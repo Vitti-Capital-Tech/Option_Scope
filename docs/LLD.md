@@ -34,7 +34,7 @@ All communication with Delta Exchange is encapsulated in `api.js`.
 ### REST Data Fetching
 - `loadProducts(underlying)`: Fetches `/v2/products`. Returns all available options contracts.
 - `fetchCandles(symbol, resolution, start, end)`: Fetches `/v2/history/candles`. Requests are prefixed with `MARK:` to ensure mark prices are retrieved.
-- **CORS Mitigation:** REST requests are sent to `http://localhost:5555` (the local proxy) instead of directly to Delta Exchange.
+- **CORS Mitigation:** REST requests are sent to `/api`, which is rewritten to `api.india.delta.exchange`. In development, this is handled by Vite (`vite.config.js`). In production, it is handled by Vercel (`vercel.json`).
 
 ### WebSocket Live Feed
 - `createWS(callSym, putSym, resolution, onCandle, onTicker, onStatus)`: Establishes a native WebSocket connection directly to `wss://socket.delta.exchange`. 
@@ -43,14 +43,15 @@ All communication with Delta Exchange is encapsulated in `api.js`.
 
 ---
 
-## 3. Proxy Server (`proxy.py`)
+## 3. Serverless API Rewrites
 
-A minimal Flask application.
+Instead of a traditional backend, the application uses edge-level rewrites to bypass CORS restrictions.
 
-- **Route:** `/<path:endpoint>` catches all requests.
-- **Forwarding:** It takes the requested endpoint, appends it to `https://api.india.delta.exchange/`, and forwards the GET request using the `requests` library.
-- **Headers:** It attaches the `x-cors-api-key` header to the outgoing request and injects `Access-Control-Allow-Origin: *` into the response before sending it back to the browser.
-- **State:** It is stateless and handles requests synchronously.
+### Local Development (`vite.config.js`)
+Vite's built-in dev server is configured to intercept any request starting with `/api` and proxy it to `https://api.india.delta.exchange`. 
+
+### Production (`vercel.json`)
+Vercel is configured with a `rewrites` array that takes any request to `/api/:path*` and rewrites it to `https://api.india.delta.exchange/:path*` at the CDN edge level. This provides identical behavior to the local dev environment with zero latency overhead.
 
 ---
 

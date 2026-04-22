@@ -21,35 +21,20 @@ Detailed architectural documentation is available in the `docs` folder:
 
 ### Prerequisites
 * Node.js
-* Python 3
-* Flask and Requests libraries for Python
 
 ### Steps
 
-1. Install backend dependencies:
-   ```bash
-   pip install flask requests
-   ```
-
-2. Install frontend dependencies:
+1. Install dependencies:
    ```bash
    npm install
    ```
 
-3. Set up environment variables:
-   Copy `.env.example` to a new file named `.env` and add your Delta Exchange credentials.
-
-4. Start the local proxy server (Terminal 1):
-   ```bash
-   python proxy.py
-   ```
-
-5. Start the frontend development server (Terminal 2):
+2. Start the development server:
    ```bash
    npm run dev
    ```
 
-6. Open the provided localhost URL in your browser to access the dashboard.
+3. Open the provided localhost URL in your browser to access the dashboard.
 
 ## License
 

@@ -21,7 +21,7 @@ This tool is built for options traders who want to monitor their straddle or str
 ```
 Browser (React App)
       |
-      |-- REST API calls (historical data) --> Flask Proxy (localhost:5555)
+      |-- REST API calls (historical data) --> /api/ Rewrite (Vite/Vercel)
       |                                               |
       |                                               --> Delta Exchange REST API
       |
@@ -36,9 +36,12 @@ The user interface runs entirely in the browser. It is built with React and disp
 - Three live candlestick charts rendered using the lightweight-charts library
 - Real-time price updates in the sidebar
 
-### 2. Flask Proxy Server (proxy.py)
+### 2. API Rewrites (Vite & Vercel)
 
-A lightweight Python server that runs locally on port 5555. Its only job is to forward requests from the browser to the Delta Exchange REST API and return the response. This is needed because browsers block direct requests to external APIs unless those APIs explicitly allow it (a restriction called CORS). The proxy runs on the same machine as the browser, so this restriction does not apply.
+Browsers block direct REST requests to external APIs that don't explicitly allow them (CORS restrictions). Instead of running a dedicated backend server, we use API rewrites:
+- **Local Development:** Vite's dev server (`vite.config.js`) proxies `/api` requests to Delta Exchange.
+- **Production:** Vercel's Edge Network (`vercel.json`) transparently rewrites `/api` requests.
+This completely eliminates the need for a backend server, making the app purely serverless.
 
 ### 3. Delta Exchange REST API
 
@@ -74,6 +77,5 @@ A persistent real-time connection that pushes live candlestick updates every tim
 |----------------|------------------|--------|
 | Frontend       | React (Vite)     | Component model makes chart management clean and maintainable |
 | Charts         | lightweight-charts | Built for financial data, handles thousands of candles efficiently |
-| Proxy          | Flask (Python)   | Simple, minimal, no external dependencies beyond Flask itself |
 | Live data      | WebSocket        | Lower latency than polling REST every second |
 | Styling        | Vanilla CSS      | No framework overhead, full control over the dark terminal aesthetic |
