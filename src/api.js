@@ -1,5 +1,5 @@
 // Delta Exchange API helpers
-const PROXY = 'http://localhost:5555';
+const PROXY = '/api';
 const WS_URL = 'wss://socket.delta.exchange';
 
 // Resolution mapping: label -> API value
