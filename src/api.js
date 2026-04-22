@@ -149,15 +149,19 @@ export function createWS(callSym, putSym, resolution, onCandle, onTicker, onStat
 
       if (msg.type && msg.type.startsWith('candlestick_')) {
         const sym = (msg.symbol || '').replace('MARK:', '');
-        onCandle(sym, {
-          time:  parseInt(msg.time),
-          open:  parseFloat(msg.open),
-          high:  parseFloat(msg.high),
-          low:   parseFloat(msg.low),
-          close: parseFloat(msg.close),
-        });
+        const t = parseInt(msg.time || msg.timestamp);
+        const o = parseFloat(msg.open);
+        const h = parseFloat(msg.high);
+        const l = parseFloat(msg.low);
+        const c = parseFloat(msg.close);
+        
+        // Prevent corrupting charts with NaN updates if payload is incomplete
+        if (isNaN(t) || isNaN(o) || isNaN(h) || isNaN(l) || isNaN(c)) return;
+
+        onCandle(sym, { time: t, open: o, high: h, low: l, close: c });
       } else if (msg.type === 'v2/ticker') {
-        onTicker(msg.symbol, parseFloat(msg.mark_price));
+        const price = parseFloat(msg.mark_price);
+        if (!isNaN(price)) onTicker(msg.symbol, price);
       }
     } catch { /* ignore parse errors */ }
   };
