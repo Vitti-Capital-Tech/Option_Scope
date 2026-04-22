@@ -10,6 +10,13 @@ export const TF_MAP = {
   '1h':  '1h',
 };
 
+export const TF_SECS = {
+  '1m': 60,
+  '5m': 300,
+  '15m': 900,
+  '1h': 3600,
+};
+
 export async function apiGet(path, params = {}) {
   const url = new URL(PROXY + path, window.location.origin);
   Object.entries(params).forEach(([k, v]) => {
@@ -154,6 +161,11 @@ export function createWS(callSym, putSym, resolution, onCandle, onTicker, onStat
         // Delta sends WS timestamps in microseconds. Lightweight charts needs seconds.
         if (t > 10000000000000) t = Math.floor(t / 1000000); // microseconds to seconds
         else if (t > 10000000000) t = Math.floor(t / 1000);  // milliseconds to seconds
+
+        // IMPORTANT: Snap the timestamp to the start of the timeframe bucket.
+        // Otherwise, lightweight-charts treats every mid-candle tick as a brand new candle.
+        const bucketSecs = TF_SECS[resolution] || 60;
+        t = Math.floor(t / bucketSecs) * bucketSecs;
 
         const o = parseFloat(msg.open);
         const h = parseFloat(msg.high);
