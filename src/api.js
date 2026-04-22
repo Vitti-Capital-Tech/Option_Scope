@@ -149,7 +149,12 @@ export function createWS(callSym, putSym, resolution, onCandle, onTicker, onStat
 
       if (msg.type && msg.type.startsWith('candlestick_')) {
         const sym = (msg.symbol || '').replace('MARK:', '');
-        const t = parseInt(msg.time || msg.timestamp);
+        let t = parseInt(msg.time || msg.timestamp);
+        
+        // Delta sends WS timestamps in microseconds. Lightweight charts needs seconds.
+        if (t > 10000000000000) t = Math.floor(t / 1000000); // microseconds to seconds
+        else if (t > 10000000000) t = Math.floor(t / 1000);  // milliseconds to seconds
+
         const o = parseFloat(msg.open);
         const h = parseFloat(msg.high);
         const l = parseFloat(msg.low);
