@@ -366,8 +366,8 @@ export default function App() {
           <div className="card">
             <div className="card-title">Engine Info</div>
             <div className="stat-row">
-              <span className="stat-label">Proxy</span>
-              <span className="stat-val" style={{ color: '#00d9a3' }}>localhost:5555</span>
+              <span className="stat-label">Routing</span>
+              <span className="stat-val" style={{ color: '#00d9a3' }}>Serverless Edge</span>
             </div>
             <div className="stat-row">
               <span className="stat-label">Price</span>

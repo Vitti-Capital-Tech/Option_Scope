@@ -11,7 +11,7 @@ export const TF_MAP = {
 };
 
 export async function apiGet(path, params = {}) {
-  const url = new URL(PROXY + path);
+  const url = new URL(PROXY + path, window.location.origin);
   Object.entries(params).forEach(([k, v]) => {
     if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, v);
   });
