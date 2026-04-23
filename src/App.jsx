@@ -11,8 +11,7 @@ import {
 import './index.css';
 
 const UNDERLYINGS = ['BTC', 'ETH'];
-const TF_LIST = ['1m', '5m', '15m', '1h'];
-const TF_SECS = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600 };
+const TF_LIST = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '12h', '1d', '1w'];
 const CANDLE_COUNT = 300;
 
 // ── ChartPanel ────────────────────────────────────────────────────────────────
@@ -22,6 +21,7 @@ const ChartPanel = forwardRef(function ChartPanel({ title, colorUp, colorDown },
   const containerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
+  const legendRef = useRef(null);
 
   useLayoutEffect(() => {
     const el = containerRef.current;
@@ -55,6 +55,25 @@ const ChartPanel = forwardRef(function ChartPanel({ title, colorUp, colorDown },
 
     chartRef.current = chart;
     seriesRef.current = series;
+
+    chart.subscribeCrosshairMove((param) => {
+      if (!legendRef.current) return;
+      if (!param.time || param.point.x < 0 || param.point.y < 0) {
+        legendRef.current.innerHTML = '';
+        return;
+      }
+      const data = param.seriesData.get(series);
+      if (data) {
+        legendRef.current.innerHTML = `
+          <div style="display:flex;gap:12px;background:rgba(10,13,18,0.85);padding:6px 10px;border-radius:4px;border:1px solid #1e2730;backdrop-filter:blur(4px);">
+            <span>O <span style="color:#fff">${data.open}</span></span>
+            <span>H <span style="color:#fff">${data.high}</span></span>
+            <span>L <span style="color:#fff">${data.low}</span></span>
+            <span>C <span style="color:#fff">${data.close}</span></span>
+          </div>
+        `;
+      }
+    });
 
     const ro = new ResizeObserver(() => {
       if (containerRef.current && chartRef.current) {
@@ -103,7 +122,12 @@ const ChartPanel = forwardRef(function ChartPanel({ title, colorUp, colorDown },
         <span style={{ color: colorUp }}>▮</span>
         <span>{title}</span>
       </div>
-      <div ref={containerRef} style={{ flex: 1, minHeight: 0 }} />
+      <div ref={containerRef} style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+        <div ref={legendRef} style={{
+          position: 'absolute', top: 8, left: 8, zIndex: 10,
+          fontSize: 11, fontFamily: "'JetBrains Mono', monospace", color: '#7d8590', pointerEvents: 'none'
+        }} />
+      </div>
     </div>
   );
 });
@@ -112,6 +136,7 @@ const ChartPanel = forwardRef(function ChartPanel({ title, colorUp, colorDown },
 export default function App() {
   const [underlying, setUnderlying] = useState('BTC');
   const [tf, setTf] = useState('1m');
+  const [priceType, setPriceType] = useState('mark');
   const [products, setProducts] = useState([]);
   const [expiries, setExpiries] = useState([]);
   const [strikes, setStrikes] = useState([]);
@@ -207,13 +232,14 @@ export default function App() {
     lastP.current = null;
 
     const now = Math.floor(Date.now() / 1000);
-    const start = now - TF_SECS[tf] * CANDLE_COUNT;
+    // Rough estimate of start time, relying on the API to limit to available data
+    const start = now - 604800 * 2; // fetch enough back for CANDLE_COUNT
 
     try {
-      console.log(`Fetching: ${callSym} / ${pSym} @ ${tf}`);
+      console.log(`Fetching: ${callSym} / ${pSym} @ ${tf} (${priceType})`);
       const [cCandles, pCandles] = await Promise.all([
-        fetchCandles(callSym, tf, start, now),
-        fetchCandles(pSym, tf, start, now),
+        fetchCandles(callSym, tf, start, now, priceType),
+        fetchCandles(pSym, tf, start, now, priceType),
       ]);
       console.log(`Candles: call=${cCandles.length} put=${pCandles.length}`);
 
@@ -231,7 +257,7 @@ export default function App() {
 
       // Connect WebSocket for live updates
       wsRef.current = createWS(
-        callSym, pSym, tf,
+        callSym, pSym, tf, priceType,
         (sym, candle) => {
           if (sym === callSymRef.current) {
             callRef.current?.update(candle);
@@ -332,12 +358,18 @@ export default function App() {
             </div>
 
             <div className="form-group">
+              <label>Price Source</label>
+              <select value={priceType} onChange={e => setPriceType(e.target.value)}>
+                <option value="mark">Mark Price</option>
+                <option value="ltp">Last Traded Price</option>
+              </select>
+            </div>
+
+            <div className="form-group">
               <label>Candle Interval</label>
-              <div className="tf-grid">
-                {TF_LIST.map(t => (
-                  <button key={t} className={`tf-btn ${tf === t ? 'active' : ''}`} onClick={() => setTf(t)}>{t}</button>
-                ))}
-              </div>
+              <select value={tf} onChange={e => setTf(e.target.value)}>
+                {TF_LIST.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
             </div>
 
             <button className="btn-start" disabled={phase === 'loading' || !callSym} onClick={startMonitoring}>
@@ -348,7 +380,7 @@ export default function App() {
           </div>
 
           <div className="card">
-            <div className="card-title">Live Prices (Mark)</div>
+            <div className="card-title">Live Prices ({priceType === 'mark' ? 'Mark' : 'LTP'})</div>
             <div className="stat-row">
               <span className="stat-label">CALL</span>
               <span className="stat-val call">{callPrice ? callPrice.toFixed(2) : '—'}</span>

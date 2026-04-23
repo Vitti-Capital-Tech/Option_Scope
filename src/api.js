@@ -5,16 +5,32 @@ const WS_URL = 'wss://socket.delta.exchange';
 // Resolution mapping: label -> API value
 export const TF_MAP = {
   '1m':  '1m',
+  '3m':  '3m',
   '5m':  '5m',
   '15m': '15m',
+  '30m': '30m',
   '1h':  '1h',
+  '2h':  '2h',
+  '4h':  '4h',
+  '6h':  '6h',
+  '12h': '12h',
+  '1d':  '1d',
+  '1w':  '1w',
 };
 
 export const TF_SECS = {
   '1m': 60,
+  '3m': 180,
   '5m': 300,
   '15m': 900,
+  '30m': 1800,
   '1h': 3600,
+  '2h': 7200,
+  '4h': 14400,
+  '6h': 21600,
+  '12h': 43200,
+  '1d': 86400,
+  '1w': 604800,
 };
 
 export async function apiGet(path, params = {}) {
@@ -67,11 +83,11 @@ export async function getSpotPrice(underlying) {
 }
 
 // Fetch historical candles
-export async function fetchCandles(symbol, resolution, startTs, endTs) {
-  // symbol must be prefixed with MARK: for mark price
+export async function fetchCandles(symbol, resolution, startTs, endTs, priceType = 'mark') {
+  const reqSymbol = priceType === 'mark' ? 'MARK:' + symbol : symbol;
   const data = await apiGet('/v2/history/candles', {
-    symbol: 'MARK:' + symbol,
-    resolution,            // "1m", "5m", "15m", "1h"
+    symbol: reqSymbol,
+    resolution,
     start: startTs,
     end: endTs,
   });
@@ -126,9 +142,10 @@ export function findATM(strikes, spot) {
 }
 
 // Create and manage a single Delta WebSocket connection
-export function createWS(callSym, putSym, resolution, onCandle, onTicker, onStatus) {
+export function createWS(callSym, putSym, resolution, priceType, onCandle, onTicker, onStatus) {
   const ws = new WebSocket(WS_URL);
   let alive = true;
+  const prefix = priceType === 'mark' ? 'MARK:' : '';
 
   ws.onopen = () => {
     onStatus('live');
@@ -138,7 +155,7 @@ export function createWS(callSym, putSym, resolution, onCandle, onTicker, onStat
         channels: [
           {
             name: `candlestick_${resolution}`,
-            symbols: ['MARK:' + callSym, 'MARK:' + putSym],
+            symbols: [prefix + callSym, prefix + putSym],
           },
           {
             name: 'v2/ticker',
@@ -177,7 +194,7 @@ export function createWS(callSym, putSym, resolution, onCandle, onTicker, onStat
 
         onCandle(sym, { time: t, open: o, high: h, low: l, close: c });
       } else if (msg.type === 'v2/ticker') {
-        const price = parseFloat(msg.mark_price);
+        const price = priceType === 'mark' ? parseFloat(msg.mark_price) : parseFloat(msg.close);
         if (!isNaN(price)) onTicker(msg.symbol, price);
       }
     } catch { /* ignore parse errors */ }
