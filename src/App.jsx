@@ -363,23 +363,7 @@ export default function App() {
             </div>
           </div>
 
-          <div className="card">
-            <div className="card-title">Engine Info</div>
-            <div className="stat-row">
-              <span className="stat-label">Routing</span>
-              <span className="stat-val" style={{ color: '#00d9a3' }}>Serverless Edge</span>
-            </div>
-            <div className="stat-row">
-              <span className="stat-label">Price</span>
-              <span className="stat-val" style={{ fontSize: 10 }}>Mark Price</span>
-            </div>
-            <div className="stat-row">
-              <span className="stat-label">Feed</span>
-              <span className="stat-val" style={{ color: wsStatus === 'live' ? '#00d9a3' : '#f85149', fontSize: 10 }}>
-                {wsStatus === 'live' ? 'WS LIVE' : 'IDLE'}
-              </span>
-            </div>
-          </div>
+
 
           {/* Footer credit */}
           <div style={{ marginTop: 'auto', paddingTop: 8 }}>
