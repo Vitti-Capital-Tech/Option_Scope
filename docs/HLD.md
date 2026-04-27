@@ -4,15 +4,12 @@
 
 OptionScope is a real-time dashboard for monitoring options contracts traded on Delta Exchange. It allows a trader to select a specific options contract (by underlying asset, expiry date, and strike price) and view live candlestick charts showing:
 
-- The mark price of the **Call** option over time
-- The mark price of the **Put** option over time
-- The **Combined Premium** — the sum of Call and Put mark prices at every point in time (this represents the total cost of holding both legs of a straddle or strangle position)
+- The price of the **Call** option over time
+- The price of the **Put** option over time
+- The **Combined Premium** — the sum of Call and Put prices at every point in time.
+- **Live Greeks**: Real-time Delta, Gamma, Vega, Theta, Rho, and IV for both legs.
 
----
-
-## Who This Is For
-
-This tool is built for options traders who want to monitor their straddle or strangle positions in real time without relying on broker interfaces, which are often slow or limited in charting capability.
+Users can toggle between **Mark Price** (standard for valuation) and **Last Traded Price (LTP)** for execution-focused monitoring.
 
 ---
 
@@ -21,53 +18,43 @@ This tool is built for options traders who want to monitor their straddle or str
 ```
 Browser (React App)
       |
-      |-- REST API calls (historical data) --> /api/ Rewrite (Vite/Vercel)
-      |                                               |
-      |                                               --> Delta Exchange REST API
+      |-- REST API calls (historical & corrective) --> /api Proxy Rewrite
+      |                                                     |
+      |                                                     --> Delta Exchange REST API
       |
-      |-- WebSocket (live updates) --> Delta Exchange WebSocket Server
+      |-- WebSocket (live telemetry) --> Delta Exchange WebSocket Server
+            |
+            |-- Ticker (Live Prices)
+            |-- Greeks (Delta, Gamma, etc.)
+            |-- Trades & L2 Book (Data Hub)
 ```
 
 ### 1. React Frontend (Browser)
+The UI is a purely client-side application. It utilizes a **Data Hub** pattern to store incoming WebSocket streams (Greeks, Ticker, Trades) without overwhelming the React render cycle. Charts are rendered using `lightweight-charts` with an imperative update strategy.
 
-The user interface runs entirely in the browser. It is built with React and displays:
+### 2. API Rewrites (Zero-Backend)
+The app is entirely serverless. It bypasses CORS restrictions using edge-level rewrites:
+- **Local:** Vite proxy (`vite.config.js`).
+- **Production:** Vercel edge rewrites (`vercel.json`).
 
-- A configuration panel (asset, expiry, strike, timeframe)
-- Three live candlestick charts rendered using the lightweight-charts library
-- Real-time price updates in the sidebar
-
-### 2. API Rewrites (Vite & Vercel)
-
-Browsers block direct REST requests to external APIs that don't explicitly allow them (CORS restrictions). Instead of running a dedicated backend server, we use API rewrites:
-- **Local Development:** Vite's dev server (`vite.config.js`) proxies `/api` requests to Delta Exchange.
-- **Production:** Vercel's Edge Network (`vercel.json`) transparently rewrites `/api` requests.
-This completely eliminates the need for a backend server, making the app purely serverless.
-
-### 3. Delta Exchange REST API
-
-Used to fetch:
-- The list of available options contracts (products)
-- Historical candlestick data for mark prices
-
-### 4. Delta Exchange WebSocket
-
-A persistent real-time connection that pushes live candlestick updates every time a new price is recorded. This is what makes the charts update without needing to refresh the page.
+### 3. Data Integrity Engine
+To solve the common problem of WebSocket vs. REST data discrepancies:
+- **Live Polling:** Every 5 seconds, the app fetches the *current* forming candle from REST to ensure O/H/L accuracy.
+- **Full History Refresh:** Every time a candle closes (e.g., at the top of the hour for 1h charts), the app waits 15 seconds for the exchange to finalize the record and then performs a silent background refresh of the entire chart history.
 
 ---
 
 ## Data Flow
 
 ### On startup
-1. The app loads and immediately fetches all available options contracts from the Delta API.
-2. The expiry date and strike price dropdowns are populated from this data.
-3. The strike closest to the current market price (ATM — At The Money) is automatically selected.
+1. The app fetches available products and calculates the **ATM (At-The-Money)** strike based on the current spot price of the underlying asset.
+2. The UI populates dropdowns and auto-selects the ATM strike for the nearest expiry.
 
-### When "Start Monitoring" is clicked
-1. The app fetches the last 300 historical candles for both the Call and Put contracts.
-2. The three charts are drawn: Call, Put, and Combined.
-3. A WebSocket connection is opened to Delta Exchange.
-4. Every time a new candlestick update arrives, the charts update in real time.
-5. The sidebar prices (Call, Put, Combined) update from both WebSocket candle messages and ticker messages.
+### During Monitoring
+1. **Bootstrap:** Fetches the last 300 historical candles.
+2. **WebSocket Feed:** Listens for `v2/ticker` (prices/Greeks) and `mark_price` updates.
+3. **Imperative Updates:** Prices are pushed directly to chart refs, bypassing React's state to ensure 60fps performance.
+4. **Auto-Correction:** The wall-clock scheduler triggers REST refreshes at every candle boundary to ensure the "Final" candle on the chart is 100% accurate.
 
 ---
 
@@ -75,7 +62,8 @@ A persistent real-time connection that pushes live candlestick updates every tim
 
 | Component      | Technology       | Reason |
 |----------------|------------------|--------|
-| Frontend       | React (Vite)     | Component model makes chart management clean and maintainable |
-| Charts         | lightweight-charts | Built for financial data, handles thousands of candles efficiently |
-| Live data      | WebSocket        | Lower latency than polling REST every second |
-| Styling        | Vanilla CSS      | No framework overhead, full control over the dark terminal aesthetic |
+| Frontend       | React (Vite)     | Modular UI and efficient state management for configuration |
+| Charts         | lightweight-charts | High-performance financial visualization |
+| Live data      | WebSocket        | Sub-second latency for prices and Greeks |
+| Data Hub       | React Refs       | Prevents unnecessary re-renders for high-frequency WebSocket data |
+| Styling        | Vanilla CSS      | Precision control over the "Terminal" aesthetic |

@@ -1,26 +1,36 @@
 # OptionScope
 
-OptionScope is a real-time monitoring dashboard for options contracts on Delta Exchange. It provides a clean, responsive interface to view live mark prices and combined premiums for call and put options.
+OptionScope is a real-time monitoring dashboard for options contracts on Delta Exchange. It provides a premium, high-performance interface for traders to track live prices, combined premiums, and option Greeks.
 
 ## Overview
 
-The application allows traders to select an underlying asset, expiry date, and strike price to generate real-time candlestick charts. It displays the individual call and put option charts alongside a combined premium chart, providing immediate insight into the total cost of straddle or strangle positions.
+The application allows traders to monitor "Straddle" or "Strangle" positions by selecting an underlying asset, expiry date, and strike price. It generates real-time candlestick charts for individual call and put options alongside a **Combined Premium** chart, offering immediate insight into the total cost and performance of multi-leg positions.
 
-The project consists of two main parts:
-1. A React frontend that renders the user interface and high-performance charts.
-2. A Python proxy server that facilitates secure communication with the Delta Exchange API.
+### Key Features
+- **Real-Time Greeks**: Live monitoring of Delta, Gamma, Vega, Theta, Rho, and Implied Volatility (IV).
+- **Data Integrity**: Robust "Full History Refresh" mechanism that auto-corrects charts precisely when a candle closes using official REST data.
+- **Price Sources**: Toggle between **Mark Price** and **Last Traded Price (LTP)**.
+- **Smart Selection**: Automatically detects and selects the At-The-Money (ATM) strike when you change expiry dates.
+- **Purely Serverless**: Zero backend dependencies; uses Vite/Vercel edge rewrites to communicate directly with Delta Exchange.
+
+## Architecture
+
+The project is built with a modern, serverless stack:
+1. **Frontend**: React (Vite) + `lightweight-charts` for high-performance financial charting.
+2. **Connectivity**: Native WebSockets for sub-second price updates and Greeks.
+3. **API Proxy**: Edge-level rewrites (`vercel.json`) and local proxies (`vite.config.js`) to handle CORS without a dedicated backend.
 
 ## Documentation
 
 Detailed architectural documentation is available in the `docs` folder:
 
-* [High Level Design (HLD)](docs/HLD.md) - A non-technical overview of the system components and data flow.
-* [Low Level Design (LLD)](docs/LLD.md) - Technical implementation details, including React state management and WebSocket integration.
+* [High Level Design (HLD)](docs/HLD.md) - Overview of components and data flow.
+* [Low Level Design (LLD)](docs/LLD.md) - Technical implementation details, data hub logic, and chart rendering strategies.
 
 ## Installation and Setup
 
 ### Prerequisites
-* Node.js
+* Node.js (v18+)
 
 ### Steps
 
