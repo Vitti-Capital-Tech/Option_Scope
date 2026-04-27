@@ -1,4 +1,4 @@
-import {
+import React, {
   useEffect, useLayoutEffect, useRef, useState,
   useCallback, forwardRef, useImperativeHandle
 } from 'react';
@@ -6,7 +6,7 @@ import { createChart, CandlestickSeries } from 'lightweight-charts';
 import {
   loadProducts, getExpiries, getStrikes, getSpotPrice,
   fetchCandles, sumCandles, putSymbol, fmtExpiry, findATM,
-  createWS,
+  createWS, TF_SECS
 } from './api';
 import './index.css';
 
@@ -89,10 +89,16 @@ const ChartPanel = forwardRef(function ChartPanel({ title, colorUp, colorDown },
   }, []); // mount once, never destroy until page unloads
 
   useImperativeHandle(ref, () => ({
-    setData(candles) {
+    setData(candles, fit = true) {
       if (!seriesRef.current || !candles?.length) return;
+      let range;
+      if (!fit) range = chartRef.current?.timeScale().getVisibleLogicalRange();
       seriesRef.current.setData(candles);
-      chartRef.current?.timeScale().fitContent();
+      if (fit) {
+        chartRef.current?.timeScale().fitContent();
+      } else if (range) {
+        chartRef.current?.timeScale().setVisibleLogicalRange(range);
+      }
     },
     update(candle) {
       if (!seriesRef.current || !candle) return;
@@ -160,9 +166,29 @@ export default function App() {
   const lastP = useRef(null);
   const callSymRef = useRef('');
   const putSymRef = useRef('');
+  const pollerRef = useRef(null);
+  const offsetRef = useRef(0);
+  const currentCandleTimer = useRef(null);
+  const correctionTimerRef = useRef(null); // wall-clock based candle correction chain
+
+  // ── Data Hub: stores ALL WebSocket streams for future use ──────────────
+  const makeEmptySide = () => ({
+    ticker: null,               // latest full v2/ticker snapshot
+    greeks: null,               // { delta, gamma, vega, theta, rho, iv }
+    markPrice: null,               // { price, timestamp }
+    trades: [],                 // last 200 trades [ { price, size, side, ts } ]
+    orderbook: { bids: [], asks: [] }, // latest L2 depth
+  });
+  const dataHubRef = useRef({ call: makeEmptySide(), put: makeEmptySide() });
+
+  // Reactive Greeks for UI display (IV + Delta for Call)
+  const [callGreeks, setCallGreeks] = useState(null);
+  const [putGreeks, setPutGreeks] = useState(null);
+
   // Track what symbol the charts currently show
   const [activeCall, setActiveCall] = useState('');
   const [activePut, setActivePut] = useState('');
+
 
   // ── Load products on underlying change ───────────────────────────────────
   useEffect(() => {
@@ -204,21 +230,46 @@ export default function App() {
   // ── Imperative combine update ─────────────────────────────────────────────
   const updateComb = useCallback((c, p) => {
     if (!c || !p) return;
-    combRef.current?.update({
-      time: c.time,
-      open: c.open + p.open,
-      high: c.high + p.high,
-      low: c.low + p.low,
-      close: c.close + p.close,
-    });
-  }, []);
 
+    if (c.time === p.time) {
+      combRef.current?.update({
+        time: c.time,
+        open: c.open + p.open,
+        high: c.high + p.high,
+        low: c.low + p.low,
+        close: c.close + p.close,
+      });
+    } else {
+      // If one candle ticked over to a new timestamp but the other hasn't,
+      // use the newest timestamp. For the lagging candle, assume its price
+      // stayed flat at its previous close.
+      const time = Math.max(c.time, p.time);
+      const cOpen = c.time === time ? c.open : c.close;
+      const cHigh = c.time === time ? c.high : c.close;
+      const cLow = c.time === time ? c.low : c.close;
+      const cClose = c.time === time ? c.close : c.close;
+
+      const pOpen = p.time === time ? p.open : p.close;
+      const pHigh = p.time === time ? p.high : p.close;
+      const pLow = p.time === time ? p.low : p.close;
+      const pClose = p.time === time ? p.close : p.close;
+
+      combRef.current?.update({
+        time: time,
+        open: cOpen + pOpen,
+        high: cHigh + pHigh,
+        low: cLow + pLow,
+        close: cClose + pClose,
+      });
+    }
+  }, []);
   // ── START MONITORING ──────────────────────────────────────────────────────
   const startMonitoring = useCallback(async () => {
     if (!callSym) { setErrMsg('Select a valid strike first.'); return; }
 
     // Kill existing WS
     if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
+    if (pollerRef.current) clearInterval(pollerRef.current);
 
     const pSym = putSymbol(callSym);
     callSymRef.current = callSym;
@@ -244,9 +295,9 @@ export default function App() {
       console.log(`Candles: call=${cCandles.length} put=${pCandles.length}`);
 
       // Push data directly — charts are already mounted
-      callRef.current?.setData(cCandles);
-      putRef.current?.setData(pCandles);
-      combRef.current?.setData(sumCandles(cCandles, pCandles));
+      callRef.current?.setData(cCandles, true);
+      putRef.current?.setData(pCandles, true);
+      combRef.current?.setData(sumCandles(cCandles, pCandles), true);
 
       setActiveCall(callSym);
       setActivePut(pSym);
@@ -255,25 +306,214 @@ export default function App() {
       if (cCandles.length) { lastC.current = cCandles.at(-1); setCallPrice(cCandles.at(-1).close); }
       if (pCandles.length) { lastP.current = pCandles.at(-1); setPutPrice(pCandles.at(-1).close); }
 
-      // Connect WebSocket for live updates
+      const bucketSecs = TF_SECS[tf] || 60;
+
+      // ── Helper: fetch the current LIVE candle from REST and bless the chart ──
+      // This is the source of truth for O/H/L — the ticker only gives Close.
+      const refreshCurrentCandle = async () => {
+        try {
+          const nowSec = Math.floor(Date.now() / 1000);
+          const bucketSecs = TF_SECS[tf] || 60;
+          const startTs = Math.max(0, nowSec - bucketSecs * 3); // fetch last 3 buckets to guarantee overlap
+
+          const [cc, pc] = await Promise.all([
+            fetchCandles(callSym, tf, startTs, nowSec + 1, priceType),
+            fetchCandles(pSym, tf, startTs, nowSec + 1, priceType),
+          ]);
+
+          if (cc?.length) {
+            cc.forEach(c => callRef.current?.update(c));
+            const latestC = cc[cc.length - 1];
+            // Only overwrite lastC.current if the REST candle is >= our temporary websocket candle
+            if (!lastC.current || latestC.time >= lastC.current.time) {
+              lastC.current = latestC;
+            }
+          }
+          if (pc?.length) {
+            pc.forEach(p => putRef.current?.update(p));
+            const latestP = pc[pc.length - 1];
+            if (!lastP.current || latestP.time >= lastP.current.time) {
+              lastP.current = latestP;
+            }
+          }
+          if (cc?.length && pc?.length) {
+            const comb = sumCandles(cc, pc);
+            comb.forEach(c => combRef.current?.update(c));
+          }
+        } catch (err) { console.warn('refreshCurrentCandle failed:', err); }
+      };
+
+      // ── Helper: completely refresh history when a candle closes ───────────
+      // This guarantees that any slight inaccuracies from the final moments
+      // of a live candle are permanently corrected with official REST data.
+      const refreshAllHistory = async () => {
+        try {
+          const nowSec = Math.floor(Date.now() / 1000);
+          const bucketSecs = TF_SECS[tf] || 60;
+          const startTs = nowSec - bucketSecs * CANDLE_COUNT;
+
+          const [cc, pc] = await Promise.all([
+            fetchCandles(callSym, tf, startTs, nowSec + 1, priceType),
+            fetchCandles(pSym, tf, startTs, nowSec + 1, priceType),
+          ]);
+
+          if (cc?.length) {
+            callRef.current?.setData(cc, false);
+            lastC.current = cc[cc.length - 1];
+            setCallPrice(lastC.current.close);
+          }
+          if (pc?.length) {
+            putRef.current?.setData(pc, false);
+            lastP.current = pc[pc.length - 1];
+            setPutPrice(lastP.current.close);
+          }
+          if (cc?.length && pc?.length) {
+            const comb = sumCandles(cc, pc);
+            combRef.current?.setData(comb, false);
+          }
+          console.log(`[AutoCorrect] Full history refreshed perfectly.`);
+        } catch (err) { console.warn('refreshAllHistory failed:', err); }
+      };
+
+      // ── Wall-clock candle correction scheduler ────────────────────────────
+      // Fires precisely when each candle closes (regardless of ticker activity).
+      // Waits 15s for REST to settle, then replaces the closed candle with
+      // official exchange data — exactly like clicking Start Monitoring again.
+      const scheduleCandleCorrections = () => {
+        if (correctionTimerRef.current) clearTimeout(correctionTimerRef.current);
+
+        const nowSec = Math.floor(Date.now() / 1000);
+        const anchor = lastC.current?.time ?? Math.floor(nowSec / bucketSecs) * bucketSecs;
+        const currentBucket = anchor + Math.floor((nowSec - anchor) / bucketSecs) * bucketSecs;
+        const nextBoundary = currentBucket + bucketSecs;          // when current candle closes
+        const msUntilClose = Math.max(0, (nextBoundary - nowSec) * 1000);
+        const SETTLE_MS = 15000; // wait 15s after close for REST to finalise
+
+        correctionTimerRef.current = setTimeout(async () => {
+          // Fetch and replace the entire chart with official REST data
+          console.log(`[AutoCorrect] Triggering full refresh to correct closed candle...`);
+          await refreshAllHistory();
+          // Chain: schedule correction for the NEXT candle
+          scheduleCandleCorrections();
+        }, msUntilClose + SETTLE_MS);
+
+        console.log(`[AutoCorrect] Next correction in ${Math.round((msUntilClose + SETTLE_MS) / 1000)}s (candle closes in ${Math.round(msUntilClose / 1000)}s)`);
+      };
+
+      // Kick off the correction chain
+      scheduleCandleCorrections();
+
+      // Start the current-candle refresh interval (every 5 seconds)
+      if (currentCandleTimer.current) clearInterval(currentCandleTimer.current);
+      currentCandleTimer.current = setInterval(refreshCurrentCandle, 5000);
+
+      // ── WebSocket: ticker updates Close price in real-time (zero latency) ──
       wsRef.current = createWS(
         callSym, pSym, tf, priceType,
-        (sym, candle) => {
+        (sym, price) => {
+          // Determine current bucket using wall-clock anchored to last known candle
+          const nowSec = Math.floor(Date.now() / 1000);
+          const anchor = lastC.current?.time ?? lastP.current?.time ?? Math.floor(nowSec / bucketSecs) * bucketSecs;
+          const currentBucket = anchor + Math.floor((nowSec - anchor) / bucketSecs) * bucketSecs;
+
           if (sym === callSymRef.current) {
-            callRef.current?.update(candle);
-            lastC.current = candle;
-            setCallPrice(candle.close);
-            updateComb(candle, lastP.current);
-          } else if (sym === putSymRef.current) {
-            putRef.current?.update(candle);
-            lastP.current = candle;
-            setPutPrice(candle.close);
-            updateComb(lastC.current, candle);
+            setCallPrice(price);
+            // !lastC.current handles LTP mode where no historical trades exist
+            if (!lastC.current || currentBucket > lastC.current.time) {
+              const prevTime = lastC.current?.time;
+              const newC = { time: currentBucket, open: price, high: price, low: price, close: price };
+              lastC.current = newC;
+              callRef.current?.update(newC);
+              updateComb(newC, lastP.current);
+              if (prevTime) correctClosedCandle(prevTime);
+            } else {
+              // Same candle — update Close; also expand H/L as fallback for LTP (REST may miss)
+              const upd = { ...lastC.current, close: price };
+              if (price > upd.high) upd.high = price;
+              if (price < upd.low) upd.low = price;
+              lastC.current = upd;
+              callRef.current?.update(upd);
+              updateComb(upd, lastP.current);
+            }
+          }
+          if (sym === putSymRef.current) {
+            setPutPrice(price);
+            if (!lastP.current || currentBucket > lastP.current.time) {
+              const prevTime = lastP.current?.time;
+              const newP = { time: currentBucket, open: price, high: price, low: price, close: price };
+              lastP.current = newP;
+              putRef.current?.update(newP);
+              updateComb(lastC.current, newP);
+              if (prevTime) correctClosedCandle(prevTime);
+            } else {
+              const upd = { ...lastP.current, close: price };
+              if (price > upd.high) upd.high = price;
+              if (price < upd.low) upd.low = price;
+              lastP.current = upd;
+              putRef.current?.update(upd);
+              updateComb(lastC.current, upd);
+            }
           }
         },
-        (sym, price) => {
-          if (sym === callSymRef.current) setCallPrice(price);
-          if (sym === putSymRef.current) setPutPrice(price);
+        // ── Data Hub: extract and store ALL WebSocket streams ──────────────
+        (msg) => {
+          const sym = msg.symbol;
+          const side = sym === callSymRef.current ? 'call'
+            : sym === putSymRef.current ? 'put'
+              : null;
+
+          // ── v2/ticker: full snapshot including Greeks + OI + quotes ──
+          if (msg.type === 'v2/ticker') {
+            if (side) {
+              dataHubRef.current[side].ticker = msg;
+              // Extract Greeks (only present for options)
+              if (msg.greeks) {
+                const g = {
+                  delta: parseFloat(msg.greeks.delta),
+                  gamma: parseFloat(msg.greeks.gamma),
+                  vega: parseFloat(msg.greeks.vega),
+                  theta: parseFloat(msg.greeks.theta),
+                  rho: parseFloat(msg.greeks.rho),
+                  iv: parseFloat(msg.implied_volatility ?? msg.greeks.iv ?? 0),
+                };
+                dataHubRef.current[side].greeks = g;
+                if (side === 'call') setCallGreeks(g);
+                else setPutGreeks(g);
+              }
+            }
+          }
+
+          // ── trades: public trade tape ─────────────────────────────────
+          if (msg.type === 'trades' && Array.isArray(msg.trades)) {
+            if (side) {
+              const parsed = msg.trades.map(t => ({
+                price: parseFloat(t.price),
+                size: parseFloat(t.size),
+                side: t.buyer_role === 'taker' ? 'buy' : 'sell',
+                ts: parseInt(t.created_at ?? t.timestamp ?? 0),
+              }));
+              dataHubRef.current[side].trades = [
+                ...parsed,
+                ...dataHubRef.current[side].trades,
+              ].slice(0, 200); // keep last 200 trades
+            }
+          }
+
+          // ── l2_updates: incremental orderbook depth ───────────────────
+          if (msg.type === 'l2_updates' && side) {
+            const ob = dataHubRef.current[side].orderbook;
+            // Delta sends full snapshot on first message, then increments
+            if (msg.buy) ob.bids = msg.buy;   // array of { limit_price, size }
+            if (msg.sell) ob.asks = msg.sell;
+          }
+
+          // ── mark_price: dedicated mark price stream ───────────────────
+          if (msg.type === 'mark_price' && side) {
+            dataHubRef.current[side].markPrice = {
+              price: parseFloat(msg.price),
+              ts: msg.timestamp ? Math.floor(parseInt(msg.timestamp) / 1000000) : Math.floor(Date.now() / 1000),
+            };
+          }
         },
         (status) => setWsStatus(status),
       );
@@ -283,9 +523,12 @@ export default function App() {
       setErrMsg('Error: ' + e.message);
       setPhase('idle');
     }
-  }, [callSym, tf, updateComb]);
+  }, [callSym, tf, priceType, updateComb]);
 
-  useEffect(() => () => wsRef.current?.close(), []);
+  useEffect(() => () => {
+    wsRef.current?.close();
+    if (currentCandleTimer.current) clearInterval(currentCandleTimer.current);
+  }, []);
 
   const combPrice = (callPrice && putPrice) ? (callPrice + putPrice).toFixed(2) : '—';
   const pSym = callSym ? putSymbol(callSym) : '';
@@ -395,9 +638,38 @@ export default function App() {
             </div>
           </div>
 
+          {/* Greeks card — populated from WebSocket Data Hub */}
+          {(callGreeks || putGreeks) && (
+            <div className="card">
+              <div className="card-title">Greeks (Live)</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px 8px', fontSize: 10, fontFamily: 'JetBrains Mono, monospace' }}>
+                <span style={{ color: '#7d8590', fontWeight: 700 }}></span>
+                <span style={{ color: '#3fb950', fontWeight: 700, textAlign: 'center' }}>CALL</span>
+                <span style={{ color: '#f85149', fontWeight: 700, textAlign: 'center' }}>PUT</span>
+
+                {[
+                  { label: 'Δ Delta', key: 'delta', decimals: 4 },
+                  { label: 'Γ Gamma', key: 'gamma', decimals: 4 },
+                  { label: 'ν Vega', key: 'vega', decimals: 2 },
+                  { label: 'Θ Theta', key: 'theta', decimals: 2 },
+                  { label: 'ρ Rho', key: 'rho', decimals: 4 },
+                  { label: 'IV %', key: 'iv', decimals: 1, scale: 100 },
+                ].map(({ label, key, decimals, scale = 1 }) => (
+                  <React.Fragment key={key}>
+                    <span style={{ color: '#7d8590' }}>{label}</span>
+                    <span style={{ color: '#e6edf3', textAlign: 'center' }}>
+                      {callGreeks?.[key] != null ? (callGreeks[key] * scale).toFixed(decimals) : '—'}
+                    </span>
+                    <span style={{ color: '#e6edf3', textAlign: 'center' }}>
+                      {putGreeks?.[key] != null ? (putGreeks[key] * scale).toFixed(decimals) : '—'}
+                    </span>
+                  </React.Fragment>
+                ))}
+              </div>
+            </div>
+          )}
 
 
-          {/* Footer credit */}
           <div style={{ marginTop: 'auto', paddingTop: 8 }}>
             <a
               href="https://minianonlink.vercel.app/tusharbhardwaj"
@@ -467,7 +739,7 @@ export default function App() {
           {/* Combined chart — ALWAYS in DOM */}
           <ChartPanel
             ref={combRef}
-            title={activeCall ? `COMBINED PREMIUM  ·  ${activeCall} + ${activePut}` : 'COMBINED PREMIUM'}
+            title={activeCall ? `COMBINED PREMIUM (${priceType.toUpperCase()})  ·  ${activeCall} + ${activePut}` : 'COMBINED PREMIUM'}
             colorUp="#e3b341"
             colorDown="#b08a2e"
           />
@@ -476,13 +748,13 @@ export default function App() {
           <div style={{ display: 'flex', gap: 12, flex: 1, minHeight: 0 }}>
             <ChartPanel
               ref={callRef}
-              title={activeCall ? `CALL  ·  ${activeCall}` : 'CALL'}
+              title={activeCall ? `CALL (${priceType.toUpperCase()})  ·  ${activeCall}` : 'CALL'}
               colorUp="#3fb950"
               colorDown="#238636"
             />
             <ChartPanel
               ref={putRef}
-              title={activePut ? `PUT  ·  ${activePut}` : 'PUT'}
+              title={activePut ? `PUT (${priceType.toUpperCase()})  ·  ${activePut}` : 'PUT'}
               colorUp="#f85149"
               colorDown="#b62324"
             />

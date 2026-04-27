@@ -141,11 +141,9 @@ export function findATM(strikes, spot) {
   , strikes[0]);
 }
 
-// Create and manage a single Delta WebSocket connection
-export function createWS(callSym, putSym, resolution, priceType, onCandle, onTicker, onStatus) {
+export function createWS(callSym, putSym, resolution, priceType, onTicker, onData, onStatus) {
   const ws = new WebSocket(WS_URL);
   let alive = true;
-  const prefix = priceType === 'mark' ? 'MARK:' : '';
 
   ws.onopen = () => {
     onStatus('live');
@@ -153,14 +151,10 @@ export function createWS(callSym, putSym, resolution, priceType, onCandle, onTic
       type: 'subscribe',
       payload: {
         channels: [
-          {
-            name: `candlestick_${resolution}`,
-            symbols: [prefix + callSym, prefix + putSym],
-          },
-          {
-            name: 'v2/ticker',
-            symbols: [callSym, putSym],
-          },
+          { name: 'v2/ticker', symbols: [callSym, putSym] },
+          { name: 'trades', symbols: [callSym, putSym] },
+          { name: 'l2_updates', symbols: [callSym, putSym] },
+          { name: 'mark_price', symbols: [callSym, putSym] },
         ],
       },
     }));
@@ -171,32 +165,22 @@ export function createWS(callSym, putSym, resolution, priceType, onCandle, onTic
       const msg = JSON.parse(e.data);
       if (!msg || msg.type === 'subscriptions') return;
 
-      if (msg.type && msg.type.startsWith('candlestick_')) {
-        const sym = (msg.symbol || '').replace('MARK:', '');
-        let t = parseInt(msg.time || msg.timestamp);
-        
-        // Delta sends WS timestamps in microseconds. Lightweight charts needs seconds.
-        if (t > 10000000000000) t = Math.floor(t / 1000000); // microseconds to seconds
-        else if (t > 10000000000) t = Math.floor(t / 1000);  // milliseconds to seconds
-
-        // IMPORTANT: Snap the timestamp to the start of the timeframe bucket.
-        // Otherwise, lightweight-charts treats every mid-candle tick as a brand new candle.
-        const bucketSecs = TF_SECS[resolution] || 60;
-        t = Math.floor(t / bucketSecs) * bucketSecs;
-
-        const o = parseFloat(msg.open);
-        const h = parseFloat(msg.high);
-        const l = parseFloat(msg.low);
-        const c = parseFloat(msg.close);
-        
-        // Prevent corrupting charts with NaN updates if payload is incomplete
-        if (isNaN(t) || isNaN(o) || isNaN(h) || isNaN(l) || isNaN(c)) return;
-
-        onCandle(sym, { time: t, open: o, high: h, low: l, close: c });
-      } else if (msg.type === 'v2/ticker') {
-        const price = priceType === 'mark' ? parseFloat(msg.mark_price) : parseFloat(msg.close);
-        if (!isNaN(price)) onTicker(msg.symbol, price);
+      if (msg.type === 'v2/ticker') {
+        let price;
+        if (priceType === 'mark') {
+          price = parseFloat(msg.mark_price);
+        } else {
+          // LTP: use close (last trade price).
+          // If no close is present (no trades), price will be NaN and onTicker won't fire.
+          // This ensures we do NOT show synthetic volume or mark prices on an LTP chart.
+          price = parseFloat(msg.close);
+        }
+        const tickerTimestamp = msg.timestamp ? Math.floor(parseInt(msg.timestamp) / 1000000) : Math.floor(Date.now() / 1000);
+        if (!isNaN(price) && price > 0) onTicker(msg.symbol, price, tickerTimestamp);
       }
+
+      // Relay all data to the hub
+      if (onData) onData(msg);
     } catch { /* ignore parse errors */ }
   };
 
