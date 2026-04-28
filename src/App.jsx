@@ -2,7 +2,7 @@ import React, {
   useEffect, useLayoutEffect, useRef, useState,
   useCallback, forwardRef, useImperativeHandle
 } from 'react';
-import { createChart, CandlestickSeries } from 'lightweight-charts';
+import { createChart, CandlestickSeries, LineSeries } from 'lightweight-charts';
 import {
   loadProducts, getExpiries, getStrikes, getSpotPrice,
   fetchCandles, sumCandles, putSymbol, fmtExpiry, findATM,
@@ -39,13 +39,17 @@ const playAlertSound = () => {
 // Exposes setData() and update() via ref.
 const ChartPanel = forwardRef(function ChartPanel({ 
   title, colorUp, colorDown, iconColor,
-  alertDir, onAlertDirChange, alertPrice, onAlertPriceChange
+  alertDir, onAlertDirChange, alertPrice, onAlertPriceChange,
+  showIvCall, showIvPut
 }, ref) {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
   const legendRef = useRef(null);
   const alertLineRef = useRef(null);
+  const callIvRef = useRef(null);
+  const putIvRef = useRef(null);
+  const combIvRef = useRef(null);
 
   useEffect(() => {
     if (!seriesRef.current) return;
@@ -82,7 +86,10 @@ const ChartPanel = forwardRef(function ChartPanel({
       },
       crosshair: { mode: 1 },
       timeScale: { borderColor: '#1e2730', timeVisible: true, secondsVisible: false },
-      rightPriceScale: { borderColor: '#1e2730' },
+      rightPriceScale: { 
+        borderColor: '#1e2730',
+        scaleMargins: { top: 0.05, bottom: 0.35 },
+      },
       width: el.clientWidth,
       height: el.clientHeight,
     });
@@ -98,6 +105,35 @@ const ChartPanel = forwardRef(function ChartPanel({
     chartRef.current = chart;
     seriesRef.current = series;
 
+    let ivScaleCreated = false;
+
+    if (showIvCall && showIvPut) {
+      combIvRef.current = chart.addSeries(LineSeries, {
+        priceScaleId: 'ivScale', color: '#e3b341', lineWidth: 1.5, title: 'Comb IV', crosshairMarkerRadius: 3
+      });
+      ivScaleCreated = true;
+    } else {
+      if (showIvCall) {
+        callIvRef.current = chart.addSeries(LineSeries, {
+          priceScaleId: 'ivScale', color: '#00d9a3', lineWidth: 1.5, title: 'Call IV', crosshairMarkerRadius: 3
+        });
+        ivScaleCreated = true;
+      }
+      if (showIvPut) {
+        putIvRef.current = chart.addSeries(LineSeries, {
+          priceScaleId: 'ivScale', color: '#ff2ebd', lineWidth: 1.5, title: 'Put IV', crosshairMarkerRadius: 3
+        });
+        ivScaleCreated = true;
+      }
+    }
+
+    if (ivScaleCreated) {
+      chart.priceScale('ivScale').applyOptions({
+        scaleMargins: { top: 0.75, bottom: 0.05 },
+        borderColor: '#1e2730',
+      });
+    }
+
     chart.subscribeCrosshairMove((param) => {
       if (!legendRef.current) return;
       if (!param.time || param.point.x < 0 || param.point.y < 0) {
@@ -106,12 +142,26 @@ const ChartPanel = forwardRef(function ChartPanel({
       }
       const data = param.seriesData.get(series);
       if (data) {
+        let ivHtml = '';
+        if (callIvRef.current) {
+          const callData = param.seriesData.get(callIvRef.current);
+          if (callData) ivHtml += `<span style="color:#00d9a3;margin-left:8px;">Call IV <span style="color:#fff">${(callData.value*100).toFixed(1)}%</span></span>`;
+        }
+        if (putIvRef.current) {
+          const putData = param.seriesData.get(putIvRef.current);
+          if (putData) ivHtml += `<span style="color:#ff2ebd;margin-left:8px;">Put IV <span style="color:#fff">${(putData.value*100).toFixed(1)}%</span></span>`;
+        }
+        if (combIvRef.current) {
+          const combData = param.seriesData.get(combIvRef.current);
+          if (combData) ivHtml += `<span style="color:#e3b341;margin-left:8px;">Comb IV <span style="color:#fff">${(combData.value*100).toFixed(1)}%</span></span>`;
+        }
         legendRef.current.innerHTML = `
-          <div style="display:flex;gap:12px;background:rgba(10,13,18,0.85);padding:6px 10px;border-radius:4px;border:1px solid #1e2730;backdrop-filter:blur(4px);">
+          <div style="display:flex;gap:12px;background:rgba(10,13,18,0.85);padding:6px 10px;border-radius:4px;border:1px solid #1e2730;backdrop-filter:blur(4px);align-items:center;">
             <span>O <span style="color:#fff">${data.open}</span></span>
             <span>H <span style="color:#fff">${data.high}</span></span>
             <span>L <span style="color:#fff">${data.low}</span></span>
             <span>C <span style="color:#fff">${data.close}</span></span>
+            ${ivHtml}
           </div>
         `;
       }
@@ -144,9 +194,30 @@ const ChartPanel = forwardRef(function ChartPanel({
     },
     update(candle) {
       if (!seriesRef.current || !candle) return;
-      try { seriesRef.current.update(candle); } catch (e) {
+      try { 
+        seriesRef.current.update(candle); 
+        if (callIvRef.current && candle.callIv !== undefined && !isNaN(candle.callIv)) {
+          callIvRef.current.update({ time: candle.time, value: candle.callIv });
+        }
+        if (putIvRef.current && candle.putIv !== undefined && !isNaN(candle.putIv)) {
+          putIvRef.current.update({ time: candle.time, value: candle.putIv });
+        }
+        if (combIvRef.current && candle.callIv !== undefined && candle.putIv !== undefined) {
+          const sum = candle.callIv + candle.putIv;
+          if (!isNaN(sum)) {
+            combIvRef.current.update({ time: candle.time, value: sum });
+          }
+        }
+      } catch (e) {
         console.warn('series.update error:', e.message);
       }
+    },
+    clearIvData() {
+      try {
+        if (callIvRef.current) callIvRef.current.setData([]);
+        if (putIvRef.current) putIvRef.current.setData([]);
+        if (combIvRef.current) combIvRef.current.setData([]);
+      } catch { }
     },
     clearData() {
       if (!seriesRef.current) return;
@@ -202,6 +273,18 @@ const ChartPanel = forwardRef(function ChartPanel({
           position: 'absolute', top: 8, left: 8, zIndex: 10,
           fontSize: 11, fontFamily: "'JetBrains Mono', monospace", color: '#7d8590', pointerEvents: 'none'
         }} />
+        {(showIvCall || showIvPut) && (
+          <div style={{
+            position: 'absolute',
+            top: '70%',
+            left: 0,
+            right: 0,
+            height: '1px',
+            background: '#1e2730',
+            zIndex: 5,
+            pointerEvents: 'none'
+          }} />
+        )}
       </div>
     </div>
   );
@@ -356,6 +439,8 @@ export default function App() {
         high: c.high + p.high,
         low: c.low + p.low,
         close: c.close + p.close,
+        callIv: c.callIv,
+        putIv: p.putIv,
       });
     } else {
       // If one candle ticked over to a new timestamp but the other hasn't,
@@ -378,6 +463,8 @@ export default function App() {
         high: cHigh + pHigh,
         low: cLow + pLow,
         close: cClose + pClose,
+        callIv: c.callIv,
+        putIv: p.putIv,
       });
     }
   }, []);
@@ -413,6 +500,10 @@ export default function App() {
       console.log(`Candles: call=${cCandles.length} put=${pCandles.length}`);
 
       // Push data directly — charts are already mounted
+      callRef.current?.clearIvData();
+      putRef.current?.clearIvData();
+      combRef.current?.clearIvData();
+
       callRef.current?.setData(cCandles, true);
       putRef.current?.setData(pCandles, true);
       combRef.current?.setData(sumCandles(cCandles, pCandles), true);
@@ -564,7 +655,7 @@ export default function App() {
       // ── WebSocket: ticker updates Close price in real-time (zero latency) ──
       wsRef.current = createWS(
         callSym, pSym, tf, priceType,
-        (sym, price) => {
+        (sym, price, _ts, iv) => {
           // Determine current bucket using wall-clock anchored to last known candle
           const nowSec = Math.floor(Date.now() / 1000);
           const anchor = lastC.current?.time ?? lastP.current?.time ?? Math.floor(nowSec / bucketSecs) * bucketSecs;
@@ -575,14 +666,14 @@ export default function App() {
             // !lastC.current handles LTP mode where no historical trades exist
             if (!lastC.current || currentBucket > lastC.current.time) {
               const prevTime = lastC.current?.time;
-              const newC = { time: currentBucket, open: price, high: price, low: price, close: price };
+              const newC = { time: currentBucket, open: price, high: price, low: price, close: price, callIv: iv };
               lastC.current = newC;
               callRef.current?.update(newC);
               updateComb(newC, lastP.current);
               if (prevTime) correctClosedCandle(prevTime);
             } else {
               // Same candle — update Close; also expand H/L as fallback for LTP (REST may miss)
-              const upd = { ...lastC.current, close: price };
+              const upd = { ...lastC.current, close: price, callIv: iv };
               if (price > upd.high) upd.high = price;
               if (price < upd.low) upd.low = price;
               lastC.current = upd;
@@ -594,13 +685,13 @@ export default function App() {
             setPutPrice(price);
             if (!lastP.current || currentBucket > lastP.current.time) {
               const prevTime = lastP.current?.time;
-              const newP = { time: currentBucket, open: price, high: price, low: price, close: price };
+              const newP = { time: currentBucket, open: price, high: price, low: price, close: price, putIv: iv };
               lastP.current = newP;
               putRef.current?.update(newP);
               updateComb(lastC.current, newP);
               if (prevTime) correctClosedCandle(prevTime);
             } else {
-              const upd = { ...lastP.current, close: price };
+              const upd = { ...lastP.current, close: price, putIv: iv };
               if (price > upd.high) upd.high = price;
               if (price < upd.low) upd.low = price;
               lastP.current = upd;
@@ -885,6 +976,8 @@ export default function App() {
             onAlertDirChange={dir => setCombAlert(a => ({ ...a, dir }))}
             alertPrice={combAlert.price}
             onAlertPriceChange={price => setCombAlert(a => ({ ...a, price }))}
+            showIvCall={true}
+            showIvPut={true}
           />
 
           {/* Call + Put — ALWAYS in DOM */}
@@ -899,6 +992,7 @@ export default function App() {
               onAlertDirChange={dir => setCallAlert(a => ({ ...a, dir }))}
               alertPrice={callAlert.price}
               onAlertPriceChange={price => setCallAlert(a => ({ ...a, price }))}
+              showIvCall={true}
             />
             <ChartPanel
               ref={putRef}
@@ -910,6 +1004,7 @@ export default function App() {
               onAlertDirChange={dir => setPutAlert(a => ({ ...a, dir }))}
               alertPrice={putAlert.price}
               onAlertPriceChange={price => setPutAlert(a => ({ ...a, price }))}
+              showIvPut={true}
             />
           </div>
         </main>

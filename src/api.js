@@ -176,7 +176,8 @@ export function createWS(callSym, putSym, resolution, priceType, onTicker, onDat
           price = parseFloat(msg.close);
         }
         const tickerTimestamp = msg.timestamp ? Math.floor(parseInt(msg.timestamp) / 1000000) : Math.floor(Date.now() / 1000);
-        if (!isNaN(price) && price > 0) onTicker(msg.symbol, price, tickerTimestamp);
+        const iv = parseFloat(msg.mark_vol ?? msg.quotes?.mark_iv ?? 0);
+        if (!isNaN(price) && price > 0) onTicker(msg.symbol, price, tickerTimestamp, iv);
       }
 
       // Relay all data to the hub
