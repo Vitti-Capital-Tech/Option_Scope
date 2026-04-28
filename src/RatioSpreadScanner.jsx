@@ -52,6 +52,7 @@ export default function RatioSpreadScanner({ onNavigate }) {
   const [results, setResults] = useState([]);
   const [logs, setLogs] = useState([]);
   const [tickerData, setTickerData] = useState({});
+  const [expandedStrikes, setExpandedStrikes] = useState({});
   const wsRef = useRef(null);
   const scanIntervalRef = useRef(null);
   const spotIntervalRef = useRef(null);
@@ -72,6 +73,7 @@ export default function RatioSpreadScanner({ onNavigate }) {
   useEffect(() => {
     setExpiries([]); setSelExpiry(''); setResults([]);
     setTickerData({});
+    setExpandedStrikes({});
     loadProducts(underlying)
       .then(prods => {
         setProducts(prods);
@@ -87,7 +89,7 @@ export default function RatioSpreadScanner({ onNavigate }) {
     const fetchSpot = () => {
       getSpotPrice(underlying)
         .then(sp => { if (sp) setSpotPrice(sp); })
-        .catch(() => {});
+        .catch(() => { });
     };
     fetchSpot();
     spotIntervalRef.current = setInterval(fetchSpot, 10000);
@@ -108,6 +110,7 @@ export default function RatioSpreadScanner({ onNavigate }) {
     setScanning(true);
     setResults([]);
     setTickerData({});
+    setExpandedStrikes({});
     addLog(`Starting ratio spread scan for ${underlying} | ${fmtExpiry(selExpiry)} | ${optionType.toUpperCase()} options`, 'info');
 
     // Get all strikes for this expiry
@@ -137,7 +140,7 @@ export default function RatioSpreadScanner({ onNavigate }) {
         strikeLotSizes[strike] = parseFloat(callProd.contract_size ?? callProd.quoting_precision ?? 1);
       }
     }
-    addLog(`Lot sizes: ${Object.entries(strikeLotSizes).slice(0,2).map(([k,v])=>`${k}→${v}`).join(', ')} …`, 'info');
+    addLog(`Lot sizes: ${Object.entries(strikeLotSizes).slice(0, 2).map(([k, v]) => `${k}→${v}`).join(', ')} …`, 'info');
 
     const allSymbols = Object.values(strikeSymbols);
     addLog(`Subscribing to ${allSymbols.length} ${optionType} option tickers via WebSocket`, 'info');
@@ -257,9 +260,9 @@ export default function RatioSpreadScanner({ onNavigate }) {
         const sellDN = sellLeg.deltaNotional;
 
         if (buyDN == null || sellDN == null ||
-            buyLeg.markPrice == null || sellLeg.markPrice == null ||
-            buyLeg.markPrice === 0 || sellLeg.markPrice === 0 ||
-            buyDN === 0 || sellDN === 0) continue;
+          buyLeg.markPrice == null || sellLeg.markPrice == null ||
+          buyLeg.markPrice === 0 || sellLeg.markPrice === 0 ||
+          buyDN === 0 || sellDN === 0) continue;
 
         // Ratio of premiums (per contract, in $)
         const premiumRatio = buyLeg.markPrice / sellLeg.markPrice;
@@ -537,46 +540,110 @@ export default function RatioSpreadScanner({ onNavigate }) {
                       <th>Net Prem</th>
                       <th>Prem/ΔN Ratio</th>
                       <th>Dev %</th>
-                      <th>Score</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {results.map((r, i) => (
-                      <tr key={`${r.buyLeg.strike}-${r.sellLeg.strike}`} className={i === 0 ? 'scanner-row-best' : ''}>
-                        <td>
-                          <span className={`scanner-rank ${i < 3 ? `rank-${i + 1}` : ''}`}>
-                            #{i + 1}
-                          </span>
-                        </td>
-                        <td className="scanner-buy">{r.buyLeg.strike.toLocaleString()}</td>
-                        <td className="scanner-sell">{r.sellLeg.strike.toLocaleString()}</td>
-                        <td>{r.strikeDiff.toLocaleString()}</td>
-                        <td className="scanner-buy">${r.buyLeg.markPrice?.toFixed(2)}</td>
-                        <td className="scanner-sell">${r.sellLeg.markPrice?.toFixed(2)}</td>
-                        <td>{r.buyLeg.iv?.toFixed(1)}%</td>
-                        <td>{r.sellLeg.iv?.toFixed(1)}%</td>
-                        <td className="scanner-highlight">{r.ivDiff.toFixed(1)}%</td>
-                        <td>{r.buyLeg.delta?.toFixed(4)}</td>
-                        <td>{r.sellLeg.delta?.toFixed(4)}</td>
-                        {/* Lot size — same for both legs in same expiry */}
-                        <td style={{ color: 'var(--text-dim)', fontSize: 10 }}>
-                          {r.buyLeg.lotSize}
-                        </td>
-                        {/* Sell Qty: how many sell contracts per 1 buy to be Δ-neutral */}
-                        <td className="scanner-sell" style={{ fontWeight: 700 }}>
-                          ×{r.sellQty}
-                        </td>
-                        {/* Net premium: buy cost − (sellQty × sell premium) */}
-                        <td className={parseFloat(r.netPremium) < 0 ? 'scanner-buy' : 'scanner-sell'}>
-                          ${r.netPremium}
-                        </td>
-                        <td>{r.premiumRatio} / {r.deltaNotionalRatio}</td>
-                        <td className={parseFloat(r.ratioDeviation) < 10 ? 'scanner-good' : 'scanner-warn'}>
-                          {r.ratioDeviation}%
-                        </td>
-                        <td className="scanner-score">{r.score.toFixed(1)}</td>
-                      </tr>
-                    ))}
+                    {(() => {
+                      // Group results by buy strike
+                      const groups = results.reduce((acc, r) => {
+                        const s = r.buyLeg.strike;
+                        if (!acc[s]) acc[s] = [];
+                        acc[s].push(r);
+                        return acc;
+                      }, {});
+
+                      // Sort unique buy strikes by the best score in their group
+                      const sortedBuyStrikes = Object.keys(groups).sort((a, b) => {
+                        return groups[b][0].score - groups[a][0].score;
+                      });
+
+                      let globalRank = 1;
+
+                      return sortedBuyStrikes.map((strike) => {
+                        const groupRows = groups[strike];
+                        const bestRow = groupRows[0];
+                        const others = groupRows.slice(1);
+                        const isExpanded = !!expandedStrikes[strike];
+                        const hasOthers = others.length > 0;
+
+                        return (
+                          <React.Fragment key={strike}>
+                            {/* Best row for this strike */}
+                            <tr
+                              className={`${globalRank === 1 ? 'scanner-row-best' : ''} ${hasOthers ? 'scanner-row-group' : ''}`}
+                              onClick={() => hasOthers && setExpandedStrikes(prev => ({ ...prev, [strike]: !prev[strike] }))}
+                              style={{ cursor: hasOthers ? 'pointer' : 'default' }}
+                            >
+                              <td>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center' }}>
+                                  {hasOthers && (
+                                    <span className={`scanner-group-toggle ${isExpanded ? 'expanded' : ''}`}>
+                                      ▸
+                                    </span>
+                                  )}
+                                  <span className={`scanner-rank ${globalRank < 4 ? `rank-${globalRank}` : ''}`}>
+                                    #{globalRank++}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="scanner-buy">{bestRow.buyLeg.strike.toLocaleString()}</td>
+                              <td className="scanner-sell">{bestRow.sellLeg.strike.toLocaleString()}</td>
+                              <td>{bestRow.strikeDiff.toLocaleString()}</td>
+                              <td className="scanner-buy">${bestRow.buyLeg.markPrice?.toFixed(2)}</td>
+                              <td className="scanner-sell">${bestRow.sellLeg.markPrice?.toFixed(2)}</td>
+                              <td>{bestRow.buyLeg.iv?.toFixed(1)}%</td>
+                              <td>{bestRow.sellLeg.iv?.toFixed(1)}%</td>
+                              <td className="scanner-highlight">{bestRow.ivDiff.toFixed(1)}%</td>
+                              <td>{bestRow.buyLeg.delta?.toFixed(4)}</td>
+                              <td>{bestRow.sellLeg.delta?.toFixed(4)}</td>
+                              <td style={{ color: 'var(--text-dim)', fontSize: 10 }}>
+                                {bestRow.buyLeg.lotSize}
+                              </td>
+                              <td className="scanner-sell" style={{ fontWeight: 700 }}>
+                                ×{bestRow.sellQty}
+                              </td>
+                              <td className={parseFloat(bestRow.netPremium) < 0 ? 'scanner-buy' : 'scanner-sell'}>
+                                ${bestRow.netPremium}
+                              </td>
+                              <td>{bestRow.premiumRatio} / {bestRow.deltaNotionalRatio}</td>
+                              <td className={parseFloat(bestRow.ratioDeviation) < 10 ? 'scanner-good' : 'scanner-warn'}>
+                                {bestRow.ratioDeviation}%
+                              </td>
+                            </tr>
+
+                            {/* Other rows for this strike */}
+                            {isExpanded && others.map((r, subIdx) => (
+                              <tr key={`${r.buyLeg.strike}-${r.sellLeg.strike}`} className="scanner-row-sub">
+                                <td></td>
+                                <td className="scanner-buy">{r.buyLeg.strike.toLocaleString()}</td>
+                                <td className="scanner-sell">{r.sellLeg.strike.toLocaleString()}</td>
+                                <td>{r.strikeDiff.toLocaleString()}</td>
+                                <td className="scanner-buy">${r.buyLeg.markPrice?.toFixed(2)}</td>
+                                <td className="scanner-sell">${r.sellLeg.markPrice?.toFixed(2)}</td>
+                                <td>{r.buyLeg.iv?.toFixed(1)}%</td>
+                                <td>{r.sellLeg.iv?.toFixed(1)}%</td>
+                                <td className="scanner-highlight">{r.ivDiff.toFixed(1)}%</td>
+                                <td>{r.buyLeg.delta?.toFixed(4)}</td>
+                                <td>{r.sellLeg.delta?.toFixed(4)}</td>
+                                <td style={{ color: 'var(--text-dim)', fontSize: 10 }}>
+                                  {r.buyLeg.lotSize}
+                                </td>
+                                <td className="scanner-sell" style={{ fontWeight: 700 }}>
+                                  ×{r.sellQty}
+                                </td>
+                                <td className={parseFloat(r.netPremium) < 0 ? 'scanner-buy' : 'scanner-sell'}>
+                                  ${r.netPremium}
+                                </td>
+                                <td>{r.premiumRatio} / {r.deltaNotionalRatio}</td>
+                                <td className={parseFloat(r.ratioDeviation) < 10 ? 'scanner-good' : 'scanner-warn'}>
+                                  {r.ratioDeviation}%
+                                </td>
+                              </tr>
+                            ))}
+                          </React.Fragment>
+                        );
+                      });
+                    })()}
                   </tbody>
                 </table>
               )}

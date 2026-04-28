@@ -8,6 +8,7 @@ OptionScope is a real-time dashboard for monitoring options contracts traded on 
 - The price of the **Put** option over time
 - The **Combined Premium** — the sum of Call and Put prices at every point in time.
 - **Live Greeks**: Real-time Delta, Gamma, Vega, Theta, Rho, and IV for both legs.
+- **Ratio Spread Scanner**: A real-time engine that monitors hundreds of option strikes to find spreads where the premium ratio aligns with the delta-notional ratio.
 
 Users can toggle between **Mark Price** (standard for valuation) and **Last Traded Price (LTP)** for execution-focused monitoring.
 
@@ -26,6 +27,7 @@ Browser (React App)
             |
             |-- Ticker (Live Prices)
             |-- Greeks (Delta, Gamma, etc.)
+            |-- Ratio Scanner (Throttled O(N^2) Logic)
             |-- Trades & L2 Book (Data Hub)
 ```
 
