@@ -291,7 +291,7 @@ const ChartPanel = forwardRef(function ChartPanel({
 });
 
 // ── App ───────────────────────────────────────────────────────────────────────
-export default function App() {
+export default function App({ onNavigate }) {
   const [underlying, setUnderlying] = useState('BTC');
   const [tf, setTf] = useState('1m');
   const [priceType, setPriceType] = useState('mark');
@@ -812,6 +812,16 @@ export default function App() {
           </svg>
           VITTI OPTION<span>SCOPE</span>
         </div>
+
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <button className="nav-tab active">
+            <span className="nav-tab-icon">📊</span> Charts
+          </button>
+          <button className="nav-tab" onClick={() => onNavigate('scanner')}>
+            <span className="nav-tab-icon">🎯</span> Ratio Spread
+          </button>
+        </div>
+
         <div style={{ display: 'flex', gap: 20, alignItems: 'center' }}>
           {activeCall && (
             <span style={{ fontFamily: 'JetBrains Mono', fontSize: 11, color: '#7d8590' }}>
