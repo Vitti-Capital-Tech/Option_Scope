@@ -1,15 +1,26 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   loadProducts, getExpiries, getStrikes, getSpotPrice,
-  fmtExpiry, findATM, apiGet, putSymbol
+  fmtExpiry, createTickerStream
 } from './api';
 
 const UNDERLYINGS = ['BTC', 'ETH'];
-const WS_URL = 'wss://socket.delta.exchange';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 function formatTime(d) {
   return d.toLocaleTimeString('en-IN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function normalizeIv(iv) {
+  if (!Number.isFinite(iv)) return null;
+  return iv <= 1 ? iv * 100 : iv;
+}
+
+function matchesOptionType(product, optionType) {
+  const wanted = optionType === 'call' ? 'call_options' : 'put_options';
+  return product?.contract_type === wanted
+    || product?.contract_types === wanted
+    || (optionType === 'call' ? /^C-/.test(product?.symbol || '') : /^P-/.test(product?.symbol || ''));
 }
 
 function LogPanel({ logs }) {
@@ -52,10 +63,13 @@ export default function RatioSpreadScanner({ onNavigate }) {
   const [results, setResults] = useState([]);
   const [logs, setLogs] = useState([]);
   const [tickerData, setTickerData] = useState({});
+  const [expectedTickerCount, setExpectedTickerCount] = useState(0);
   const [expandedStrikes, setExpandedStrikes] = useState({});
   const wsRef = useRef(null);
   const scanIntervalRef = useRef(null);
   const spotIntervalRef = useRef(null);
+  const tickerBufferRef = useRef({});
+  const flushTimerRef = useRef(null);
 
   // Configurable thresholds
   const [config, setConfig] = useState({
@@ -69,10 +83,19 @@ export default function RatioSpreadScanner({ onNavigate }) {
     setLogs(prev => [...prev.slice(-199), { time: formatTime(new Date()), msg, type }]);
   }, []);
 
+  const flushTickerBuffer = useCallback(() => {
+    flushTimerRef.current = null;
+    const buffered = tickerBufferRef.current;
+    if (!Object.keys(buffered).length) return;
+    tickerBufferRef.current = {};
+    setTickerData(prev => ({ ...prev, ...buffered }));
+  }, []);
+
   // ── Load products on underlying change ──────────────────────────────────
   useEffect(() => {
     setExpiries([]); setSelExpiry(''); setResults([]);
     setTickerData({});
+    setExpectedTickerCount(0);
     setExpandedStrikes({});
     loadProducts(underlying)
       .then(prods => {
@@ -106,10 +129,16 @@ export default function RatioSpreadScanner({ onNavigate }) {
     // Close any existing WS
     if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
     if (scanIntervalRef.current) clearInterval(scanIntervalRef.current);
+    if (flushTimerRef.current) {
+      clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+    tickerBufferRef.current = {};
 
     setScanning(true);
     setResults([]);
     setTickerData({});
+    setExpectedTickerCount(0);
     setExpandedStrikes({});
     addLog(`Starting ratio spread scan for ${underlying} | ${fmtExpiry(selExpiry)} | ${optionType.toUpperCase()} options`, 'info');
 
@@ -128,84 +157,73 @@ export default function RatioSpreadScanner({ onNavigate }) {
     // e.g. BTC options = 0.001 BTC/contract, ETH = 0.01 ETH/contract
     const strikeSymbols = {};  // strike -> symbol
     const strikeLotSizes = {}; // strike -> contract_size (lot size)
+    const symbolMeta = {};     // symbol -> { strike, lotSize }
     for (const strike of strikes) {
-      const callProd = products.find(p =>
+      const optionProd = products.find(p =>
         p.settlement_time === selExpiry &&
-        parseFloat(p.strike_price) === parseFloat(strike)
+        parseFloat(p.strike_price) === parseFloat(strike) &&
+        matchesOptionType(p, optionType)
       );
-      if (callProd) {
-        const sym = optionType === 'call' ? callProd.symbol : putSymbol(callProd.symbol);
+      if (optionProd) {
+        const sym = optionProd.symbol;
+        const lotSize = parseFloat(optionProd.contract_size ?? optionProd.quoting_precision ?? 1);
         strikeSymbols[strike] = sym;
         // contract_size tells us how many underlying units one contract controls
-        strikeLotSizes[strike] = parseFloat(callProd.contract_size ?? callProd.quoting_precision ?? 1);
+        strikeLotSizes[strike] = lotSize;
+        symbolMeta[sym] = { strike: parseFloat(strike), lotSize };
       }
     }
     addLog(`Lot sizes: ${Object.entries(strikeLotSizes).slice(0, 2).map(([k, v]) => `${k}→${v}`).join(', ')} …`, 'info');
 
     const allSymbols = Object.values(strikeSymbols);
+    setExpectedTickerCount(allSymbols.length);
     addLog(`Subscribing to ${allSymbols.length} ${optionType} option tickers via WebSocket`, 'info');
 
-    // Connect WS and subscribe to all tickers
-    const ws = new WebSocket(WS_URL);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      addLog('WebSocket connected — subscribing to tickers', 'success');
-      ws.send(JSON.stringify({
-        type: 'subscribe',
-        payload: {
-          channels: [
-            { name: 'v2/ticker', symbols: allSymbols },
-          ],
-        },
-      }));
-    };
-
-    ws.onmessage = (e) => {
-      try {
-        const msg = JSON.parse(e.data);
-        if (msg.type !== 'v2/ticker') return;
-
+    addLog('WebSocket connecting — subscribing to tickers', 'info');
+    const stream = createTickerStream(
+      allSymbols,
+      (msg) => {
         const sym = msg.symbol;
         const markPrice = parseFloat(msg.mark_price);
-        const iv = parseFloat(msg.mark_vol ?? msg.quotes?.mark_iv ?? 0);
+        const iv = normalizeIv(parseFloat(msg.mark_vol ?? msg.quotes?.mark_iv ?? NaN));
         const delta = msg.greeks ? parseFloat(msg.greeks.delta) : null;
         const gamma = msg.greeks ? parseFloat(msg.greeks.gamma) : null;
         const theta = msg.greeks ? parseFloat(msg.greeks.theta) : null;
 
-        // Find which strike this symbol belongs to
-        const strikeEntry = Object.entries(strikeSymbols).find(([, s]) => s === sym);
-        if (!strikeEntry) return;
-        const strike = parseFloat(strikeEntry[0]);
+        const meta = symbolMeta[sym];
+        if (!meta) return;
 
-        // lot size for this strike (units of underlying per contract)
-        const lotSize = strikeLotSizes[strike] ?? 1;
+        const { strike, lotSize } = meta;
+        const prevBuffered = tickerBufferRef.current[strike] ?? tickerData[strike];
+        tickerBufferRef.current[strike] = {
+          symbol: sym,
+          strike,
+          lotSize,
+          markPrice,
+          iv,
+          // raw per-unit delta from the exchange
+          delta: delta !== null ? delta : prevBuffered?.delta,
+          // delta-notional = |delta| × lotSize
+          // this is the actual underlying exposure per 1 contract
+          deltaNotional: delta !== null
+            ? Math.abs(delta) * lotSize
+            : prevBuffered?.deltaNotional,
+          gamma,
+          theta,
+          lastUpdate: Date.now(),
+        };
 
-        setTickerData(prev => ({
-          ...prev,
-          [strike]: {
-            symbol: sym,
-            strike,
-            lotSize,
-            markPrice,
-            iv: iv * 100,
-            // raw per-unit delta from the exchange
-            delta: delta !== null ? delta : prev[strike]?.delta,
-            // delta-notional = |delta| × lotSize
-            // this is the actual underlying exposure per 1 contract
-            deltaNotional: delta !== null
-              ? Math.abs(delta) * lotSize
-              : prev[strike]?.deltaNotional,
-            gamma,
-            theta,
-            lastUpdate: Date.now(),
-          },
-        }));
-      } catch { /* ignore */ }
-    };
-
-    ws.onerror = () => addLog('WebSocket error', 'error');
-    ws.onclose = () => addLog('WebSocket disconnected', 'warn');
+        if (!flushTimerRef.current) {
+          flushTimerRef.current = setTimeout(flushTickerBuffer, 50);
+        }
+      },
+      (status) => {
+        if (status === 'live') addLog('WebSocket connected — receiving tickers', 'success');
+        else if (status === 'error') addLog('WebSocket error', 'error');
+        else if (status === 'disconnected') addLog('WebSocket disconnected', 'warn');
+      }
+    );
+    wsRef.current = stream;
   }, [selExpiry, products, underlying, optionType, addLog]);
 
   // ── Scan for valid ratio spreads whenever ticker data changes ───────────
@@ -316,7 +334,13 @@ export default function RatioSpreadScanner({ onNavigate }) {
   const stopScan = useCallback(() => {
     if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
     if (scanIntervalRef.current) clearInterval(scanIntervalRef.current);
+    if (flushTimerRef.current) {
+      clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+    tickerBufferRef.current = {};
     setScanning(false);
+    setExpectedTickerCount(0);
     addLog('Scan stopped', 'warn');
   }, [addLog]);
 
@@ -325,9 +349,11 @@ export default function RatioSpreadScanner({ onNavigate }) {
     if (wsRef.current) wsRef.current.close();
     if (scanIntervalRef.current) clearInterval(scanIntervalRef.current);
     if (spotIntervalRef.current) clearInterval(spotIntervalRef.current);
+    if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
   }, []);
 
   const tickerCount = Object.keys(tickerData).length;
+  const hasLiveFeed = scanning && tickerCount > 0;
 
   return (
     <div className="app">
@@ -512,10 +538,14 @@ export default function RatioSpreadScanner({ onNavigate }) {
 
               {scanning && results.length === 0 && (
                 <div className="scanner-empty">
-                  <div className="spinner" />
-                  <div className="scanner-empty-title" style={{ marginTop: 12 }}>SCANNING…</div>
+                  {!hasLiveFeed && <div className="spinner" />}
+                  <div className="scanner-empty-title" style={{ marginTop: 12 }}>
+                    {hasLiveFeed ? 'NO MATCHES YET' : 'SCANNING…'}
+                  </div>
                   <div className="scanner-empty-desc">
-                    Receiving ticker data from {tickerCount} instruments. Matches will appear here.
+                    {hasLiveFeed
+                      ? `Live ticker data received for ${tickerCount}${expectedTickerCount ? ` / ${expectedTickerCount}` : ''} instruments. Current filters have not produced a ratio spread match yet.`
+                      : `Waiting for live ticker data${expectedTickerCount ? ` from ${expectedTickerCount} instruments` : ''}. Matches will appear here once quotes arrive.`}
                   </div>
                 </div>
               )}

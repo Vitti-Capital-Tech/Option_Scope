@@ -46,14 +46,21 @@ export async function apiGet(path, params = {}) {
   return json.result;
 }
 
-// Load all live call_options products for a given underlying (e.g. "BTC")
+// Load all live option products for a given underlying (e.g. "BTC")
 export async function loadProducts(underlying) {
-  const products = await apiGet('/v2/products', {
-    contract_types: 'call_options',
-    states: 'live',
-    underlying_asset_symbols: underlying,
-  });
-  return products || [];
+  const [calls, puts] = await Promise.all([
+    apiGet('/v2/products', {
+      contract_types: 'call_options',
+      states: 'live',
+      underlying_asset_symbols: underlying,
+    }),
+    apiGet('/v2/products', {
+      contract_types: 'put_options',
+      states: 'live',
+      underlying_asset_symbols: underlying,
+    }),
+  ]);
+  return [...(calls || []), ...(puts || [])];
 }
 
 // Get unique expiries from products (as ISO strings)
@@ -64,10 +71,11 @@ export function getExpiries(products) {
 
 // Get strikes for a given expiry
 export function getStrikes(products, settlementTime) {
-  return products
-    .filter(p => p.settlement_time === settlementTime)
-    .map(p => parseFloat(p.strike_price))
-    .sort((a, b) => a - b);
+  return [...new Set(
+    products
+      .filter(p => p.settlement_time === settlementTime)
+      .map(p => parseFloat(p.strike_price))
+  )].sort((a, b) => a - b);
 }
 
 // Get current spot price from perpetual futures
@@ -190,6 +198,44 @@ export function createWS(callSym, putSym, resolution, priceType, onTicker, onDat
   ws.onclose = () => {
     onStatus('disconnected');
     if (alive) setTimeout(() => {}, 0); // caller decides reconnect
+  };
+
+  return {
+    close: () => { alive = false; ws.close(); },
+  };
+}
+
+// Subscribe to v2/ticker stream for multiple symbols (scanner use-case)
+export function createTickerStream(symbols, onTicker, onStatus) {
+  const ws = new WebSocket(WS_URL);
+  let alive = true;
+
+  ws.onopen = () => {
+    onStatus?.('live');
+    ws.send(JSON.stringify({
+      type: 'subscribe',
+      payload: {
+        channels: [
+          { name: 'v2/ticker', symbols },
+        ],
+      },
+    }));
+  };
+
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (!msg || msg.type === 'subscriptions') return;
+      if (msg.type !== 'v2/ticker') return;
+      onTicker?.(msg);
+    } catch { /* ignore */ }
+  };
+
+  ws.onerror = () => onStatus?.('error');
+
+  ws.onclose = () => {
+    onStatus?.('disconnected');
+    if (alive) setTimeout(() => {}, 0);
   };
 
   return {
