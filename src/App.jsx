@@ -494,7 +494,7 @@ export default function App() {
                   vega: parseFloat(msg.greeks.vega),
                   theta: parseFloat(msg.greeks.theta),
                   rho: parseFloat(msg.greeks.rho),
-                  iv: parseFloat(msg.implied_volatility ?? msg.greeks.iv ?? 0),
+                  iv: parseFloat(msg.mark_vol ?? msg.quotes?.mark_iv ?? 0),
                 };
                 dataHubRef.current[side].greeks = g;
                 if (side === 'call') setCallGreeks(g);
