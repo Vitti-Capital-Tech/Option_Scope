@@ -14,14 +14,56 @@ const UNDERLYINGS = ['BTC', 'ETH'];
 const TF_LIST = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '12h', '1d', '1w'];
 const CANDLE_COUNT = 300;
 
+const playAlertSound = () => {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const playNote = (freq, startTime, duration) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, startTime);
+      gain.gain.setValueAtTime(0.1, startTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+      osc.start(startTime);
+      osc.stop(startTime + duration);
+    };
+    playNote(880, ctx.currentTime, 0.2); // A5
+    playNote(1108.73, ctx.currentTime + 0.15, 0.4); // C#6
+  } catch (e) { console.warn('Audio play failed', e); }
+};
+
 // ── ChartPanel ────────────────────────────────────────────────────────────────
 // Always mounted (never unmounts), shown/hidden via CSS by parent.
 // Exposes setData() and update() via ref.
-const ChartPanel = forwardRef(function ChartPanel({ title, colorUp, colorDown, iconColor }, ref) {
+const ChartPanel = forwardRef(function ChartPanel({ 
+  title, colorUp, colorDown, iconColor,
+  alertDir, onAlertDirChange, alertPrice, onAlertPriceChange
+}, ref) {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
   const legendRef = useRef(null);
+  const alertLineRef = useRef(null);
+
+  useEffect(() => {
+    if (!seriesRef.current) return;
+    if (alertLineRef.current) {
+      seriesRef.current.removePriceLine(alertLineRef.current);
+      alertLineRef.current = null;
+    }
+    if (alertPrice && !isNaN(alertPrice)) {
+      alertLineRef.current = seriesRef.current.createPriceLine({
+        price: parseFloat(alertPrice),
+        color: '#e3b341',
+        lineWidth: 1,
+        lineStyle: 2, // Dashed
+        axisLabelVisible: true,
+        title: 'ALERT',
+      });
+    }
+  }, [alertPrice]);
 
   useLayoutEffect(() => {
     const el = containerRef.current;
@@ -123,10 +165,37 @@ const ChartPanel = forwardRef(function ChartPanel({ title, colorUp, colorDown, i
         borderBottom: '1px solid #1e2730',
         fontSize: 10, fontWeight: 700, letterSpacing: 1.5,
         color: '#7d8590', display: 'flex', alignItems: 'center',
+        justifyContent: 'space-between',
         gap: 8, flexShrink: 0,
       }}>
-        <span style={{ color: iconColor || colorUp }}>▮</span>
-        <span>{title}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ color: iconColor || colorUp }}>▮</span>
+          <span>{title}</span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <span style={{ fontSize: 9, opacity: 0.7 }}>ALERT</span>
+          <select 
+            value={alertDir} 
+            onChange={e => onAlertDirChange?.(e.target.value)}
+            style={{ 
+              background: '#0a0d12', border: '1px solid #1e2730', color: '#e6edf3', 
+              fontSize: 10, padding: '2px 4px', borderRadius: 4, cursor: 'pointer', outline: 'none'
+            }}
+          >
+            <option value=">=">≥</option>
+            <option value="<=">≤</option>
+          </select>
+          <input 
+            type="number" 
+            placeholder="0.00"
+            value={alertPrice}
+            onChange={e => onAlertPriceChange?.(e.target.value)}
+            style={{ 
+              background: '#0a0d12', border: '1px solid #1e2730', color: '#e6edf3',
+              padding: '2px 6px', borderRadius: 4, width: 55, fontSize: 10, fontFamily: 'JetBrains Mono, monospace', outline: 'none'
+            }}
+          />
+        </div>
       </div>
       <div ref={containerRef} style={{ flex: 1, minHeight: 0, position: 'relative' }}>
         <div ref={legendRef} style={{
@@ -190,6 +259,35 @@ export default function App() {
   // Track what symbol the charts currently show
   const [activeCall, setActiveCall] = useState('');
   const [activePut, setActivePut] = useState('');
+
+  // Alerts
+  const [callAlert, setCallAlert] = useState({ price: '', dir: '>=' });
+  const [putAlert, setPutAlert] = useState({ price: '', dir: '>=' });
+  const [combAlert, setCombAlert] = useState({ price: '', dir: '>=' });
+  const alertsRef = useRef({ call: callAlert, put: putAlert, comb: combAlert });
+  useEffect(() => {
+    alertsRef.current = { call: callAlert, put: putAlert, comb: combAlert };
+  }, [callAlert, putAlert, combAlert]);
+
+  const triggeredAlerts = useRef(new Set());
+  const [toasts, setToasts] = useState([]);
+
+  const addToast = useCallback((msg) => {
+    const id = Date.now() + Math.random();
+    setToasts(t => [...t, { id, msg }]);
+    setTimeout(() => {
+      setToasts(t => t.filter(x => x.id !== id));
+    }, 8000);
+  }, []);
+
+
+  // ── Notification Permissions ──────────────────────────────────────────────
+  useEffect(() => {
+    if ('Notification' in window && Notification.permission !== 'granted' && Notification.permission !== 'denied') {
+      Notification.requestPermission();
+    }
+  }, []);
+
 
 
   // ── Load products on underlying change ───────────────────────────────────
@@ -390,6 +488,42 @@ export default function App() {
           if (cc?.length && pc?.length) {
             const comb = sumCandles(cc, pc);
             combRef.current?.setData(comb, false);
+
+            // ── Alert Engine (EVALUATES ONLY ON OFFICIALLY CLOSED CANDLES) ──
+            const nowSecAlert = Math.floor(Date.now() / 1000);
+            const bSecs = TF_SECS[tf] || 60;
+            const currentBucket = Math.floor(nowSecAlert / bSecs) * bSecs;
+
+            // Robustly find the most recently closed candle (time < current forming bucket)
+            const closedC = [...cc].reverse().find(c => c.time < currentBucket);
+            const closedP = [...pc].reverse().find(p => p.time < currentBucket);
+
+            if (closedC && closedP) {
+              const alerts = alertsRef.current;
+              const checkAlert = (id, closedPrice, alertObj, title) => {
+                if (!closedPrice || !alertObj.price) return;
+                const target = parseFloat(alertObj.price);
+                if (isNaN(target)) return;
+
+                // Evaluate against the official REST Close price
+                const isTriggered = alertObj.dir === '>=' ? closedPrice >= target : closedPrice <= target;
+
+                if (isTriggered && !triggeredAlerts.current.has(id)) {
+                  triggeredAlerts.current.add(id);
+                  playAlertSound();
+                  const msg = `${title} confirmed crossing at close! Price: ${closedPrice.toFixed(2)} (${alertObj.dir} ${target})`;
+                  if ('Notification' in window && Notification.permission === 'granted') {
+                    new Notification('OptionScope Alert', { body: msg });
+                  }
+                  addToast(msg);
+                } else if (!isTriggered) {
+                  triggeredAlerts.current.delete(id);
+                }
+              };
+              checkAlert('call', closedC.close, alerts.call, 'CALL');
+              checkAlert('put', closedP.close, alerts.put, 'PUT');
+              checkAlert('comb', closedC.close + closedP.close, alerts.comb, 'COMBINED');
+            }
           }
           console.log(`[AutoCorrect] Full history refreshed perfectly.`);
         } catch (err) { console.warn('refreshAllHistory failed:', err); }
@@ -543,7 +677,7 @@ export default function App() {
       setErrMsg('Error: ' + e.message);
       setPhase('idle');
     }
-  }, [callSym, putSym, tf, priceType, updateComb]);
+  }, [callSym, putSym, tf, priceType, updateComb, addToast]);
 
   useEffect(() => () => {
     wsRef.current?.close();
@@ -554,6 +688,20 @@ export default function App() {
 
   return (
     <div className="app">
+      {/* Toast Container */}
+      <div style={{ position: 'fixed', top: 20, right: 20, zIndex: 9999, display: 'flex', flexDirection: 'column', gap: 10, pointerEvents: 'none' }}>
+        {toasts.map(t => (
+          <div key={t.id} style={{
+            background: 'rgba(10, 13, 18, 0.95)', border: '1px solid #e3b341', borderLeft: '4px solid #e3b341',
+            padding: '12px 16px', borderRadius: 6, color: '#fff', fontSize: 12, fontFamily: 'JetBrains Mono, monospace',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.6)', minWidth: 260
+          }}>
+            <div style={{ color: '#e3b341', fontWeight: 700, marginBottom: 4 }}>🔔 ALERT TRIGGERED</div>
+            <div style={{ color: '#e6edf3' }}>{t.msg}</div>
+          </div>
+        ))}
+      </div>
+
       {/* Navbar */}
       <nav className="navbar">
         <div className="logo" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -733,6 +881,10 @@ export default function App() {
             colorUp="#3fb950"
             colorDown="#f85149"
             iconColor="#e3b341"
+            alertDir={combAlert.dir}
+            onAlertDirChange={dir => setCombAlert(a => ({ ...a, dir }))}
+            alertPrice={combAlert.price}
+            onAlertPriceChange={price => setCombAlert(a => ({ ...a, price }))}
           />
 
           {/* Call + Put — ALWAYS in DOM */}
@@ -743,6 +895,10 @@ export default function App() {
               colorUp="#3fb950"
               colorDown="#f85149"
               iconColor="#3fb950"
+              alertDir={callAlert.dir}
+              onAlertDirChange={dir => setCallAlert(a => ({ ...a, dir }))}
+              alertPrice={callAlert.price}
+              onAlertPriceChange={price => setCallAlert(a => ({ ...a, price }))}
             />
             <ChartPanel
               ref={putRef}
@@ -750,6 +906,10 @@ export default function App() {
               colorUp="#3fb950"
               colorDown="#f85149"
               iconColor="#f85149"
+              alertDir={putAlert.dir}
+              onAlertDirChange={dir => setPutAlert(a => ({ ...a, dir }))}
+              alertPrice={putAlert.price}
+              onAlertPriceChange={price => setPutAlert(a => ({ ...a, price }))}
             />
           </div>
         </main>
