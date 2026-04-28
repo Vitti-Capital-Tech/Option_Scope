@@ -17,7 +17,7 @@ const CANDLE_COUNT = 300;
 // ── ChartPanel ────────────────────────────────────────────────────────────────
 // Always mounted (never unmounts), shown/hidden via CSS by parent.
 // Exposes setData() and update() via ref.
-const ChartPanel = forwardRef(function ChartPanel({ title, colorUp, colorDown }, ref) {
+const ChartPanel = forwardRef(function ChartPanel({ title, colorUp, colorDown, iconColor }, ref) {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
@@ -125,7 +125,7 @@ const ChartPanel = forwardRef(function ChartPanel({ title, colorUp, colorDown },
         color: '#7d8590', display: 'flex', alignItems: 'center',
         gap: 8, flexShrink: 0,
       }}>
-        <span style={{ color: colorUp }}>▮</span>
+        <span style={{ color: iconColor || colorUp }}>▮</span>
         <span>{title}</span>
       </div>
       <div ref={containerRef} style={{ flex: 1, minHeight: 0, position: 'relative' }}>
@@ -147,8 +147,10 @@ export default function App() {
   const [expiries, setExpiries] = useState([]);
   const [strikes, setStrikes] = useState([]);
   const [selExpiry, setSelExpiry] = useState('');
-  const [selStrike, setSelStrike] = useState('');
+  const [selCallStrike, setSelCallStrike] = useState('');
+  const [selPutStrike, setSelPutStrike] = useState('');
   const [callSym, setCallSym] = useState('');
+  const [putSym, setPutSym] = useState('');
 
   // 'idle' | 'loading' | 'ready'
   const [phase, setPhase] = useState('idle');
@@ -193,7 +195,7 @@ export default function App() {
   // ── Load products on underlying change ───────────────────────────────────
   useEffect(() => {
     setExpiries([]); setStrikes([]);
-    setSelExpiry(''); setSelStrike(''); setCallSym('');
+    setSelExpiry(''); setSelCallStrike(''); setSelPutStrike(''); setCallSym(''); setPutSym('');
     setErrMsg('');
 
     loadProducts(underlying)
@@ -213,19 +215,37 @@ export default function App() {
     setStrikes(ss);
     if (!ss.length) return;
     getSpotPrice(underlying)
-      .then(spot => setSelStrike(String(findATM(ss, spot))))
-      .catch(() => setSelStrike(String(ss[0])));
+      .then(spot => {
+        const atm = String(findATM(ss, spot));
+        setSelCallStrike(atm);
+        setSelPutStrike(atm);
+      })
+      .catch(() => {
+        setSelCallStrike(String(ss[0]));
+        setSelPutStrike(String(ss[0]));
+      });
   }, [selExpiry, products, underlying]);
 
-  // ── Derive call symbol ────────────────────────────────────────────────────
+  // ── Derive symbols ────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!selExpiry || !selStrike || !products.length) { setCallSym(''); return; }
-    const prod = products.find(p =>
-      p.settlement_time === selExpiry &&
-      parseFloat(p.strike_price) === parseFloat(selStrike)
-    );
-    setCallSym(prod?.symbol || '');
-  }, [selExpiry, selStrike, products]);
+    if (!selExpiry || !products.length) { setCallSym(''); setPutSym(''); return; }
+    
+    if (selCallStrike) {
+      const callProd = products.find(p =>
+        p.settlement_time === selExpiry &&
+        parseFloat(p.strike_price) === parseFloat(selCallStrike)
+      );
+      setCallSym(callProd?.symbol || '');
+    } else setCallSym('');
+
+    if (selPutStrike) {
+      const putProd = products.find(p =>
+        p.settlement_time === selExpiry &&
+        parseFloat(p.strike_price) === parseFloat(selPutStrike)
+      );
+      setPutSym(putProd ? putSymbol(putProd.symbol) : '');
+    } else setPutSym('');
+  }, [selExpiry, selCallStrike, selPutStrike, products]);
 
   // ── Imperative combine update ─────────────────────────────────────────────
   const updateComb = useCallback((c, p) => {
@@ -265,13 +285,13 @@ export default function App() {
   }, []);
   // ── START MONITORING ──────────────────────────────────────────────────────
   const startMonitoring = useCallback(async () => {
-    if (!callSym) { setErrMsg('Select a valid strike first.'); return; }
+    if (!callSym || !putSym) { setErrMsg('Select valid strikes first.'); return; }
 
     // Kill existing WS
     if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
     if (pollerRef.current) clearInterval(pollerRef.current);
 
-    const pSym = putSymbol(callSym);
+    const pSym = putSym;
     callSymRef.current = callSym;
     putSymRef.current = pSym;
 
@@ -523,7 +543,7 @@ export default function App() {
       setErrMsg('Error: ' + e.message);
       setPhase('idle');
     }
-  }, [callSym, tf, priceType, updateComb]);
+  }, [callSym, putSym, tf, priceType, updateComb]);
 
   useEffect(() => () => {
     wsRef.current?.close();
@@ -531,7 +551,6 @@ export default function App() {
   }, []);
 
   const combPrice = (callPrice && putPrice) ? (callPrice + putPrice).toFixed(2) : '—';
-  const pSym = callSym ? putSymbol(callSym) : '';
 
   return (
     <div className="app">
@@ -591,8 +610,18 @@ export default function App() {
             </div>
 
             <div className="form-group">
-              <label>Strike Price</label>
-              <select value={selStrike} onChange={e => setSelStrike(e.target.value)} disabled={!strikes.length}>
+              <label>Call Strike</label>
+              <select value={selCallStrike} onChange={e => setSelCallStrike(e.target.value)} disabled={!strikes.length}>
+                {!strikes.length
+                  ? <option>Select Expiry First</option>
+                  : strikes.map(s => <option key={s} value={s}>{Number(s).toLocaleString()}</option>)
+                }
+              </select>
+            </div>
+
+            <div className="form-group">
+              <label>Put Strike</label>
+              <select value={selPutStrike} onChange={e => setSelPutStrike(e.target.value)} disabled={!strikes.length}>
                 {!strikes.length
                   ? <option>Select Expiry First</option>
                   : strikes.map(s => <option key={s} value={s}>{Number(s).toLocaleString()}</option>)
@@ -615,7 +644,7 @@ export default function App() {
               </select>
             </div>
 
-            <button className="btn-start" disabled={phase === 'loading' || !callSym} onClick={startMonitoring}>
+            <button className="btn-start" disabled={phase === 'loading' || !callSym || !putSym} onClick={startMonitoring}>
               {phase === 'loading' ? 'LOADING…' : 'START MONITORING'}
             </button>
 
@@ -670,46 +699,7 @@ export default function App() {
           )}
 
 
-          <div style={{ marginTop: 'auto', paddingTop: 8 }}>
-            <a
-              href="https://minianonlink.vercel.app/tusharbhardwaj"
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 7,
-                padding: '9px 12px',
-                borderRadius: 7,
-                border: '1px solid #1e2730',
-                background: '#0f1419',
-                textDecoration: 'none',
-                fontSize: 11,
-                color: '#7d8590',
-                fontFamily: 'JetBrains Mono, monospace',
-                letterSpacing: 0.5,
-                transition: 'all 0.2s',
-              }}
-              onMouseEnter={e => {
-                e.currentTarget.style.borderColor = '#00d9a3';
-                e.currentTarget.style.color = '#00d9a3';
-                e.currentTarget.style.boxShadow = '0 0 12px rgba(0,217,163,0.15)';
-              }}
-              onMouseLeave={e => {
-                e.currentTarget.style.borderColor = '#1e2730';
-                e.currentTarget.style.color = '#7d8590';
-                e.currentTarget.style.boxShadow = 'none';
-              }}
-            >
-              {/* Link icon */}
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-              </svg>
-              Made with 💙 by Tushar
-            </a>
-          </div>
+
         </aside>
 
         {/* Chart area — charts ALWAYS mounted, overlay sits on top */}
@@ -730,7 +720,7 @@ export default function App() {
                 {phase === 'loading' ? 'LOADING CANDLES' : 'OPTIONSCOPE'}
               </div>
               <div style={{ fontSize: 12, color: '#7d8590' }}>
-                {phase === 'loading' ? callSym : 'Select underlying, expiry & strike → START MONITORING'}
+                {phase === 'loading' ? `${callSym} / ${putSym}` : 'Select underlying, expiry & strikes → START MONITORING'}
               </div>
               {errMsg && <div style={{ color: '#f85149', fontSize: 12, maxWidth: 320, textAlign: 'center' }}>{errMsg}</div>}
             </div>
@@ -740,8 +730,9 @@ export default function App() {
           <ChartPanel
             ref={combRef}
             title={activeCall ? `COMBINED PREMIUM (${priceType.toUpperCase()})  ·  ${activeCall} + ${activePut}` : 'COMBINED PREMIUM'}
-            colorUp="#e3b341"
-            colorDown="#b08a2e"
+            colorUp="#3fb950"
+            colorDown="#f85149"
+            iconColor="#e3b341"
           />
 
           {/* Call + Put — ALWAYS in DOM */}
@@ -750,13 +741,15 @@ export default function App() {
               ref={callRef}
               title={activeCall ? `CALL (${priceType.toUpperCase()})  ·  ${activeCall}` : 'CALL'}
               colorUp="#3fb950"
-              colorDown="#238636"
+              colorDown="#f85149"
+              iconColor="#3fb950"
             />
             <ChartPanel
               ref={putRef}
               title={activePut ? `PUT (${priceType.toUpperCase()})  ·  ${activePut}` : 'PUT'}
-              colorUp="#f85149"
-              colorDown="#b62324"
+              colorUp="#3fb950"
+              colorDown="#f85149"
+              iconColor="#f85149"
             />
           </div>
         </main>
