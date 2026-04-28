@@ -1,6 +1,7 @@
 // Delta Exchange API helpers
 const PROXY = '/api';
-const WS_URL = 'wss://socket.delta.exchange';
+// Keep WS host aligned with REST host (India in this project).
+const WS_URL = 'wss://socket.india.delta.exchange';
 
 // Resolution mapping: label -> API value
 export const TF_MAP = {

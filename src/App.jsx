@@ -787,7 +787,13 @@ export default function App({ onNavigate }) {
             padding: '12px 16px', borderRadius: 6, color: '#fff', fontSize: 12, fontFamily: 'JetBrains Mono, monospace',
             boxShadow: '0 8px 24px rgba(0,0,0,0.6)', minWidth: 260
           }}>
-            <div style={{ color: '#e3b341', fontWeight: 700, marginBottom: 4 }}>🔔 ALERT TRIGGERED</div>
+            <div style={{ color: '#e3b341', fontWeight: 700, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path d="M12 3a6 6 0 0 0-6 6v3.7L4.4 15a1 1 0 0 0 .8 1.6h13.6a1 1 0 0 0 .8-1.6L18 12.7V9a6 6 0 0 0-6-6Z" stroke="#e3b341" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M9.5 18.5a2.5 2.5 0 0 0 5 0" stroke="#e3b341" strokeWidth="1.8" strokeLinecap="round" />
+              </svg>
+              ALERT TRIGGERED
+            </div>
             <div style={{ color: '#e6edf3' }}>{t.msg}</div>
           </div>
         ))}
@@ -815,10 +821,24 @@ export default function App({ onNavigate }) {
 
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <button className="nav-tab active">
-            <span className="nav-tab-icon">📊</span> Charts
+            <span className="nav-tab-icon" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M4 20V4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                <path d="M4 20H20" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                <rect x="7" y="12" width="3" height="6" rx="0.6" fill="currentColor" />
+                <rect x="12" y="9" width="3" height="9" rx="0.6" fill="currentColor" />
+                <rect x="17" y="6" width="3" height="12" rx="0.6" fill="currentColor" />
+              </svg>
+            </span> Charts
           </button>
           <button className="nav-tab" onClick={() => onNavigate('scanner')}>
-            <span className="nav-tab-icon">🎯</span> Ratio Spread
+            <span className="nav-tab-icon" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="1.8" />
+                <circle cx="12" cy="12" r="4.5" stroke="currentColor" strokeWidth="1.8" />
+                <circle cx="12" cy="12" r="1.7" fill="currentColor" />
+              </svg>
+            </span> Ratio Spread
           </button>
         </div>
 

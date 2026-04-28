@@ -16,6 +16,11 @@ function normalizeIv(iv) {
   return iv <= 1 ? iv * 100 : iv;
 }
 
+function toFiniteNumber(v) {
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 function matchesOptionType(product, optionType) {
   const wanted = optionType === 'call' ? 'call_options' : 'put_options';
   return product?.contract_type === wanted
@@ -184,11 +189,11 @@ export default function RatioSpreadScanner({ onNavigate }) {
       allSymbols,
       (msg) => {
         const sym = msg.symbol;
-        const markPrice = parseFloat(msg.mark_price);
-        const iv = normalizeIv(parseFloat(msg.mark_vol ?? msg.quotes?.mark_iv ?? NaN));
-        const delta = msg.greeks ? parseFloat(msg.greeks.delta) : null;
-        const gamma = msg.greeks ? parseFloat(msg.greeks.gamma) : null;
-        const theta = msg.greeks ? parseFloat(msg.greeks.theta) : null;
+        const markPrice = toFiniteNumber(msg.mark_price ?? msg.close ?? msg.last_price);
+        const iv = normalizeIv(toFiniteNumber(msg.mark_vol ?? msg.quotes?.mark_iv ?? msg.greeks?.iv));
+        const delta = msg.greeks ? toFiniteNumber(msg.greeks.delta) : null;
+        const gamma = msg.greeks ? toFiniteNumber(msg.greeks.gamma) : null;
+        const theta = msg.greeks ? toFiniteNumber(msg.greeks.theta) : null;
 
         const meta = symbolMeta[sym];
         if (!meta) return;
@@ -199,8 +204,8 @@ export default function RatioSpreadScanner({ onNavigate }) {
           symbol: sym,
           strike,
           lotSize,
-          markPrice,
-          iv,
+          markPrice: markPrice ?? prevBuffered?.markPrice ?? null,
+          iv: iv ?? prevBuffered?.iv ?? null,
           // raw per-unit delta from the exchange
           delta: delta !== null ? delta : prevBuffered?.delta,
           // delta-notional = |delta| × lotSize
@@ -208,8 +213,8 @@ export default function RatioSpreadScanner({ onNavigate }) {
           deltaNotional: delta !== null
             ? Math.abs(delta) * lotSize
             : prevBuffered?.deltaNotional,
-          gamma,
-          theta,
+          gamma: gamma ?? prevBuffered?.gamma ?? null,
+          theta: theta ?? prevBuffered?.theta ?? null,
           lastUpdate: Date.now(),
         };
 
@@ -381,12 +386,26 @@ export default function RatioSpreadScanner({ onNavigate }) {
             className="nav-tab"
             onClick={() => onNavigate('charts')}
           >
-            <span className="nav-tab-icon">📊</span> Charts
+            <span className="nav-tab-icon" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M4 20V4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                <path d="M4 20H20" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                <rect x="7" y="12" width="3" height="6" rx="0.6" fill="currentColor" />
+                <rect x="12" y="9" width="3" height="9" rx="0.6" fill="currentColor" />
+                <rect x="17" y="6" width="3" height="12" rx="0.6" fill="currentColor" />
+              </svg>
+            </span> Charts
           </button>
           <button
             className="nav-tab active"
           >
-            <span className="nav-tab-icon">🎯</span> Ratio Spread
+            <span className="nav-tab-icon" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="1.8" />
+                <circle cx="12" cy="12" r="4.5" stroke="currentColor" strokeWidth="1.8" />
+                <circle cx="12" cy="12" r="1.7" fill="currentColor" />
+              </svg>
+            </span> Ratio Spread
           </button>
         </div>
 
@@ -521,7 +540,13 @@ export default function RatioSpreadScanner({ onNavigate }) {
             <div className="scanner-table-body">
               {!scanning && results.length === 0 && (
                 <div className="scanner-empty">
-                  <div className="scanner-empty-icon">🎯</div>
+                  <div className="scanner-empty-icon" aria-hidden="true">
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="1.8" />
+                      <circle cx="12" cy="12" r="4.5" stroke="currentColor" strokeWidth="1.8" />
+                      <circle cx="12" cy="12" r="1.7" fill="currentColor" />
+                    </svg>
+                  </div>
                   <div className="scanner-empty-title">RATIO SPREAD SCANNER</div>
                   <div className="scanner-empty-desc">
                     Configure filters and click START SCANNER to find optimal ratio spread opportunities in real-time.
