@@ -248,6 +248,10 @@ select:disabled {
   color: var(--call);
 }
 
+.stat-val.spot {
+  color: var(--accent);
+}
+
 .stat-val.put {
   color: var(--put);
 }
