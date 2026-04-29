@@ -86,7 +86,7 @@ export async function getSpotPrice(underlying) {
       underlying_asset_symbols: underlying,
       contract_types: 'perpetual_futures',
     });
-    if (tickers && tickers[0]) return parseFloat(tickers[0].mark_price);
+    if (tickers && tickers[0]) return parseFloat(tickers[0].spot_price);
   } catch (e) { /* ignore */ }
   return null;
 }
