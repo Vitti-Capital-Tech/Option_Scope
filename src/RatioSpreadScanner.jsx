@@ -657,7 +657,7 @@ export default function RatioSpreadScanner({ onNavigate }) {
                                 <div><span className='scanner-buy'>{bestRow.buyLeg.lotSize}</span>/
                                   <span className='scanner-sell'>{bestRow.sellQty}</span></div>
                               </td>
-                              <td className={parseFloat(bestRow.netPremium) < 0 ? 'scanner-sell' : 'scanner-buy'}>
+                              <td className={parseFloat(bestRow.netPremium) < 0 ? 'scanner-buy' : 'scanner-sell'}>
                                 ${Math.abs(parseFloat(bestRow.netPremium))}
                               </td>
                               <td>{bestRow.premiumRatio} / {bestRow.deltaNotionalRatio}</td>
@@ -683,7 +683,7 @@ export default function RatioSpreadScanner({ onNavigate }) {
                                   <div><span className='scanner-buy'>{r.buyLeg.lotSize}</span>/
                                     <span className='scanner-sell'>{r.sellQty}</span></div>
                                 </td>
-                                <td className={parseFloat(r.netPremium) < 0 ? 'scanner-sell' : 'scanner-buy'}>
+                                <td className={parseFloat(r.netPremium) < 0 ? 'scanner-buy' : 'scanner-sell'}>
                                   ${Math.abs(parseFloat(r.netPremium))}
                                 </td>
                                 <td>{r.premiumRatio} / {r.deltaNotionalRatio}</td>
