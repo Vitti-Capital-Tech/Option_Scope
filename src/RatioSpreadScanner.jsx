@@ -300,7 +300,8 @@ export default function RatioSpreadScanner({ onNavigate }) {
         // ── Recommended sell qty per 1 buy contract ──
         // To be delta-neutral: sellQty × sellDN = 1 × buyDN
         // => sellQty = buyDN / sellDN  (round to nearest integer ≥ 1)
-        const sellQty = Math.max(1, Math.round(buyDN / sellDN));
+        const rawQty = buyDN / sellDN;
+        const sellQty = Math.max(1, Math.round(rawQty / 0.25) * 0.25);
 
         // ── Filter 5: Buy closer to spot, sell farther — already ensured above ──
 
@@ -532,9 +533,16 @@ export default function RatioSpreadScanner({ onNavigate }) {
                   {underlying} · {selExpiry ? fmtExpiry(selExpiry) : '—'} · {optionType.toUpperCase()}
                 </span>
               </div>
-              {results.length > 0 && (
-                <span className="scanner-match-badge">{results.length} match{results.length !== 1 ? 'es' : ''}</span>
-              )}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {spotPrice && (
+                  <span className="scanner-spot" style={{ color: 'var(--accent)' }}>
+                    Spot price: {spotPrice.toFixed(4)}
+                  </span>
+                )}
+                {results.length > 0 && (
+                  <span className="scanner-match-badge">{results.length} match{results.length !== 1 ? 'es' : ''}</span>
+                )}
+              </div>
             </div>
 
             <div className="scanner-table-body">
@@ -580,18 +588,13 @@ export default function RatioSpreadScanner({ onNavigate }) {
                   <thead>
                     <tr>
                       <th>Rank</th>
-                      <th>Buy Strike</th>
-                      <th>Sell Strike</th>
+                      <th>Buy/Sell Strikes</th>
                       <th>Strike Δ</th>
                       <th>Buy Prem</th>
                       <th>Sell Prem</th>
-                      <th>Buy IV</th>
-                      <th>Sell IV</th>
                       <th>IV Diff</th>
-                      <th>Buy Δ</th>
-                      <th>Sell Δ</th>
-                      <th>Lot Size</th>
-                      <th>Sell Qty</th>
+                      <th>Buy Δ / Sell Δ</th>
+                      <th>Buy/Sell Qty</th>
                       <th>Net Prem</th>
                       <th>Prem/ΔN Ratio</th>
                       <th>Dev %</th>
@@ -641,24 +644,21 @@ export default function RatioSpreadScanner({ onNavigate }) {
                                   </span>
                                 </div>
                               </td>
-                              <td className="scanner-buy">{bestRow.buyLeg.strike.toLocaleString()}</td>
-                              <td className="scanner-sell">{bestRow.sellLeg.strike.toLocaleString()}</td>
+                              <td><div><span className="scanner-buy">{bestRow.buyLeg.strike.toLocaleString()}</span>/<span className="scanner-sell">{bestRow.sellLeg.strike.toLocaleString()}</span></div></td>
                               <td>{bestRow.strikeDiff.toLocaleString()}</td>
-                              <td className="scanner-buy">${bestRow.buyLeg.markPrice?.toFixed(2)}</td>
-                              <td className="scanner-sell">${bestRow.sellLeg.markPrice?.toFixed(2)}</td>
-                              <td>{bestRow.buyLeg.iv?.toFixed(1)}%</td>
-                              <td>{bestRow.sellLeg.iv?.toFixed(1)}%</td>
+                              <td><div><div className="scanner-buy">${bestRow.buyLeg.markPrice?.toFixed(2)}</div><div>{bestRow.buyLeg.iv?.toFixed(1)}%</div></div></td>
+                              <td><div><div className="scanner-sell">${bestRow.sellLeg.markPrice?.toFixed(2)}</div><div>{bestRow.sellLeg.iv?.toFixed(1)}%</div></div></td>
                               <td className="scanner-highlight">{bestRow.ivDiff.toFixed(1)}%</td>
-                              <td>{bestRow.buyLeg.delta?.toFixed(4)}</td>
-                              <td>{bestRow.sellLeg.delta?.toFixed(4)}</td>
-                              <td style={{ color: 'var(--text-dim)', fontSize: 10 }}>
-                                {bestRow.buyLeg.lotSize}
+                              <td style={{ fontWeight: 700 }}>
+                                <div><span className='scanner-buy'>{bestRow.buyLeg.delta?.toFixed(4)}</span>/
+                                  <span className='scanner-sell'>{bestRow.sellLeg.delta?.toFixed(4)}</span></div>
                               </td>
-                              <td className="scanner-sell" style={{ fontWeight: 700 }}>
-                                ×{bestRow.sellQty}
+                              <td style={{ fontWeight: 700 }}>
+                                <div><span className='scanner-buy'>{bestRow.buyLeg.lotSize}</span>/
+                                  <span className='scanner-sell'>{bestRow.sellQty}</span></div>
                               </td>
-                              <td className={parseFloat(bestRow.netPremium) < 0 ? 'scanner-buy' : 'scanner-sell'}>
-                                ${bestRow.netPremium}
+                              <td className={parseFloat(bestRow.netPremium) < 0 ? 'scanner-sell' : 'scanner-buy'}>
+                                ${Math.abs(parseFloat(bestRow.netPremium))}
                               </td>
                               <td>{bestRow.premiumRatio} / {bestRow.deltaNotionalRatio}</td>
                               <td className={parseFloat(bestRow.ratioDeviation) < 10 ? 'scanner-good' : 'scanner-warn'}>
@@ -670,24 +670,21 @@ export default function RatioSpreadScanner({ onNavigate }) {
                             {isExpanded && others.map((r, subIdx) => (
                               <tr key={`${r.buyLeg.strike}-${r.sellLeg.strike}`} className="scanner-row-sub">
                                 <td></td>
-                                <td className="scanner-buy">{r.buyLeg.strike.toLocaleString()}</td>
-                                <td className="scanner-sell">{r.sellLeg.strike.toLocaleString()}</td>
+                                <td><div><span className="scanner-buy">{r.buyLeg.strike.toLocaleString()}</span>/<span className="scanner-sell">{r.sellLeg.strike.toLocaleString()}</span></div></td>
                                 <td>{r.strikeDiff.toLocaleString()}</td>
-                                <td className="scanner-buy">${r.buyLeg.markPrice?.toFixed(2)}</td>
-                                <td className="scanner-sell">${r.sellLeg.markPrice?.toFixed(2)}</td>
-                                <td>{r.buyLeg.iv?.toFixed(1)}%</td>
-                                <td>{r.sellLeg.iv?.toFixed(1)}%</td>
+                                <td><div><div className="scanner-buy">${r.buyLeg.markPrice?.toFixed(2)}</div><div>{r.buyLeg.iv?.toFixed(1)}%</div></div></td>
+                                <td><div><div className="scanner-sell">${r.sellLeg.markPrice?.toFixed(2)}</div><div>{r.sellLeg.iv?.toFixed(1)}%</div></div></td>
                                 <td className="scanner-highlight">{r.ivDiff.toFixed(1)}%</td>
-                                <td>{r.buyLeg.delta?.toFixed(4)}</td>
-                                <td>{r.sellLeg.delta?.toFixed(4)}</td>
-                                <td style={{ color: 'var(--text-dim)', fontSize: 10 }}>
-                                  {r.buyLeg.lotSize}
+                                <td style={{ fontWeight: 700 }}>
+                                  <div><span className='scanner-buy'>{r.buyLeg.delta?.toFixed(4)}</span>/
+                                    <span className='scanner-sell'>{r.sellLeg.delta?.toFixed(4)}</span></div>
                                 </td>
-                                <td className="scanner-sell" style={{ fontWeight: 700 }}>
-                                  ×{r.sellQty}
+                                <td style={{ fontWeight: 700 }}>
+                                  <div><span className='scanner-buy'>{r.buyLeg.lotSize}</span>/
+                                    <span className='scanner-sell'>{r.sellQty}</span></div>
                                 </td>
-                                <td className={parseFloat(r.netPremium) < 0 ? 'scanner-buy' : 'scanner-sell'}>
-                                  ${r.netPremium}
+                                <td className={parseFloat(r.netPremium) < 0 ? 'scanner-sell' : 'scanner-buy'}>
+                                  ${Math.abs(parseFloat(r.netPremium))}
                                 </td>
                                 <td>{r.premiumRatio} / {r.deltaNotionalRatio}</td>
                                 <td className={parseFloat(r.ratioDeviation) < 10 ? 'scanner-good' : 'scanner-warn'}>
