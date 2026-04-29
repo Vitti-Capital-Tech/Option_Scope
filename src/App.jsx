@@ -310,6 +310,7 @@ export default function App({ onNavigate }) {
   const [wsStatus, setWsStatus] = useState('disconnected');
   const [callPrice, setCallPrice] = useState(null);
   const [putPrice, setPutPrice] = useState(null);
+  const [spotPrice, setSpotPrice] = useState(null);
 
   // Chart refs — always valid since panels never unmount
   const combRef = useRef(null);
@@ -406,6 +407,18 @@ export default function App({ onNavigate }) {
         setSelPutStrike(String(ss[0]));
       });
   }, [selExpiry, products, underlying]);
+
+  // ── Fetch spot price ────────────────────────────────────────────────────
+  useEffect(() => {
+    const fetchSpot = () => {
+      getSpotPrice(underlying)
+        .then(sp => { if (sp) setSpotPrice(sp); })
+        .catch(() => { });
+    };
+    fetchSpot();
+    const interval = setInterval(fetchSpot, 10000);
+    return () => clearInterval(interval);
+  }, [underlying]);
 
   // ── Derive symbols ────────────────────────────────────────────────────────
   useEffect(() => {
@@ -922,6 +935,10 @@ export default function App({ onNavigate }) {
 
           <div className="card">
             <div className="card-title">Live Prices ({priceType === 'mark' ? 'Mark' : 'LTP'})</div>
+            <div className="stat-row">
+              <span className="stat-label">SPOT</span>
+              <span className="stat-val spot">{spotPrice ? spotPrice.toLocaleString(undefined, { maximumFractionDigits: 2 }) : '—'}</span>
+            </div>
             <div className="stat-row">
               <span className="stat-label">CALL</span>
               <span className="stat-val call">{callPrice ? callPrice.toFixed(2) : '—'}</span>
