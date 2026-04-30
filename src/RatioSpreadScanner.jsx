@@ -247,7 +247,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
         }
       }
 
-      validPairs.sort((a, b) => b.netPremium - a.netPremium);
+      validPairs.sort((a, b) => a.netPremium - b.netPremium);
       return validPairs;
     };
 
@@ -421,19 +421,19 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
       <div className="body" style={{ flexDirection: 'column' }}>
         {/* Topbar Configuration */}
         <div style={{
-          display: 'flex', gap: 16, padding: '12px 20px',
+          display: 'flex', gap: 32, padding: '16px 24px',
           backgroundColor: 'var(--bg-card)', borderBottom: '1px solid var(--border)',
           alignItems: 'center', flexWrap: 'wrap'
         }}>
-          <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-dim)' }}>SCANNER CONFIG</span>
-            <div className="form-group" style={{ marginBottom: 0, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-dim)', letterSpacing: '0.5px' }}>SCANNER CONFIG</span>
+            <div className="form-group" style={{ marginBottom: 0, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <label style={{ marginBottom: 0 }}>Underlying:</label>
               <select value={underlying} onChange={e => { setUnderlying(e.target.value); stopScan(); }} style={{ padding: '4px 8px', width: 'auto' }}>
                 {UNDERLYINGS.map(u => <option key={u}>{u}</option>)}
               </select>
             </div>
-            <div className="form-group" style={{ marginBottom: 0, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <div className="form-group" style={{ marginBottom: 0, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <label style={{ marginBottom: 0 }}>Expiry:</label>
               <select value={selExpiry} onChange={e => { setSelExpiry(e.target.value); stopScan(); }} disabled={!expiries.length} style={{ padding: '4px 8px', width: 'auto' }}>
                 {!expiries.length
@@ -446,7 +446,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
               className={`btn-start ${scanning ? 'btn-stop' : ''}`}
               onClick={scanning ? stopScan : startScan}
               disabled={!selExpiry}
-              style={{ padding: '6px 12px', fontSize: 13, marginTop: '10px' }}
+              style={{ padding: '6px 16px', fontSize: 13, fontWeight: 600, marginLeft: 8 }}
             >
               {scanning ? '■ STOP SCAN' : '▶ START SCAN'}
             </button>
@@ -454,9 +454,9 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
 
           <div style={{ width: 1, height: 24, backgroundColor: 'var(--border)' }}></div>
 
-          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-dim)' }}>FILTERS</span>
-            <div className="form-group" style={{ marginBottom: 0, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 20, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-dim)', letterSpacing: '0.5px' }}>FILTERS</span>
+            <div className="form-group" style={{ marginBottom: 0, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <label style={{ marginBottom: 0 }}>Min Strike Diff ($):</label>
               <input
                 type="number"
@@ -465,7 +465,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
                 style={{ width: 60, padding: '4px 8px' }}
               />
             </div>
-            <div className="form-group" style={{ marginBottom: 0, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <div className="form-group" style={{ marginBottom: 0, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <label style={{ marginBottom: 0 }}>Min IV Diff (%):</label>
               <input
                 type="number"
@@ -474,7 +474,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
                 style={{ width: 50, padding: '4px 8px' }}
               />
             </div>
-            <div className="form-group" style={{ marginBottom: 0, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <div className="form-group" style={{ marginBottom: 0, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <label style={{ marginBottom: 0 }}>Max Ratio Dev:</label>
               <input
                 type="number"
@@ -484,7 +484,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
                 style={{ width: 60, padding: '4px 8px' }}
               />
             </div>
-            <div className="form-group" style={{ marginBottom: 0, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <div className="form-group" style={{ marginBottom: 0, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <label style={{ marginBottom: 0 }}>Min Sell Prem ($):</label>
               <input
                 type="number"
