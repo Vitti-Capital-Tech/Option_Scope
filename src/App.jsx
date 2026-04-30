@@ -34,6 +34,25 @@ const playAlertSound = () => {
   } catch (e) { console.warn('Audio play failed', e); }
 };
 
+const formatCombinedTitle = (callSym, putSym, priceType) => {
+  if (!callSym) return 'COMBINED PREMIUM';
+  const cParts = callSym.split('-');
+  const pParts = putSym.split('-');
+  if (cParts.length < 4 || pParts.length < 4) return `COMBINED PREMIUM · ${callSym} + ${putSym}`;
+
+  const typeC = cParts[0];
+  const asset = cParts[1];
+  const strikeC = cParts[2];
+  const expiry = cParts[3];
+  const typeP = pParts[0];
+  const strikeP = pParts[2];
+
+  if (strikeC === strikeP) {
+    return `COMBINED PREMIUM (${priceType.toUpperCase()}) · ${asset}-${strikeC}-${expiry} (${typeC}+${typeP})`;
+  }
+  return `COMBINED PREMIUM (${priceType.toUpperCase()}) · ${typeC}-${strikeC} + ${typeP}-${strikeP} · ${asset}-${expiry}`;
+};
+
 // ── ChartPanel ────────────────────────────────────────────────────────────────
 // Always mounted (never unmounts), shown/hidden via CSS by parent.
 // Exposes setData() and update() via ref.
@@ -314,8 +333,6 @@ export default function App({ onNavigate }) {
 
   // Chart refs — always valid since panels never unmount
   const combRef = useRef(null);
-  const callRef = useRef(null);
-  const putRef = useRef(null);
   const wsRef = useRef(null);
   const lastC = useRef(null);
   const lastP = useRef(null);
@@ -345,13 +362,11 @@ export default function App({ onNavigate }) {
   const [activePut, setActivePut] = useState('');
 
   // Alerts
-  const [callAlert, setCallAlert] = useState({ price: '', dir: '>=' });
-  const [putAlert, setPutAlert] = useState({ price: '', dir: '>=' });
   const [combAlert, setCombAlert] = useState({ price: '', dir: '>=' });
-  const alertsRef = useRef({ call: callAlert, put: putAlert, comb: combAlert });
+  const alertsRef = useRef({ comb: combAlert });
   useEffect(() => {
-    alertsRef.current = { call: callAlert, put: putAlert, comb: combAlert };
-  }, [callAlert, putAlert, combAlert]);
+    alertsRef.current = { comb: combAlert };
+  }, [combAlert]);
 
   const triggeredAlerts = useRef(new Set());
   const [toasts, setToasts] = useState([]);
@@ -513,12 +528,8 @@ export default function App({ onNavigate }) {
       console.log(`Candles: call=${cCandles.length} put=${pCandles.length}`);
 
       // Push data directly — charts are already mounted
-      callRef.current?.clearIvData();
-      putRef.current?.clearIvData();
       combRef.current?.clearIvData();
 
-      callRef.current?.setData(cCandles, true);
-      putRef.current?.setData(pCandles, true);
       combRef.current?.setData(sumCandles(cCandles, pCandles), true);
 
       setActiveCall(callSym);
@@ -543,16 +554,7 @@ export default function App({ onNavigate }) {
             fetchCandles(pSym, tf, startTs, nowSec + 1, priceType),
           ]);
 
-          if (cc?.length) {
-            cc.forEach(c => callRef.current?.update(c));
-            const latestC = cc[cc.length - 1];
-            // Only overwrite lastC.current if the REST candle is >= our temporary websocket candle
-            if (!lastC.current || latestC.time >= lastC.current.time) {
-              lastC.current = latestC;
-            }
-          }
           if (pc?.length) {
-            pc.forEach(p => putRef.current?.update(p));
             const latestP = pc[pc.length - 1];
             if (!lastP.current || latestP.time >= lastP.current.time) {
               lastP.current = latestP;
@@ -579,13 +581,7 @@ export default function App({ onNavigate }) {
             fetchCandles(pSym, tf, startTs, nowSec + 1, priceType),
           ]);
 
-          if (cc?.length) {
-            callRef.current?.setData(cc, false);
-            lastC.current = cc[cc.length - 1];
-            setCallPrice(lastC.current.close);
-          }
           if (pc?.length) {
-            putRef.current?.setData(pc, false);
             lastP.current = pc[pc.length - 1];
             setPutPrice(lastP.current.close);
           }
@@ -624,8 +620,6 @@ export default function App({ onNavigate }) {
                   triggeredAlerts.current.delete(id);
                 }
               };
-              checkAlert('call', closedC.close, alerts.call, 'CALL');
-              checkAlert('put', closedP.close, alerts.put, 'PUT');
               checkAlert('comb', closedC.close + closedP.close, alerts.comb, 'COMBINED');
             }
           }
@@ -681,7 +675,6 @@ export default function App({ onNavigate }) {
               const prevTime = lastC.current?.time;
               const newC = { time: currentBucket, open: price, high: price, low: price, close: price, callIv: iv };
               lastC.current = newC;
-              callRef.current?.update(newC);
               updateComb(newC, lastP.current);
               if (prevTime) correctClosedCandle(prevTime);
             } else {
@@ -690,7 +683,6 @@ export default function App({ onNavigate }) {
               if (price > upd.high) upd.high = price;
               if (price < upd.low) upd.low = price;
               lastC.current = upd;
-              callRef.current?.update(upd);
               updateComb(upd, lastP.current);
             }
           }
@@ -700,7 +692,6 @@ export default function App({ onNavigate }) {
               const prevTime = lastP.current?.time;
               const newP = { time: currentBucket, open: price, high: price, low: price, close: price, putIv: iv };
               lastP.current = newP;
-              putRef.current?.update(newP);
               updateComb(lastC.current, newP);
               if (prevTime) correctClosedCandle(prevTime);
             } else {
@@ -708,7 +699,6 @@ export default function App({ onNavigate }) {
               if (price > upd.high) upd.high = price;
               if (price < upd.low) upd.low = price;
               lastP.current = upd;
-              putRef.current?.update(upd);
               updateComb(lastC.current, upd);
             }
           }
@@ -1015,7 +1005,7 @@ export default function App({ onNavigate }) {
           {/* Combined chart — ALWAYS in DOM */}
           <ChartPanel
             ref={combRef}
-            title={activeCall ? `COMBINED PREMIUM (${priceType.toUpperCase()})  ·  ${activeCall} + ${activePut}` : 'COMBINED PREMIUM'}
+            title={formatCombinedTitle(activeCall, activePut, priceType)}
             colorUp="#3fb950"
             colorDown="#f85149"
             iconColor="#e3b341"
@@ -1026,34 +1016,6 @@ export default function App({ onNavigate }) {
             showIvCall={true}
             showIvPut={true}
           />
-
-          {/* Call + Put — ALWAYS in DOM */}
-          <div style={{ display: 'flex', gap: 12, flex: 1, minHeight: 0 }}>
-            <ChartPanel
-              ref={callRef}
-              title={activeCall ? `CALL (${priceType.toUpperCase()})  ·  ${activeCall}` : 'CALL'}
-              colorUp="#3fb950"
-              colorDown="#f85149"
-              iconColor="#3fb950"
-              alertDir={callAlert.dir}
-              onAlertDirChange={dir => setCallAlert(a => ({ ...a, dir }))}
-              alertPrice={callAlert.price}
-              onAlertPriceChange={price => setCallAlert(a => ({ ...a, price }))}
-              showIvCall={true}
-            />
-            <ChartPanel
-              ref={putRef}
-              title={activePut ? `PUT (${priceType.toUpperCase()})  ·  ${activePut}` : 'PUT'}
-              colorUp="#3fb950"
-              colorDown="#f85149"
-              iconColor="#f85149"
-              alertDir={putAlert.dir}
-              onAlertDirChange={dir => setPutAlert(a => ({ ...a, dir }))}
-              alertPrice={putAlert.price}
-              onAlertPriceChange={price => setPutAlert(a => ({ ...a, price }))}
-              showIvPut={true}
-            />
-          </div>
         </main>
       </div>
     </div>
