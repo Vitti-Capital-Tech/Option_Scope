@@ -216,7 +216,7 @@ const ChartPanel = forwardRef(function ChartPanel({
     ro.observe(el);
 
     return () => { ro.disconnect(); chart.remove(); };
-  }, [theme]); // mount once, never destroy until page unloads
+  }, []); // mount once, never destroy until page unloads
 
   useEffect(() => {
     if (!chartRef.current) return;
@@ -487,6 +487,23 @@ const ChartPanel = forwardRef(function ChartPanel({
              ts.setVisibleLogicalRange({ from: range.from + shift, to: range.to + shift });
           }}>
              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+          </button>
+
+          <button title="Go to Current Time" className="tv-btn" onClick={() => {
+             const ts = chartRef.current?.timeScale();
+             if(!ts || !candlesCacheRef.current.length) return;
+             
+             const lastIndex = candlesCacheRef.current.length - 1;
+             const width = ts.width();
+             const barSpacing = ts.options().barSpacing || 6;
+             const barsVisible = width / barSpacing;
+             
+             ts.setVisibleLogicalRange({
+               from: lastIndex - barsVisible / 2,
+               to: lastIndex + barsVisible / 2
+             });
+          }}>
+             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="13 17 18 12 13 7"></polyline><polyline points="6 17 11 12 6 7"></polyline></svg>
           </button>
 
           <div style={{ width: 1, background: 'var(--border)', margin: '4px 4px' }} />
