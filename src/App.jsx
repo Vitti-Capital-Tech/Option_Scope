@@ -35,7 +35,10 @@ const playAlertSound = () => {
 };
 
 const formatCombinedTitle = (callSym, putSym, priceType) => {
-  if (!callSym) return 'COMBINED PREMIUM';
+  if (!callSym && !putSym) return 'PREMIUM CHART';
+  if (!callSym) return `PUT PREMIUM (${priceType.toUpperCase()}) · ${putSym}`;
+  if (!putSym) return `CALL PREMIUM (${priceType.toUpperCase()}) · ${callSym}`;
+
   const cParts = callSym.split('-');
   const pParts = putSym.split('-');
   if (cParts.length < 4 || pParts.length < 4) return `COMBINED PREMIUM · ${callSym} + ${putSym}`;
@@ -322,6 +325,70 @@ export default function App({ onNavigate }) {
   const [selPutStrike, setSelPutStrike] = useState('');
   const [callSym, setCallSym] = useState('');
   const [putSym, setPutSym] = useState('');
+  const [legType, setLegType] = useState('combined'); // 'combined' | 'call' | 'put'
+  const [watchList, setWatchList] = useState([]);
+  const watchListRef = useRef(watchList);
+  useEffect(() => { watchListRef.current = watchList; }, [watchList]);
+  const [listData, setListData] = useState({}); // Stores { price, high, low } per item ID
+  const [selectedWatchId, setSelectedWatchId] = useState(null);
+
+  const addToWatchList = async () => {
+    if (legType !== 'put' && !callSym) { setErrMsg('Select valid call strike.'); return; }
+    if (legType !== 'call' && !putSym) { setErrMsg('Select valid put strike.'); return; }
+    setErrMsg('');
+
+    const id = Date.now().toString();
+    const item = {
+      id,
+      type: legType,
+      callSym: legType !== 'put' ? callSym : null,
+      putSym: legType !== 'call' ? putSym : null,
+      callStrike: selCallStrike,
+      putStrike: selPutStrike,
+      expiry: selExpiry,
+      underlying,
+      priceType,
+      alertDir: '>=',
+      alertPrice: '',
+    };
+    
+    setWatchList(prev => {
+      const next = [...prev, item];
+      if (next.length === 1) setTimeout(() => setSelectedWatchId(id), 0);
+      return next;
+    });
+
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      const start = now - 3600;
+      let hc = 0, lc = Infinity, hp = 0, lp = Infinity;
+      
+      if (item.callSym) {
+        const c = await fetchCandles(item.callSym, '1h', start, now, priceType);
+        if (c.length) { hc = c[c.length-1].high; lc = c[c.length-1].low; }
+      }
+      if (item.putSym) {
+        const p = await fetchCandles(item.putSym, '1h', start, now, priceType);
+        if (p.length) { hp = p[p.length-1].high; lp = p[p.length-1].low; }
+      }
+      
+      let initialHigh = 0, initialLow = Infinity;
+      if (item.type === 'combined' && hc && hp) {
+         initialHigh = hc + hp;
+         initialLow = lc + lp;
+      } else if (item.type === 'call') {
+         initialHigh = hc; initialLow = lc;
+      } else if (item.type === 'put') {
+         initialHigh = hp; initialLow = lp;
+      }
+      if (initialLow === Infinity) initialLow = 0;
+      
+      setListData(prev => ({
+        ...prev,
+        [id]: { price: 0, high: initialHigh, low: initialLow }
+      }));
+    } catch (e) { console.error('High/Low error', e); }
+  };
 
   // 'idle' | 'loading' | 'ready'
   const [phase, setPhase] = useState('idle');
@@ -378,6 +445,78 @@ export default function App({ onNavigate }) {
       setToasts(t => t.filter(x => x.id !== id));
     }, 8000);
   }, []);
+
+  const listWsRef = useRef(null);
+  const tickerCacheRef = useRef({}); // { [sym]: price }
+
+  useEffect(() => {
+    if (!watchList.length) {
+      if (listWsRef.current) { listWsRef.current.close(); listWsRef.current = null; }
+      return;
+    }
+    
+    const syms = new Set();
+    watchList.forEach(w => {
+      if (w.callSym) syms.add(w.callSym);
+      if (w.putSym) syms.add(w.putSym);
+    });
+
+    if (listWsRef.current) listWsRef.current.close();
+
+    const ws = new WebSocket('wss://socket.delta.exchange');
+    ws.onopen = () => {
+      ws.send(JSON.stringify({
+        type: 'subscribe',
+        payload: { channels: [{ name: 'v2/ticker', symbols: Array.from(syms) }] }
+      }));
+    };
+    
+    ws.onmessage = (e) => {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'v2/ticker') {
+        const sym = msg.symbol;
+        const price = parseFloat(msg.mark_price || msg.close || 0);
+        if (!price) return;
+        tickerCacheRef.current[sym] = price;
+
+        setListData(prev => {
+          let changed = false;
+          const next = { ...prev };
+          watchList.forEach(w => {
+            const pC = tickerCacheRef.current[w.callSym] || 0;
+            const pP = tickerCacheRef.current[w.putSym] || 0;
+            let newPrice = 0;
+            if (w.type === 'combined') newPrice = pC + pP;
+            else if (w.type === 'call') newPrice = pC;
+            else if (w.type === 'put') newPrice = pP;
+            
+            const old = prev[w.id] || { price: 0, high: 0, low: Infinity };
+            if (old.price !== newPrice && newPrice !== 0 && (w.type === 'combined' ? (pC && pP) : true)) {
+              changed = true;
+              let newHigh = Math.max(old.high, newPrice);
+              let newLow = old.low === Infinity || old.low === 0 ? newPrice : Math.min(old.low, newPrice);
+              next[w.id] = { ...old, price: newPrice, high: newHigh, low: newLow };
+
+              const alertObj = w.alertDir && w.alertPrice ? { dir: w.alertDir, price: parseFloat(w.alertPrice) } : null;
+              if (alertObj && !isNaN(alertObj.price)) {
+                 const triggered = alertObj.dir === '>=' ? newPrice >= alertObj.price : newPrice <= alertObj.price;
+                 if (triggered && !triggeredAlerts.current.has(w.id)) {
+                    triggeredAlerts.current.add(w.id);
+                    playAlertSound();
+                    addToast(`List Alert: ${w.callStrike || ''}/${w.putStrike || ''} hit ${newPrice.toFixed(2)}`);
+                 } else if (!triggered) {
+                    triggeredAlerts.current.delete(w.id);
+                 }
+              }
+            }
+          });
+          return changed ? next : prev;
+        });
+      }
+    };
+    listWsRef.current = ws;
+    return () => ws.close();
+  }, [watchList, addToast]);
 
 
   // ── Notification Permissions ──────────────────────────────────────────────
@@ -458,7 +597,15 @@ export default function App({ onNavigate }) {
 
   // ── Imperative combine update ─────────────────────────────────────────────
   const updateComb = useCallback((c, p) => {
-    if (!c || !p) return;
+    if (!c && !p) return;
+    if (c && !p) {
+      combRef.current?.update(c);
+      return;
+    }
+    if (!c && p) {
+      combRef.current?.update(p);
+      return;
+    }
 
     if (c.time === p.time) {
       combRef.current?.update({
@@ -498,20 +645,29 @@ export default function App({ onNavigate }) {
   }, []);
   // ── START MONITORING ──────────────────────────────────────────────────────
   const startMonitoring = useCallback(async () => {
-    if (!callSym || !putSym) { setErrMsg('Select valid strikes first.'); return; }
+    const item = watchListRef.current.find(w => w.id === selectedWatchId);
+    if (!item) return;
+
+    const cSym = item.callSym || '';
+    const pSym = item.putSym || '';
+    const pType = item.priceType || priceType;
+
+    if (!cSym && !pSym) { setErrMsg('Select valid strikes first.'); return; }
 
     // Kill existing WS
     if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
     if (pollerRef.current) clearInterval(pollerRef.current);
 
-    const pSym = putSym;
-    callSymRef.current = callSym;
+    callSymRef.current = cSym;
     putSymRef.current = pSym;
 
     setErrMsg('');
     setPhase('loading');
     setCallPrice(null);
     setPutPrice(null);
+    setCallGreeks(null);
+    setPutGreeks(null);
+    dataHubRef.current = { call: makeEmptySide(), put: makeEmptySide() };
     lastC.current = null;
     lastP.current = null;
 
@@ -520,10 +676,10 @@ export default function App({ onNavigate }) {
     const start = now - 604800 * 2; // fetch enough back for CANDLE_COUNT
 
     try {
-      console.log(`Fetching: ${callSym} / ${pSym} @ ${tf} (${priceType})`);
+      console.log(`Fetching: ${cSym} / ${pSym} @ ${tf} (${pType})`);
       const [cCandles, pCandles] = await Promise.all([
-        fetchCandles(callSym, tf, start, now, priceType),
-        fetchCandles(pSym, tf, start, now, priceType),
+        cSym ? fetchCandles(cSym, tf, start, now, pType) : Promise.resolve([]),
+        pSym ? fetchCandles(pSym, tf, start, now, pType) : Promise.resolve([]),
       ]);
       console.log(`Candles: call=${cCandles.length} put=${pCandles.length}`);
 
@@ -532,7 +688,7 @@ export default function App({ onNavigate }) {
 
       combRef.current?.setData(sumCandles(cCandles, pCandles), true);
 
-      setActiveCall(callSym);
+      setActiveCall(cSym);
       setActivePut(pSym);
       setPhase('ready');
 
@@ -550,20 +706,24 @@ export default function App({ onNavigate }) {
           const startTs = Math.max(0, nowSec - bucketSecs * 3); // fetch last 3 buckets to guarantee overlap
 
           const [cc, pc] = await Promise.all([
-            fetchCandles(callSym, tf, startTs, nowSec + 1, priceType),
-            fetchCandles(pSym, tf, startTs, nowSec + 1, priceType),
+            cSym ? fetchCandles(cSym, tf, startTs, nowSec + 1, pType) : Promise.resolve([]),
+            pSym ? fetchCandles(pSym, tf, startTs, nowSec + 1, pType) : Promise.resolve([]),
           ]);
 
+          if (cc?.length) {
+            const latestC = cc[cc.length - 1];
+            if (!lastC.current || latestC.time >= lastC.current.time) {
+              lastC.current = latestC;
+            }
+          }
           if (pc?.length) {
             const latestP = pc[pc.length - 1];
             if (!lastP.current || latestP.time >= lastP.current.time) {
               lastP.current = latestP;
             }
           }
-          if (cc?.length && pc?.length) {
-            const comb = sumCandles(cc, pc);
-            comb.forEach(c => combRef.current?.update(c));
-          }
+          const comb = sumCandles(cc, pc);
+          comb.forEach(c => combRef.current?.update(c));
         } catch (err) { console.warn('refreshCurrentCandle failed:', err); }
       };
 
@@ -577,16 +737,20 @@ export default function App({ onNavigate }) {
           const startTs = nowSec - bucketSecs * CANDLE_COUNT;
 
           const [cc, pc] = await Promise.all([
-            fetchCandles(callSym, tf, startTs, nowSec + 1, priceType),
-            fetchCandles(pSym, tf, startTs, nowSec + 1, priceType),
+            cSym ? fetchCandles(cSym, tf, startTs, nowSec + 1, pType) : Promise.resolve([]),
+            pSym ? fetchCandles(pSym, tf, startTs, nowSec + 1, pType) : Promise.resolve([]),
           ]);
 
+          if (cc?.length) {
+            lastC.current = cc[cc.length - 1];
+            setCallPrice(lastC.current.close);
+          }
           if (pc?.length) {
             lastP.current = pc[pc.length - 1];
             setPutPrice(lastP.current.close);
           }
-          if (cc?.length && pc?.length) {
-            const comb = sumCandles(cc, pc);
+          const comb = sumCandles(cc, pc);
+          if (comb.length) {
             combRef.current?.setData(comb, false);
 
             // ── Alert Engine (EVALUATES ONLY ON OFFICIALLY CLOSED CANDLES) ──
@@ -594,11 +758,10 @@ export default function App({ onNavigate }) {
             const bSecs = TF_SECS[tf] || 60;
             const currentBucket = Math.floor(nowSecAlert / bSecs) * bSecs;
 
-            // Robustly find the most recently closed candle (time < current forming bucket)
-            const closedC = [...cc].reverse().find(c => c.time < currentBucket);
-            const closedP = [...pc].reverse().find(p => p.time < currentBucket);
+            // Robustly find the most recently closed candle
+            const closedComb = [...comb].reverse().find(c => c.time < currentBucket);
 
-            if (closedC && closedP) {
+            if (closedComb) {
               const alerts = alertsRef.current;
               const checkAlert = (id, closedPrice, alertObj, title) => {
                 if (!closedPrice || !alertObj.price) return;
@@ -620,7 +783,7 @@ export default function App({ onNavigate }) {
                   triggeredAlerts.current.delete(id);
                 }
               };
-              checkAlert('comb', closedC.close + closedP.close, alerts.comb, 'COMBINED');
+              checkAlert('comb', closedComb.close, alerts.comb, 'COMBINED');
             }
           }
           console.log(`[AutoCorrect] Full history refreshed perfectly.`);
@@ -661,7 +824,7 @@ export default function App({ onNavigate }) {
 
       // ── WebSocket: ticker updates Close price in real-time (zero latency) ──
       wsRef.current = createWS(
-        callSym, pSym, tf, priceType,
+        cSym, pSym, tf, pType,
         (sym, price, _ts, iv) => {
           // Determine current bucket using wall-clock anchored to last known candle
           const nowSec = Math.floor(Date.now() / 1000);
@@ -771,7 +934,19 @@ export default function App({ onNavigate }) {
       setErrMsg('Error: ' + e.message);
       setPhase('idle');
     }
-  }, [callSym, putSym, tf, priceType, updateComb, addToast]);
+  }, [selectedWatchId, tf, priceType, updateComb, addToast]);
+
+  // Trigger startMonitoring whenever selectedWatchId changes
+  useEffect(() => {
+    if (selectedWatchId) {
+      startMonitoring();
+    } else {
+      setPhase('idle');
+      combRef.current?.clearData();
+      combRef.current?.clearIvData();
+      if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
+    }
+  }, [selectedWatchId, startMonitoring]);
 
   useEffect(() => () => {
     wsRef.current?.close();
@@ -881,9 +1056,19 @@ export default function App({ onNavigate }) {
               </select>
             </div>
 
-            <div className="form-group">
+            <div className="form-group" style={{ opacity: legType === 'put' ? 0.5 : 1 }}>
               <label>Call Strike</label>
-              <select value={selCallStrike} onChange={e => setSelCallStrike(e.target.value)} disabled={!strikes.length}>
+              <select value={selCallStrike} onChange={e => setSelCallStrike(e.target.value)} disabled={!strikes.length || legType === 'put'}>
+                {!strikes.length
+                  ? <option>Select Expiry First</option>
+                  : strikes.map(s => <option key={s} value={s}>{Number(s).toLocaleString()}</option>)
+                }
+              </select>
+            </div>
+
+            <div className="form-group" style={{ opacity: legType === 'call' ? 0.5 : 1 }}>
+              <label>Put Strike</label>
+              <select value={selPutStrike} onChange={e => setSelPutStrike(e.target.value)} disabled={!strikes.length || legType === 'call'}>
                 {!strikes.length
                   ? <option>Select Expiry First</option>
                   : strikes.map(s => <option key={s} value={s}>{Number(s).toLocaleString()}</option>)
@@ -892,12 +1077,11 @@ export default function App({ onNavigate }) {
             </div>
 
             <div className="form-group">
-              <label>Put Strike</label>
-              <select value={selPutStrike} onChange={e => setSelPutStrike(e.target.value)} disabled={!strikes.length}>
-                {!strikes.length
-                  ? <option>Select Expiry First</option>
-                  : strikes.map(s => <option key={s} value={s}>{Number(s).toLocaleString()}</option>)
-                }
+              <label>Leg Type</label>
+              <select value={legType} onChange={e => setLegType(e.target.value)}>
+                <option value="combined">Combined (Straddle/Strangle)</option>
+                <option value="call">Call Premium Only</option>
+                <option value="put">Put Premium Only</option>
               </select>
             </div>
 
@@ -916,8 +1100,8 @@ export default function App({ onNavigate }) {
               </select>
             </div>
 
-            <button className="btn-start" disabled={phase === 'loading' || !callSym || !putSym} onClick={startMonitoring}>
-              {phase === 'loading' ? 'LOADING…' : 'START MONITORING'}
+            <button className="btn-start" disabled={(!callSym && !putSym) || (legType !== 'put' && !callSym) || (legType !== 'call' && !putSym)} onClick={addToWatchList}>
+              ADD TO WATCHLIST
             </button>
 
             {errMsg && <div style={{ color: '#f85149', fontSize: 11, marginTop: 8, lineHeight: 1.4 }}>{errMsg}</div>}
@@ -981,6 +1165,74 @@ export default function App({ onNavigate }) {
         {/* Chart area — charts ALWAYS mounted, overlay sits on top */}
         <main className="main" style={{ position: 'relative', padding: 12, gap: 12, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
+          <div className="watchlist-container" style={{ flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 8, overflowY: 'auto', paddingBottom: 8, minHeight: 80, maxHeight: '35vh', zIndex: 11 }}>
+            {watchList.length === 0 ? (
+              <div style={{ color: '#7d8590', fontSize: 12, padding: 12, border: '1px dashed #1e2730', borderRadius: 8, textAlign: 'center' }}>
+                No strategies in watchlist. Add one from the sidebar.
+              </div>
+            ) : (
+              watchList.map(item => {
+                const data = listData[item.id] || { price: 0, high: 0, low: Infinity };
+                const isSelected = selectedWatchId === item.id;
+                
+                return (
+                  <div key={item.id} onClick={() => setSelectedWatchId(item.id)} style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    padding: '8px 12px', background: isSelected ? 'rgba(47, 129, 247, 0.1)' : '#0a0d12',
+                    border: `1px solid ${isSelected ? '#2f81f7' : '#1e2730'}`,
+                    borderRadius: 8, cursor: 'pointer', gap: 16
+                  }}>
+                    <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 16 }}>
+                       <div style={{ fontFamily: 'JetBrains Mono', fontSize: 12, fontWeight: 600 }}>
+                         {item.type === 'combined' ? `STRADDLE/STRANGLE: ${item.callStrike}C + ${item.putStrike}P` : 
+                          item.type === 'call' ? `CALL: ${item.callStrike}C` : `PUT: ${item.putStrike}P`}
+                         <div style={{ fontSize: 10, color: '#7d8590', marginTop: 2 }}>{fmtExpiry(item.expiry)}</div>
+                       </div>
+                       
+                       <div style={{ display: 'flex', alignItems: 'center', gap: 16, fontFamily: 'JetBrains Mono', fontSize: 13 }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+                            <span style={{ fontSize: 9, color: '#7d8590' }}>LIVE</span>
+                            <span style={{ color: data.price > 0 ? '#e3b341' : '#e6edf3' }}>{data.price > 0 ? data.price.toFixed(2) : '—'}</span>
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+                            <span style={{ fontSize: 9, color: '#7d8590' }}>1H HIGH</span>
+                            <span style={{ color: '#3fb950' }}>{data.high > 0 ? data.high.toFixed(2) : '—'}</span>
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+                            <span style={{ fontSize: 9, color: '#7d8590' }}>1H LOW</span>
+                            <span style={{ color: '#f85149' }}>{data.low < Infinity && data.low > 0 ? data.low.toFixed(2) : '—'}</span>
+                          </div>
+                       </div>
+                    </div>
+                    
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }} onClick={e => e.stopPropagation()}>
+                       <span style={{ fontSize: 10, color: '#7d8590' }}>ALERT:</span>
+                       <select value={item.alertDir} onChange={e => {
+                          const val = e.target.value;
+                          setWatchList(prev => prev.map(w => w.id === item.id ? { ...w, alertDir: val } : w));
+                       }} style={{ background: '#0a0d12', border: '1px solid #1e2730', color: '#e6edf3', fontSize: 11, padding: '2px 4px', borderRadius: 4, outline: 'none' }}>
+                         <option value=">=">≥</option>
+                         <option value="<=">≤</option>
+                       </select>
+                       <input type="number" placeholder="0.00" value={item.alertPrice} onChange={e => {
+                          const val = e.target.value;
+                          setWatchList(prev => prev.map(w => w.id === item.id ? { ...w, alertPrice: val } : w));
+                       }} style={{ background: '#0a0d12', border: '1px solid #1e2730', color: '#e6edf3', padding: '2px 6px', borderRadius: 4, width: 60, fontSize: 11, fontFamily: 'JetBrains Mono', outline: 'none' }} />
+                       
+                       <button onClick={() => {
+                          setWatchList(prev => prev.filter(w => w.id !== item.id));
+                          setListData(prev => { const next = {...prev}; delete next[item.id]; return next; });
+                          if (selectedWatchId === item.id) setSelectedWatchId(null);
+                       }} style={{ marginLeft: 8, background: 'transparent', border: 'none', color: '#f85149', cursor: 'pointer', fontSize: 16 }}>
+                         ×
+                       </button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+
           {/* Idle/Loading overlay — sits ON TOP of charts via absolute positioning */}
           {(phase === 'idle' || phase === 'loading') && (
             <div style={{
@@ -996,7 +1248,7 @@ export default function App({ onNavigate }) {
                 {phase === 'loading' ? 'LOADING CANDLES' : 'OPTIONSCOPE'}
               </div>
               <div style={{ fontSize: 12, color: '#7d8590' }}>
-                {phase === 'loading' ? `${callSym} / ${putSym}` : 'Select underlying, expiry & strikes → START MONITORING'}
+                {phase === 'loading' ? 'Loading chart data...' : 'Add a strategy to your watchlist and select it to view the chart.'}
               </div>
               {errMsg && <div style={{ color: '#f85149', fontSize: 12, maxWidth: 320, textAlign: 'center' }}>{errMsg}</div>}
             </div>

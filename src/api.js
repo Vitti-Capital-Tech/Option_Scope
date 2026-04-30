@@ -112,6 +112,9 @@ export async function fetchCandles(symbol, resolution, startTs, endTs, priceType
 
 // Align two candle arrays and sum OHLC (for combined)
 export function sumCandles(callCandles, putCandles) {
+  if (!callCandles || !callCandles.length) return putCandles || [];
+  if (!putCandles || !putCandles.length) return callCandles || [];
+  
   const putMap = new Map(putCandles.map(c => [c.time, c]));
   const result = [];
   for (const cc of callCandles) {
