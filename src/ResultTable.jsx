@@ -10,7 +10,8 @@ export default function ResultTable({
   expectedTickerCount,
   config,
   onRefresh,
-  timeRemaining
+  timeRemaining,
+  spotPrice
 }) {
   const [expandedStrikes, setExpandedStrikes] = useState({});
 
@@ -27,6 +28,9 @@ export default function ResultTable({
           {results.length > 0 && (
             <span className="scanner-match-badge">{results.length} match{results.length !== 1 ? 'es' : ''}</span>
           )}
+          <div style={{ fontSize: 12 }}>
+            Spot Price: {spotPrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </div>
           <button
             onClick={onRefresh}
             disabled={!scanning}

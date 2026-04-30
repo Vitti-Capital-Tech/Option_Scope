@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Raleway:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 *,
 *::before,
@@ -23,13 +23,28 @@
   --danger: #f85149;
 }
 
+:root[data-theme="light"] {
+  --bg: #f3f4f6;
+  --bg2: #ffffff;
+  --bg3: #f9fafb;
+  --border: #e5e7eb;
+  --text: #111827;
+  --text-dim: #6b7280;
+  --accent: #059669;
+  --accent2: #d1fae5;
+  --call: #16a34a;
+  --put: #dc2626;
+  --comb: #d97706;
+  --danger: #dc2626;
+}
+
 html,
 body,
 #root {
   height: 100%;
   background: var(--bg);
   color: var(--text);
-  font-family: 'Inter', sans-serif;
+  font-family: 'Raleway', Arial, sans-serif;
   font-size: 13px;
   overflow: hidden;
 }
@@ -209,7 +224,7 @@ select:disabled {
   padding: 10px;
   cursor: pointer;
   transition: all 0.15s;
-  font-family: 'Inter', sans-serif;
+  font-family: 'Raleway', Arial, sans-serif;
 }
 
 .btn-start:hover {
@@ -382,7 +397,7 @@ select:disabled {
   padding: 6px 14px;
   font-size: 12px;
   font-weight: 600;
-  font-family: 'Inter', sans-serif;
+  font-family: 'Raleway', Arial, sans-serif;
   cursor: pointer;
   transition: all 0.2s ease;
   letter-spacing: 0.3px;
@@ -811,13 +826,16 @@ select:disabled {
 .watchlist-container::-webkit-scrollbar {
   width: 6px;
 }
+
 .watchlist-container::-webkit-scrollbar-track {
   background: transparent;
 }
+
 .watchlist-container::-webkit-scrollbar-thumb {
   background: var(--border);
   border-radius: 4px;
 }
+
 .watchlist-container::-webkit-scrollbar-thumb:hover {
   background: var(--text-dim);
 }
@@ -865,9 +883,21 @@ select:disabled {
   vertical-align: text-bottom;
   letter-spacing: 0.5px;
 }
-.badge.comb { background: rgba(227, 179, 65, 0.15); color: var(--comb); }
-.badge.call { background: rgba(63, 185, 80, 0.15); color: var(--call); }
-.badge.put { background: rgba(248, 81, 73, 0.15); color: var(--put); }
+
+.badge.comb {
+  background: rgba(227, 179, 65, 0.15);
+  color: var(--comb);
+}
+
+.badge.call {
+  background: rgba(63, 185, 80, 0.15);
+  color: var(--call);
+}
+
+.badge.put {
+  background: rgba(248, 81, 73, 0.15);
+  color: var(--put);
+}
 
 .watch-item-prices {
   display: flex;
@@ -896,10 +926,22 @@ select:disabled {
 .watch-price-val {
   font-weight: 500;
 }
-.watch-price-val.live { color: #fff; }
-.watch-price-val.live.highlight { color: var(--comb); }
-.watch-price-val.high { color: var(--call); }
-.watch-price-val.low { color: var(--put); }
+
+.watch-price-val.live {
+  color: #fff;
+}
+
+.watch-price-val.live.highlight {
+  color: var(--comb);
+}
+
+.watch-price-val.high {
+  color: var(--call);
+}
+
+.watch-price-val.low {
+  color: var(--put);
+}
 
 .watch-alert-pill {
   display: flex;
@@ -945,7 +987,8 @@ select:disabled {
   border-color: rgba(47, 129, 247, 0.3);
 }
 
-.watch-alert-inputs select, .watch-alert-inputs input {
+.watch-alert-inputs select,
+.watch-alert-inputs input {
   background: transparent;
   border: none;
   font-family: 'JetBrains Mono', monospace;

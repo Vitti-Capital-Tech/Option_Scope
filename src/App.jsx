@@ -59,10 +59,10 @@ const formatCombinedTitle = (callSym, putSym, priceType) => {
 // ── ChartPanel ────────────────────────────────────────────────────────────────
 // Always mounted (never unmounts), shown/hidden via CSS by parent.
 // Exposes setData() and update() via ref.
-const ChartPanel = forwardRef(function ChartPanel({ 
+const ChartPanel = forwardRef(function ChartPanel({
   title, colorUp, colorDown, iconColor,
   alertDir, onAlertDirChange, alertPrice, onAlertPriceChange,
-  showIvCall, showIvPut
+  showIvCall, showIvPut, theme
 }, ref) {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
@@ -97,19 +97,18 @@ const ChartPanel = forwardRef(function ChartPanel({
 
     const chart = createChart(el, {
       layout: {
-        background: { color: '#0a0d12' },
-        textColor: '#7d8590',
+        background: { color: theme === 'dark' ? '#0a0d12' : '#fff' },
+        textColor: theme === 'dark' ? '#7d8590' : '#000',
         fontFamily: "'JetBrains Mono', monospace",
         fontSize: 11,
       },
       grid: {
-        vertLines: { color: '#161c24' },
-        horzLines: { color: '#161c24' },
+        vertLines: { color: theme === 'dark' ? '#161c24' : '#e5e7eb' },
+        horzLines: { color: theme === 'dark' ? '#161c24' : '#e5e7eb' },
       },
       crosshair: { mode: 1 },
-      timeScale: { borderColor: '#1e2730', timeVisible: true, secondsVisible: false },
-      rightPriceScale: { 
-        borderColor: '#1e2730',
+      timeScale: { timeVisible: true, secondsVisible: false },
+      rightPriceScale: {
         scaleMargins: { top: 0.05, bottom: 0.35 },
       },
       width: el.clientWidth,
@@ -152,7 +151,7 @@ const ChartPanel = forwardRef(function ChartPanel({
     if (ivScaleCreated) {
       chart.priceScale('ivScale').applyOptions({
         scaleMargins: { top: 0.75, bottom: 0.05 },
-        borderColor: '#1e2730',
+        borderColor: theme === 'dark' ? '#1e2730' : '#1e2730',
       });
     }
 
@@ -167,15 +166,15 @@ const ChartPanel = forwardRef(function ChartPanel({
         let ivHtml = '';
         if (callIvRef.current) {
           const callData = param.seriesData.get(callIvRef.current);
-          if (callData) ivHtml += `<span style="color:#00d9a3;margin-left:8px;">Call IV <span style="color:#fff">${(callData.value*100).toFixed(1)}%</span></span>`;
+          if (callData) ivHtml += `<span style="color:#00d9a3;margin-left:8px;">Call IV <span style="color:#fff">${(callData.value * 100).toFixed(1)}%</span></span>`;
         }
         if (putIvRef.current) {
           const putData = param.seriesData.get(putIvRef.current);
-          if (putData) ivHtml += `<span style="color:#ff2ebd;margin-left:8px;">Put IV <span style="color:#fff">${(putData.value*100).toFixed(1)}%</span></span>`;
+          if (putData) ivHtml += `<span style="color:#ff2ebd;margin-left:8px;">Put IV <span style="color:#fff">${(putData.value * 100).toFixed(1)}%</span></span>`;
         }
         if (combIvRef.current) {
           const combData = param.seriesData.get(combIvRef.current);
-          if (combData) ivHtml += `<span style="color:#e3b341;margin-left:8px;">Comb IV <span style="color:#fff">${(combData.value*100).toFixed(1)}%</span></span>`;
+          if (combData) ivHtml += `<span style="color:#e3b341;margin-left:8px;">Comb IV <span style="color:#fff">${(combData.value * 100).toFixed(1)}%</span></span>`;
         }
         legendRef.current.innerHTML = `
           <div style="display:flex;gap:12px;background:rgba(10,13,18,0.85);padding:6px 10px;border-radius:4px;border:1px solid #1e2730;backdrop-filter:blur(4px);align-items:center;">
@@ -200,7 +199,24 @@ const ChartPanel = forwardRef(function ChartPanel({
     ro.observe(el);
 
     return () => { ro.disconnect(); chart.remove(); };
-  }, []); // mount once, never destroy until page unloads
+  }, [theme]); // mount once, never destroy until page unloads
+
+  useEffect(() => {
+    if (!chartRef.current) return;
+    const isLight = theme === 'light';
+    chartRef.current.applyOptions({
+      layout: {
+        background: { color: 'transparent' },
+        textColor: isLight ? '#6b7280' : '#7d8590',
+      },
+      grid: {
+        vertLines: { color: isLight ? '#e5e7eb' : '#161c24' },
+        horzLines: { color: isLight ? '#e5e7eb' : '#161c24' },
+      },
+      timeScale: { borderColor: isLight ? '#d1d5db' : '#1e2730' },
+      rightPriceScale: { borderColor: isLight ? '#d1d5db' : '#1e2730' },
+    });
+  }, [theme]);
 
   useImperativeHandle(ref, () => ({
     setData(candles, fit = true) {
@@ -216,8 +232,8 @@ const ChartPanel = forwardRef(function ChartPanel({
     },
     update(candle) {
       if (!seriesRef.current || !candle) return;
-      try { 
-        seriesRef.current.update(candle); 
+      try {
+        seriesRef.current.update(candle);
         if (callIvRef.current && candle.callIv !== undefined && !isNaN(candle.callIv)) {
           callIvRef.current.update({ time: candle.time, value: candle.callIv });
         }
@@ -250,14 +266,14 @@ const ChartPanel = forwardRef(function ChartPanel({
   return (
     <div style={{
       flex: 1, display: 'flex', flexDirection: 'column',
-      border: '1px solid #1e2730', borderRadius: 8,
-      overflow: 'hidden', minHeight: 0,
+      border: '1px solid var(--border)', borderRadius: 8,
+      overflow: 'hidden', minHeight: 0, background: 'var(--bg)'
     }}>
       <div style={{
-        padding: '6px 12px', background: '#0f1419',
-        borderBottom: '1px solid #1e2730',
+        padding: '6px 12px', background: 'var(--bg2)',
+        borderBottom: '1px solid var(--border)',
         fontSize: 10, fontWeight: 700, letterSpacing: 1.5,
-        color: '#7d8590', display: 'flex', alignItems: 'center',
+        color: 'var(--text-dim)', display: 'flex', alignItems: 'center',
         justifyContent: 'space-between',
         gap: 8, flexShrink: 0,
       }}>
@@ -267,24 +283,24 @@ const ChartPanel = forwardRef(function ChartPanel({
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
           <span style={{ fontSize: 9, opacity: 0.7 }}>ALERT</span>
-          <select 
-            value={alertDir} 
+          <select
+            value={alertDir}
             onChange={e => onAlertDirChange?.(e.target.value)}
-            style={{ 
-              background: '#0a0d12', border: '1px solid #1e2730', color: '#e6edf3', 
+            style={{
+              background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)',
               fontSize: 10, padding: '2px 4px', borderRadius: 4, cursor: 'pointer', outline: 'none'
             }}
           >
             <option value=">=">≥</option>
             <option value="<=">≤</option>
           </select>
-          <input 
-            type="number" 
+          <input
+            type="number"
             placeholder="0.00"
             value={alertPrice}
             onChange={e => onAlertPriceChange?.(e.target.value)}
-            style={{ 
-              background: '#0a0d12', border: '1px solid #1e2730', color: '#e6edf3',
+            style={{
+              background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)',
               padding: '2px 6px', borderRadius: 4, width: 55, fontSize: 10, fontFamily: 'JetBrains Mono, monospace', outline: 'none'
             }}
           />
@@ -313,7 +329,7 @@ const ChartPanel = forwardRef(function ChartPanel({
 });
 
 // ── App ───────────────────────────────────────────────────────────────────────
-export default function App({ onNavigate }) {
+export default function App({ onNavigate, theme, toggleTheme }) {
   const [underlying, setUnderlying] = useState('BTC');
   const [tf, setTf] = useState('1m');
   const [priceType, setPriceType] = useState('mark');
@@ -351,7 +367,7 @@ export default function App({ onNavigate }) {
       alertDir: '>=',
       alertPrice: '',
     };
-    
+
     setWatchList(prev => {
       const next = [...prev, item];
       if (next.length === 1) setTimeout(() => setSelectedWatchId(id), 0);
@@ -362,27 +378,27 @@ export default function App({ onNavigate }) {
       const now = Math.floor(Date.now() / 1000);
       const start = now - 3600;
       let hc = 0, lc = Infinity, hp = 0, lp = Infinity;
-      
+
       if (item.callSym) {
         const c = await fetchCandles(item.callSym, '1h', start, now, priceType);
-        if (c.length) { hc = c[c.length-1].high; lc = c[c.length-1].low; }
+        if (c.length) { hc = c[c.length - 1].high; lc = c[c.length - 1].low; }
       }
       if (item.putSym) {
         const p = await fetchCandles(item.putSym, '1h', start, now, priceType);
-        if (p.length) { hp = p[p.length-1].high; lp = p[p.length-1].low; }
+        if (p.length) { hp = p[p.length - 1].high; lp = p[p.length - 1].low; }
       }
-      
+
       let initialHigh = 0, initialLow = Infinity;
       if (item.type === 'combined' && hc && hp) {
-         initialHigh = hc + hp;
-         initialLow = lc + lp;
+        initialHigh = hc + hp;
+        initialLow = lc + lp;
       } else if (item.type === 'call') {
-         initialHigh = hc; initialLow = lc;
+        initialHigh = hc; initialLow = lc;
       } else if (item.type === 'put') {
-         initialHigh = hp; initialLow = lp;
+        initialHigh = hp; initialLow = lp;
       }
       if (initialLow === Infinity) initialLow = 0;
-      
+
       setListData(prev => ({
         ...prev,
         [id]: { price: 0, high: initialHigh, low: initialLow }
@@ -454,7 +470,7 @@ export default function App({ onNavigate }) {
       if (listWsRef.current) { listWsRef.current.close(); listWsRef.current = null; }
       return;
     }
-    
+
     const syms = new Set();
     watchList.forEach(w => {
       if (w.callSym) syms.add(w.callSym);
@@ -470,7 +486,7 @@ export default function App({ onNavigate }) {
         payload: { channels: [{ name: 'v2/ticker', symbols: Array.from(syms) }] }
       }));
     };
-    
+
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
       if (msg.type === 'v2/ticker') {
@@ -489,7 +505,7 @@ export default function App({ onNavigate }) {
             if (w.type === 'combined') newPrice = pC + pP;
             else if (w.type === 'call') newPrice = pC;
             else if (w.type === 'put') newPrice = pP;
-            
+
             const old = prev[w.id] || { price: 0, high: 0, low: Infinity };
             if (old.price !== newPrice && newPrice !== 0 && (w.type === 'combined' ? (pC && pP) : true)) {
               changed = true;
@@ -499,14 +515,14 @@ export default function App({ onNavigate }) {
 
               const alertObj = w.alertDir && w.alertPrice ? { dir: w.alertDir, price: parseFloat(w.alertPrice) } : null;
               if (alertObj && !isNaN(alertObj.price)) {
-                 const triggered = alertObj.dir === '>=' ? newPrice >= alertObj.price : newPrice <= alertObj.price;
-                 if (triggered && !triggeredAlerts.current.has(w.id)) {
-                    triggeredAlerts.current.add(w.id);
-                    playAlertSound();
-                    addToast(`List Alert: ${w.callStrike || ''}/${w.putStrike || ''} hit ${newPrice.toFixed(2)}`);
-                 } else if (!triggered) {
-                    triggeredAlerts.current.delete(w.id);
-                 }
+                const triggered = alertObj.dir === '>=' ? newPrice >= alertObj.price : newPrice <= alertObj.price;
+                if (triggered && !triggeredAlerts.current.has(w.id)) {
+                  triggeredAlerts.current.add(w.id);
+                  playAlertSound();
+                  addToast(`List Alert: ${w.callStrike || ''}/${w.putStrike || ''} hit ${newPrice.toFixed(2)}`);
+                } else if (!triggered) {
+                  triggeredAlerts.current.delete(w.id);
+                }
               }
             }
           });
@@ -577,7 +593,7 @@ export default function App({ onNavigate }) {
   // ── Derive symbols ────────────────────────────────────────────────────────
   useEffect(() => {
     if (!selExpiry || !products.length) { setCallSym(''); setPutSym(''); return; }
-    
+
     if (selCallStrike) {
       const callProd = products.find(p =>
         p.settlement_time === selExpiry &&
@@ -1026,6 +1042,25 @@ export default function App({ onNavigate }) {
               {activeCall} / {activePut}
             </span>
           )}
+          <button className="nav-tab" onClick={toggleTheme} title="Toggle Theme" style={{ padding: '6px' }}>
+            {theme === 'dark' ? (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="5"></circle>
+                <line x1="12" y1="1" x2="12" y2="3"></line>
+                <line x1="12" y1="21" x2="12" y2="23"></line>
+                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+                <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+                <line x1="1" y1="12" x2="3" y2="12"></line>
+                <line x1="21" y1="12" x2="23" y2="12"></line>
+                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+                <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+              </svg>
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+              </svg>
+            )}
+          </button>
           <div className="ws-badge">
             <div className={`ws-dot ${wsStatus === 'live' ? 'live' : ''}`} />
             <span>{wsStatus === 'live' ? 'Live Feed' : wsStatus === 'error' ? 'WS Error' : 'Disconnected'}</span>
@@ -1161,7 +1196,7 @@ export default function App({ onNavigate }) {
         {/* Chart area — charts ALWAYS mounted, overlay sits on top */}
         <main className="main" style={{ position: 'relative', padding: 12, gap: 12, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
-          <div style={{ fontFamily: 'JetBrains Mono', fontSize: 16, fontWeight: 700, color: '#e6edf3', display: 'flex', alignItems: 'center' }}>
+          <div style={{ fontFamily: 'JetBrains Mono', fontSize: 16, fontWeight: 700, color: theme === 'dark' ? '#e6edf3' : '#1e2730', display: 'flex', alignItems: 'center' }}>
             SPOT: <span style={{ color: '#e3b341', marginLeft: 8 }}>{spotPrice ? spotPrice.toLocaleString(undefined, { maximumFractionDigits: 2 }) : '—'}</span>
           </div>
 
@@ -1174,72 +1209,74 @@ export default function App({ onNavigate }) {
               watchList.map(item => {
                 const data = listData[item.id] || { price: 0, high: 0, low: Infinity };
                 const isSelected = selectedWatchId === item.id;
-                
+
                 return (
-                  <div key={item.id} onClick={() => setSelectedWatchId(item.id)} className={`watch-item ${isSelected ? 'selected' : ''}`}>
+                  <div key={item.id} onClick={() => setSelectedWatchId(item.id)}
+                    className={`watch-item ${isSelected ? 'selected' : ''}`}
+                    style={{ backgroundColor: theme == 'dark' ? '' : isSelected ? '#b8f5f7' : '#e6edf3' }}>
                     <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 16 }}>
-                       <div className="watch-item-title">
-                         {item.type === 'combined' ? (
-                           <><span className="badge comb">STRADDLE</span> {item.callStrike}C + {item.putStrike}P</>
-                         ) : item.type === 'call' ? (
-                           <><span className="badge call">CALL</span> {item.callStrike}C</>
-                         ) : (
-                           <><span className="badge put">PUT</span> {item.putStrike}P</>
-                         )}
-                         <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 4, letterSpacing: 0.5 }}>{fmtExpiry(item.expiry)}</div>
-                       </div>
-                       
-                       <div className="watch-item-prices">
-                          <div className="watch-price-block">
-                            <span className="watch-price-label">LIVE</span>
-                            <span className={`watch-price-val live ${data.price > 0 ? 'highlight' : ''}`}>{data.price > 0 ? data.price.toFixed(2) : '—'}</span>
-                          </div>
-                          <div className="watch-price-block">
-                            <span className="watch-price-label">1H HIGH</span>
-                            <span className="watch-price-val high">{data.high > 0 ? data.high.toFixed(2) : '—'}</span>
-                          </div>
-                          <div className="watch-price-block">
-                            <span className="watch-price-label">1H LOW</span>
-                            <span className="watch-price-val low">{data.low < Infinity && data.low > 0 ? data.low.toFixed(2) : '—'}</span>
-                          </div>
-                       </div>
+                      <div className="watch-item-title">
+                        {item.type === 'combined' ? (
+                          <><span className="badge comb">STRADDLE</span> {item.callStrike}C + {item.putStrike}P</>
+                        ) : item.type === 'call' ? (
+                          <><span className="badge call">CALL</span> {item.callStrike}C</>
+                        ) : (
+                          <><span className="badge put">PUT</span> {item.putStrike}P</>
+                        )}
+                        <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 4, letterSpacing: 0.5 }}>{fmtExpiry(item.expiry)}</div>
+                      </div>
+
+                      <div className="watch-item-prices">
+                        <div className="watch-price-block">
+                          <span className="watch-price-label">LIVE</span>
+                          <span className={`watch-price-val live ${data.price > 0 ? 'highlight' : ''}`}>{data.price > 0 ? data.price.toFixed(2) : '—'}</span>
+                        </div>
+                        <div className="watch-price-block">
+                          <span className="watch-price-label">1H HIGH</span>
+                          <span className="watch-price-val high">{data.high > 0 ? data.high.toFixed(2) : '—'}</span>
+                        </div>
+                        <div className="watch-price-block">
+                          <span className="watch-price-label">1H LOW</span>
+                          <span className="watch-price-val low">{data.low < Infinity && data.low > 0 ? data.low.toFixed(2) : '—'}</span>
+                        </div>
+                      </div>
                     </div>
-                    
+
                     <div style={{ display: 'flex', alignItems: 'center', gap: 12 }} onClick={e => e.stopPropagation()}>
-                       <div className="watch-alert-pill">
-                         <div className="watch-alert-icon-wrap">
-                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                             <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
-                             <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
-                           </svg>
-                           <span className="watch-alert-label">ALERT</span>
-                         </div>
-                         <div className="watch-alert-inputs">
-                           <select value={item.alertDir} onChange={e => {
-                              const val = e.target.value;
-                              setWatchList(prev => prev.map(w => w.id === item.id ? { ...w, alertDir: val } : w));
-                           }}>
-                             <option value=">=">≥</option>
-                             <option value="<=">≤</option>
-                           </select>
-                           <div className="watch-alert-divider"></div>
-                           <input type="number" placeholder="0.00" value={item.alertPrice} onChange={e => {
-                              const val = e.target.value;
-                              setWatchList(prev => prev.map(w => w.id === item.id ? { ...w, alertPrice: val } : w));
-                           }} />
-                         </div>
-                       </div>
-                       
-                       <button className="watch-delete-btn" title="Remove strategy" onClick={() => {
-                          setWatchList(prev => prev.filter(w => w.id !== item.id));
-                          setListData(prev => { const next = {...prev}; delete next[item.id]; return next; });
-                          if (selectedWatchId === item.id) setSelectedWatchId(null);
-                       }}>
-                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                           <polyline points="3 6 5 6 21 6"></polyline>
-                           <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                         </svg>
-                       </button>
+                      <div className="watch-alert-pill">
+                        <div className="watch-alert-icon-wrap">
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+                            <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+                          </svg>
+                          <span className="watch-alert-label">ALERT</span>
+                        </div>
+                        <div className="watch-alert-inputs">
+                          <select value={item.alertDir} onChange={e => {
+                            const val = e.target.value;
+                            setWatchList(prev => prev.map(w => w.id === item.id ? { ...w, alertDir: val } : w));
+                          }}>
+                            <option value=">=">≥</option>
+                            <option value="<=">≤</option>
+                          </select>
+                          <div className="watch-alert-divider"></div>
+                          <input type="number" placeholder="0.00" value={item.alertPrice} onChange={e => {
+                            const val = e.target.value;
+                            setWatchList(prev => prev.map(w => w.id === item.id ? { ...w, alertPrice: val } : w));
+                          }} />
+                        </div>
+                      </div>
+
+                      <button className="watch-delete-btn" title="Remove strategy" onClick={() => {
+                        setWatchList(prev => prev.filter(w => w.id !== item.id));
+                        setListData(prev => { const next = { ...prev }; delete next[item.id]; return next; });
+                        if (selectedWatchId === item.id) setSelectedWatchId(null);
+                      }}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="3 6 5 6 21 6"></polyline>
+                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                        </svg>
+                      </button>
                     </div>
                   </div>
                 );
@@ -1253,7 +1290,7 @@ export default function App({ onNavigate }) {
               position: 'absolute', inset: 12, zIndex: 10,
               display: 'flex', flexDirection: 'column',
               alignItems: 'center', justifyContent: 'center',
-              background: 'rgba(10,13,18,0.96)',
+              background: theme === 'dark' ? 'rgba(10,13,18,0.96)' : 'rgba(255,255,255,0.96)',
               borderRadius: 8, border: '1px solid #1e2730',
               gap: 12,
             }}>
@@ -1281,6 +1318,7 @@ export default function App({ onNavigate }) {
             onAlertPriceChange={price => setCombAlert(a => ({ ...a, price }))}
             showIvCall={true}
             showIvPut={true}
+            theme={theme}
           />
         </main>
       </div>
