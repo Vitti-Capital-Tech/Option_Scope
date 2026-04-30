@@ -323,6 +323,67 @@ const ChartPanel = forwardRef(function ChartPanel({
             pointerEvents: 'none'
           }} />
         )}
+        
+        {/* TradingView-style Tools */}
+        <div style={{
+          position: 'absolute', bottom: 12, right: 12, zIndex: 10,
+          display: 'flex', gap: 4, background: theme === 'dark' ? 'rgba(10, 13, 18, 0.8)' : 'rgba(255, 255, 255, 0.8)', padding: 4,
+          borderRadius: 8, border: '1px solid var(--border)', backdropFilter: 'blur(4px)'
+        }}>
+          <button title="Scroll Left" className="tv-btn" onClick={() => {
+             const ts = chartRef.current?.timeScale();
+             if(!ts) return;
+             const range = ts.getVisibleLogicalRange();
+             if(!range) return;
+             const shift = (range.to - range.from) * 0.2;
+             ts.setVisibleLogicalRange({ from: range.from - shift, to: range.to - shift });
+          }}>
+             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+          </button>
+          
+          <button title="Scroll Right" className="tv-btn" onClick={() => {
+             const ts = chartRef.current?.timeScale();
+             if(!ts) return;
+             const range = ts.getVisibleLogicalRange();
+             if(!range) return;
+             const shift = (range.to - range.from) * 0.2;
+             ts.setVisibleLogicalRange({ from: range.from + shift, to: range.to + shift });
+          }}>
+             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+          </button>
+
+          <div style={{ width: 1, background: 'var(--border)', margin: '4px 4px' }} />
+
+          <button title="Zoom Out" className="tv-btn" onClick={() => {
+             const ts = chartRef.current?.timeScale();
+             if(!ts) return;
+             const range = ts.getVisibleLogicalRange();
+             if(!range) return;
+             const diff = (range.to - range.from) * 0.2;
+             ts.setVisibleLogicalRange({ from: range.from - diff, to: range.to + diff });
+          }}>
+             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line><line x1="8" y1="11" x2="14" y2="11"></line></svg>
+          </button>
+          
+          <button title="Zoom In" className="tv-btn" onClick={() => {
+             const ts = chartRef.current?.timeScale();
+             if(!ts) return;
+             const range = ts.getVisibleLogicalRange();
+             if(!range) return;
+             const diff = (range.to - range.from) * 0.2;
+             ts.setVisibleLogicalRange({ from: range.from + diff, to: range.to - diff });
+          }}>
+             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line><line x1="11" y1="8" x2="11" y2="14"></line><line x1="8" y1="11" x2="14" y2="11"></line></svg>
+          </button>
+
+          <div style={{ width: 1, background: 'var(--border)', margin: '4px 4px' }} />
+
+          <button title="Auto Fit" className="tv-btn" onClick={() => {
+             chartRef.current?.timeScale().fitContent();
+          }}>
+             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>
+          </button>
+        </div>
       </div>
     </div>
   );
