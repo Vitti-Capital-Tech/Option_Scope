@@ -1110,10 +1110,6 @@ export default function App({ onNavigate }) {
           <div className="card">
             <div className="card-title">Live Prices ({priceType === 'mark' ? 'Mark' : 'LTP'})</div>
             <div className="stat-row">
-              <span className="stat-label">SPOT</span>
-              <span className="stat-val spot">{spotPrice ? spotPrice.toLocaleString(undefined, { maximumFractionDigits: 2 }) : '—'}</span>
-            </div>
-            <div className="stat-row">
               <span className="stat-label">CALL</span>
               <span className="stat-val call">{callPrice ? callPrice.toFixed(2) : '—'}</span>
             </div>
@@ -1164,6 +1160,10 @@ export default function App({ onNavigate }) {
 
         {/* Chart area — charts ALWAYS mounted, overlay sits on top */}
         <main className="main" style={{ position: 'relative', padding: 12, gap: 12, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
+          <div style={{ fontFamily: 'JetBrains Mono', fontSize: 16, fontWeight: 700, color: '#e6edf3', display: 'flex', alignItems: 'center' }}>
+            SPOT: <span style={{ color: '#e3b341', marginLeft: 8 }}>{spotPrice ? spotPrice.toLocaleString(undefined, { maximumFractionDigits: 2 }) : '—'}</span>
+          </div>
 
           <div className="watchlist-container" style={{ flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 8, overflowY: 'auto', paddingBottom: 8, minHeight: 80, maxHeight: '35vh', zIndex: 11 }}>
             {watchList.length === 0 ? (
