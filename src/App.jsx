@@ -681,6 +681,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
   const wsRef = useRef(null);
   const lastC = useRef(null);
   const lastP = useRef(null);
+  const lastComb = useRef(null); // Accurate H/L tracker for combined
   const callSymRef = useRef('');
   const putSymRef = useRef('');
   const pollerRef = useRef(null);
@@ -875,51 +876,39 @@ export default function App({ onNavigate, theme, toggleTheme }) {
 
   // ── Imperative combine update ─────────────────────────────────────────────
   const updateComb = useCallback((c, p) => {
-    if (!c && !p) return;
-    if (c && !p) {
-      combRef.current?.update(c);
-      return;
-    }
-    if (!c && p) {
-      combRef.current?.update(p);
-      return;
-    }
-
-    if (c.time === p.time) {
-      combRef.current?.update({
-        time: c.time,
-        open: c.open + p.open,
-        high: c.high + p.high,
-        low: c.low + p.low,
-        close: c.close + p.close,
-        callIv: c.callIv,
-        putIv: p.putIv,
-      });
-    } else {
-      // If one candle ticked over to a new timestamp but the other hasn't,
-      // use the newest timestamp. For the lagging candle, assume its price
-      // stayed flat at its previous close.
-      const time = Math.max(c.time, p.time);
-      const cOpen = c.time === time ? c.open : c.close;
-      const cHigh = c.time === time ? c.high : c.close;
-      const cLow = c.time === time ? c.low : c.close;
-      const cClose = c.time === time ? c.close : c.close;
-
-      const pOpen = p.time === time ? p.open : p.close;
-      const pHigh = p.time === time ? p.high : p.close;
-      const pLow = p.time === time ? p.low : p.close;
-      const pClose = p.time === time ? p.close : p.close;
-
-      combRef.current?.update({
+    if (!c || !p) return;
+    
+    const time = Math.max(c.time, p.time);
+    const combinedPrice = c.close + p.close;
+    
+    let current = lastComb.current;
+    
+    if (!current || time > current.time) {
+      // New bucket started or first data
+      current = {
         time: time,
-        open: cOpen + pOpen,
-        high: cHigh + pHigh,
-        low: cLow + pLow,
-        close: cClose + pClose,
+        open: combinedPrice,
+        high: combinedPrice,
+        low: combinedPrice,
+        close: combinedPrice,
         callIv: c.callIv,
-        putIv: p.putIv,
-      });
+        putIv: p.putIv
+      };
+    } else {
+      // Existing bucket - update close and expand H/L based on THIS tick
+      // This is the ONLY way to get accurate H/L for a sum of two assets.
+      current = {
+        ...current,
+        close: combinedPrice,
+        callIv: c.callIv,
+        putIv: p.putIv
+      };
+      if (combinedPrice > current.high) current.high = combinedPrice;
+      if (combinedPrice < current.low) current.low = combinedPrice;
     }
+    
+    lastComb.current = current;
+    combRef.current?.update(current);
   }, []);
   // ── START MONITORING ──────────────────────────────────────────────────────
   const startMonitoring = useCallback(async () => {
@@ -948,6 +937,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
     dataHubRef.current = { call: makeEmptySide(), put: makeEmptySide() };
     lastC.current = null;
     lastP.current = null;
+    lastComb.current = null;
 
     const now = Math.floor(Date.now() / 1000);
     // Rough estimate of start time, relying on the API to limit to available data
@@ -1101,30 +1091,30 @@ export default function App({ onNavigate, theme, toggleTheme }) {
       currentCandleTimer.current = setInterval(refreshCurrentCandle, 5000);
 
       // ── WebSocket: ticker updates Close price in real-time (zero latency) ──
+      const correctClosedCandle = () => refreshAllHistory(); // Map to full refresh
+
       wsRef.current = createWS(
         cSym, pSym, tf, pType,
         (sym, price, _ts, iv) => {
-          // Determine current bucket using wall-clock anchored to last known candle
-          const nowSec = Math.floor(Date.now() / 1000);
+          // Use exchange timestamp if available, fallback to wall-clock
+          const nowSec = _ts || Math.floor(Date.now() / 1000);
           const anchor = lastC.current?.time ?? lastP.current?.time ?? Math.floor(nowSec / bucketSecs) * bucketSecs;
           const currentBucket = anchor + Math.floor((nowSec - anchor) / bucketSecs) * bucketSecs;
 
           if (sym === callSymRef.current) {
             setCallPrice(price);
-            // !lastC.current handles LTP mode where no historical trades exist
             if (!lastC.current || currentBucket > lastC.current.time) {
               const prevTime = lastC.current?.time;
               const newC = { time: currentBucket, open: price, high: price, low: price, close: price, callIv: iv };
               lastC.current = newC;
-              updateComb(newC, lastP.current);
-              if (prevTime) correctClosedCandle(prevTime);
+              if (lastP.current) updateComb(newC, lastP.current);
+              if (prevTime) correctClosedCandle();
             } else {
-              // Same candle — update Close; also expand H/L as fallback for LTP (REST may miss)
               const upd = { ...lastC.current, close: price, callIv: iv };
               if (price > upd.high) upd.high = price;
               if (price < upd.low) upd.low = price;
               lastC.current = upd;
-              updateComb(upd, lastP.current);
+              if (lastP.current) updateComb(upd, lastP.current);
             }
           }
           if (sym === putSymRef.current) {
@@ -1133,14 +1123,14 @@ export default function App({ onNavigate, theme, toggleTheme }) {
               const prevTime = lastP.current?.time;
               const newP = { time: currentBucket, open: price, high: price, low: price, close: price, putIv: iv };
               lastP.current = newP;
-              updateComb(lastC.current, newP);
-              if (prevTime) correctClosedCandle(prevTime);
+              if (lastC.current) updateComb(lastC.current, newP);
+              if (prevTime) correctClosedCandle();
             } else {
               const upd = { ...lastP.current, close: price, putIv: iv };
               if (price > upd.high) upd.high = price;
               if (price < upd.low) upd.low = price;
               lastP.current = upd;
-              updateComb(lastC.current, upd);
+              if (lastC.current) updateComb(lastC.current, upd);
             }
           }
         },
