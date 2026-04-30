@@ -11,7 +11,8 @@ export default function ResultTable({
   config,
   onRefresh,
   timeRemaining,
-  spotPrice
+  spotPrice,
+  lastRefreshed
 }) {
   const [expandedStrikes, setExpandedStrikes] = useState({});
 
@@ -31,6 +32,11 @@ export default function ResultTable({
           <div style={{ fontSize: 12 }}>
             Spot Price: {spotPrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
+          {lastRefreshed > 0 && (
+            <div style={{ fontSize: 12, color: 'var(--text)', borderLeft: '1px solid var(--border)', paddingLeft: 8 }}>
+              Updated: {new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }).format(new Date(lastRefreshed))}
+            </div>
+          )}
           <button
             onClick={onRefresh}
             disabled={!scanning}

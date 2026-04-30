@@ -511,6 +511,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             onRefresh={() => computeSpreads(true)}
             timeRemaining={timeRemaining}
             spotPrice={spotPrice}
+            lastRefreshed={lastRefreshed}
           />
           <ResultTable
             title="PUT SPREAD"
@@ -524,6 +525,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             onRefresh={() => computeSpreads(true)}
             timeRemaining={timeRemaining}
             spotPrice={spotPrice}
+            lastRefreshed={lastRefreshed}
           />
         </main>
       </div>
