@@ -339,19 +339,37 @@ const ChartPanel = forwardRef(function ChartPanel({
     update(candle) {
       if (!seriesRef.current || !candle) return;
       try {
+        // Lightweight-charts update handles newer or same-time candles perfectly.
+        // For older candles, we should ideally use setData, but for small corrections
+        // to the "live" tip, this works.
         seriesRef.current.update(candle);
         
         const cache = candlesCacheRef.current;
-        if (cache.length > 0 && cache[cache.length - 1].time === candle.time) {
-          cache[cache.length - 1] = candle;
-        } else {
+        if (cache.length === 0) {
           cache.push(candle);
+        } else {
+          const lastIdx = cache.length - 1;
+          if (candle.time === cache[lastIdx].time) {
+            cache[lastIdx] = candle;
+          } else if (candle.time > cache[lastIdx].time) {
+            cache.push(candle);
+          } else {
+            // Historical correction: find and update
+            const idx = cache.findIndex(c => c.time === candle.time);
+            if (idx !== -1) cache[idx] = candle;
+          }
         }
         
+        // Always maintain max history for SMA
+        if (cache.length > 500) cache.shift();
+
         if (smaSeriesRef.current && cache.length >= 20) {
-          let sum = 0;
-          for (let j = 0; j < 20; j++) sum += cache[cache.length - 1 - j].close;
-          smaSeriesRef.current.update({ time: candle.time, value: sum / 20 });
+          const idx = cache.findIndex(c => c.time === candle.time);
+          if (idx >= 19) {
+            let sum = 0;
+            for (let j = 0; j < 20; j++) sum += cache[idx - j].close;
+            smaSeriesRef.current.update({ time: candle.time, value: sum / 20 });
+          }
         }
 
         if (callIvRef.current && candle.callIv !== undefined && !isNaN(candle.callIv)) {
@@ -367,7 +385,7 @@ const ChartPanel = forwardRef(function ChartPanel({
           }
         }
       } catch (e) {
-        console.warn('series.update error:', e.message);
+        // console.warn('series.update error:', e.message);
       }
     },
     clearIvData() {
@@ -1140,13 +1158,21 @@ export default function App({ onNavigate, theme, toggleTheme }) {
               // Extract Greeks (only present for options)
               if (msg.greeks) {
                 const g = {
-                  delta: parseFloat(msg.greeks.delta),
-                  gamma: parseFloat(msg.greeks.gamma),
-                  vega: parseFloat(msg.greeks.vega),
-                  theta: parseFloat(msg.greeks.theta),
-                  rho: parseFloat(msg.greeks.rho),
-                  iv: parseFloat(msg.mark_vol ?? msg.quotes?.mark_iv ?? 0),
+                  delta: parseFloat(msg.greeks.delta || 0),
+                  gamma: parseFloat(msg.greeks.gamma || 0),
+                  vega: parseFloat(msg.greeks.vega || 0),
+                  theta: parseFloat(msg.greeks.theta || 0),
+                  rho: parseFloat(msg.greeks.rho || 0),
+                  iv: parseFloat(msg.mark_vol ?? msg.quotes?.mark_iv ?? msg.greeks?.iv ?? 0),
                 };
+                dataHubRef.current[side].greeks = g;
+                if (side === 'call') setCallGreeks(g);
+                else setPutGreeks(g);
+              } else if (msg.mark_vol || msg.quotes?.mark_iv) {
+                // Fallback: update only IV if greeks object is missing
+                const iv = parseFloat(msg.mark_vol ?? msg.quotes?.mark_iv ?? 0);
+                const prev = dataHubRef.current[side].greeks || {};
+                const g = { ...prev, iv };
                 dataHubRef.current[side].greeks = g;
                 if (side === 'call') setCallGreeks(g);
                 else setPutGreeks(g);
