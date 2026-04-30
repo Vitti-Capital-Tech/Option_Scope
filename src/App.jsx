@@ -751,7 +751,7 @@ export default function App({ onNavigate }) {
           }
           const comb = sumCandles(cc, pc);
           if (comb.length) {
-            combRef.current?.setData(comb, false);
+            comb.forEach(c => combRef.current?.update(c));
 
             // ── Alert Engine (EVALUATES ONLY ON OFFICIALLY CLOSED CANDLES) ──
             const nowSecAlert = Math.floor(Date.now() / 1000);
@@ -1176,55 +1176,69 @@ export default function App({ onNavigate }) {
                 const isSelected = selectedWatchId === item.id;
                 
                 return (
-                  <div key={item.id} onClick={() => setSelectedWatchId(item.id)} style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                    padding: '8px 12px', background: isSelected ? 'rgba(47, 129, 247, 0.1)' : '#0a0d12',
-                    border: `1px solid ${isSelected ? '#2f81f7' : '#1e2730'}`,
-                    borderRadius: 8, cursor: 'pointer', gap: 16
-                  }}>
+                  <div key={item.id} onClick={() => setSelectedWatchId(item.id)} className={`watch-item ${isSelected ? 'selected' : ''}`}>
                     <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 16 }}>
-                       <div style={{ fontFamily: 'JetBrains Mono', fontSize: 12, fontWeight: 600 }}>
-                         {item.type === 'combined' ? `STRADDLE/STRANGLE: ${item.callStrike}C + ${item.putStrike}P` : 
-                          item.type === 'call' ? `CALL: ${item.callStrike}C` : `PUT: ${item.putStrike}P`}
-                         <div style={{ fontSize: 10, color: '#7d8590', marginTop: 2 }}>{fmtExpiry(item.expiry)}</div>
+                       <div className="watch-item-title">
+                         {item.type === 'combined' ? (
+                           <><span className="badge comb">STRADDLE</span> {item.callStrike}C + {item.putStrike}P</>
+                         ) : item.type === 'call' ? (
+                           <><span className="badge call">CALL</span> {item.callStrike}C</>
+                         ) : (
+                           <><span className="badge put">PUT</span> {item.putStrike}P</>
+                         )}
+                         <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 4, letterSpacing: 0.5 }}>{fmtExpiry(item.expiry)}</div>
                        </div>
                        
-                       <div style={{ display: 'flex', alignItems: 'center', gap: 16, fontFamily: 'JetBrains Mono', fontSize: 13 }}>
-                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
-                            <span style={{ fontSize: 9, color: '#7d8590' }}>LIVE</span>
-                            <span style={{ color: data.price > 0 ? '#e3b341' : '#e6edf3' }}>{data.price > 0 ? data.price.toFixed(2) : '—'}</span>
+                       <div className="watch-item-prices">
+                          <div className="watch-price-block">
+                            <span className="watch-price-label">LIVE</span>
+                            <span className={`watch-price-val live ${data.price > 0 ? 'highlight' : ''}`}>{data.price > 0 ? data.price.toFixed(2) : '—'}</span>
                           </div>
-                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
-                            <span style={{ fontSize: 9, color: '#7d8590' }}>1H HIGH</span>
-                            <span style={{ color: '#3fb950' }}>{data.high > 0 ? data.high.toFixed(2) : '—'}</span>
+                          <div className="watch-price-block">
+                            <span className="watch-price-label">1H HIGH</span>
+                            <span className="watch-price-val high">{data.high > 0 ? data.high.toFixed(2) : '—'}</span>
                           </div>
-                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
-                            <span style={{ fontSize: 9, color: '#7d8590' }}>1H LOW</span>
-                            <span style={{ color: '#f85149' }}>{data.low < Infinity && data.low > 0 ? data.low.toFixed(2) : '—'}</span>
+                          <div className="watch-price-block">
+                            <span className="watch-price-label">1H LOW</span>
+                            <span className="watch-price-val low">{data.low < Infinity && data.low > 0 ? data.low.toFixed(2) : '—'}</span>
                           </div>
                        </div>
                     </div>
                     
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }} onClick={e => e.stopPropagation()}>
-                       <span style={{ fontSize: 10, color: '#7d8590' }}>ALERT:</span>
-                       <select value={item.alertDir} onChange={e => {
-                          const val = e.target.value;
-                          setWatchList(prev => prev.map(w => w.id === item.id ? { ...w, alertDir: val } : w));
-                       }} style={{ background: '#0a0d12', border: '1px solid #1e2730', color: '#e6edf3', fontSize: 11, padding: '2px 4px', borderRadius: 4, outline: 'none' }}>
-                         <option value=">=">≥</option>
-                         <option value="<=">≤</option>
-                       </select>
-                       <input type="number" placeholder="0.00" value={item.alertPrice} onChange={e => {
-                          const val = e.target.value;
-                          setWatchList(prev => prev.map(w => w.id === item.id ? { ...w, alertPrice: val } : w));
-                       }} style={{ background: '#0a0d12', border: '1px solid #1e2730', color: '#e6edf3', padding: '2px 6px', borderRadius: 4, width: 60, fontSize: 11, fontFamily: 'JetBrains Mono', outline: 'none' }} />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }} onClick={e => e.stopPropagation()}>
+                       <div className="watch-alert-pill">
+                         <div className="watch-alert-icon-wrap">
+                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                             <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+                             <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+                           </svg>
+                           <span className="watch-alert-label">ALERT</span>
+                         </div>
+                         <div className="watch-alert-inputs">
+                           <select value={item.alertDir} onChange={e => {
+                              const val = e.target.value;
+                              setWatchList(prev => prev.map(w => w.id === item.id ? { ...w, alertDir: val } : w));
+                           }}>
+                             <option value=">=">≥</option>
+                             <option value="<=">≤</option>
+                           </select>
+                           <div className="watch-alert-divider"></div>
+                           <input type="number" placeholder="0.00" value={item.alertPrice} onChange={e => {
+                              const val = e.target.value;
+                              setWatchList(prev => prev.map(w => w.id === item.id ? { ...w, alertPrice: val } : w));
+                           }} />
+                         </div>
+                       </div>
                        
-                       <button onClick={() => {
+                       <button className="watch-delete-btn" title="Remove strategy" onClick={() => {
                           setWatchList(prev => prev.filter(w => w.id !== item.id));
                           setListData(prev => { const next = {...prev}; delete next[item.id]; return next; });
                           if (selectedWatchId === item.id) setSelectedWatchId(null);
-                       }} style={{ marginLeft: 8, background: 'transparent', border: 'none', color: '#f85149', cursor: 'pointer', fontSize: 16 }}>
-                         ×
+                       }}>
+                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                           <polyline points="3 6 5 6 21 6"></polyline>
+                           <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                         </svg>
                        </button>
                     </div>
                   </div>

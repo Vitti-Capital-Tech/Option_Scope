@@ -806,3 +806,196 @@ select:disabled {
 .scanner-logs-body::-webkit-scrollbar-thumb:hover {
   background: var(--text-dim);
 }
+
+/* ── Watchlist UI ────────────────────────────────────── */
+.watchlist-container::-webkit-scrollbar {
+  width: 6px;
+}
+.watchlist-container::-webkit-scrollbar-track {
+  background: transparent;
+}
+.watchlist-container::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+.watchlist-container::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
+}
+
+.watch-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: rgba(15, 20, 25, 0.4);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  gap: 16px;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.watch-item:hover {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.1);
+  transform: translateY(-1px);
+}
+
+.watch-item.selected {
+  background: rgba(47, 129, 247, 0.08);
+  border-color: rgba(47, 129, 247, 0.5);
+  box-shadow: 0 4px 12px rgba(47, 129, 247, 0.1);
+}
+
+.watch-item-title {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: 0.5px;
+}
+
+.watch-item-title .badge {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  margin-right: 10px;
+  vertical-align: text-bottom;
+  letter-spacing: 0.5px;
+}
+.badge.comb { background: rgba(227, 179, 65, 0.15); color: var(--comb); }
+.badge.call { background: rgba(63, 185, 80, 0.15); color: var(--call); }
+.badge.put { background: rgba(248, 81, 73, 0.15); color: var(--put); }
+
+.watch-item-prices {
+  display: flex;
+  align-items: center;
+  gap: 36px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
+}
+
+.watch-price-block {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  min-width: 72px;
+}
+
+.watch-price-label {
+  font-size: 9px;
+  color: var(--text-dim);
+  font-family: 'Inter', sans-serif;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.watch-price-val {
+  font-weight: 500;
+}
+.watch-price-val.live { color: #fff; }
+.watch-price-val.live.highlight { color: var(--comb); }
+.watch-price-val.high { color: var(--call); }
+.watch-price-val.low { color: var(--put); }
+
+.watch-alert-pill {
+  display: flex;
+  align-items: center;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px;
+  gap: 8px;
+  transition: all 0.2s;
+}
+
+.watch-alert-pill:focus-within {
+  border-color: rgba(47, 129, 247, 0.5);
+  box-shadow: 0 0 0 2px rgba(47, 129, 247, 0.15);
+}
+
+.watch-alert-icon-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-left: 6px;
+  color: var(--text-dim);
+}
+
+.watch-alert-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.watch-alert-inputs {
+  display: flex;
+  align-items: center;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+  transition: border-color 0.2s;
+}
+
+.watch-alert-pill:focus-within .watch-alert-inputs {
+  border-color: rgba(47, 129, 247, 0.3);
+}
+
+.watch-alert-inputs select, .watch-alert-inputs input {
+  background: transparent;
+  border: none;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text);
+  padding: 4px;
+}
+
+.watch-alert-inputs select {
+  cursor: pointer;
+  color: #3fb950;
+  font-weight: 700;
+  padding-right: 0;
+  outline: none;
+}
+
+.watch-alert-divider {
+  width: 1px;
+  height: 14px;
+  background: var(--border);
+  margin: 0 2px;
+}
+
+.watch-alert-inputs input {
+  width: 65px;
+  text-align: right;
+  font-weight: 600;
+  outline: none;
+}
+
+.watch-alert-inputs input:focus {
+  outline: none;
+}
+
+.watch-delete-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 18px;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  transition: all 0.2s;
+}
+
+.watch-delete-btn:hover {
+  background: rgba(248, 81, 73, 0.1);
+  color: var(--danger);
+}
