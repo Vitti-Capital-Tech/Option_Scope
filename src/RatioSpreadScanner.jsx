@@ -28,33 +28,7 @@ function matchesOptionType(product, optionType) {
     || (optionType === 'call' ? /^C-/.test(product?.symbol || '') : /^P-/.test(product?.symbol || ''));
 }
 
-function LogPanel({ logs }) {
-  const endRef = useRef(null);
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [logs]);
 
-  return (
-    <div className="scanner-logs">
-      <div className="scanner-logs-header">
-        <span className="scanner-logs-icon">▸</span>
-        <span>SCANNER LOG</span>
-        <span className="scanner-logs-count">{logs.length} entries</span>
-      </div>
-      <div className="scanner-logs-body">
-        {logs.length === 0 && (
-          <div className="scanner-log-empty">Waiting for scan results…</div>
-        )}
-        {logs.map((l, i) => (
-          <div key={i} className={`scanner-log-row ${l.type || ''}`}>
-            <span className="scanner-log-time">{l.time}</span>
-            <span className="scanner-log-badge" data-type={l.type}>{l.type?.toUpperCase() || 'INFO'}</span>
-            <span className="scanner-log-msg">{l.msg}</span>
-          </div>
-        ))}
-        <div ref={endRef} />
-      </div>
-    </div>
-  );
-}
 
 // ── Main Scanner Component ──────────────────────────────────────────────────
 export default function RatioSpreadScanner({ onNavigate }) {
@@ -66,7 +40,6 @@ export default function RatioSpreadScanner({ onNavigate }) {
   const [spotPrice, setSpotPrice] = useState(null);
   const [scanning, setScanning] = useState(false);
   const [results, setResults] = useState([]);
-  const [logs, setLogs] = useState([]);
   const [tickerData, setTickerData] = useState({});
   const [expectedTickerCount, setExpectedTickerCount] = useState(0);
   const [expandedStrikes, setExpandedStrikes] = useState({});
@@ -84,9 +57,7 @@ export default function RatioSpreadScanner({ onNavigate }) {
     minSellPremium: 10,
   });
 
-  const addLog = useCallback((msg, type = 'info') => {
-    setLogs(prev => [...prev.slice(-199), { time: formatTime(new Date()), msg, type }]);
-  }, []);
+
 
   const flushTickerBuffer = useCallback(() => {
     flushTimerRef.current = null;
@@ -109,8 +80,8 @@ export default function RatioSpreadScanner({ onNavigate }) {
         setExpiries(exps);
         if (exps.length) setSelExpiry(exps[0]);
       })
-      .catch(e => addLog('Failed to load products: ' + e.message, 'error'));
-  }, [underlying, addLog]);
+      .catch(e => console.error('Failed to load products:', e));
+  }, [underlying]);
 
   // ── Fetch spot price ────────────────────────────────────────────────────
   useEffect(() => {
@@ -127,7 +98,6 @@ export default function RatioSpreadScanner({ onNavigate }) {
   // ── Build strike pairs and subscribe to WS ──────────────────────────────
   const startScan = useCallback(() => {
     if (!selExpiry || !products.length) {
-      addLog('Select an expiry first', 'warn');
       return;
     }
 
@@ -145,14 +115,11 @@ export default function RatioSpreadScanner({ onNavigate }) {
     setTickerData({});
     setExpectedTickerCount(0);
     setExpandedStrikes({});
-    addLog(`Starting ratio spread scan for ${underlying} | ${fmtExpiry(selExpiry)} | ${optionType.toUpperCase()} options`, 'info');
 
     // Get all strikes for this expiry
     const strikes = getStrikes(products, selExpiry);
-    addLog(`Found ${strikes.length} strikes for ${fmtExpiry(selExpiry)}`, 'info');
 
     if (strikes.length < 2) {
-      addLog('Need at least 2 strikes to scan', 'warn');
       setScanning(false);
       return;
     }
@@ -178,13 +145,12 @@ export default function RatioSpreadScanner({ onNavigate }) {
         symbolMeta[sym] = { strike: parseFloat(strike), lotSize };
       }
     }
-    addLog(`Lot sizes: ${Object.entries(strikeLotSizes).slice(0, 2).map(([k, v]) => `${k}→${v}`).join(', ')} …`, 'info');
+
 
     const allSymbols = Object.values(strikeSymbols);
     setExpectedTickerCount(allSymbols.length);
-    addLog(`Subscribing to ${allSymbols.length} ${optionType} option tickers via WebSocket`, 'info');
 
-    addLog('WebSocket connecting — subscribing to tickers', 'info');
+
     const stream = createTickerStream(
       allSymbols,
       (msg) => {
@@ -223,13 +189,10 @@ export default function RatioSpreadScanner({ onNavigate }) {
         }
       },
       (status) => {
-        if (status === 'live') addLog('WebSocket connected — receiving tickers', 'success');
-        else if (status === 'error') addLog('WebSocket error', 'error');
-        else if (status === 'disconnected') addLog('WebSocket disconnected', 'warn');
       }
     );
     wsRef.current = stream;
-  }, [selExpiry, products, underlying, optionType, addLog]);
+  }, [selExpiry, products, underlying, optionType]);
 
   // ── Scan for valid ratio spreads whenever ticker data changes ───────────
   useEffect(() => {
@@ -325,16 +288,9 @@ export default function RatioSpreadScanner({ onNavigate }) {
     validPairs.sort((a, b) => b.score - a.score);
 
     setResults(prev => {
-      const newCount = validPairs.length;
-      const prevCount = prev.length;
-      if (newCount !== prevCount && scanning) {
-        if (newCount > 0) {
-          addLog(`Found ${newCount} valid ratio spread ${newCount === 1 ? 'pair' : 'pairs'}`, 'success');
-        }
-      }
       return validPairs;
     });
-  }, [tickerData, scanning, spotPrice, config, addLog]);
+  }, [tickerData, scanning, spotPrice, config]);
 
   // ── Stop scanning ──────────────────────────────────────────────────────
   const stopScan = useCallback(() => {
@@ -347,8 +303,7 @@ export default function RatioSpreadScanner({ onNavigate }) {
     tickerBufferRef.current = {};
     setScanning(false);
     setExpectedTickerCount(0);
-    addLog('Scan stopped', 'warn');
-  }, [addLog]);
+  }, []);
 
   // Cleanup on unmount
   useEffect(() => () => {
@@ -702,8 +657,7 @@ export default function RatioSpreadScanner({ onNavigate }) {
             </div>
           </div>
 
-          {/* Log Panel */}
-          <LogPanel logs={logs} />
+
         </main>
       </div>
     </div>
