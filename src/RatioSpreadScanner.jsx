@@ -242,13 +242,12 @@ export default function RatioSpreadScanner({ onNavigate }) {
             ratioDeviation: (ratioDeviation * 100).toFixed(1),
             sellQty,
             netPremium: (buyLeg.markPrice - sellQty * sellLeg.markPrice).toFixed(2),
-            score: (1 / (ratioDeviation + 0.001)) * ivDiff * (strikeDiff / 1000),
             deltaDiff,
           });
         }
       }
 
-      validPairs.sort((a, b) => b.score - a.score);
+      validPairs.sort((a, b) => b.netPremium - a.netPremium);
       return validPairs;
     };
 
