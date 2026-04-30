@@ -72,6 +72,23 @@ const ChartPanel = forwardRef(function ChartPanel({
   const callIvRef = useRef(null);
   const putIvRef = useRef(null);
   const combIvRef = useRef(null);
+  const smaSeriesRef = useRef(null);
+  const candlesCacheRef = useRef([]);
+  const [showSma, setShowSma] = useState(false);
+  
+  const drawnLinesRef = useRef([]);
+  const [drawMode, setDrawMode] = useState(false);
+  const drawModeRef = useRef(false);
+  const [drawnCount, setDrawnCount] = useState(0);
+
+  const toggleDrawMode = () => {
+    const next = !drawMode;
+    setDrawMode(next);
+    drawModeRef.current = next;
+    if (containerRef.current) {
+      containerRef.current.style.cursor = next ? 'crosshair' : 'default';
+    }
+  };
 
   useEffect(() => {
     if (!seriesRef.current) return;
@@ -218,12 +235,101 @@ const ChartPanel = forwardRef(function ChartPanel({
     });
   }, [theme]);
 
+  useEffect(() => {
+    if (!chartRef.current) return;
+    
+    if (showSma) {
+      if (!smaSeriesRef.current) {
+        smaSeriesRef.current = chartRef.current.addSeries(LineSeries, {
+          color: '#2f81f7',
+          lineWidth: 2,
+          title: 'SMA 20',
+          crosshairMarkerRadius: 4,
+          priceScaleId: 'right'
+        });
+        
+        const candles = candlesCacheRef.current;
+        if (candles.length >= 20) {
+          const smaData = [];
+          for (let i = 19; i < candles.length; i++) {
+            let sum = 0;
+            for (let j = 0; j < 20; j++) sum += candles[i - j].close;
+            smaData.push({ time: candles[i].time, value: sum / 20 });
+          }
+          smaSeriesRef.current.setData(smaData);
+        }
+      }
+    } else {
+      if (smaSeriesRef.current) {
+        chartRef.current.removeSeries(smaSeriesRef.current);
+        smaSeriesRef.current = null;
+      }
+    }
+  }, [showSma]);
+
+  // Handle Chart Clicks for Drawing
+  useEffect(() => {
+    if (!chartRef.current || !seriesRef.current) return;
+    
+    const clickHandler = (param) => {
+      console.log('Chart clicked:', param);
+      if (!drawModeRef.current) return;
+      
+      let price = null;
+      if (param.point) {
+        price = seriesRef.current.coordinateToPrice(param.point.y);
+      } else if (param.time) {
+        const data = param.seriesData.get(seriesRef.current);
+        if (data && data.close !== undefined) price = data.close;
+      }
+
+      if (price !== null && !isNaN(price)) {
+        console.log('Drawing line at price:', price);
+        const line = seriesRef.current.createPriceLine({
+          price: price,
+          color: theme === 'dark' ? '#e3b341' : '#d29922',
+          lineWidth: 2,
+          lineStyle: 0,
+          axisLabelVisible: true,
+          title: 'S/R',
+        });
+        drawnLinesRef.current.push(line);
+        setDrawnCount(prev => prev + 1);
+        
+        // Auto-off
+        setDrawMode(false);
+        drawModeRef.current = false;
+        if (containerRef.current) containerRef.current.style.cursor = 'default';
+      }
+    };
+    
+    chartRef.current.subscribeClick(clickHandler);
+
+    return () => {
+      if (chartRef.current) {
+        chartRef.current.unsubscribeClick(clickHandler);
+      }
+    };
+  }, [theme]); // Re-bind only if theme changes (for color), drawMode is handled via ref
+
   useImperativeHandle(ref, () => ({
     setData(candles, fit = true) {
       if (!seriesRef.current || !candles?.length) return;
+      candlesCacheRef.current = [...candles];
       let range;
       if (!fit) range = chartRef.current?.timeScale().getVisibleLogicalRange();
       seriesRef.current.setData(candles);
+      
+      if (smaSeriesRef.current && candles.length >= 20) {
+        const smaData = [];
+        for (let i = 19; i < candles.length; i++) {
+          let sum = 0;
+          for (let j = 0; j < 20; j++) sum += candles[i - j].close;
+          smaData.push({ time: candles[i].time, value: sum / 20 });
+        }
+        smaSeriesRef.current.setData(smaData);
+      }
+
       if (fit) {
         chartRef.current?.timeScale().fitContent();
       } else if (range) {
@@ -234,6 +340,20 @@ const ChartPanel = forwardRef(function ChartPanel({
       if (!seriesRef.current || !candle) return;
       try {
         seriesRef.current.update(candle);
+        
+        const cache = candlesCacheRef.current;
+        if (cache.length > 0 && cache[cache.length - 1].time === candle.time) {
+          cache[cache.length - 1] = candle;
+        } else {
+          cache.push(candle);
+        }
+        
+        if (smaSeriesRef.current && cache.length >= 20) {
+          let sum = 0;
+          for (let j = 0; j < 20; j++) sum += cache[cache.length - 1 - j].close;
+          smaSeriesRef.current.update({ time: candle.time, value: sum / 20 });
+        }
+
         if (callIvRef.current && candle.callIv !== undefined && !isNaN(candle.callIv)) {
           callIvRef.current.update({ time: candle.time, value: candle.callIv });
         }
@@ -281,8 +401,24 @@ const ChartPanel = forwardRef(function ChartPanel({
           <span style={{ color: iconColor || colorUp }}>▮</span>
           <span>{title}</span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          <span style={{ fontSize: 9, opacity: 0.7 }}>ALERT</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button
+            onClick={() => setShowSma(!showSma)}
+            style={{
+              background: showSma ? 'rgba(47, 129, 247, 0.15)' : 'transparent',
+              border: `1px solid ${showSma ? 'rgba(47, 129, 247, 0.4)' : 'var(--border)'}`,
+              color: showSma ? '#2f81f7' : 'var(--text-dim)',
+              padding: '2px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer',
+              fontWeight: 600, transition: 'all 0.15s'
+            }}
+          >
+            SMA 20
+          </button>
+          
+          <div style={{ width: 1, height: 14, background: 'var(--border)' }} />
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <span style={{ fontSize: 9, opacity: 0.7 }}>ALERT</span>
           <select
             value={alertDir}
             onChange={e => onAlertDirChange?.(e.target.value)}
@@ -304,6 +440,7 @@ const ChartPanel = forwardRef(function ChartPanel({
               padding: '2px 6px', borderRadius: 4, width: 55, fontSize: 10, fontFamily: 'JetBrains Mono, monospace', outline: 'none'
             }}
           />
+          </div>
         </div>
       </div>
       <div ref={containerRef} style={{ flex: 1, minHeight: 0, position: 'relative' }}>
@@ -351,6 +488,35 @@ const ChartPanel = forwardRef(function ChartPanel({
           }}>
              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
           </button>
+
+          <div style={{ width: 1, background: 'var(--border)', margin: '4px 4px' }} />
+
+          <button title="Draw S/R Line" className="tv-btn" onClick={toggleDrawMode} style={{ color: drawMode ? '#e3b341' : 'var(--text-dim)', background: drawMode ? 'rgba(227, 179, 65, 0.15)' : 'transparent' }}>
+             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2v20"></path><path d="M8 8l4-4 4 4"></path><path d="M8 16l4 4 4-4"></path></svg>
+          </button>
+          
+          {drawnCount > 0 && (
+            <>
+              <button title="Undo Last Line" className="tv-btn" onClick={() => {
+                const last = drawnLinesRef.current.pop();
+                if (last) {
+                  try { seriesRef.current.removePriceLine(last); } catch(e){}
+                  setDrawnCount(drawnLinesRef.current.length);
+                }
+              }}>
+                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7v6h6"></path><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"></path></svg>
+              </button>
+              <button title="Clear All S/R Lines" className="tv-btn" onClick={() => {
+                drawnLinesRef.current.forEach(line => {
+                  try { seriesRef.current.removePriceLine(line); } catch(e){}
+                });
+                drawnLinesRef.current = [];
+                setDrawnCount(0);
+              }} style={{ color: '#f85149' }}>
+                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+              </button>
+            </>
+          )}
 
           <div style={{ width: 1, background: 'var(--border)', margin: '4px 4px' }} />
 
