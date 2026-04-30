@@ -1429,35 +1429,33 @@ export default function App({ onNavigate, theme, toggleTheme }) {
           </div>
 
           {/* Greeks card — populated from WebSocket Data Hub */}
-          {(callGreeks || putGreeks) && (
-            <div className="card">
-              <div className="card-title">Greeks (Live)</div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px 8px', fontSize: 10, fontFamily: 'JetBrains Mono, monospace' }}>
-                <span style={{ color: '#7d8590', fontWeight: 700 }}></span>
-                <span style={{ color: '#3fb950', fontWeight: 700, textAlign: 'center' }}>CALL</span>
-                <span style={{ color: '#f85149', fontWeight: 700, textAlign: 'center' }}>PUT</span>
+          <div className="card">
+            <div className="card-title">Greeks (Live)</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px 8px', fontSize: 10, fontFamily: 'JetBrains Mono, monospace' }}>
+              <span style={{ color: '#7d8590', fontWeight: 700 }}></span>
+              <span style={{ color: '#3fb950', fontWeight: 700, textAlign: 'center' }}>CALL</span>
+              <span style={{ color: '#f85149', fontWeight: 700, textAlign: 'center' }}>PUT</span>
 
-                {[
-                  { label: 'Δ Delta', key: 'delta', decimals: 4 },
-                  { label: 'Γ Gamma', key: 'gamma', decimals: 4 },
-                  { label: 'ν Vega', key: 'vega', decimals: 2 },
-                  { label: 'Θ Theta', key: 'theta', decimals: 2 },
-                  { label: 'ρ Rho', key: 'rho', decimals: 4 },
-                  { label: 'IV %', key: 'iv', decimals: 1, scale: 100 },
-                ].map(({ label, key, decimals, scale = 1 }) => (
-                  <React.Fragment key={key}>
-                    <span style={{ color: '#7d8590' }}>{label}</span>
-                    <span style={{ color: '#e6edf3', textAlign: 'center' }}>
-                      {callGreeks?.[key] != null ? (callGreeks[key] * scale).toFixed(decimals) : '—'}
-                    </span>
-                    <span style={{ color: '#e6edf3', textAlign: 'center' }}>
-                      {putGreeks?.[key] != null ? (putGreeks[key] * scale).toFixed(decimals) : '—'}
-                    </span>
-                  </React.Fragment>
-                ))}
-              </div>
+              {[
+                { label: 'Δ Delta', key: 'delta', decimals: 4 },
+                { label: 'Γ Gamma', key: 'gamma', decimals: 4 },
+                { label: 'ν Vega', key: 'vega', decimals: 2 },
+                { label: 'Θ Theta', key: 'theta', decimals: 2 },
+                { label: 'ρ Rho', key: 'rho', decimals: 4 },
+                { label: 'IV %', key: 'iv', decimals: 1, scale: 100 },
+              ].map(({ label, key, decimals, scale = 1 }) => (
+                <React.Fragment key={key}>
+                  <span style={{ color: '#7d8590' }}>{label}</span>
+                  <span style={{ color: '#e6edf3', textAlign: 'center' }}>
+                    {callGreeks?.[key] != null ? (callGreeks[key] * scale).toFixed(decimals) : '—'}
+                  </span>
+                  <span style={{ color: '#e6edf3', textAlign: 'center' }}>
+                    {putGreeks?.[key] != null ? (putGreeks[key] * scale).toFixed(decimals) : '—'}
+                  </span>
+                </React.Fragment>
+              ))}
             </div>
-          )}
+          </div>
 
 
 
