@@ -91,7 +91,6 @@ export default function ResultTable({
           <table className="scanner-table">
             <thead>
               <tr>
-                <th>Rank</th>
                 <th>Buy/Sell Strikes</th>
                 <th>Strike Δ</th>
                 <th>Buy Prem</th>
@@ -138,16 +137,15 @@ export default function ResultTable({
                         <td>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center' }}>
                             {hasOthers && (
-                              <span className={`scanner-group-toggle ${isExpanded ? 'expanded' : ''}`}>
-                                ▸
+                              <span className={`scanner-group-toggle ${isExpanded ? 'expanded' : ''}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" style={{ transition: 'transform 0.2s', transform: isExpanded ? 'rotate(0deg)' : 'none' }}>
+                                  <polyline points="9 18 15 12 9 6"></polyline>
+                                </svg>
                               </span>
                             )}
-                            <span className={`scanner-rank ${globalRank < 4 ? `rank-${globalRank}` : ''}`}>
-                              #{globalRank++}
-                            </span>
+                            <div><span className="scanner-buy">{bestRow.buyLeg.strike.toLocaleString()}</span>/<span className="scanner-sell">{bestRow.sellLeg.strike.toLocaleString()}</span></div>
                           </div>
                         </td>
-                        <td><div><span className="scanner-buy">{bestRow.buyLeg.strike.toLocaleString()}</span>/<span className="scanner-sell">{bestRow.sellLeg.strike.toLocaleString()}</span></div></td>
                         <td>{bestRow.strikeDiff.toLocaleString()}</td>
                         <td><div><div className="scanner-buy">${bestRow.buyLeg.markPrice?.toFixed(2)}</div><div>{bestRow.buyLeg.iv?.toFixed(1)}%</div></div></td>
                         <td><div><div className="scanner-sell">${bestRow.sellLeg.markPrice?.toFixed(2)}</div><div>{bestRow.sellLeg.iv?.toFixed(1)}%</div></div></td>
@@ -169,7 +167,6 @@ export default function ResultTable({
                       {/* Other rows for this strike */}
                       {isExpanded && others.map((r) => (
                         <tr key={`${r.buyLeg.strike}-${r.sellLeg.strike}`} className="scanner-row-sub">
-                          <td></td>
                           <td><div><span className="scanner-buy">{r.buyLeg.strike.toLocaleString()}</span>/<span className="scanner-sell">{r.sellLeg.strike.toLocaleString()}</span></div></td>
                           <td>{r.strikeDiff.toLocaleString()}</td>
                           <td><div><div className="scanner-buy">${r.buyLeg.markPrice?.toFixed(2)}</div><div>{r.buyLeg.iv?.toFixed(1)}%</div></div></td>

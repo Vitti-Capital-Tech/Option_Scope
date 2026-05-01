@@ -15,10 +15,16 @@ function Root() {
 
   const toggleTheme = () => setTheme(prev => prev === 'dark' ? 'light' : 'dark');
 
-  if (page === 'scanner') {
-    return <RatioSpreadScanner onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} />;
-  }
-  return <App onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} />;
+  return (
+    <>
+      <div style={{ display: page === 'charts' ? 'block' : 'none', height: '100%', width: '100%' }}>
+        <App onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} />
+      </div>
+      <div style={{ display: page === 'scanner' ? 'block' : 'none', height: '100%', width: '100%' }}>
+        <RatioSpreadScanner onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} />
+      </div>
+    </>
+  );
 }
 
 createRoot(document.getElementById('root')).render(<Root />)

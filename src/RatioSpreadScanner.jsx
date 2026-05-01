@@ -230,7 +230,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
 
           const rawQty = buyDN / sellDN;
           const sellQty = Math.max(1, Math.round(rawQty / 0.25) * 0.25);
-          const deltaDiff = Math.abs(buyDN - sellQty * sellDN);
+          const deltaDiff = buyDN - sellQty * sellDN;
 
           validPairs.push({
             buyLeg,
@@ -247,7 +247,12 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
         }
       }
 
-      validPairs.sort((a, b) => a.netPremium - b.netPremium);
+      validPairs.sort((a, b) => {
+        const distA = Math.abs(a.buyLeg.strike - spotPrice);
+        const distB = Math.abs(b.buyLeg.strike - spotPrice);
+        if (distA !== distB) return distB - distA;
+        return a.netPremium - b.netPremium;
+      });
       return validPairs;
     };
 
