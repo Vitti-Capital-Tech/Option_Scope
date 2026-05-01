@@ -1,71 +1,84 @@
 # High Level Design — OptionScope
 
-## What This System Does
+## What The System Does
 
-OptionScope is a real-time dashboard for monitoring options contracts traded on Delta Exchange. It allows a trader to select a specific options contract (by underlying asset, expiry date, and strike price) and view live candlestick charts showing:
+OptionScope is a client-side trading workstation for Delta Exchange options. It has three top-level modules:
 
-- The price of the **Call** option over time
-- The price of the **Put** option over time
-- The **Combined Premium** — the sum of Call and Put prices at every point in time.
-- **Live Greeks**: Real-time Delta, Gamma, Vega, Theta, Rho, and IV for both legs.
-- **Ratio Spread Scanner**: A real-time engine that monitors hundreds of option strikes to find spreads where the premium ratio aligns with the delta-notional ratio.
+- **Charts**: Real-time call/put/combined premium monitoring with Greeks and alerts.
+- **Ratio Spread Scanner**: Live discovery of ratio spreads based on premium-to-delta-notional alignment.
+- **Paper Trading**: Automated simulation of spread entries/exits with live PnL and trade history.
 
-Users can toggle between **Mark Price** (standard for valuation) and **Last Traded Price (LTP)** for execution-focused monitoring.
+The user selects underlying and expiry, then the system streams option telemetry and updates UI decisions in near real-time.
 
 ---
 
 ## System Components
 
 ```
-Browser (React App)
-      |
-      |-- REST API calls (historical & corrective) --> /api Proxy Rewrite
-      |                                                     |
-      |                                                     --> Delta Exchange REST API
-      |
-      |-- WebSocket (live telemetry) --> Delta Exchange WebSocket Server
-            |
-            |-- Ticker (Live Prices)
-            |-- Greeks (Delta, Gamma, etc.)
-            |-- Ratio Scanner (Throttled O(N^2) Logic)
-            |-- Trades & L2 Book (Data Hub)
+Browser (React + Vite)
+  |
+  |-- Navigation Shell (Charts / Scanner / Paper Trading)
+  |
+  |-- REST adapter (products, candles, spot) ---> /api proxy ---> Delta REST
+  |
+  |-- WebSocket adapter (ticker, greeks, trades, l2, mark_price) ---> Delta WS
+         |
+         |-- Chart Data Hub + Correction Engine
+         |-- Scanner Engine (filtered pair search)
+         |-- Paper Trading Engine (entry/exit/PnL lifecycle)
 ```
 
-### 1. React Frontend (Browser)
-The UI is a purely client-side application. It utilizes a **Data Hub** pattern to store incoming WebSocket streams (Greeks, Ticker, Trades) without overwhelming the React render cycle. Charts are rendered using `lightweight-charts` with an imperative update strategy.
+### 1) UI Layer
 
-### 2. API Rewrites (Zero-Backend)
-The app is entirely serverless. It bypasses CORS restrictions using edge-level rewrites:
-- **Local:** Vite proxy (`vite.config.js`).
-- **Production:** Vercel edge rewrites (`vercel.json`).
+- React components are route-like modules switched inside the app shell.
+- Theme toggle is shared across modules.
+- Strategy watchlist and configuration state drive the active chart context.
 
-### 3. Data Integrity Engine
-To solve the common problem of WebSocket vs. REST data discrepancies:
-- **Live Polling:** Every 5 seconds, the app fetches the *current* forming candle from REST to ensure O/H/L accuracy.
-- **Full History Refresh:** Every time a candle closes (e.g., at the top of the hour for 1h charts), the app waits 15 seconds for the exchange to finalize the record and then performs a silent background refresh of the entire chart history.
+### 2) Market Data Layer
+
+- **REST** handles product metadata, initial candle history, and correction backfills.
+- **WebSocket** handles low-latency live fields (`v2/ticker`, `mark_price`, trades, order book updates).
+- Proxy rewrites keep the architecture serverless while handling CORS.
+
+### 3) Runtime Engines
+
+- **Charting Engine** uses imperative refs and always-mounted chart components for smooth updates.
+- **Scanner Engine** processes option chains for valid ratio candidates using configurable thresholds.
+- **Paper Engine** reuses scanner-style candidate selection to simulate positions, exits, and realized outcomes.
 
 ---
 
-## Data Flow
+## End-to-End Data Flow
 
-### On startup
-1. The app fetches available products and calculates the **ATM (At-The-Money)** strike based on the current spot price of the underlying asset.
-2. The UI populates dropdowns and auto-selects the ATM strike for the nearest expiry.
+### Initialization
 
-### During Monitoring
-1. **Bootstrap:** Fetches the last 300 historical candles.
-2. **WebSocket Feed:** Listens for `v2/ticker` (prices/Greeks) and `mark_price` updates.
-3. **Imperative Updates:** Prices are pushed directly to chart refs, bypassing React's state to ensure 60fps performance.
-4. **Auto-Correction:** The wall-clock scheduler triggers REST refreshes at every candle boundary to ensure the "Final" candle on the chart is 100% accurate.
+1. Load product universe for the selected underlying.
+2. Derive expiries and strikes; auto-select ATM where applicable.
+3. Pull spot price and start periodic spot refresh.
+
+### Live Monitoring (Charts)
+
+1. Bootstrap candles from REST.
+2. Start WebSocket streams for selected symbols.
+3. Update latest candles and Greeks continuously.
+4. Every 5 seconds, refresh forming candle from REST.
+5. At each candle boundary (+ settle delay), refresh full history for official close integrity.
+
+### Live Scanning / Trading
+
+1. Subscribe to all option symbols in the selected expiry.
+2. Buffer and batch ticker updates to limit render pressure.
+3. Evaluate pair candidates using strike/IV/premium/deviation constraints.
+4. Publish scanner tables or simulated trading actions based on top-ranked pairs.
 
 ---
 
 ## Technology Choices
 
-| Component      | Technology       | Reason |
-|----------------|------------------|--------|
-| Frontend       | React (Vite)     | Modular UI and efficient state management for configuration |
-| Charts         | lightweight-charts | High-performance financial visualization |
-| Live data      | WebSocket        | Sub-second latency for prices and Greeks |
-| Data Hub       | React Refs       | Prevents unnecessary re-renders for high-frequency WebSocket data |
-| Styling        | Vanilla CSS      | Precision control over the "Terminal" aesthetic |
+| Component | Technology | Why |
+|---|---|---|
+| Frontend | React + Vite | Fast iteration, modular stateful UI |
+| Charting | `lightweight-charts` | High-performance OHLC rendering |
+| Streaming | Native WebSocket | Low-latency market updates |
+| Data buffering | `useRef` + batched flush | Controls re-render frequency under bursty data |
+| Styling | CSS | Fine-grained control of trading terminal aesthetics |

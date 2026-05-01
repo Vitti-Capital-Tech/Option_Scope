@@ -1,36 +1,45 @@
 # OptionScope
 
-OptionScope is a real-time monitoring dashboard for options contracts on Delta Exchange. It provides a premium, high-performance interface for traders to track live prices, combined premiums, and option Greeks.
+OptionScope is a real-time options intelligence workspace for Delta Exchange. It combines live charting, ratio spread discovery, and paper-trading simulation in a single serverless React app.
 
 ## Overview
 
-The application allows traders to monitor "Straddle" or "Strangle" positions by selecting an underlying asset, expiry date, and strike price. It generates real-time candlestick charts for individual call and put options alongside a **Combined Premium** chart, offering immediate insight into the total cost and performance of multi-leg positions.
+The app is built around three workflows:
 
-### Key Features
-- **Ratio Spread Scanner**: Real-time discovery of institutional ratio spreads with lot-size-aware delta notional logic.
-- **Smart Scoring**: Proprietary ranking engine that identifies optimal spreads based on mathematical alignment, IV edge, and strike width.
-- **Performance Optimized**: Uses throttled calculation loops and Ref-based data storage to handle high-frequency data bursts (150+ symbols) without UI lag.
-- **Smart Selection**: Automatically detects and selects the At-The-Money (ATM) strike when you change expiry dates.
-- **Purely Serverless**: Zero backend dependencies; uses Vite/Vercel edge rewrites to communicate directly with Delta Exchange.
+- **Charts**: Monitor call, put, or combined premium structures with live candles, Greeks, and alerting.
+- **Ratio Spread Scanner**: Discover call/put ratio opportunities using lot-size-aware delta notional alignment.
+- **Paper Trading**: Simulate strategy lifecycle (entry, live PnL, exits, history, CSV export) using the scanner logic.
+
+## Key Features
+
+- **Live Multi-Page Trading UI**: `Charts`, `Ratio Spread`, and `Paper Trading` modules with shared underlying/expiry flows.
+- **Data Hub + Auto-Correction**: WebSocket for low-latency updates plus periodic REST correction for candle accuracy.
+- **Advanced Chart Tools**: SMA(20), drawing mode for S/R lines, zoom/scroll controls, and theme toggle.
+- **Watchlist and Alerts**: Track multiple strategies, monitor live + 1h high/low, and trigger toast/notification alerts.
+- **Scanner Performance Pipeline**: Buffered ticker ingestion and throttled compute cycle for large symbol sets.
+- **Paper Trade Analytics**: Margin estimate, unrealized/realized PnL, auto/manual exits, and trade history export.
 
 ## Architecture
 
 The project is built with a modern, serverless stack:
-1. **Frontend**: React (Vite) + `lightweight-charts` for high-performance financial charting.
-2. **Connectivity**: Native WebSockets for sub-second price updates and Greeks.
-3. **API Proxy**: Edge-level rewrites (`vercel.json`) and local proxies (`vite.config.js`) to handle CORS without a dedicated backend.
+
+1. **Frontend**: React (Vite) with imperative chart updates for high-frequency data.
+2. **Connectivity**: Delta Exchange WebSocket (`v2/ticker`, `trades`, `l2_updates`, `mark_price`) + REST backfill.
+3. **Chart Engine**: `lightweight-charts` with always-mounted panels to avoid remount jitter.
+4. **Proxying**: Vite local proxy and Vercel rewrites for CORS-safe API access without a custom backend.
 
 ## Documentation
 
-Detailed architectural documentation is available in the `docs` folder:
+Detailed design documentation is available in the `docs` folder:
 
-* [High Level Design (HLD)](docs/HLD.md) - Overview of components and data flow.
-* [Low Level Design (LLD)](docs/LLD.md) - Technical implementation details, data hub logic, and chart rendering strategies.
+- [High Level Design (HLD)](docs/HLD.md)
+- [Low Level Design (LLD)](docs/LLD.md)
 
 ## Installation and Setup
 
 ### Prerequisites
-* Node.js (v18+)
+
+- Node.js (v18+)
 
 ### Steps
 
@@ -38,13 +47,11 @@ Detailed architectural documentation is available in the `docs` folder:
    ```bash
    npm install
    ```
-
 2. Start the development server:
    ```bash
    npm run dev
    ```
-
-3. Open the provided localhost URL in your browser to access the dashboard.
+3. Open the local URL printed by Vite.
 
 ## License
 
