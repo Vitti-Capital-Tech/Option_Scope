@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react'
 import './index.css'
 import App from './App.jsx'
 import RatioSpreadScanner from './RatioSpreadScanner.jsx'
+import PaperTrading from './PaperTrading.jsx'
 
 function Root() {
   const [page, setPage] = useState('charts');
@@ -22,6 +23,9 @@ function Root() {
       </div>
       <div style={{ display: page === 'scanner' ? 'block' : 'none', height: '100%', width: '100%' }}>
         <RatioSpreadScanner onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} />
+      </div>
+      <div style={{ display: page === 'trading' ? 'block' : 'none', height: '100%', width: '100%' }}>
+        <PaperTrading onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} />
       </div>
     </>
   );
