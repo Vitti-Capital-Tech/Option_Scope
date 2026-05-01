@@ -231,10 +231,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           const buyStrike = pos.buyLeg.strike;
 
           if (pos.strikeDiff < 1000) {
-            // Exit when buying strike reaches ATM
-            if (buyStrike === atmStrike) {
+            // Exit when buying strike reaches ATM or ITM
+            const isAtOrItm = isCall ? spotPrice >= buyStrike : spotPrice <= buyStrike;
+            if (isAtOrItm) {
               shouldExit = true;
-              exitReason = 'Buy Strike reached ATM (<1000 diff)';
+              exitReason = 'Buy Strike reached ATM/ITM (<1000 diff)';
             }
           } else if (pos.strikeDiff < 1200) {
             // Exit at 200 points ITM
@@ -256,7 +257,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         // Get latest prices for PnL
         const latestBuy = tickerData[pos.buyLeg.symbol]?.markPrice || pos.buyLeg.markPrice;
         const latestSell = tickerData[pos.sellLeg.symbol]?.markPrice || pos.sellLeg.markPrice;
-        const currentPnl = (latestBuy - pos.entryBuyPrice) - ((latestSell - pos.entrySellPrice) * pos.sellQty);
+
+        // Include lotSize in PnL calculation
+        const buyPnl = (latestBuy - pos.entryBuyPrice) * pos.buyLeg.lotSize;
+        const sellPnl = (latestSell - pos.entrySellPrice) * pos.sellLeg.lotSize * pos.sellQty;
+        const currentPnl = buyPnl - sellPnl;
 
         if (shouldExit) {
           exited.push({
@@ -287,7 +292,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         const id = `${spread.buyLeg.symbol}_${spread.sellLeg.symbol}`;
         const exists = remaining.find(p => p.id === id);
         if (!exists) {
-          const margin = (spread.buyLeg.markPrice * 1) + (spread.sellQty * spread.sellLeg.markPrice * 200);
+          // Margin: 100% for long (1x), 200x leverage for short leg (Value / 200)
+          const longMargin = spread.buyLeg.markPrice * spread.buyLeg.lotSize * 1;
+          const shortMargin = (spread.sellLeg.markPrice * spread.sellLeg.lotSize * spread.sellQty) / 200;
+          const margin = longMargin + shortMargin;
           remaining.push({
             id,
             type: spread.buyLeg.type,
@@ -310,6 +318,31 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     });
 
   }, [tickerData, trading, spotPrice, config, expectedTickerCount]);
+
+  const closePosition = (posId, reason = 'Manual Exit') => {
+    setPositions(prev => {
+      const pos = prev.find(p => p.id === posId);
+      if (!pos) return prev;
+
+      const latestBuy = tickerData[pos.buyLeg.symbol]?.markPrice || pos.buyLeg.markPrice;
+      const latestSell = tickerData[pos.sellLeg.symbol]?.markPrice || pos.sellLeg.markPrice;
+      const buyPnl = (latestBuy - pos.entryBuyPrice) * pos.buyLeg.lotSize;
+      const sellPnl = (latestSell - pos.entrySellPrice) * pos.sellLeg.lotSize * pos.sellQty;
+      const realizedPnl = buyPnl - sellPnl;
+
+      const exitedTrade = {
+        ...pos,
+        exitTime: new Date(),
+        exitBuyPrice: latestBuy,
+        exitSellPrice: latestSell,
+        realizedPnl,
+        exitReason: reason
+      };
+
+      setTradeHistory(th => [exitedTrade, ...th]);
+      return prev.filter(p => p.id !== posId);
+    });
+  };
 
   useEffect(() => () => {
     if (wsRef.current) wsRef.current.close();
@@ -370,14 +403,42 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         </div>
 
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <button className="nav-tab" onClick={() => onNavigate('charts')}>
-            Charts
+          <button
+            className="nav-tab"
+            onClick={() => onNavigate('charts')}
+          >
+            <span className="nav-tab-icon" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M4 20V4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                <path d="M4 20H20" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                <rect x="7" y="12" width="3" height="6" rx="0.6" fill="currentColor" />
+                <rect x="12" y="9" width="3" height="9" rx="0.6" fill="currentColor" />
+                <rect x="17" y="6" width="3" height="12" rx="0.6" fill="currentColor" />
+              </svg>
+            </span> Charts
           </button>
-          <button className="nav-tab" onClick={() => onNavigate('scanner')}>
-            Ratio Spread
+          <button
+            className="nav-tab"
+            onClick={() => onNavigate('scanner')}
+          >
+            <span className="nav-tab-icon" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="1.8" />
+                <circle cx="12" cy="12" r="4.5" stroke="currentColor" strokeWidth="1.8" />
+                <circle cx="12" cy="12" r="1.7" fill="currentColor" />
+              </svg>
+            </span> Ratio Spread
           </button>
-          <button className="nav-tab active">
-            Paper Trading
+          <button
+            className="nav-tab active"
+          >
+            <span className="nav-tab-icon" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                <line x1="3" y1="9" x2="21" y2="9"></line>
+                <line x1="9" y1="21" x2="9" y2="9"></line>
+              </svg>
+            </span> Paper Trading
           </button>
         </div>
 
@@ -478,11 +539,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                   <th>Unrl PnL</th>
                   <th>Margin Req</th>
                   <th>Duration</th>
+                  <th>Action</th>
                 </tr>
               </thead>
               <tbody>
                 {positions.length === 0 ? (
-                  <tr><td colSpan="9" style={{ textAlign: 'center', padding: 24, color: 'var(--text-dim)' }}>No active positions. Algo will enter automatically.</td></tr>
+                  <tr><td colSpan="10" style={{ textAlign: 'center', padding: 24, color: 'var(--text-dim)' }}>No active positions. Algo will enter automatically.</td></tr>
                 ) : positions.map(p => {
                   const entryNet = p.entryBuyPrice - (p.sellQty * p.entrySellPrice);
                   const currentNet = p.currentBuyPrice - (p.sellQty * p.currentSellPrice);
@@ -499,6 +561,22 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                       <td style={{ color: pnlColor, fontWeight: 600 }}>{p.unrealizedPnl > 0 ? '+' : ''}{p.unrealizedPnl.toFixed(2)}</td>
                       <td>{p.margin.toFixed(2)}</td>
                       <td>{duration}s</td>
+                      <td>
+                        <button
+                          onClick={() => closePosition(p.id)}
+                          style={{
+                            background: 'rgba(248, 81, 73, 0.1)',
+                            color: '#f85149',
+                            border: '1px solid rgba(248, 81, 73, 0.2)',
+                            padding: '2px 8px',
+                            borderRadius: '4px',
+                            fontSize: '10px',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          CLOSE
+                        </button>
+                      </td>
                     </tr>
                   );
                 })}
