@@ -243,6 +243,10 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             sellQty,
             netPremium: (buyLeg.markPrice - sellQty * sellLeg.markPrice).toFixed(2),
             deltaDiff,
+            thetaDiff: (buyLeg.theta || 0) - (sellQty * (sellLeg.theta || 0)),
+            gammaDiff: (buyLeg.gamma || 0) - (sellQty * (sellLeg.gamma || 0)),
+            vegaDiff: (buyLeg.vega || 0) - (sellQty * (sellLeg.vega || 0)),
+            rhoDiff: (buyLeg.rho || 0) - (sellQty * (sellLeg.rho || 0)),
           });
         }
       }

@@ -61,14 +61,14 @@ const formatCombinedTitle = (callSym, putSym, priceType) => {
 // Exposes setData() and update() via ref.
 const ChartPanel = forwardRef(function ChartPanel({
   title, colorUp, colorDown, iconColor,
-  alertDir, onAlertDirChange, alertPrice, onAlertPriceChange,
+  alerts = [], onAddAlert, onRemoveAlert,
   showIvCall, showIvPut, theme
 }, ref) {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
   const legendRef = useRef(null);
-  const alertLineRef = useRef(null);
+  const alertLinesRef = useRef({}); // { [id]: line }
   const callIvRef = useRef(null);
   const putIvRef = useRef(null);
   const combIvRef = useRef(null);
@@ -80,6 +80,7 @@ const ChartPanel = forwardRef(function ChartPanel({
   const [drawMode, setDrawMode] = useState(false);
   const drawModeRef = useRef(false);
   const [drawnCount, setDrawnCount] = useState(0);
+  const [newAlert, setNewAlert] = useState({ price: '', dir: '>=' });
 
   const toggleDrawMode = () => {
     const next = !drawMode;
@@ -92,21 +93,27 @@ const ChartPanel = forwardRef(function ChartPanel({
 
   useEffect(() => {
     if (!seriesRef.current) return;
-    if (alertLineRef.current) {
-      seriesRef.current.removePriceLine(alertLineRef.current);
-      alertLineRef.current = null;
-    }
-    if (alertPrice && !isNaN(alertPrice)) {
-      alertLineRef.current = seriesRef.current.createPriceLine({
-        price: parseFloat(alertPrice),
-        color: '#e3b341',
-        lineWidth: 1,
-        lineStyle: 2, // Dashed
+    
+    // Remove all old lines
+    Object.values(alertLinesRef.current).forEach(line => {
+      seriesRef.current.removePriceLine(line);
+    });
+    alertLinesRef.current = {};
+
+    // Add current lines
+    alerts.forEach(a => {
+      if (!a.price) return;
+      const line = seriesRef.current.createPriceLine({
+        price: parseFloat(a.price),
+        color: a.dir === '>=' ? '#3fb950' : '#f85149',
+        lineWidth: 2,
+        lineStyle: 1, // Dotted
         axisLabelVisible: true,
-        title: 'ALERT',
+        title: `ALERT ${a.dir}`,
       });
-    }
-  }, [alertPrice]);
+      alertLinesRef.current[a.id] = line;
+    });
+  }, [alerts]);
 
   useLayoutEffect(() => {
     const el = containerRef.current;
@@ -415,49 +422,100 @@ const ChartPanel = forwardRef(function ChartPanel({
         justifyContent: 'space-between',
         gap: 8, flexShrink: 0,
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ color: iconColor || colorUp }}>▮</span>
-          <span>{title}</span>
-        </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <button
-            onClick={() => setShowSma(!showSma)}
-            style={{
-              background: showSma ? 'rgba(47, 129, 247, 0.15)' : 'transparent',
-              border: `1px solid ${showSma ? 'rgba(47, 129, 247, 0.4)' : 'var(--border)'}`,
-              color: showSma ? '#2f81f7' : 'var(--text-dim)',
-              padding: '2px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer',
-              fontWeight: 600, transition: 'all 0.15s'
-            }}
-          >
-            SMA 20
-          </button>
-          
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ color: iconColor || colorUp }}>▮</span>
+            <span>{title}</span>
+          </div>
+
           <div style={{ width: 1, height: 14, background: 'var(--border)' }} />
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <span style={{ fontSize: 9, opacity: 0.7 }}>ALERT</span>
-          <select
-            value={alertDir}
-            onChange={e => onAlertDirChange?.(e.target.value)}
-            style={{
-              background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)',
-              fontSize: 10, padding: '2px 4px', borderRadius: 4, cursor: 'pointer', outline: 'none'
-            }}
-          >
-            <option value=">=">≥</option>
-            <option value="<=">≤</option>
-          </select>
-          <input
-            type="number"
-            placeholder="0.00"
-            value={alertPrice}
-            onChange={e => onAlertPriceChange?.(e.target.value)}
-            style={{
-              background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)',
-              padding: '2px 6px', borderRadius: 4, width: 55, fontSize: 10, fontFamily: 'JetBrains Mono, monospace', outline: 'none'
-            }}
-          />
+          {/* Tools */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button
+              onClick={() => setShowSma(!showSma)}
+              style={{
+                background: showSma ? 'rgba(47, 129, 247, 0.15)' : 'transparent',
+                border: `1px solid ${showSma ? 'rgba(47, 129, 247, 0.4)' : 'var(--border)'}`,
+                color: showSma ? '#2f81f7' : 'var(--text-dim)',
+                padding: '2px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer',
+                fontWeight: 600, transition: 'all 0.15s'
+              }}
+            >
+              SMA 20
+            </button>
+            <button
+              onClick={toggleDrawMode}
+              title="Toggle Trendline Tool"
+              style={{
+                background: drawMode ? 'rgba(56, 139, 253, 0.15)' : 'transparent',
+                border: `1px solid ${drawMode ? '#388bfd' : 'var(--border)'}`,
+                color: drawMode ? '#388bfd' : 'var(--text-dim)',
+                padding: '2px 8px', borderRadius: 4, cursor: 'pointer',
+                display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, fontWeight: 600
+              }}
+            >
+              DRAW
+            </button>
+          </div>
+
+          <div style={{ width: 1, height: 14, background: 'var(--border)' }} />
+
+          {/* Multiple Alerts UI */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, background: '#161b22', padding: '2px 6px', borderRadius: 6, border: '1px solid #30363d' }}>
+              <select
+                value={newAlert.dir}
+                onChange={e => setNewAlert(prev => ({ ...prev, dir: e.target.value }))}
+                style={{ 
+                  background: 'transparent', border: 'none', 
+                  color: newAlert.dir === '>=' ? '#3fb950' : '#f85149', 
+                  fontSize: 11, fontWeight: 700, outline: 'none', cursor: 'pointer' 
+                }}
+              >
+                <option value=">=" style={{ color: '#3fb950' }}>&ge;</option>
+                <option value="<=" style={{ color: '#f85149' }}>&le;</option>
+              </select>
+              <input
+                type="number"
+                placeholder="Alert Price"
+                value={newAlert.price}
+                onChange={e => setNewAlert(prev => ({ ...prev, price: e.target.value }))}
+                style={{ background: 'transparent', border: 'none', color: '#e6edf3', width: 70, fontSize: 11, fontFamily: 'JetBrains Mono', outline: 'none' }}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && newAlert.price) {
+                    onAddAlert(newAlert.dir, newAlert.price);
+                    setNewAlert(prev => ({ ...prev, price: '' }));
+                  }
+                }}
+              />
+              <button
+                onClick={() => {
+                  if (newAlert.price) {
+                    onAddAlert(newAlert.dir, newAlert.price);
+                    setNewAlert(prev => ({ ...prev, price: '' }));
+                  }
+                }}
+                disabled={!newAlert.price}
+                style={{ background: '#238636', border: 'none', color: '#fff', padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 700, cursor: 'pointer', opacity: newAlert.price ? 1 : 0.5 }}
+              >
+                SET ALERT
+              </button>
+            </div>
+
+            {/* Active Alerts List */}
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'nowrap', overflowX: 'auto', maxWidth: 400, scrollbarWidth: 'none' }}>
+              {alerts.map(a => (
+                <div key={a.id} style={{
+                  display: 'flex', alignItems: 'center', gap: 4, background: a.dir === '>=' ? 'rgba(63, 185, 80, 0.15)' : 'rgba(248, 81, 73, 0.15)',
+                  border: `1px solid ${a.dir === '>=' ? 'rgba(63, 185, 80, 0.3)' : 'rgba(248, 81, 73, 0.3)'}`,
+                  padding: '2px 6px', borderRadius: 4, fontSize: 10, color: a.dir === '>=' ? '#3fb950' : '#f85149', fontWeight: 700, flexShrink: 0
+                }}>
+                  {a.dir} {parseFloat(a.price).toFixed(2)}
+                  <span onClick={() => onRemoveAlert(a.id)} style={{ cursor: 'pointer', marginLeft: 4, opacity: 0.7 }}>&times;</span>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </div>
@@ -626,8 +684,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
       expiry: selExpiry,
       underlying,
       priceType,
-      alertDir: '>=',
-      alertPrice: '',
+      alerts: [], // Array of { id, dir, price }
     };
 
     setWatchList(prev => {
@@ -707,19 +764,23 @@ export default function App({ onNavigate, theme, toggleTheme }) {
   const [activeCall, setActiveCall] = useState('');
   const [activePut, setActivePut] = useState('');
 
-  // Alerts
-  const [combAlert, setCombAlert] = useState({ price: '', dir: '>=' });
-  const alertsRef = useRef({ comb: combAlert });
-  useEffect(() => {
-    alertsRef.current = { comb: combAlert };
-  }, [combAlert]);
+  const [alertLogs, setAlertLogs] = useState([]);
 
   const triggeredAlerts = useRef(new Set());
   const [toasts, setToasts] = useState([]);
 
-  const addToast = useCallback((msg) => {
+  const addToast = useCallback((msg, type = 'alert') => {
     const id = Date.now() + Math.random();
-    setToasts(t => [...t, { id, msg }]);
+    setToasts(t => [...t, { id, msg, type }]);
+    
+    if (type === 'alert') {
+      setAlertLogs(prev => [{
+        id: Date.now(),
+        time: new Date().toLocaleTimeString(),
+        msg
+      }, ...prev].slice(0, 50));
+    }
+    
     setTimeout(() => {
       setToasts(t => t.filter(x => x.id !== id));
     }, 8000);
@@ -727,6 +788,8 @@ export default function App({ onNavigate, theme, toggleTheme }) {
 
   const listWsRef = useRef(null);
   const tickerCacheRef = useRef({}); // { [sym]: price }
+
+  const greekCacheRef = useRef({}); // { [sym]: greeks }
 
   useEffect(() => {
     if (!watchList.length) {
@@ -758,44 +821,92 @@ export default function App({ onNavigate, theme, toggleTheme }) {
         if (!price) return;
         tickerCacheRef.current[sym] = price;
 
+        if (msg.greeks) {
+          greekCacheRef.current[sym] = {
+            delta: parseFloat(msg.greeks.delta || 0),
+            gamma: parseFloat(msg.greeks.gamma || 0),
+            vega: parseFloat(msg.greeks.vega || 0),
+            theta: parseFloat(msg.greeks.theta || 0),
+            rho: parseFloat(msg.greeks.rho || 0),
+            iv: parseFloat(msg.mark_vol ?? msg.quotes?.mark_iv ?? msg.greeks?.iv ?? 0),
+          };
+        }
+
         setListData(prev => {
           let changed = false;
           const next = { ...prev };
           watchList.forEach(w => {
             const pC = tickerCacheRef.current[w.callSym] || 0;
             const pP = tickerCacheRef.current[w.putSym] || 0;
+            const gC = greekCacheRef.current[w.callSym];
+            const gP = greekCacheRef.current[w.putSym];
+
             let newPrice = 0;
             if (w.type === 'combined') newPrice = pC + pP;
             else if (w.type === 'call') newPrice = pC;
             else if (w.type === 'put') newPrice = pP;
 
-            const old = prev[w.id] || { price: 0, high: 0, low: Infinity };
-            if (old.price !== newPrice && newPrice !== 0 && (w.type === 'combined' ? (pC && pP) : true)) {
+            let newGreeks = null;
+            if (w.type === 'combined') {
+              if (gC && gP) {
+                newGreeks = {
+                  delta: gC.delta + gP.delta,
+                  gamma: gC.gamma + gP.gamma,
+                  vega: gC.vega + gP.vega,
+                  theta: gC.theta + gP.theta,
+                  rho: gC.rho + gP.rho,
+                  iv: (gC.iv + gP.iv) / 2
+                };
+              }
+            } else if (w.type === 'call') {
+              if (gC) newGreeks = gC;
+            } else if (w.type === 'put') {
+              if (gP) newGreeks = gP;
+            }
+
+            const old = prev[w.id] || { price: 0, high: 0, low: Infinity, greeks: null };
+            const priceChanged = old.price !== newPrice && newPrice !== 0 && (w.type === 'combined' ? (pC && pP) : true);
+            const greeksChanged = JSON.stringify(old.greeks) !== JSON.stringify(newGreeks);
+
+            if (priceChanged || greeksChanged) {
               changed = true;
               let newHigh = Math.max(old.high, newPrice);
               let newLow = old.low === Infinity || old.low === 0 ? newPrice : Math.min(old.low, newPrice);
-              next[w.id] = { ...old, price: newPrice, high: newHigh, low: newLow };
+              next[w.id] = { ...old, price: newPrice, high: newHigh, low: newLow, greeks: newGreeks };
 
-              const alertObj = w.alertDir && w.alertPrice ? { dir: w.alertDir, price: parseFloat(w.alertPrice) } : null;
-              if (alertObj && !isNaN(alertObj.price)) {
-                const triggered = alertObj.dir === '>=' ? newPrice >= alertObj.price : newPrice <= alertObj.price;
-                if (triggered && !triggeredAlerts.current.has(w.id)) {
-                  triggeredAlerts.current.add(w.id);
-                  playAlertSound();
-                  addToast(`List Alert: ${w.callStrike || ''}/${w.putStrike || ''} hit ${newPrice.toFixed(2)}`);
-                } else if (!triggered) {
-                  triggeredAlerts.current.delete(w.id);
-                }
+              if (priceChanged) {
+                (w.alerts || []).forEach(alertObj => {
+                  if (!alertObj.price) return;
+                  const target = parseFloat(alertObj.price);
+                  const alertId = `${w.id}-${alertObj.id}`;
+                  const triggered = alertObj.dir === '>=' ? newPrice >= target : newPrice <= target;
+                  
+                  if (triggered && !triggeredAlerts.current.has(alertId)) {
+                    triggeredAlerts.current.add(alertId);
+                    playAlertSound();
+                    const name = w.type === 'combined' ? `STRADDLE ${w.callStrike}/${w.putStrike}`
+                      : w.type === 'call' ? `CALL ${w.callStrike}C`
+                        : `PUT ${w.putStrike}P`;
+                    addToast(`Watchlist Alert: ${name} ${alertObj.dir} ${target} (Hit: ${newPrice.toFixed(2)})`);
+                    
+                    // Auto-remove triggered alert
+                    setWatchList(prevW => prevW.map(item => 
+                      item.id === w.id ? { ...item, alerts: (item.alerts || []).filter(a => a.id !== alertObj.id) } : item
+                    ));
+                  } else if (!triggered) {
+                    triggeredAlerts.current.delete(alertId);
+                  }
+                });
               }
             }
           });
           return changed ? next : prev;
         });
-      }
-    };
-    listWsRef.current = ws;
-    return () => ws.close();
-  }, [watchList, addToast]);
+        }
+      };
+      listWsRef.current = ws;
+      return () => ws.close();
+    }, [watchList, addToast]);
 
 
   // ── Notification Permissions ──────────────────────────────────────────────
@@ -1030,28 +1141,32 @@ export default function App({ onNavigate, theme, toggleTheme }) {
             const closedComb = [...comb].reverse().find(c => c.time < currentBucket);
 
             if (closedComb) {
-              const alerts = alertsRef.current;
-              const checkAlert = (id, closedPrice, alertObj, title) => {
-                if (!closedPrice || !alertObj.price) return;
+              const activeItem = watchListRef.current.find(w => w.id === selectedWatchId);
+              const alerts = (activeItem?.alerts || []);
+              alerts.forEach(alertObj => {
+                if (!alertObj.price) return;
                 const target = parseFloat(alertObj.price);
-                if (isNaN(target)) return;
+                const alertId = `comb-${alertObj.id}`;
+                const isTriggered = alertObj.dir === '>=' ? closedComb.close >= target : closedComb.close <= target;
 
-                // Evaluate against the official REST Close price
-                const isTriggered = alertObj.dir === '>=' ? closedPrice >= target : closedPrice <= target;
-
-                if (isTriggered && !triggeredAlerts.current.has(id)) {
-                  triggeredAlerts.current.add(id);
+                if (isTriggered && !triggeredAlerts.current.has(alertId)) {
+                  triggeredAlerts.current.add(alertId);
                   playAlertSound();
-                  const msg = `${title} confirmed crossing at close! Price: ${closedPrice.toFixed(2)} (${alertObj.dir} ${target})`;
+                  const title = formatCombinedTitle(cSym, pSym, pType);
+                  const msg = `${title} confirmed crossing at close! Price: ${closedComb.close.toFixed(2)} (${alertObj.dir} ${target})`;
                   if ('Notification' in window && Notification.permission === 'granted') {
                     new Notification('OptionScope Alert', { body: msg });
                   }
                   addToast(msg);
+
+                  // Auto-remove triggered alert
+                  setWatchList(prev => prev.map(w => 
+                    w.id === selectedWatchId ? { ...w, alerts: w.alerts.filter(a => a.id !== alertObj.id) } : w
+                  ));
                 } else if (!isTriggered) {
-                  triggeredAlerts.current.delete(id);
+                  triggeredAlerts.current.delete(alertId);
                 }
-              };
-              checkAlert('comb', closedComb.close, alerts.comb, 'COMBINED');
+              });
             }
           }
           console.log(`[AutoCorrect] Full history refreshed perfectly.`);
@@ -1427,31 +1542,25 @@ export default function App({ onNavigate, theme, toggleTheme }) {
             </div>
           </div>
 
-          {/* Greeks card — populated from WebSocket Data Hub */}
+          {/* Alert History card */}
           <div className="card">
-            <div className="card-title">Greeks (Live)</div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px 8px', fontSize: 10, fontFamily: 'JetBrains Mono, monospace' }}>
-              <span style={{ color: '#7d8590', fontWeight: 700 }}></span>
-              <span style={{ color: '#3fb950', fontWeight: 700, textAlign: 'center' }}>CALL</span>
-              <span style={{ color: '#f85149', fontWeight: 700, textAlign: 'center' }}>PUT</span>
-
-              {[
-                { label: 'Δ Delta', key: 'delta', decimals: 4 },
-                { label: 'Γ Gamma', key: 'gamma', decimals: 4 },
-                { label: 'ν Vega', key: 'vega', decimals: 2 },
-                { label: 'Θ Theta', key: 'theta', decimals: 2 },
-                { label: 'ρ Rho', key: 'rho', decimals: 4 },
-                { label: 'IV %', key: 'iv', decimals: 1, scale: 100 },
-              ].map(({ label, key, decimals, scale = 1 }) => (
-                <React.Fragment key={key}>
-                  <span style={{ color: '#7d8590' }}>{label}</span>
-                  <span style={{ color: '#e6edf3', textAlign: 'center' }}>
-                    {callGreeks?.[key] != null ? (callGreeks[key] * scale).toFixed(decimals) : '—'}
-                  </span>
-                  <span style={{ color: '#e6edf3', textAlign: 'center' }}>
-                    {putGreeks?.[key] != null ? (putGreeks[key] * scale).toFixed(decimals) : '—'}
-                  </span>
-                </React.Fragment>
+            <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span>Alert History</span>
+              <span onClick={() => setAlertLogs([])} style={{ fontSize: 9, cursor: 'pointer', opacity: 0.6 }}>Clear</span>
+            </div>
+            <div className="trade-list" style={{ maxHeight: 200, overflowY: 'auto' }}>
+              {!alertLogs.length && <div style={{ textAlign: 'center', padding: 20, color: '#484f58', fontSize: 11 }}>No alerts logged yet.</div>}
+              {alertLogs.map(log => (
+                <div key={log.id} style={{
+                  padding: '6px 0', borderBottom: '1px solid #21262d', fontSize: 11,
+                  display: 'flex', flexDirection: 'column', gap: 2
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: '#e3b341', fontWeight: 700 }}>TRIGGERED</span>
+                    <span style={{ color: '#7d8590' }}>{log.time}</span>
+                  </div>
+                  <div style={{ color: '#e6edf3', lineHeight: 1.4 }}>{log.msg}</div>
+                </div>
               ))}
             </div>
           </div>
@@ -1506,31 +1615,106 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                           <span className="watch-price-label">1H LOW</span>
                           <span className="watch-price-val low">{data.low < Infinity && data.low > 0 ? data.low.toFixed(2) : '—'}</span>
                         </div>
+                        <div className="watch-price-block">
+                          <span className="watch-price-label">DELTA</span>
+                          <span className="watch-price-val" style={{ color: 'var(--accent)', fontSize: 13 }}>{data.greeks?.delta != null ? data.greeks.delta.toFixed(4) : '—'}</span>
+                        </div>
+                        <div className="watch-price-block">
+                          <span className="watch-price-label">GAMMA</span>
+                          <span className="watch-price-val" style={{ color: 'var(--accent)', fontSize: 13 }}>{data.greeks?.gamma != null ? data.greeks.gamma.toFixed(5) : '—'}</span>
+                        </div>
+                        <div className="watch-price-block">
+                          <span className="watch-price-label">VEGA</span>
+                          <span className="watch-price-val" style={{ color: 'var(--comb)', fontSize: 13 }}>{data.greeks?.vega != null ? data.greeks.vega.toFixed(2) : '—'}</span>
+                        </div>
+                        <div className="watch-price-block">
+                          <span className="watch-price-label">THETA</span>
+                          <span className="watch-price-val" style={{ color: '#ff7b72', fontSize: 13 }}>{data.greeks?.theta != null ? data.greeks.theta.toFixed(2) : '—'}</span>
+                        </div>
+                        <div className="watch-price-block">
+                          <span className="watch-price-label">RHO</span>
+                          <span className="watch-price-val" style={{ color: '#58a6ff', fontSize: 13 }}>{data.greeks?.rho != null ? data.greeks.rho.toFixed(4) : '—'}</span>
+                        </div>
+                        <div className="watch-price-block">
+                          <span className="watch-price-label">IV %</span>
+                          <span className="watch-price-val" style={{ color: 'var(--comb)', fontSize: 13 }}>{data.greeks?.iv != null ? (data.greeks.iv * 100).toFixed(1) : '—'}%</span>
+                        </div>
                       </div>
                     </div>
 
                     <div style={{ display: 'flex', alignItems: 'center', gap: 12 }} onClick={e => e.stopPropagation()}>
-                      <div className="watch-alert-pill">
-                        <div className="watch-alert-icon-wrap">
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
-                            <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+                      {/* Alerts Section */}
+                      <div className="watch-alert-pill" style={{ height: 'auto', minHeight: 32, padding: '4px 8px' }}>
+                        <div className="watch-alert-icon-wrap" style={{ alignSelf: 'flex-start', marginTop: 4 }}>
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#e3b341" strokeWidth="2.5">
+                            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0" />
                           </svg>
-                          <span className="watch-alert-label">ALERT</span>
                         </div>
-                        <div className="watch-alert-inputs">
-                          <select value={item.alertDir} onChange={e => {
-                            const val = e.target.value;
-                            setWatchList(prev => prev.map(w => w.id === item.id ? { ...w, alertDir: val } : w));
-                          }}>
-                            <option value=">=">≥</option>
-                            <option value="<=">≤</option>
-                          </select>
-                          <div className="watch-alert-divider"></div>
-                          <input type="number" placeholder="0.00" value={item.alertPrice} onChange={e => {
-                            const val = e.target.value;
-                            setWatchList(prev => prev.map(w => w.id === item.id ? { ...w, alertPrice: val } : w));
-                          }} />
+                        
+                        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                            {(item.alerts || []).map(a => (
+                              <div key={a.id} style={{
+                                display: 'flex', alignItems: 'center', gap: 4, background: '#161b22', border: '1px solid #30363d',
+                                padding: '1px 6px', borderRadius: 4, fontSize: 10, color: a.dir === '>=' ? '#3fb950' : '#f85149', fontWeight: 700
+                              }}>
+                                {a.dir} {parseFloat(a.price).toFixed(2)}
+                                <span 
+                                  onClick={() => {
+                                    setWatchList(prev => prev.map(w => w.id === item.id ? { ...w, alerts: w.alerts.filter(x => x.id !== a.id) } : w));
+                                  }} 
+                                  style={{ cursor: 'pointer', opacity: 0.6, marginLeft: 2 }}
+                                >&times;</span>
+                              </div>
+                            ))}
+                          </div>
+
+                          <div className="watch-alert-inputs" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <select 
+                              id={`dir-${item.id}`}
+                              style={{ 
+                                background: 'transparent', border: 'none', 
+                                color: document.getElementById(`dir-${item.id}`)?.value === '<=' ? '#f85149' : '#3fb950',
+                                fontSize: 10, fontWeight: 700, outline: 'none', cursor: 'pointer' 
+                              }}
+                              onChange={(e) => e.target.style.color = e.target.value === '>=' ? '#3fb950' : '#f85149'}
+                            >
+                              <option value=">=" style={{ color: '#3fb950' }}>&ge;</option>
+                              <option value="<=" style={{ color: '#f85149' }}>&le;</option>
+                            </select>
+                            <input
+                              type="number"
+                              placeholder="Price"
+                              id={`price-${item.id}`}
+                              style={{ background: 'transparent', border: 'none', color: '#e6edf3', width: 50, fontSize: 10, fontFamily: 'JetBrains Mono', outline: 'none' }}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') {
+                                  const dir = document.getElementById(`dir-${item.id}`).value;
+                                  const price = e.target.value;
+                                  if (price) {
+                                    setWatchList(prev => prev.map(w => w.id === item.id ? { ...w, alerts: [...(w.alerts || []), { id: Date.now(), dir, price }] } : w));
+                                    e.target.value = '';
+                                    addToast(`Alert set: ${dir} ${price}`, 'info');
+                                  }
+                                }
+                              }}
+                            />
+                            <button
+                              onClick={() => {
+                                const dir = document.getElementById(`dir-${item.id}`).value;
+                                const input = document.getElementById(`price-${item.id}`);
+                                const price = input.value;
+                                if (price) {
+                                  setWatchList(prev => prev.map(w => w.id === item.id ? { ...w, alerts: [...(w.alerts || []), { id: Date.now(), dir, price }] } : w));
+                                  input.value = '';
+                                  addToast(`Alert set: ${dir} ${price}`, 'info');
+                                }
+                              }}
+                              style={{ background: 'rgba(56, 139, 253, 0.1)', border: '1px solid rgba(56, 139, 253, 0.3)', color: '#58a6ff', padding: '0 6px', borderRadius: 4, fontSize: 9, fontWeight: 700, cursor: 'pointer' }}
+                            >
+                              ADD
+                            </button>
+                          </div>
                         </div>
                       </div>
 
@@ -1579,10 +1763,15 @@ export default function App({ onNavigate, theme, toggleTheme }) {
             colorUp="#3fb950"
             colorDown="#f85149"
             iconColor="#e3b341"
-            alertDir={combAlert.dir}
-            onAlertDirChange={dir => setCombAlert(a => ({ ...a, dir }))}
-            alertPrice={combAlert.price}
-            onAlertPriceChange={price => setCombAlert(a => ({ ...a, price }))}
+            alerts={watchList.find(w => w.id === selectedWatchId)?.alerts || []}
+            onAddAlert={(dir, price) => {
+              const id = Date.now();
+              setWatchList(prev => prev.map(w => w.id === selectedWatchId ? { ...w, alerts: [...(w.alerts || []), { id, dir, price }] } : w));
+              addToast(`Alert set: ${dir} ${price}`, 'info');
+            }}
+            onRemoveAlert={(id) => {
+              setWatchList(prev => prev.map(w => w.id === selectedWatchId ? { ...w, alerts: w.alerts.filter(a => a.id !== id) } : w));
+            }}
             showIvCall={true}
             showIvPut={true}
             theme={theme}
