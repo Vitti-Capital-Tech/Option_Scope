@@ -1102,6 +1102,206 @@ select:disabled {
   background: rgba(255, 255, 255, 0.02);
 }
 
+.watch-price-block {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  min-width: 60px;
+}
+
+.watch-price-label {
+  font-size: 9px;
+  color: var(--text-dim);
+  font-family: 'Inter', sans-serif;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.watch-price-val {
+  font-weight: 500;
+}
+
+.watch-price-val.live {
+  color: #fff;
+}
+
+.watch-price-val.live.highlight {
+  color: var(--comb);
+}
+
+.watch-price-val.high {
+  color: var(--call);
+}
+
+.watch-price-val.low {
+  color: var(--put);
+}
+
+.watch-alert-pill {
+  display: flex;
+  align-items: center;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px;
+  gap: 8px;
+  transition: all 0.2s;
+}
+
+.watch-alert-pill:focus-within {
+  border-color: rgba(47, 129, 247, 0.5);
+  box-shadow: 0 0 0 2px rgba(47, 129, 247, 0.15);
+}
+
+.watch-alert-icon-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-left: 6px;
+  color: var(--text-dim);
+}
+
+.watch-alert-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.watch-alert-inputs {
+  display: flex;
+  align-items: center;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+  transition: border-color 0.2s;
+}
+
+.watch-alert-pill:focus-within .watch-alert-inputs {
+  border-color: rgba(47, 129, 247, 0.3);
+}
+
+.watch-alert-inputs select,
+.watch-alert-inputs input {
+  background: transparent;
+  border: none;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text);
+  padding: 4px;
+}
+
+.watch-alert-inputs select {
+  cursor: pointer;
+  color: #3fb950;
+  font-weight: 700;
+  padding-right: 0;
+  outline: none;
+}
+
+.watch-alert-divider {
+  width: 1px;
+  height: 14px;
+  background: var(--border);
+  margin: 0 2px;
+}
+
+.watch-alert-inputs input {
+  width: 65px;
+  text-align: right;
+  font-weight: 600;
+  outline: none;
+}
+
+.watch-alert-inputs input:focus {
+  outline: none;
+}
+
+.watch-delete-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 18px;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  transition: all 0.2s;
+}
+
+.watch-delete-btn:hover {
+  background: rgba(248, 81, 73, 0.1);
+  color: var(--danger);
+}
+
+/* ── TradingView Toolbar ─────────────────────────────── */
+.tv-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 600;
+  transition: all 0.15s ease;
+}
+
+.tv-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+
+.tv-btn:active {
+  background: rgba(255, 255, 255, 0.12);
+  transform: scale(0.96);
+}
+
+/* ── Data Tables (Paper Trading) ─────────────────────── */
+.data-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+}
+
+.data-table th {
+  background: var(--bg2);
+  color: var(--text-dim);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-size: 10px;
+  padding: 12px 16px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.data-table td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  transition: background 0.15s;
+}
+
+.data-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
 .data-table tbody tr:last-child td {
   border-bottom: none;
-}
+}
+
+@keyframes slideIn {
+  from { transform: translateX(20px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}

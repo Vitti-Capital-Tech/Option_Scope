@@ -507,12 +507,21 @@ const ChartPanel = forwardRef(function ChartPanel({
             <div style={{ display: 'flex', gap: 6, flexWrap: 'nowrap', overflowX: 'auto', maxWidth: 400, scrollbarWidth: 'none' }}>
               {alerts.map(a => (
                 <div key={a.id} style={{
-                  display: 'flex', alignItems: 'center', gap: 4, background: a.dir === '>=' ? 'rgba(63, 185, 80, 0.15)' : 'rgba(248, 81, 73, 0.15)',
+                  display: 'flex', alignItems: 'center', gap: 6, background: a.dir === '>=' ? 'rgba(63, 185, 80, 0.15)' : 'rgba(248, 81, 73, 0.15)',
                   border: `1px solid ${a.dir === '>=' ? 'rgba(63, 185, 80, 0.3)' : 'rgba(248, 81, 73, 0.3)'}`,
-                  padding: '2px 6px', borderRadius: 4, fontSize: 10, color: a.dir === '>=' ? '#3fb950' : '#f85149', fontWeight: 700, flexShrink: 0
+                  padding: '3px 8px', borderRadius: 4, fontSize: 10, color: a.dir === '>=' ? '#3fb950' : '#f85149', fontWeight: 700, flexShrink: 0
                 }}>
                   {a.dir} {parseFloat(a.price).toFixed(2)}
-                  <span onClick={() => onRemoveAlert(a.id)} style={{ cursor: 'pointer', marginLeft: 4, opacity: 0.7 }}>&times;</span>
+                  <div 
+                    onClick={() => onRemoveAlert(a.id)} 
+                    style={{ cursor: 'pointer', marginLeft: 6, display: 'flex', alignItems: 'center', opacity: 0.7 }}
+                    className="alert-delete-icon"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="18" y1="6" x2="6" y2="18"></line>
+                      <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                  </div>
                 </div>
               ))}
             </div>
@@ -1352,18 +1361,19 @@ export default function App({ onNavigate, theme, toggleTheme }) {
       <div style={{ position: 'fixed', top: 20, right: 20, zIndex: 9999, display: 'flex', flexDirection: 'column', gap: 10, pointerEvents: 'none' }}>
         {toasts.map(t => (
           <div key={t.id} style={{
-            background: 'rgba(10, 13, 18, 0.95)', border: '1px solid #e3b341', borderLeft: '4px solid #e3b341',
-            padding: '12px 16px', borderRadius: 6, color: '#fff', fontSize: 12, fontFamily: 'JetBrains Mono, monospace',
-            boxShadow: '0 8px 24px rgba(0,0,0,0.6)', minWidth: 260
+            background: 'rgba(10, 13, 18, 0.98)', border: '1px solid rgba(227, 179, 65, 0.3)', borderLeft: '4px solid #e3b341',
+            padding: '12px 16px', borderRadius: 8, color: '#fff', fontSize: 12, fontFamily: 'JetBrains Mono, monospace',
+            boxShadow: '0 12px 32px rgba(0,0,0,0.7)', minWidth: 280,
+            animation: 'slideIn 0.3s ease-out'
           }}>
-            <div style={{ color: '#e3b341', fontWeight: 700, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <path d="M12 3a6 6 0 0 0-6 6v3.7L4.4 15a1 1 0 0 0 .8 1.6h13.6a1 1 0 0 0 .8-1.6L18 12.7V9a6 6 0 0 0-6-6Z" stroke="#e3b341" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-                <path d="M9.5 18.5a2.5 2.5 0 0 0 5 0" stroke="#e3b341" strokeWidth="1.8" strokeLinecap="round" />
+            <div style={{ color: '#e3b341', fontWeight: 800, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8, letterSpacing: 1 }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                <path d="M13.73 21a2 2 0 0 1-3.46 0" />
               </svg>
               ALERT TRIGGERED
             </div>
-            <div style={{ color: '#e6edf3' }}>{t.msg}</div>
+            <div style={{ color: '#e6edf3', lineHeight: 1.5, opacity: 0.9 }}>{t.msg}</div>
           </div>
         ))}
       </div>
@@ -1555,9 +1565,15 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                   padding: '6px 0', borderBottom: '1px solid #21262d', fontSize: 11,
                   display: 'flex', flexDirection: 'column', gap: 2
                 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ color: '#e3b341', fontWeight: 700 }}>TRIGGERED</span>
-                    <span style={{ color: '#7d8590' }}>{log.time}</span>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#e3b341', fontWeight: 800, fontSize: 10 }}>
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                        <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                      </svg>
+                      TRIGGERED
+                    </div>
+                    <span style={{ color: '#7d8590', fontSize: 10 }}>{log.time}</span>
                   </div>
                   <div style={{ color: '#e6edf3', lineHeight: 1.4 }}>{log.msg}</div>
                 </div>
@@ -1646,8 +1662,10 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                       {/* Alerts Section */}
                       <div className="watch-alert-pill" style={{ height: 'auto', minHeight: 32, padding: '4px 8px' }}>
                         <div className="watch-alert-icon-wrap" style={{ alignSelf: 'flex-start', marginTop: 4 }}>
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#e3b341" strokeWidth="2.5">
-                            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0" />
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#e3b341" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                            <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                            <circle cx="12" cy="3" r="1" fill="#e3b341" />
                           </svg>
                         </div>
                         
@@ -1655,16 +1673,22 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                             {(item.alerts || []).map(a => (
                               <div key={a.id} style={{
-                                display: 'flex', alignItems: 'center', gap: 4, background: '#161b22', border: '1px solid #30363d',
-                                padding: '1px 6px', borderRadius: 4, fontSize: 10, color: a.dir === '>=' ? '#3fb950' : '#f85149', fontWeight: 700
+                                display: 'flex', alignItems: 'center', gap: 6, background: '#161b22', border: '1px solid #30363d',
+                                padding: '2px 8px', borderRadius: 4, fontSize: 10, color: a.dir === '>=' ? '#3fb950' : '#f85149', fontWeight: 700
                               }}>
                                 {a.dir} {parseFloat(a.price).toFixed(2)}
-                                <span 
+                                <div 
                                   onClick={() => {
                                     setWatchList(prev => prev.map(w => w.id === item.id ? { ...w, alerts: w.alerts.filter(x => x.id !== a.id) } : w));
                                   }} 
-                                  style={{ cursor: 'pointer', opacity: 0.6, marginLeft: 2 }}
-                                >&times;</span>
+                                  style={{ cursor: 'pointer', opacity: 0.6, marginLeft: 4, display: 'flex', alignItems: 'center' }}
+                                  className="alert-delete-icon"
+                                >
+                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                                  </svg>
+                                </div>
                               </div>
                             ))}
                           </div>
