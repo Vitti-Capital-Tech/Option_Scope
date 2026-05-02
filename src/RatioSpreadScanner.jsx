@@ -3,11 +3,12 @@ import {
   loadProducts, getExpiries, getStrikes, getSpotPrice,
   fmtExpiry, createTickerStream
 } from './api';
+import { useTabListener } from './useTabSync';
 
 const UNDERLYINGS = ['BTC', 'ETH'];
 
 import ResultTable from './ResultTable';
-import { normalizeIv, toFiniteNumber, matchesOptionType } from './scannerUtils';;
+import { normalizeIv, toFiniteNumber, matchesOptionType } from './scannerUtils';
 
 
 // ── Main Scanner Component ──────────────────────────────────────────────────
@@ -340,6 +341,36 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
     setExpectedTickerCount(0);
   }, []);
 
+  // ── Cross-tab sync ─────────────────────────────────────────────────────
+  const startScanRef = useRef(startScan);
+  startScanRef.current = startScan;
+  const stopScanRef = useRef(stopScan);
+  stopScanRef.current = stopScan;
+
+  const { broadcast: tabBroadcast } = useTabListener({
+    SCANNER_START: (payload) => {
+      // Sync underlying + expiry first, then start
+      if (payload.underlying) setUnderlying(payload.underlying);
+      if (payload.expiry) setSelExpiry(payload.expiry);
+      // Delay start to let state settle
+      setTimeout(() => startScanRef.current(), 100);
+    },
+    SCANNER_STOP: () => {
+      stopScanRef.current();
+    },
+  });
+
+  // Wrapped start/stop that also broadcasts to other tabs
+  const handleStartScan = useCallback(() => {
+    startScan();
+    tabBroadcast('SCANNER_START', { underlying, expiry: selExpiry });
+  }, [startScan, tabBroadcast, underlying, selExpiry]);
+
+  const handleStopScan = useCallback(() => {
+    stopScan();
+    tabBroadcast('SCANNER_STOP', {});
+  }, [stopScan, tabBroadcast]);
+
   // Cleanup on unmount
   useEffect(() => () => {
     if (wsRef.current) wsRef.current.close();
@@ -465,7 +496,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             </div>
             <button
               className={`btn-start ${scanning ? 'btn-stop' : ''}`}
-              onClick={scanning ? stopScan : startScan}
+              onClick={scanning ? handleStopScan : handleStartScan}
               disabled={!selExpiry}
               style={{ padding: '6px 16px', fontSize: 13, fontWeight: 600, marginLeft: 8 }}
             >

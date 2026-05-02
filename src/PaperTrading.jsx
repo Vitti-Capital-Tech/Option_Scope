@@ -4,6 +4,7 @@ import {
   fmtExpiry, createTickerStream
 } from './api';
 import { normalizeIv, toFiniteNumber, matchesOptionType, formatTime } from './scannerUtils';
+import { useTabListener } from './useTabSync';
 
 const UNDERLYINGS = ['BTC', 'ETH'];
 
@@ -350,6 +351,33 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
   }, []);
 
+  // ── Cross-tab sync ──────────────────────────────────
+  const startTradingRef = useRef(startTrading);
+  startTradingRef.current = startTrading;
+  const stopTradingRef = useRef(stopTrading);
+  stopTradingRef.current = stopTrading;
+
+  const { broadcast: tabBroadcast } = useTabListener({
+    TRADING_START: (payload) => {
+      if (payload.underlying) setUnderlying(payload.underlying);
+      if (payload.expiry) setSelExpiry(payload.expiry);
+      setTimeout(() => startTradingRef.current(), 100);
+    },
+    TRADING_STOP: () => {
+      stopTradingRef.current();
+    },
+  });
+
+  const handleStartTrading = useCallback(() => {
+    startTrading();
+    tabBroadcast('TRADING_START', { underlying, expiry: selExpiry });
+  }, [startTrading, tabBroadcast, underlying, selExpiry]);
+
+  const handleStopTrading = useCallback(() => {
+    stopTrading();
+    tabBroadcast('TRADING_STOP', {});
+  }, [stopTrading, tabBroadcast]);
+
   const exportCSV = () => {
     if (!tradeHistory.length) {
       alert('Trade history is empty. Export will be available once trades are closed.');
@@ -380,6 +408,30 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     a.href = url;
     a.download = `paper_trades_${new Date().getTime()}.csv`;
     a.click();
+  };
+
+  // ── KPI Computations ──────────────────────────────────
+  const totalUnrealizedPnl = positions.reduce((s, p) => s + (p.unrealizedPnl || 0), 0);
+  const totalRealizedPnl = tradeHistory.reduce((s, t) => s + (t.realizedPnl || 0), 0);
+  const totalPnl = totalUnrealizedPnl + totalRealizedPnl;
+  const wins = tradeHistory.filter(t => t.realizedPnl > 0).length;
+  const winRate = tradeHistory.length > 0 ? ((wins / tradeHistory.length) * 100).toFixed(1) : '—';
+  const totalMargin = positions.reduce((s, p) => s + (p.margin || 0), 0);
+
+  const fmtDuration = (ms) => {
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m ${s % 60}s`;
+    return `${Math.floor(m / 60)}h ${m % 60}m`;
+  };
+
+  const exitBadgeClass = (reason) => {
+    if (reason.includes('Manual')) return 'manual';
+    if (reason.includes('Top 3')) return 'position';
+    if (reason.includes('ITM')) return 'itm';
+    if (reason.includes('ATM')) return 'atm';
+    return 'position';
   };
 
   return (
@@ -470,9 +522,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       </nav>
 
       <div className="body" style={{ flexDirection: 'column', overflowY: 'auto' }}>
-        <div style={{ display: 'flex', gap: 32, padding: '16px 24px', backgroundColor: 'var(--bg-card)', borderBottom: '1px solid var(--border)', alignItems: 'center' }}>
-          <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-dim)' }}>ALGO CONFIG</span>
+        {/* ── Control Panel ───────────────────────────── */}
+        <div className="pt-control-panel">
+          <div className="pt-control-section">
+            <span className="pt-control-label">Algo</span>
             <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
               <label style={{ marginBottom: 0 }}>Underlying:</label>
               <select value={underlying} onChange={e => { setUnderlying(e.target.value); stopTrading(); }} style={{ padding: '6px 12px', width: '100px', fontSize: '13px' }}>
@@ -485,140 +538,199 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                 {!expiries.length ? <option>Loading...</option> : expiries.map(e => <option key={e} value={e}>{fmtExpiry(e)}</option>)}
               </select>
             </div>
-            <button className={`btn-start ${trading ? 'btn-stop' : ''}`} onClick={trading ? stopTrading : startTrading} disabled={!selExpiry} style={{ padding: '6px 16px', fontWeight: 600, marginLeft: 8 }}>
-              {trading ? '■ STOP TRADING' : '▶ START TRADING'}
-            </button>
           </div>
+
+          {spotPrice && (
+            <div className="pt-spot-display">
+              <span className="pt-spot-label">SPOT</span>
+              <span className="pt-spot-value">${spotPrice.toLocaleString()}</span>
+            </div>
+          )}
+
+          <button className={`pt-btn-trade ${trading ? 'stop' : 'start'}`} onClick={trading ? handleStopTrading : handleStartTrading} disabled={!selExpiry}>
+            {trading ? (
+              <><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg> STOP TRADING</>
+            ) : (
+              <><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="6,4 20,12 6,20"/></svg> START TRADING</>
+            )}
+          </button>
+
           <div style={{ flex: 1 }} />
-          <button
-            onClick={exportCSV}
-            style={{
-              background: 'transparent',
-              color: '#3fb950',
-              border: '1px solid #3fb950',
-              padding: '4px 12px',
-              borderRadius: '4px',
-              fontSize: '11px',
-              fontWeight: 600,
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              transition: 'all 0.2s'
-            }}
-            onMouseOver={e => { e.target.style.background = 'rgba(63, 185, 80, 0.1)' }}
-            onMouseOut={e => { e.target.style.background = 'transparent' }}
-          >
+
+          <button className="pt-btn-export" onClick={exportCSV}>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v4"></path>
-              <polyline points="7 10 12 15 17 10"></polyline>
-              <line x1="12" y1="15" x2="12" y2="3"></line>
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
             </svg>
             Export CSV
           </button>
         </div>
 
-        <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 24 }}>
-          {/* Active Positions Table */}
-          <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
-            <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', fontWeight: 600, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span>Active Positions ({positions.length})</span>
-              {trading && <span style={{ fontSize: 10, color: '#3fb950', display: 'flex', alignItems: 'center', gap: 4 }}>
-                <div className="ws-dot live" style={{ width: 6, height: 6 }} /> Monitoring Live
-              </span>}
-            </div>
-            <table className="data-table" style={{ width: '100%' }}>
-              <thead>
-                <tr>
-                  <th>Type</th>
-                  <th>Buy Strike</th>
-                  <th>Sell Strike</th>
-                  <th>Sell Qty</th>
-                  <th>Entry Net</th>
-                  <th>Current Net</th>
-                  <th>Unrl PnL</th>
-                  <th>Margin Req</th>
-                  <th>Duration</th>
-                  <th>Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {positions.length === 0 ? (
-                  <tr><td colSpan="10" style={{ textAlign: 'center', padding: 24, color: 'var(--text-dim)' }}>No active positions. Algo will enter automatically.</td></tr>
-                ) : positions.map(p => {
-                  const entryNet = p.entryBuyPrice - (p.sellQty * p.entrySellPrice);
-                  const currentNet = p.currentBuyPrice - (p.sellQty * p.currentSellPrice);
-                  const pnlColor = p.unrealizedPnl >= 0 ? '#3fb950' : '#f85149';
-                  const duration = Math.floor((new Date() - p.entryTime) / 1000);
-                  return (
-                    <tr key={p.id}>
-                      <td style={{ color: p.type === 'call' ? '#00d9a3' : '#ff2ebd', fontWeight: 600 }}>{p.type.toUpperCase()}</td>
-                      <td>{p.buyLeg.strike}</td>
-                      <td>{p.sellLeg.strike}</td>
-                      <td>{p.sellQty}x</td>
-                      <td>{entryNet.toFixed(2)}</td>
-                      <td>{currentNet.toFixed(2)}</td>
-                      <td style={{ color: pnlColor, fontWeight: 600 }}>{p.unrealizedPnl > 0 ? '+' : ''}{p.unrealizedPnl.toFixed(2)}</td>
-                      <td>{p.margin.toFixed(2)}</td>
-                      <td>{duration}s</td>
-                      <td>
-                        <button
-                          onClick={() => closePosition(p.id)}
-                          style={{
-                            background: 'rgba(248, 81, 73, 0.1)',
-                            color: '#f85149',
-                            border: '1px solid rgba(248, 81, 73, 0.2)',
-                            padding: '2px 8px',
-                            borderRadius: '4px',
-                            fontSize: '10px',
-                            cursor: 'pointer'
-                          }}
-                        >
-                          CLOSE
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+        {/* ── KPI Dashboard ───────────────────────────── */}
+        <div className="pt-kpi-strip">
+          <div className={`pt-kpi-card ${totalPnl >= 0 ? 'accent-green' : 'accent-red'}`}>
+            <span className="pt-kpi-label">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2v20M17 7l-5-5-5 5"/></svg>
+              Total P&L
+            </span>
+            <span className={`pt-kpi-value ${totalPnl > 0 ? 'positive' : totalPnl < 0 ? 'negative' : 'neutral'}`}>
+              {totalPnl > 0 ? '+' : ''}{totalPnl.toFixed(2)}
+            </span>
+            <span className="pt-kpi-sub">Realized: {totalRealizedPnl.toFixed(2)} | Unrl: {totalUnrealizedPnl.toFixed(2)}</span>
           </div>
 
-          {/* Trade History Table */}
-          <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
-            <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', fontWeight: 600, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span>Trade History ({tradeHistory.length})</span>
-              <span style={{ fontSize: 10, color: 'var(--text-dim)', fontStyle: 'italic' }}>Auto-updates on exit</span>
+          <div className="pt-kpi-card accent-gold">
+            <span className="pt-kpi-label">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M8 12l3 3 5-5"/></svg>
+              Win Rate
+            </span>
+            <span className="pt-kpi-value neutral">{winRate}{winRate !== '—' ? '%' : ''}</span>
+            <span className="pt-kpi-sub">{wins}W / {tradeHistory.length - wins}L of {tradeHistory.length}</span>
+          </div>
+
+          <div className="pt-kpi-card accent-blue">
+            <span className="pt-kpi-label">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/></svg>
+              Active
+            </span>
+            <span className="pt-kpi-value neutral">{positions.length}</span>
+            <span className="pt-kpi-sub">{positions.filter(p => p.type === 'call').length} calls / {positions.filter(p => p.type === 'put').length} puts</span>
+          </div>
+
+          <div className="pt-kpi-card accent-purple">
+            <span className="pt-kpi-label">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="10"/></svg>
+              Trades
+            </span>
+            <span className="pt-kpi-value neutral">{tradeHistory.length}</span>
+            <span className="pt-kpi-sub">Closed positions</span>
+          </div>
+
+          <div className="pt-kpi-card accent-blue">
+            <span className="pt-kpi-label">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/></svg>
+              Margin Used
+            </span>
+            <span className="pt-kpi-value neutral">${totalMargin.toFixed(0)}</span>
+            <span className="pt-kpi-sub">Across {positions.length} position{positions.length !== 1 ? 's' : ''}</span>
+          </div>
+        </div>
+
+        <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+          {/* ── Active Positions ─────────────────────── */}
+          <div className={`pt-section ${trading ? 'live' : ''}`}>
+            <div className="pt-section-header">
+              <div className="pt-section-title">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                Active Positions
+                <span className="pt-section-count">{positions.length}</span>
+              </div>
+              {trading && (
+                <div className="pt-live-badge">
+                  <div className="pt-live-dot" />
+                  Monitoring
+                </div>
+              )}
             </div>
-            <table className="data-table" style={{ width: '100%' }}>
-              <thead>
-                <tr>
-                  <th>Time</th>
-                  <th>Type</th>
-                  <th>Buy / Sell Strike</th>
-                  <th>Realized PnL</th>
-                  <th>Margin Req</th>
-                  <th>Exit Reason</th>
-                </tr>
-              </thead>
-              <tbody>
-                {tradeHistory.length === 0 ? (
-                  <tr><td colSpan="6" style={{ textAlign: 'center', padding: 24, color: 'var(--text-dim)' }}>No closed trades yet.</td></tr>
-                ) : tradeHistory.map((t, i) => {
-                  const pnlColor = t.realizedPnl >= 0 ? '#3fb950' : '#f85149';
-                  return (
-                    <tr key={i}>
-                      <td>{formatTime(t.exitTime)}</td>
-                      <td style={{ color: t.type === 'call' ? '#00d9a3' : '#ff2ebd', fontWeight: 600 }}>{t.type.toUpperCase()}</td>
-                      <td>{t.buyLeg.strike} / {t.sellLeg.strike}</td>
-                      <td style={{ color: pnlColor, fontWeight: 600 }}>{t.realizedPnl > 0 ? '+' : ''}{t.realizedPnl.toFixed(2)}</td>
-                      <td>{t.margin.toFixed(2)}</td>
-                      <td style={{ fontSize: 11, color: 'var(--text-dim)' }}>{t.exitReason}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+            {positions.length === 0 ? (
+              <div className="pt-empty">
+                <div className={`pt-empty-icon ${trading ? 'scanning' : 'idle'}`}>
+                  {trading ? (
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#0ecb81" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a10 10 0 0 1 0 20" strokeDasharray="4 4"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="3s" repeatCount="indefinite"/></path></svg>
+                  ) : (
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
+                  )}
+                </div>
+                <span className="pt-empty-title">{trading ? 'Scanning for Opportunities...' : 'Algo Idle'}</span>
+                <span className="pt-empty-desc">{trading ? 'The engine is analyzing live option chains for ratio spread entries. Positions will appear here automatically.' : 'Select expiry and click Start Trading to begin automated ratio spread scanning.'}</span>
+              </div>
+            ) : (
+              <div className="pt-table-scroll">
+                <table className="pt-table">
+                  <thead><tr>
+                    <th>Type</th><th>Buy Strike</th><th>Sell Strike</th><th>Sell Qty</th>
+                    <th>Entry Net</th><th>Current Net</th><th>Unrl P&L</th>
+                    <th>Margin</th><th>Duration</th><th>Action</th>
+                  </tr></thead>
+                  <tbody>
+                    {positions.map(p => {
+                      const entryNet = p.entryBuyPrice - (p.sellQty * p.entrySellPrice);
+                      const currentNet = p.currentBuyPrice - (p.sellQty * p.currentSellPrice);
+                      const pnlClass = p.unrealizedPnl > 0 ? 'positive' : p.unrealizedPnl < 0 ? 'negative' : 'zero';
+                      return (
+                        <tr key={p.id} className={`pt-row-${p.type}`}>
+                          <td><span className={`pt-type-badge ${p.type}`}>{p.type.toUpperCase()}</span></td>
+                          <td className="pt-strike pt-strike-buy">{p.buyLeg.strike.toLocaleString()}</td>
+                          <td className="pt-strike pt-strike-sell">{p.sellLeg.strike.toLocaleString()}</td>
+                          <td>{p.sellQty}x</td>
+                          <td>{entryNet.toFixed(2)}</td>
+                          <td>{currentNet.toFixed(2)}</td>
+                          <td><span className={`pt-pnl ${pnlClass}`}>{p.unrealizedPnl > 0 ? '+' : ''}{p.unrealizedPnl.toFixed(2)}</span></td>
+                          <td>
+                            <div className="pt-margin-cell">
+                              <span>${p.margin.toFixed(0)}</span>
+                              <div className="pt-margin-bar"><div className="pt-margin-fill" style={{ width: `${Math.min(100, (p.margin / (totalMargin || 1)) * 100)}%` }} /></div>
+                            </div>
+                          </td>
+                          <td><span className="pt-duration">{fmtDuration(new Date() - p.entryTime)}</span></td>
+                          <td><button className="pt-btn-close" onClick={() => closePosition(p.id)}>✕ Close</button></td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* ── Trade History ────────────────────────── */}
+          <div className="pt-section">
+            <div className="pt-section-header">
+              <div className="pt-section-title">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="10"/></svg>
+                Trade History
+                <span className="pt-section-count">{tradeHistory.length}</span>
+              </div>
+              {tradeHistory.length > 0 && (
+                <div className="pt-history-stats">
+                  <span className="pt-history-stat">Net: <span className={`value ${totalRealizedPnl >= 0 ? 'green' : 'red'}`}>{totalRealizedPnl > 0 ? '+' : ''}{totalRealizedPnl.toFixed(2)}</span></span>
+                  <span className="pt-history-stat">W/L: <span className="value green">{wins}</span>/<span className="value red">{tradeHistory.length - wins}</span></span>
+                </div>
+              )}
+            </div>
+            {tradeHistory.length === 0 ? (
+              <div className="pt-empty">
+                <div className="pt-empty-icon idle">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="2"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="10"/></svg>
+                </div>
+                <span className="pt-empty-title">No Closed Trades</span>
+                <span className="pt-empty-desc">Trades will appear here once positions are exited — either automatically by the algo or manually by you.</span>
+              </div>
+            ) : (
+              <div className="pt-table-scroll">
+                <table className="pt-table">
+                  <thead><tr>
+                    <th>Exit Time</th><th>Type</th><th>Buy / Sell Strike</th>
+                    <th>Realized P&L</th><th>Margin</th><th>Exit Reason</th>
+                  </tr></thead>
+                  <tbody>
+                    {tradeHistory.map((t, i) => (
+                      <tr key={i}>
+                        <td style={{ color: 'var(--text-dim)' }}>{formatTime(t.exitTime)}</td>
+                        <td><span className={`pt-type-badge ${t.type}`}>{t.type.toUpperCase()}</span></td>
+                        <td>
+                          <span className="pt-strike-buy">{t.buyLeg.strike.toLocaleString()}</span>
+                          <span className="pt-strike-separator"> / </span>
+                          <span className="pt-strike-sell">{t.sellLeg.strike.toLocaleString()}</span>
+                        </td>
+                        <td><span className={`pt-pnl ${t.realizedPnl > 0 ? 'positive' : t.realizedPnl < 0 ? 'negative' : 'zero'}`}>{t.realizedPnl > 0 ? '+' : ''}{t.realizedPnl.toFixed(2)}</span></td>
+                        <td>${t.margin.toFixed(0)}</td>
+                        <td><span className={`pt-exit-badge ${exitBadgeClass(t.exitReason)}`}>{t.exitReason}</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </div>
       </div>

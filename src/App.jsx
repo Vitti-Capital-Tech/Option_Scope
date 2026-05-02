@@ -8,6 +8,7 @@ import {
   fetchCandles, sumCandles, putSymbol, fmtExpiry, findATM,
   createWS, TF_SECS
 } from './api';
+import { useTabListener } from './useTabSync';
 import './index.css';
 
 const UNDERLYINGS = ['BTC', 'ETH'];
@@ -676,6 +677,43 @@ export default function App({ onNavigate, theme, toggleTheme }) {
   useEffect(() => { watchListRef.current = watchList; }, [watchList]);
   const [listData, setListData] = useState({}); // Stores { price, high, low } per item ID
   const [selectedWatchId, setSelectedWatchId] = useState(null);
+
+  // ── Cross-tab sync for Watchlist ─────────────────────────────────────────
+  const isRemoteUpdateRef = useRef(false);
+  const selectedWatchIdRef = useRef(selectedWatchId);
+  useEffect(() => { selectedWatchIdRef.current = selectedWatchId; }, [selectedWatchId]);
+
+  const { broadcast: tabBroadcast } = useTabListener({
+    WATCHLIST_SYNC: (payload) => {
+      const currentStr = JSON.stringify(watchListRef.current);
+      const newStr = JSON.stringify(payload.watchList);
+      if (currentStr !== newStr) {
+        isRemoteUpdateRef.current = true;
+        setWatchList(payload.watchList);
+
+        // Handle selected item state when watchlist changes remotely
+        const currSelected = selectedWatchIdRef.current;
+        if (currSelected) {
+          const exists = payload.watchList.find(w => w.id === currSelected);
+          if (!exists) {
+            setSelectedWatchId(payload.watchList.length ? payload.watchList[0].id : null);
+          }
+        } else if (payload.watchList.length > 0) {
+          setSelectedWatchId(payload.watchList[0].id);
+        }
+      }
+    }
+  });
+
+  useEffect(() => {
+    watchListRef.current = watchList;
+    if (isRemoteUpdateRef.current) {
+      isRemoteUpdateRef.current = false;
+      return;
+    }
+    tabBroadcast('WATCHLIST_SYNC', { watchList });
+  }, [watchList, tabBroadcast]);
+  // ─────────────────────────────────────────────────────────────────────────
 
   const addToWatchList = async () => {
     if (legType !== 'put' && !callSym) { setErrMsg('Select valid call strike.'); return; }
