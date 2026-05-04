@@ -116,9 +116,13 @@ export default function ResultTable({
                   return acc;
                 }, {});
 
-                // Sort unique buy strikes ascending (closest to ATM first)
+                // Sort unique buy strikes: ascending for CALL, descending for PUT
                 const sortedBuyStrikes = Object.keys(groups).sort((a, b) => {
-                  return parseFloat(a) - parseFloat(b);
+                  if (type === 'CALL') {
+                    return parseFloat(a) - parseFloat(b);
+                  } else {
+                    return parseFloat(b) - parseFloat(a);
+                  }
                 });
 
                 let globalRank = 1;

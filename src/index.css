@@ -1919,6 +1919,105 @@ select:disabled {
   100% { background: transparent; }
 }
 
+.pt-status-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: rgba(14, 203, 129, 0.1);
+  border: 1px solid rgba(14, 203, 129, 0.2);
+  border-radius: 20px;
+  color: #0ecb81;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.pt-pulse {
+  width: 8px;
+  height: 8px;
+  background: #0ecb81;
+  border-radius: 50%;
+  box-shadow: 0 0 0 0 rgba(14, 203, 129, 0.7);
+  animation: pt-pulse-anim 2s infinite;
+}
+
+@keyframes pt-pulse-anim {
+  0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(14, 203, 129, 0.7); }
+  70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(14, 203, 129, 0); }
+  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(14, 203, 129, 0); }
+}
+
+/* ── Custom Fee Toggle ──────────────────────────────── */
+.pt-fee-toggle-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.pt-fee-toggle-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.2s;
+}
+
+.pt-fee-toggle-label.active {
+  color: #0ecb81;
+}
+
+.pt-switch {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+}
+
+.pt-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.pt-slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--bg3);
+  transition: .3s;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+}
+
+.pt-slider:before {
+  position: absolute;
+  content: "";
+  height: 14px;
+  width: 14px;
+  left: 2px;
+  bottom: 2px;
+  background-color: var(--text-dim);
+  transition: .3s;
+  border-radius: 50%;
+}
+
+.pt-switch input:checked + .pt-slider {
+  background-color: rgba(14, 203, 129, 0.15);
+  border-color: rgba(14, 203, 129, 0.3);
+}
+
+.pt-switch input:checked + .pt-slider:before {
+  transform: translateX(16px);
+  background-color: #0ecb81;
+}
+
 /* ── Light Theme Overrides for Paper Trading ──────────── */
 body.light-theme .pt-kpi-card {
   background: linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(245, 245, 245, 0.8));

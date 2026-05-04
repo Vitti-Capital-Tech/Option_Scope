@@ -195,16 +195,11 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
           const buy = sorted[i];
           const sell = sorted[j];
 
-          const buyDistToSpot = Math.abs(buy.strike - spotPrice);
-          const sellDistToSpot = Math.abs(sell.strike - spotPrice);
-
           let buyLeg, sellLeg;
-          if (buyDistToSpot <= sellDistToSpot) {
-            buyLeg = buy;
-            sellLeg = sell;
+          if (buy.type === 'call') {
+            buyLeg = buy; sellLeg = sell; // Call: buy lower, sell higher
           } else {
-            buyLeg = sell;
-            sellLeg = buy;
+            buyLeg = sell; sellLeg = buy; // Put: buy higher, sell lower
           }
 
           const strikeDiff = Math.abs(sellLeg.strike - buyLeg.strike);
