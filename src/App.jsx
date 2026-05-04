@@ -1647,12 +1647,12 @@ export default function App({ onNavigate, theme, toggleTheme }) {
           </div>
 
           {/* Alert History card */}
-          <div className="card">
-            <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <div className="card" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 250 }}>
+            <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', flexShrink: 0 }}>
               <span>Alert History</span>
               <span onClick={() => setAlertLogs([])} style={{ fontSize: 9, cursor: 'pointer', opacity: 0.6 }}>Clear</span>
             </div>
-            <div className="trade-list" style={{ maxHeight: 200, overflowY: 'auto' }}>
+            <div className="trade-list" style={{ flex: 1, overflowY: 'auto', paddingRight: 4 }}>
               {!alertLogs.length && <div style={{ textAlign: 'center', padding: 20, color: '#484f58', fontSize: 11 }}>No alerts logged yet.</div>}
               {alertLogs.map(log => (
                 <div key={log.id} style={{
