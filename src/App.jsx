@@ -1196,7 +1196,8 @@ export default function App({ onNavigate, theme, toggleTheme }) {
           const nowSec = Math.floor(Date.now() / 1000);
           const bSecs = TF_SECS[tf] || 60;
           const currentBucket = Math.floor(nowSec / bSecs) * bSecs;
-          const startTs = nowSec - bSecs * CANDLE_COUNT;
+          // Match startMonitoring's lookback exactly to prevent array size mismatch (which causes vacant canvas on setData)
+          const startTs = nowSec - 604800 * 2;
 
           const [cc, pc] = await Promise.all([
             cSym ? fetchCandles(cSym, tf, startTs, nowSec + 1, pType) : Promise.resolve([]),
