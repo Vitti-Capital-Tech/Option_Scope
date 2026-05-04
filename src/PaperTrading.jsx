@@ -41,6 +41,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     minIvDiff: 5,
     maxRatioDeviation: 0.25,
     minSellPremium: 10,
+    maxNetPremium: 20,
   });
 
   const positionsRef = useRef([]);
@@ -210,13 +211,21 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           if (ratioDeviation > config.maxRatioDeviation) continue;
 
           const sellQty = Math.max(1, Math.round((buyDN / sellDN) / 0.25) * 0.25);
-          validPairs.push({ buyLeg, sellLeg, strikeDiff, sellQty, netPremium: buyLeg.markPrice - sellQty * sellLeg.markPrice });
+          const netPrem = buyLeg.markPrice - sellQty * sellLeg.markPrice;
+
+          if (config.maxNetPremium < 0) {
+            if (netPrem < 0 && netPrem < config.maxNetPremium) continue;
+          } else {
+            if (netPrem > 0 && netPrem > config.maxNetPremium) continue;
+          }
+
+          validPairs.push({ buyLeg, sellLeg, strikeDiff, sellQty, netPremium: netPrem });
         }
       }
       validPairs.sort((a, b) => {
         const distA = Math.abs(a.buyLeg.strike - spotPrice);
         const distB = Math.abs(b.buyLeg.strike - spotPrice);
-        if (distA !== distB) return distB - distA;
+        if (distA !== distB) return distA - distB;
         return a.netPremium - b.netPremium;
       });
       // Pick top 3 with UNIQUE buy strikes

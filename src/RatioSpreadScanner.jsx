@@ -39,7 +39,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
     minIvDiff: 5,
     maxRatioDeviation: 0.25,
     minSellPremium: 10,
-    maxNetPremium: -20,
+    maxNetPremium: 20,
   });
 
   const flushTickerBuffer = useCallback(() => {
