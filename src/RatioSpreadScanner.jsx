@@ -236,8 +236,14 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
 
           const netPrem = buyLeg.markPrice - sellQty * sellLeg.markPrice;
 
-          // Filter: net premium must be >= maxNetPremium (e.g., >= -20)
-          if (netPrem < config.maxNetPremium) continue;
+          // Dynamic Filter based on sign of maxNetPremium:
+          if (config.maxNetPremium < 0) {
+            // If negative (-20), filter out credits that are too large (e.g., netPrem < -20)
+            if (netPrem < 0 && netPrem < config.maxNetPremium) continue;
+          } else {
+            // If positive (20), filter out debits that are too large (e.g., netPrem > 20)
+            if (netPrem > 0 && netPrem > config.maxNetPremium) continue;
+          }
 
           validPairs.push({
             buyLeg,
