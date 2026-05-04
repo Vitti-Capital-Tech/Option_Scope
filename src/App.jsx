@@ -865,7 +865,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
       if (msg.type === 'v2/ticker') {
         const sym = msg.symbol;
         const mark = parseFloat(msg.mark_price || 0);
-        const ltp = parseFloat(msg.close || 0);
+        const ltp = parseFloat(msg.last_price || msg.close || 0);
         if (!mark && !ltp) return;
         const prevCache = tickerCacheRef.current[sym] || { mark: 0, ltp: 0 };
         tickerCacheRef.current[sym] = {

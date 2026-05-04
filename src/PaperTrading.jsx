@@ -122,7 +122,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       allSymbols,
       (msg) => {
         const sym = msg.symbol;
-        const markPrice = toFiniteNumber(msg.mark_price ?? msg.close ?? msg.last_price);
+        const markPrice = toFiniteNumber(msg.mark_price ?? msg.last_price ?? msg.close);
         const iv = normalizeIv(toFiniteNumber(msg.mark_vol ?? msg.quotes?.mark_iv ?? msg.greeks?.iv));
         const delta = msg.greeks ? toFiniteNumber(msg.greeks.delta) : null;
 

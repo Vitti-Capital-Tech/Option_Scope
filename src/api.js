@@ -185,7 +185,7 @@ export function createWS(callSym, putSym, resolution, priceType, onTicker, onDat
           // LTP: use close (last trade price).
           // If no close is present (no trades), price will be NaN and onTicker won't fire.
           // This ensures we do NOT show synthetic volume or mark prices on an LTP chart.
-          price = parseFloat(msg.close);
+          price = parseFloat(msg.last_price || msg.close);
         }
         const tickerTimestamp = msg.timestamp ? Math.floor(parseInt(msg.timestamp) / 1000000) : Math.floor(Date.now() / 1000);
         const iv = parseFloat(msg.mark_vol ?? msg.quotes?.mark_iv ?? 0);
