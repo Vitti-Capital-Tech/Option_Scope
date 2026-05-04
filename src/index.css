@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 
 *,
 *::before,
@@ -68,10 +68,10 @@ body,
 }
 
 .logo {
-  font-family: 'JetBrains Mono', monospace;
-  font-weight: 700;
+  font-family: 'Inter', sans-serif;
+  font-weight: 800;
   font-size: 15px;
-  letter-spacing: 3px;
+  letter-spacing: 1px;
   color: var(--accent);
 }
 
@@ -86,7 +86,7 @@ body,
   gap: 7px;
   font-size: 11px;
   color: var(--text-dim);
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Inter', sans-serif;
 }
 
 .ws-dot {
@@ -156,7 +156,7 @@ input {
   color: var(--text);
   padding: 7px 10px;
   font-size: 12px;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: inherit;
   outline: none;
   cursor: pointer;
   appearance: none;
@@ -197,7 +197,7 @@ select:disabled {
   font-size: 11px;
   cursor: pointer;
   transition: all 0.15s;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: inherit;
 }
 
 .tf-btn:hover {
@@ -255,8 +255,9 @@ select:disabled {
 }
 
 .stat-val {
-  font-family: 'JetBrains Mono', monospace;
-  font-weight: 500;
+  font-family: 'Inter', sans-serif;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
 }
 
 .stat-val.call {
@@ -327,7 +328,7 @@ select:disabled {
 
 .sym-label {
   margin-left: auto;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Inter', sans-serif;
   font-size: 11px;
   color: var(--text-dim);
 }
@@ -351,11 +352,11 @@ select:disabled {
 }
 
 .overlay-title {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Inter', sans-serif;
   font-size: 14px;
   font-weight: 700;
   color: var(--text);
-  letter-spacing: 2px;
+  letter-spacing: 1px;
 }
 
 .overlay-sub {
@@ -443,15 +444,15 @@ select:disabled {
 }
 
 .scanner-table-title {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Inter', sans-serif;
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 1.5px;
+  letter-spacing: 0.5px;
   color: var(--text-dim);
 }
 
 .scanner-table-subtitle {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Inter', sans-serif;
   font-size: 10px;
   color: var(--text-dim);
   opacity: 0.6;
@@ -488,7 +489,7 @@ select:disabled {
 }
 
 .scanner-match-badge {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Inter', sans-serif;
   font-size: 10px;
   font-weight: 700;
   color: var(--call);
@@ -496,7 +497,7 @@ select:disabled {
   border: 1px solid rgba(63, 185, 80, 0.3);
   padding: 3px 10px;
   border-radius: 12px;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.2px;
 }
 
 .scanner-table-body {
@@ -508,7 +509,8 @@ select:disabled {
 .scanner-table {
   width: 100%;
   border-collapse: collapse;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Inter', sans-serif;
+  font-variant-numeric: tabular-nums;
   font-size: 11px;
 }
 
@@ -649,10 +651,10 @@ select:disabled {
 }
 
 .scanner-empty-title {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Inter', sans-serif;
   font-size: 14px;
   font-weight: 700;
-  letter-spacing: 2px;
+  letter-spacing: 1px;
   color: var(--text);
 }
 
@@ -666,7 +668,7 @@ select:disabled {
 
 .scanner-empty-criteria {
   margin-top: 16px;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Inter', sans-serif;
   font-size: 11px;
   color: var(--text-dim);
   display: flex;
@@ -697,10 +699,10 @@ select:disabled {
   padding: 7px 14px;
   background: var(--bg2);
   border-bottom: 1px solid var(--border);
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Inter', sans-serif;
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 1.5px;
+  letter-spacing: 1px;
   color: var(--text-dim);
   flex-shrink: 0;
 }
@@ -720,7 +722,7 @@ select:disabled {
   flex: 1;
   overflow-y: auto;
   padding: 6px 0;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Inter', sans-serif;
   font-size: 11px;
 }
 
@@ -844,12 +846,13 @@ select:disabled {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 16px;
+  padding: 12px 20px;
+  margin-bottom: 8px;
   background: rgba(15, 20, 25, 0.4);
   border: 1px solid var(--border);
   border-radius: 10px;
   cursor: pointer;
-  gap: 16px;
+  gap: 24px;
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -866,11 +869,13 @@ select:disabled {
 }
 
 .watch-item-title {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Inter', sans-serif;
   font-size: 13px;
   font-weight: 600;
   color: var(--text);
-  letter-spacing: 0.5px;
+  letter-spacing: 0.2px;
+  width: 240px;
+  flex-shrink: 0;
 }
 
 .watch-item-title .badge {
@@ -900,18 +905,20 @@ select:disabled {
 }
 
 .watch-item-prices {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(3, 80px) repeat(6, 70px);
   align-items: center;
   gap: 16px;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Inter', sans-serif;
+  font-variant-numeric: tabular-nums;
   font-size: 13px;
 }
 
 .watch-price-block {
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
-  min-width: 60px;
+  align-items: flex-start;
+  min-width: 0;
 }
 
 .watch-price-label {
@@ -991,7 +998,8 @@ select:disabled {
 .watch-alert-inputs input {
   background: transparent;
   border: none;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Inter', sans-serif;
+  font-variant-numeric: tabular-nums;
   font-size: 11px;
   color: var(--text);
   padding: 4px;
@@ -1186,7 +1194,8 @@ select:disabled {
 .watch-alert-inputs input {
   background: transparent;
   border: none;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Inter', sans-serif;
+  font-variant-numeric: tabular-nums;
   font-size: 11px;
   color: var(--text);
   padding: 4px;
@@ -1270,7 +1279,8 @@ select:disabled {
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Inter', sans-serif;
+  font-variant-numeric: tabular-nums;
   font-size: 11px;
 }
 
@@ -1371,7 +1381,8 @@ select:disabled {
 }
 
 .pt-kpi-value {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Inter', sans-serif;
+  font-variant-numeric: tabular-nums;
   font-size: 22px;
   font-weight: 700;
   color: var(--text);
@@ -1386,7 +1397,7 @@ select:disabled {
 .pt-kpi-sub {
   font-size: 10px;
   color: var(--text-dim);
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Inter', sans-serif;
 }
 
 /* ── Trading Control Panel ───────────────────────────── */
@@ -1423,7 +1434,8 @@ select:disabled {
   background: rgba(240, 185, 11, 0.06);
   border: 1px solid rgba(240, 185, 11, 0.2);
   border-radius: 8px;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Inter', sans-serif;
+  font-variant-numeric: tabular-nums;
 }
 
 .pt-spot-label {
@@ -1548,7 +1560,8 @@ select:disabled {
 }
 
 .pt-section-count {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Inter', sans-serif;
+  font-variant-numeric: tabular-nums;
   font-size: 11px;
   font-weight: 600;
   color: var(--text-dim);
@@ -1561,9 +1574,9 @@ select:disabled {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Inter', sans-serif;
   font-size: 10px;
-  font-weight: 600;
+  font-weight: 700;
   color: #0ecb81;
   padding: 4px 12px;
   background: rgba(14, 203, 129, 0.08);
@@ -1590,7 +1603,8 @@ select:disabled {
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Inter', sans-serif;
+  font-variant-numeric: tabular-nums;
   font-size: 11px;
 }
 
@@ -1867,7 +1881,8 @@ select:disabled {
   display: flex;
   align-items: center;
   gap: 16px;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Inter', sans-serif;
+  font-variant-numeric: tabular-nums;
   font-size: 10px;
 }
 

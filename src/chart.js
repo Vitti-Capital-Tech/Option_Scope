@@ -5,8 +5,8 @@ const CHART_OPTIONS = {
   layout: {
     background: { color: '#0a0d12' },
     textColor: '#7d8590',
-    fontFamily: "'JetBrains Mono', monospace",
-    fontSize: 11,
+    fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+    fontSize: 12,
   },
   grid: {
     vertLines: { color: '#161c24' },

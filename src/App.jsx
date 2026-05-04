@@ -188,6 +188,8 @@ const ChartPanel = forwardRef(function ChartPanel({
       }
       const data = param.seriesData.get(series);
       if (data) {
+        const isUp = data.close >= data.open;
+        const valColor = isUp ? '#089981' : '#f23645'; // TradingView green/red
         let ivHtml = '';
         if (callIvRef.current) {
           const callData = param.seriesData.get(callIvRef.current);
@@ -203,10 +205,10 @@ const ChartPanel = forwardRef(function ChartPanel({
         }
         legendRef.current.innerHTML = `
           <div style="display:flex;gap:12px;background:rgba(10,13,18,0.85);padding:6px 10px;border-radius:4px;border:1px solid #1e2730;backdrop-filter:blur(4px);align-items:center;">
-            <span>O <span style="color:#fff">${data.open}</span></span>
-            <span>H <span style="color:#fff">${data.high}</span></span>
-            <span>L <span style="color:#fff">${data.low}</span></span>
-            <span>C <span style="color:#fff">${data.close}</span></span>
+            <span style="color:#fff">O <span style="color:${valColor}">${data.open}</span></span>
+            <span style="color:#fff">H <span style="color:${valColor}">${data.high}</span></span>
+            <span style="color:#fff">L <span style="color:${valColor}">${data.low}</span></span>
+            <span style="color:#fff">C <span style="color:${valColor}">${data.close}</span></span>
             ${ivHtml}
           </div>
         `;
@@ -532,7 +534,7 @@ const ChartPanel = forwardRef(function ChartPanel({
       <div ref={containerRef} style={{ flex: 1, minHeight: 0, position: 'relative' }}>
         <div ref={legendRef} style={{
           position: 'absolute', top: 8, left: 8, zIndex: 10,
-          fontSize: 11, fontFamily: "'JetBrains Mono', monospace", color: '#7d8590', pointerEvents: 'none'
+          fontSize: 11, fontFamily: "'Inter', sans-serif", color: '#7d8590', pointerEvents: 'none'
         }} />
         {(showIvCall || showIvPut) && (
           <div style={{
@@ -1526,7 +1528,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
 
         <div style={{ display: 'flex', gap: 20, alignItems: 'center' }}>
           {activeCall && (
-            <span style={{ fontFamily: 'JetBrains Mono', fontSize: 11, color: '#7d8590' }}>
+            <span style={{ fontFamily: 'Inter', fontSize: 11, color: '#7d8590', fontVariantNumeric: 'tabular-nums' }}>
               {activeCall} / {activePut}
             </span>
           )}
@@ -1747,7 +1749,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                   <div key={item.id} onClick={() => setSelectedWatchId(item.id)}
                     className={`watch-item ${isSelected ? 'selected' : ''}`}
                     style={{ backgroundColor: theme == 'dark' ? '' : isSelected ? '#b8f5f7' : '#e6edf3' }}>
-                    <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 16 }}>
+                    <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 24 }}>
                       <div className="watch-item-title">
                         {item.type === 'combined' ? (
                           <><span className="badge comb">STRADDLE</span> {item.callStrike}C + {item.putStrike}P</>
