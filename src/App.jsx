@@ -864,9 +864,14 @@ export default function App({ onNavigate, theme, toggleTheme }) {
       const msg = JSON.parse(e.data);
       if (msg.type === 'v2/ticker') {
         const sym = msg.symbol;
-        const price = parseFloat(msg.mark_price || msg.close || 0);
-        if (!price) return;
-        tickerCacheRef.current[sym] = price;
+        const mark = parseFloat(msg.mark_price || 0);
+        const ltp = parseFloat(msg.close || 0);
+        if (!mark && !ltp) return;
+        const prevCache = tickerCacheRef.current[sym] || { mark: 0, ltp: 0 };
+        tickerCacheRef.current[sym] = {
+           mark: mark || prevCache.mark,
+           ltp: ltp || prevCache.ltp
+        };
 
         if (msg.greeks) {
           greekCacheRef.current[sym] = {
@@ -883,8 +888,11 @@ export default function App({ onNavigate, theme, toggleTheme }) {
           let changed = false;
           const next = { ...prev };
           watchList.forEach(w => {
-            const pC = tickerCacheRef.current[w.callSym] || 0;
-            const pP = tickerCacheRef.current[w.putSym] || 0;
+            const pcCache = tickerCacheRef.current[w.callSym] || { mark: 0, ltp: 0 };
+            const ppCache = tickerCacheRef.current[w.putSym] || { mark: 0, ltp: 0 };
+            const pC = w.priceType === 'ltp' ? (pcCache.ltp || pcCache.mark) : (pcCache.mark || pcCache.ltp);
+            const pP = w.priceType === 'ltp' ? (ppCache.ltp || ppCache.mark) : (ppCache.mark || ppCache.ltp);
+            
             const gC = greekCacheRef.current[w.callSym];
             const gP = greekCacheRef.current[w.putSym];
 
@@ -1684,8 +1692,55 @@ export default function App({ onNavigate, theme, toggleTheme }) {
               </div>
             ) : (
               watchList.map(item => {
-                const data = listData[item.id] || { price: 0, high: 0, low: Infinity };
+                let data = listData[item.id] || { price: 0, high: 0, low: Infinity };
                 const isSelected = selectedWatchId === item.id;
+
+                if (isSelected) {
+                  let chartPrice = 0, chartHigh = 0, chartLow = Infinity;
+                  let chartGreeks = null;
+
+                  if (item.type === 'combined') {
+                    if (lastComb.current) {
+                      chartPrice = lastComb.current.close;
+                      chartHigh = lastComb.current.high;
+                      chartLow = lastComb.current.low;
+                    }
+                    if (callGreeks && putGreeks) {
+                      chartGreeks = {
+                        delta: callGreeks.delta + putGreeks.delta,
+                        gamma: callGreeks.gamma + putGreeks.gamma,
+                        vega: callGreeks.vega + putGreeks.vega,
+                        theta: callGreeks.theta + putGreeks.theta,
+                        rho: callGreeks.rho + putGreeks.rho,
+                        iv: (callGreeks.iv + putGreeks.iv) / 2
+                      };
+                    }
+                  } else if (item.type === 'call') {
+                    if (lastC.current) {
+                      chartPrice = lastC.current.close;
+                      chartHigh = lastC.current.high;
+                      chartLow = lastC.current.low;
+                    }
+                    chartGreeks = callGreeks;
+                  } else if (item.type === 'put') {
+                    if (lastP.current) {
+                      chartPrice = lastP.current.close;
+                      chartHigh = lastP.current.high;
+                      chartLow = lastP.current.low;
+                    }
+                    chartGreeks = putGreeks;
+                  }
+                  
+                  if (chartPrice > 0) {
+                     data = {
+                        ...data,
+                        price: chartPrice,
+                        high: chartHigh > 0 ? chartHigh : data.high,
+                        low: chartLow < Infinity ? chartLow : data.low,
+                        greeks: chartGreeks || data.greeks
+                     };
+                  }
+                }
 
                 return (
                   <div key={item.id} onClick={() => setSelectedWatchId(item.id)}
