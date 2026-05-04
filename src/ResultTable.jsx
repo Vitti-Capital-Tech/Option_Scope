@@ -116,9 +116,9 @@ export default function ResultTable({
                   return acc;
                 }, {});
 
-                // Sort unique buy strikes by the best score in their group
+                // Sort unique buy strikes ascending (closest to ATM first)
                 const sortedBuyStrikes = Object.keys(groups).sort((a, b) => {
-                  return groups[a][0].netPremium - groups[b][0].netPremium;
+                  return parseFloat(a) - parseFloat(b);
                 });
 
                 let globalRank = 1;

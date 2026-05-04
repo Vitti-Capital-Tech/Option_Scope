@@ -39,6 +39,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
     minIvDiff: 5,
     maxRatioDeviation: 0.25,
     minSellPremium: 10,
+    maxNetPremium: -20,
   });
 
   const flushTickerBuffer = useCallback(() => {
@@ -233,6 +234,11 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
           const sellQty = Math.max(1, Math.round(rawQty / 0.25) * 0.25);
           const deltaDiff = buyDN - sellQty * sellDN;
 
+          const netPrem = buyLeg.markPrice - sellQty * sellLeg.markPrice;
+
+          // Filter: net premium must be >= maxNetPremium (e.g., >= -20)
+          if (netPrem < config.maxNetPremium) continue;
+
           validPairs.push({
             buyLeg,
             sellLeg,
@@ -242,7 +248,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             deltaNotionalRatio: deltaNotionalRatio.toFixed(3),
             ratioDeviation: (ratioDeviation * 100).toFixed(1),
             sellQty,
-            netPremium: (buyLeg.markPrice - sellQty * sellLeg.markPrice).toFixed(2),
+            netPremium: netPrem.toFixed(2),
             deltaDiff,
             thetaDiff: (buyLeg.theta || 0) - (sellQty * (sellLeg.theta || 0)),
             gammaDiff: (buyLeg.gamma || 0) - (sellQty * (sellLeg.gamma || 0)),
@@ -252,10 +258,11 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
         }
       }
 
+      // Sort: closest to ATM first, then by net premium ascending
       validPairs.sort((a, b) => {
         const distA = Math.abs(a.buyLeg.strike - spotPrice);
         const distB = Math.abs(b.buyLeg.strike - spotPrice);
-        if (distA !== distB) return distB - distA;
+        if (distA !== distB) return distA - distB;
         return a.netPremium - b.netPremium;
       });
       return validPairs;
@@ -543,6 +550,15 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
                 value={config.minSellPremium}
                 onChange={e => setConfig(c => ({ ...c, minSellPremium: Number(e.target.value) }))}
                 style={{ width: 50, padding: '4px 8px' }}
+              />
+            </div>
+            <div className="form-group" style={{ marginBottom: 0, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <label style={{ marginBottom: 0 }}>Max Net Prem ($):</label>
+              <input
+                type="number"
+                value={config.maxNetPremium}
+                onChange={e => setConfig(c => ({ ...c, maxNetPremium: Number(e.target.value) }))}
+                style={{ width: 60, padding: '4px 8px' }}
               />
             </div>
           </div>

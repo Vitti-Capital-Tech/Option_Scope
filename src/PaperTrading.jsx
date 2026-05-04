@@ -201,7 +201,16 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         if (distA !== distB) return distB - distA;
         return a.netPremium - b.netPremium;
       });
-      return validPairs.slice(0, 3); // TOP 3
+      // Pick top 3 with UNIQUE buy strikes
+      const unique = [];
+      const seenBuyStrikes = new Set();
+      for (const pair of validPairs) {
+        if (seenBuyStrikes.has(pair.buyLeg.strike)) continue;
+        seenBuyStrikes.add(pair.buyLeg.strike);
+        unique.push(pair);
+        if (unique.length >= 3) break;
+      }
+      return unique;
     };
 
     const callTickers = allTickers.filter(t => t.type === 'call' && (atmStrike === null || t.strike >= atmStrike));
@@ -549,9 +558,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
           <button className={`pt-btn-trade ${trading ? 'stop' : 'start'}`} onClick={trading ? handleStopTrading : handleStartTrading} disabled={!selExpiry}>
             {trading ? (
-              <><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg> STOP TRADING</>
+              <><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2" /></svg> STOP TRADING</>
             ) : (
-              <><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="6,4 20,12 6,20"/></svg> START TRADING</>
+              <><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="6,4 20,12 6,20" /></svg> START TRADING</>
             )}
           </button>
 
@@ -559,7 +568,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
           <button className="pt-btn-export" onClick={exportCSV}>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
             </svg>
             Export CSV
           </button>
@@ -569,7 +578,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         <div className="pt-kpi-strip">
           <div className={`pt-kpi-card ${totalPnl >= 0 ? 'accent-green' : 'accent-red'}`}>
             <span className="pt-kpi-label">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2v20M17 7l-5-5-5 5"/></svg>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2v20M17 7l-5-5-5 5" /></svg>
               Total P&L
             </span>
             <span className={`pt-kpi-value ${totalPnl > 0 ? 'positive' : totalPnl < 0 ? 'negative' : 'neutral'}`}>
@@ -580,7 +589,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
           <div className="pt-kpi-card accent-gold">
             <span className="pt-kpi-label">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M8 12l3 3 5-5"/></svg>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" /><path d="M8 12l3 3 5-5" /></svg>
               Win Rate
             </span>
             <span className="pt-kpi-value neutral">{winRate}{winRate !== '—' ? '%' : ''}</span>
@@ -589,7 +598,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
           <div className="pt-kpi-card accent-blue">
             <span className="pt-kpi-label">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/></svg>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18" /></svg>
               Active
             </span>
             <span className="pt-kpi-value neutral">{positions.length}</span>
@@ -598,7 +607,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
           <div className="pt-kpi-card accent-purple">
             <span className="pt-kpi-label">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="10"/></svg>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 8v4l3 3" /><circle cx="12" cy="12" r="10" /></svg>
               Trades
             </span>
             <span className="pt-kpi-value neutral">{tradeHistory.length}</span>
@@ -607,7 +616,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
           <div className="pt-kpi-card accent-blue">
             <span className="pt-kpi-label">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/></svg>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /></svg>
               Margin Used
             </span>
             <span className="pt-kpi-value neutral">${totalMargin.toFixed(0)}</span>
@@ -620,7 +629,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           <div className={`pt-section ${trading ? 'live' : ''}`}>
             <div className="pt-section-header">
               <div className="pt-section-title">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></svg>
                 Active Positions
                 <span className="pt-section-count">{positions.length}</span>
               </div>
@@ -635,9 +644,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               <div className="pt-empty">
                 <div className={`pt-empty-icon ${trading ? 'scanning' : 'idle'}`}>
                   {trading ? (
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#0ecb81" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a10 10 0 0 1 0 20" strokeDasharray="4 4"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="3s" repeatCount="indefinite"/></path></svg>
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#0ecb81" strokeWidth="2"><circle cx="12" cy="12" r="10" /><path d="M12 2a10 10 0 0 1 0 20" strokeDasharray="4 4"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="3s" repeatCount="indefinite" /></path></svg>
                   ) : (
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18" /><path d="M9 21V9" /></svg>
                   )}
                 </div>
                 <span className="pt-empty-title">{trading ? 'Scanning for Opportunities...' : 'Algo Idle'}</span>
@@ -686,7 +695,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           <div className="pt-section">
             <div className="pt-section-header">
               <div className="pt-section-title">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="10"/></svg>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 8v4l3 3" /><circle cx="12" cy="12" r="10" /></svg>
                 Trade History
                 <span className="pt-section-count">{tradeHistory.length}</span>
               </div>
@@ -700,7 +709,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             {tradeHistory.length === 0 ? (
               <div className="pt-empty">
                 <div className="pt-empty-icon idle">
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="2"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="10"/></svg>
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="2"><path d="M12 8v4l3 3" /><circle cx="12" cy="12" r="10" /></svg>
                 </div>
                 <span className="pt-empty-title">No Closed Trades</span>
                 <span className="pt-empty-desc">Trades will appear here once positions are exited — either automatically by the algo or manually by you.</span>

@@ -1036,8 +1036,24 @@ export default function App({ onNavigate, theme, toggleTheme }) {
   const updateComb = useCallback((c, p) => {
     if (!c || !p) return;
     
-    const time = Math.max(c.time, p.time);
-    const combinedPrice = c.close + p.close;
+    // At candle boundaries, call and put may temporarily have different timestamps.
+    // Use the OLDER timestamp to keep the combined chart stable until both legs
+    // have transitioned to the new bucket.
+    const time = Math.min(c.time, p.time);
+    
+    // If the two legs are in different buckets, use the old bucket's close
+    // from whichever leg has already rolled over, to avoid a spike.
+    let cClose = c.close, pClose = p.close;
+    if (c.time !== p.time) {
+      // One leg jumped to a new candle while the other is still on the old one.
+      // Use the close from both legs' perspective at the shared (older) time.
+      // The leg that's ahead just opened, so its open ≈ its close — that's fine.
+      // We just don't create a new candle until both legs agree.
+      cClose = c.time === time ? c.close : c.open;  // if c jumped ahead, use its open (≈ previous close)
+      pClose = p.time === time ? p.close : p.open;
+    }
+    
+    const combinedPrice = cClose + pClose;
     
     let current = lastComb.current;
     
@@ -1054,7 +1070,6 @@ export default function App({ onNavigate, theme, toggleTheme }) {
       };
     } else {
       // Existing bucket - update close and expand H/L based on THIS tick
-      // This is the ONLY way to get accurate H/L for a sum of two assets.
       current = {
         ...current,
         close: combinedPrice,
@@ -1123,19 +1138,24 @@ export default function App({ onNavigate, theme, toggleTheme }) {
 
       const bucketSecs = TF_SECS[tf] || 60;
 
-      // ── Helper: fetch the current LIVE candle from REST and bless the chart ──
-      // This is the source of truth for O/H/L — the ticker only gives Close.
+      // ── Helper: refresh only CLOSED candles from REST ──────────────────────
+      // Never overwrites the live candle — the WS-driven updateComb tracks
+      // accurate tick-by-tick combined OHLC. REST's sumCandles gives incorrect
+      // H/L (callHigh + putHigh ≠ combinedHigh) because peaks occur at
+      // different times, so we must protect the live candle from it.
       const refreshCurrentCandle = async () => {
         try {
           const nowSec = Math.floor(Date.now() / 1000);
-          const bucketSecs = TF_SECS[tf] || 60;
-          const startTs = Math.max(0, nowSec - bucketSecs * 3); // fetch last 3 buckets to guarantee overlap
+          const bSecs = TF_SECS[tf] || 60;
+          const currentBucket = Math.floor(nowSec / bSecs) * bSecs;
+          const startTs = Math.max(0, nowSec - bSecs * 3);
 
           const [cc, pc] = await Promise.all([
             cSym ? fetchCandles(cSym, tf, startTs, nowSec + 1, pType) : Promise.resolve([]),
             pSym ? fetchCandles(pSym, tf, startTs, nowSec + 1, pType) : Promise.resolve([]),
           ]);
 
+          // Update lastC/lastP refs for the WS candle builder
           if (cc?.length) {
             const latestC = cc[cc.length - 1];
             if (!lastC.current || latestC.time >= lastC.current.time) {
@@ -1148,19 +1168,27 @@ export default function App({ onNavigate, theme, toggleTheme }) {
               lastP.current = latestP;
             }
           }
+
+          // Only update CLOSED candles on the chart — skip the live bucket
           const comb = sumCandles(cc, pc);
-          comb.forEach(c => combRef.current?.update(c));
+          comb.forEach(c => {
+            if (c.time < currentBucket) {
+              combRef.current?.update(c);
+            }
+            // Live candle (c.time >= currentBucket) is managed by WS updateComb
+          });
         } catch (err) { console.warn('refreshCurrentCandle failed:', err); }
       };
 
       // ── Helper: completely refresh history when a candle closes ───────────
-      // This guarantees that any slight inaccuracies from the final moments
-      // of a live candle are permanently corrected with official REST data.
+      // Replaces all CLOSED candles with official REST data, then appends the
+      // current live candle from lastComb.current to keep it smooth.
       const refreshAllHistory = async () => {
         try {
           const nowSec = Math.floor(Date.now() / 1000);
-          const bucketSecs = TF_SECS[tf] || 60;
-          const startTs = nowSec - bucketSecs * CANDLE_COUNT;
+          const bSecs = TF_SECS[tf] || 60;
+          const currentBucket = Math.floor(nowSec / bSecs) * bSecs;
+          const startTs = nowSec - bSecs * CANDLE_COUNT;
 
           const [cc, pc] = await Promise.all([
             cSym ? fetchCandles(cSym, tf, startTs, nowSec + 1, pType) : Promise.resolve([]),
@@ -1175,17 +1203,27 @@ export default function App({ onNavigate, theme, toggleTheme }) {
             lastP.current = pc[pc.length - 1];
             setPutPrice(lastP.current.close);
           }
+
           const comb = sumCandles(cc, pc);
           if (comb.length) {
-            comb.forEach(c => combRef.current?.update(c));
+            // Split: closed candles from REST + live candle from WS tracker
+            const closedCandles = comb.filter(c => c.time < currentBucket);
+            const finalData = [...closedCandles];
+
+            // Preserve the WS-tracked live candle (accurate combined H/L)
+            if (lastComb.current && lastComb.current.time >= currentBucket) {
+              finalData.push(lastComb.current);
+            } else {
+              // Fallback: if WS hasn't started the live candle yet, use REST's
+              const restLive = comb.find(c => c.time >= currentBucket);
+              if (restLive) finalData.push(restLive);
+            }
+
+            // Atomic replacement — preserves scroll position
+            combRef.current?.setData(finalData, false);
 
             // ── Alert Engine (EVALUATES ONLY ON OFFICIALLY CLOSED CANDLES) ──
-            const nowSecAlert = Math.floor(Date.now() / 1000);
-            const bSecs = TF_SECS[tf] || 60;
-            const currentBucket = Math.floor(nowSecAlert / bSecs) * bSecs;
-
-            // Robustly find the most recently closed candle
-            const closedComb = [...comb].reverse().find(c => c.time < currentBucket);
+            const closedComb = [...closedCandles].reverse()[0]; // most recent closed
 
             if (closedComb) {
               const activeItem = watchListRef.current.find(w => w.id === selectedWatchId);
@@ -1253,7 +1291,16 @@ export default function App({ onNavigate, theme, toggleTheme }) {
       currentCandleTimer.current = setInterval(refreshCurrentCandle, 5000);
 
       // ── WebSocket: ticker updates Close price in real-time (zero latency) ──
-      const correctClosedCandle = () => refreshAllHistory(); // Map to full refresh
+      // ── Debounced correction: both call and put may fire new-candle events
+      // within milliseconds of each other — debounce so only one REST fetch runs.
+      let correctionDebounce = null;
+      const correctClosedCandle = () => {
+        if (correctionDebounce) clearTimeout(correctionDebounce);
+        correctionDebounce = setTimeout(() => {
+          correctionDebounce = null;
+          refreshAllHistory();
+        }, 2000); // wait 2s for both legs to roll over before fetching
+      };
 
       wsRef.current = createWS(
         cSym, pSym, tf, pType,
