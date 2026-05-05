@@ -131,6 +131,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             exitReason: t.exit_reason,
             sellQty: t.sell_qty,
             strikeDiff: t.strike_diff,
+            underlying: t.underlying,
+            realizedGrossPnl: t.realized_gross_pnl,
+            realizedNetPnl: t.realized_net_pnl,
             claudeReview: t.claude_review,
             groqReview: t.groq_review
           };
@@ -639,6 +642,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
           const newPos = {
             id,
+            underlying: underlying,
             type: spread.buyLeg.type,
             buyLeg: spread.buyLeg,
             sellLeg: spread.sellLeg,

@@ -17,42 +17,60 @@ const formatTradePrompt = (trade, eventType, history = []) => {
   const {
     id, underlying, type, buyLeg, sellLeg, sellQty, strikeDiff,
     entryTime, exitTime, entryBuyPrice, entrySellPrice,
-    exitBuyPrice, exitSellPrice, realizedNetPnl, unrealizedNetPnl,
+    exitBuyPrice, exitSellPrice, 
+    realizedGrossPnl, realizedNetPnl, 
+    unrealizedGrossPnl, unrealizedNetPnl,
     totalFees, margin, exitReason
   } = trade;
 
   const status = eventType === 'ENTRY' ? 'NEW TRADE ENTRY' : 'TRADE EXIT / REALIZED';
 
-  let prompt = ``;
-
+  let prompt = `### IMPORTANT: ANALYZE ONLY THE "CURRENT TRADE" BELOW ###\n`;
+  prompt += `### USE THE "REFERENCE" SECTION ONLY FOR CONTEXT ###\n\n`;
+  
   // Include History (Memory) if available
   if (history && history.length > 0) {
-    prompt += `### REFERENCE: SUCCESSFUL PAST TRADES (MEMORY) ###\n`;
+    prompt += `### REFERENCE: SUCCESSFUL PAST TRADES (CONTEXT) ###\n`;
     history.forEach((past, i) => {
-      prompt += `Example ${i + 1}: P&L: $${past.realized_net_pnl} | Asset: ${past.underlying} | Diff: ${past.strike_diff} | Strategy: ${past.type}\n`;
+      prompt += `Reference Example ${i+1}: P&L: +$${past.realized_net_pnl} | Asset: ${past.underlying} | Strategy: ${past.type} | Strike Diff: ${past.strike_diff}\n`;
     });
     prompt += `\n`;
   }
 
-  prompt += `--- ${status} ---
-Strategy ID: ${id}
-Asset: ${underlying}
+  prompt += `### >>> CURRENT TRADE TO ANALYZE <<< ###
+Status: ${status}
+Asset: ${underlying || 'BTC'}
 Strategy Type: ${type}
 Buy Leg: ${buyLeg.symbol} (Strike: ${buyLeg.strike})
 Sell Leg: ${sellLeg.symbol} (Strike: ${sellLeg.strike}, Qty: ${sellQty})
 Strike Difference: ${strikeDiff}
+-----------------------------------------
 ${eventType === 'ENTRY' ? `Entry Time: ${entryTime}` : `Entry Time: ${entryTime} | Exit Time: ${exitTime}`}
 Entry Buy Price: ${entryBuyPrice}
 Entry Sell Price: ${entrySellPrice}
 ${eventType === 'EXIT' ? `Exit Buy Price: ${exitBuyPrice} | Exit Sell Price: ${exitSellPrice}` : ''}
-${eventType === 'EXIT' ? `Realized Net P&L: $${realizedNetPnl}` : `Current Unrealized P&L: $${unrealizedNetPnl}`}
+-----------------------------------------
+${eventType === 'EXIT' 
+    ? `FINAL REALIZED P&L:
+   - Market (Gross): $${realizedGrossPnl}
+   - After Fees (Net): $${realizedNetPnl}`
+    : `CURRENT UNREALIZED P&L:
+   - Market (Gross): $${unrealizedGrossPnl}
+   - After Fees (Net): $${unrealizedNetPnl}`
+}
 Total Fees: $${totalFees}
 Margin Used: $${margin}
 ${eventType === 'EXIT' ? `Exit Reason: ${exitReason}` : ''}
 
-Please analyze this ${eventType.toLowerCase()} event. ${history.length > 0 ? 'Use the provided past successful trades as context to see if this new trade fits the profitable pattern.' : ''} 
-Provide a brief observation on the setup/execution and suggest any improvements or risks for future trades. Keep it concise.
+INSTRUCTION: 
+1. Compare "Market (Gross) P&L" to see if the strategy is working. 
+2. If "Market (Gross)" is positive but "After Fees (Net)" is negative, it means the trade is profitable but hasn't covered fees yet. 
+3. Compare the current Strike Difference (${strikeDiff}) to the Reference examples. (Math check: is ${strikeDiff} higher or lower than references?)
+4. Keep the analysis concise and strictly data-driven.
 `;
+
+  console.log("--- AI PROMPT DEBUG ---");
+  console.log(prompt);
   return prompt;
 };
 
