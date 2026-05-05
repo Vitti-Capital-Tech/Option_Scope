@@ -33,13 +33,19 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
   const tickerBufferRef = useRef({});
   const flushTimerRef = useRef(null);
 
-  // Configurable thresholds
-  const [config, setConfig] = useState({
-    minStrikeDiff: 800,
-    minIvDiff: 5,
-    maxRatioDeviation: 0.25,
-    minSellPremium: 10,
-    maxNetPremium: 20,
+  // Configurable thresholds initialized from localStorage
+  const [config, setConfig] = useState(() => {
+    const saved = localStorage.getItem('vitti_algo_config');
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) {}
+    }
+    return {
+      minStrikeDiff: 800,
+      minIvDiff: 5,
+      maxRatioDeviation: 0.25,
+      minSellPremium: 10,
+      maxNetPremium: 20,
+    };
   });
 
   const flushTickerBuffer = useCallback(() => {
@@ -366,7 +372,19 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
     SCANNER_STOP: () => {
       stopScanRef.current();
     },
+    CONFIG_SYNC: (payload) => {
+      if (payload.config) setConfig(payload.config);
+    }
   });
+
+  const updateConfig = (key, value) => {
+    setConfig(c => {
+      const newConfig = { ...c, [key]: value };
+      localStorage.setItem('vitti_algo_config', JSON.stringify(newConfig));
+      tabBroadcast('CONFIG_SYNC', { config: newConfig });
+      return newConfig;
+    });
+  };
 
   // Wrapped start/stop that also broadcasts to other tabs
   const handleStartScan = useCallback(() => {
@@ -521,7 +539,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
               <input
                 type="number"
                 value={config.minStrikeDiff}
-                onChange={e => setConfig(c => ({ ...c, minStrikeDiff: Number(e.target.value) }))}
+                onChange={e => updateConfig('minStrikeDiff', Number(e.target.value))}
                 style={{ width: 60, padding: '4px 8px' }}
               />
             </div>
@@ -530,7 +548,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
               <input
                 type="number"
                 value={config.minIvDiff}
-                onChange={e => setConfig(c => ({ ...c, minIvDiff: Number(e.target.value) }))}
+                onChange={e => updateConfig('minIvDiff', Number(e.target.value))}
                 style={{ width: 50, padding: '4px 8px' }}
               />
             </div>
@@ -540,7 +558,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
                 type="number"
                 step="0.01"
                 value={config.maxRatioDeviation}
-                onChange={e => setConfig(c => ({ ...c, maxRatioDeviation: Number(e.target.value) }))}
+                onChange={e => updateConfig('maxRatioDeviation', Number(e.target.value))}
                 style={{ width: 60, padding: '4px 8px' }}
               />
             </div>
@@ -549,7 +567,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
               <input
                 type="number"
                 value={config.minSellPremium}
-                onChange={e => setConfig(c => ({ ...c, minSellPremium: Number(e.target.value) }))}
+                onChange={e => updateConfig('minSellPremium', Number(e.target.value))}
                 style={{ width: 50, padding: '4px 8px' }}
               />
             </div>
@@ -558,7 +576,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
               <input
                 type="number"
                 value={config.maxNetPremium}
-                onChange={e => setConfig(c => ({ ...c, maxNetPremium: Number(e.target.value) }))}
+                onChange={e => updateConfig('maxNetPremium', Number(e.target.value))}
                 style={{ width: 60, padding: '4px 8px' }}
               />
             </div>

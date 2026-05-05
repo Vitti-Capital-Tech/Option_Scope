@@ -35,13 +35,23 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const tickerBufferRef = useRef({});
   const flushTimerRef = useRef(null);
   const cooldownRef = useRef({});
+  const lastEvaluatedRef = useRef(0);
 
-  const [config, setConfig] = useState({
-    minStrikeDiff: 800,
-    minIvDiff: 5,
-    maxRatioDeviation: 0.25,
-    minSellPremium: 10,
-    maxNetPremium: 20,
+  const [lastEvaluated, setLastEvaluated] = useState(0);
+  const [timeRemaining, setTimeRemaining] = useState(null);
+
+  const [config, setConfig] = useState(() => {
+    const saved = localStorage.getItem('vitti_algo_config');
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) {}
+    }
+    return {
+      minStrikeDiff: 800,
+      minIvDiff: 5,
+      maxRatioDeviation: 0.25,
+      minSellPremium: 10,
+      maxNetPremium: 20,
+    };
   });
 
   const positionsRef = useRef([]);
@@ -95,6 +105,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     setTickerData({});
     latestTickerDataRef.current = {};
     setExpectedTickerCount(0);
+    lastEvaluatedRef.current = 0;
+    setLastEvaluated(0);
+    setTimeRemaining(null);
 
     const strikes = getStrikes(products, selExpiry);
     if (strikes.length < 2) {
@@ -169,6 +182,45 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     const allTickers = Object.values(tickerData);
     if (allTickers.length < expectedTickerCount * 0.1) return; // Wait for enough data
 
+    const nowTime = Date.now();
+    const shouldEvaluateAlgo = nowTime - lastEvaluatedRef.current > 60000;
+
+    if (!shouldEvaluateAlgo) {
+      // Just update PnL for existing positions based on latest tickerData
+      setPositions(prev => {
+        // If prev is empty, we don't need to do anything
+        if (prev.length === 0) return prev;
+        
+        return prev.map(pos => {
+          const latestBuy = tickerData[pos.buyLeg.symbol]?.markPrice || pos.buyLeg.markPrice;
+          const latestSell = tickerData[pos.sellLeg.symbol]?.markPrice || pos.sellLeg.markPrice;
+
+          const buyPnl = (latestBuy - pos.entryBuyPrice) * pos.buyLeg.lotSize;
+          const sellPnl = (latestSell - pos.entrySellPrice) * pos.sellLeg.lotSize * pos.sellQty;
+          const grossPnl = buyPnl - sellPnl;
+
+          const exitBuyFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize);
+          const exitSellFee = calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
+          const exitFee = exitBuyFee + exitSellFee;
+          const totalFees = (pos.entryFee || 0) + exitFee;
+
+          return {
+            ...pos,
+            currentBuyPrice: latestBuy,
+            currentSellPrice: latestSell,
+            unrealizedGrossPnl: grossPnl,
+            unrealizedNetPnl: grossPnl - totalFees,
+            currentExitFee: exitFee,
+            currentTotalFees: totalFees
+          };
+        });
+      });
+      return;
+    }
+
+    lastEvaluatedRef.current = nowTime;
+    setLastEvaluated(nowTime);
+
     let atmStrike = null;
     let minDiff = Infinity;
     for (const t of allTickers) {
@@ -176,6 +228,30 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       if (diff < minDiff) {
         minDiff = diff;
         atmStrike = t.strike;
+      }
+    }
+
+    // Pre-calculate force exits (ITM/ATM) so their cooldowns take effect BEFORE scanTickers runs.
+    // This ensures scanTickers will immediately find valid replacements to maintain 6 positions.
+    const forceExits = new Map();
+    const now = Date.now();
+    for (const pos of positionsRef.current) {
+      let reason = '';
+      const isCall = pos.type === 'call';
+      const buyStrike = pos.buyLeg.strike;
+
+      if (pos.strikeDiff < 1000) {
+        if (isCall ? spotPrice >= buyStrike : spotPrice <= buyStrike) reason = 'Buy Strike reached ATM/ITM (<1000 diff)';
+      } else if (pos.strikeDiff < 1200) {
+        if ((isCall ? spotPrice - buyStrike : buyStrike - spotPrice) >= 200) reason = '200 points ITM (<1200 diff)';
+      } else if (pos.strikeDiff < 1400) {
+        if ((isCall ? spotPrice - buyStrike : buyStrike - spotPrice) >= 300) reason = '300 points ITM (<1400 diff)';
+      }
+
+      if (reason) {
+        forceExits.set(pos.id, reason);
+        cooldownRef.current[pos.buyLeg.symbol] = now + 60000;
+        cooldownRef.current[pos.sellLeg.symbol] = now + 60000;
       }
     }
 
@@ -258,37 +334,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         let shouldExit = false;
         let exitReason = '';
 
-        // 1. If strike changes (loses its top 3 position)
-        if (!currentTopIds.has(pos.id)) {
+        if (forceExits.has(pos.id)) {
+          shouldExit = true;
+          exitReason = forceExits.get(pos.id);
+        } else if (!currentTopIds.has(pos.id)) {
           shouldExit = true;
           exitReason = 'Lost Top 3 Position';
-        } else {
-          // 2. If strike doesnt change, check exit conditions based on diff
-          const isCall = pos.type === 'call';
-          const buyStrike = pos.buyLeg.strike;
-
-          if (pos.strikeDiff < 1000) {
-            // Exit when buying strike reaches ATM or ITM
-            const isAtOrItm = isCall ? spotPrice >= buyStrike : spotPrice <= buyStrike;
-            if (isAtOrItm) {
-              shouldExit = true;
-              exitReason = 'Buy Strike reached ATM/ITM (<1000 diff)';
-            }
-          } else if (pos.strikeDiff < 1200) {
-            // Exit at 200 points ITM
-            const itmPoints = isCall ? spotPrice - buyStrike : buyStrike - spotPrice;
-            if (itmPoints >= 200) {
-              shouldExit = true;
-              exitReason = '200 points ITM (<1200 diff)';
-            }
-          } else if (pos.strikeDiff < 1400) {
-            // Exit at 300 points ITM
-            const itmPoints = isCall ? spotPrice - buyStrike : buyStrike - spotPrice;
-            if (itmPoints >= 300) {
-              shouldExit = true;
-              exitReason = '300 points ITM (<1400 diff)';
-            }
-          }
         }
 
         // Get latest prices for PnL
@@ -317,10 +368,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             totalFees,
             exitReason
           });
-          
-          const now = Date.now();
-          cooldownRef.current[pos.buyLeg.symbol] = now + 60000;
-          cooldownRef.current[pos.sellLeg.symbol] = now + 60000;
         } else {
           remaining.push({
             ...pos,
@@ -429,6 +476,26 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
   }, []);
 
+  // Countdown timer for next scan
+  useEffect(() => {
+    if (!trading || lastEvaluated === 0) {
+      setTimeRemaining(null);
+      return;
+    }
+
+    const timer = setInterval(() => {
+      const elapsed = Date.now() - lastEvaluated;
+      const left = Math.ceil((60000 - elapsed) / 1000);
+      setTimeRemaining(left > 0 ? left : 0);
+    }, 1000);
+
+    const elapsed = Date.now() - lastEvaluated;
+    const left = Math.ceil((60000 - elapsed) / 1000);
+    setTimeRemaining(left > 0 ? left : 0);
+
+    return () => clearInterval(timer);
+  }, [lastEvaluated, trading]);
+
   // ── Cross-tab sync ──────────────────────────────────
   const startTradingRef = useRef(startTrading);
   startTradingRef.current = startTrading;
@@ -444,7 +511,19 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     TRADING_STOP: () => {
       stopTradingRef.current();
     },
+    CONFIG_SYNC: (payload) => {
+      if (payload.config) setConfig(payload.config);
+    }
   });
+
+  const updateConfig = (key, value) => {
+    setConfig(c => {
+      const newConfig = { ...c, [key]: value };
+      localStorage.setItem('vitti_algo_config', JSON.stringify(newConfig));
+      tabBroadcast('CONFIG_SYNC', { config: newConfig });
+      return newConfig;
+    });
+  };
 
   const handleStartTrading = useCallback(() => {
     startTrading();
@@ -604,7 +683,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       <div className="body" style={{ flexDirection: 'column', overflowY: 'auto' }}>
         {/* ── Control Panel ───────────────────────────── */}
         <div className="pt-control-panel">
-          <div className="pt-control-section">
+          <div className="pt-control-section" style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
             <span className="pt-control-label">Algo</span>
             <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
               <label style={{ marginBottom: 0 }}>Underlying:</label>
@@ -617,6 +696,30 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               <select value={selExpiry} onChange={e => { setSelExpiry(e.target.value); stopTrading(); }} disabled={!expiries.length} style={{ padding: '6px 12px', width: '160px', fontSize: '13px' }}>
                 {!expiries.length ? <option>Loading...</option> : expiries.map(e => <option key={e} value={e}>{fmtExpiry(e)}</option>)}
               </select>
+            </div>
+
+            <div style={{ width: 1, height: 24, backgroundColor: 'var(--border)' }}></div>
+
+            <span className="pt-control-label">Filters</span>
+            <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <label style={{ marginBottom: 0 }}>Min Strike Diff ($):</label>
+              <input type="number" value={config.minStrikeDiff} onChange={e => updateConfig('minStrikeDiff', Number(e.target.value))} style={{ width: 60, padding: '4px 8px', fontSize: '13px' }} />
+            </div>
+            <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <label style={{ marginBottom: 0 }}>Min IV Diff (%):</label>
+              <input type="number" value={config.minIvDiff} onChange={e => updateConfig('minIvDiff', Number(e.target.value))} style={{ width: 50, padding: '4px 8px', fontSize: '13px' }} />
+            </div>
+            <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <label style={{ marginBottom: 0 }}>Max Ratio Dev:</label>
+              <input type="number" step="0.01" value={config.maxRatioDeviation} onChange={e => updateConfig('maxRatioDeviation', Number(e.target.value))} style={{ width: 60, padding: '4px 8px', fontSize: '13px' }} />
+            </div>
+            <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <label style={{ marginBottom: 0 }}>Min Sell Prem ($):</label>
+              <input type="number" value={config.minSellPremium} onChange={e => updateConfig('minSellPremium', Number(e.target.value))} style={{ width: 50, padding: '4px 8px', fontSize: '13px' }} />
+            </div>
+            <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <label style={{ marginBottom: 0 }}>Max Net Prem ($):</label>
+              <input type="number" value={config.maxNetPremium} onChange={e => updateConfig('maxNetPremium', Number(e.target.value))} style={{ width: 60, padding: '4px 8px', fontSize: '13px' }} />
             </div>
           </div>
 
@@ -702,19 +805,34 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                 <span className="pt-section-count">{positions.length}</span>
               </div>
 
-              <div className="pt-fee-toggle-container">
-                <span className={`pt-fee-toggle-label ${!includeFees ? 'active' : ''}`} onClick={() => setIncludeFees(false)}>Gross</span>
-                <label className="pt-switch">
-                  <input type="checkbox" checked={includeFees} onChange={e => setIncludeFees(e.target.checked)} />
-                  <span className="pt-slider"></span>
-                </label>
-                <span className={`pt-fee-toggle-label ${includeFees ? 'active' : ''}`} onClick={() => setIncludeFees(true)}>Net</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+                {lastEvaluated > 0 && (
+                  <div style={{ fontSize: 12, color: 'var(--text-dim)', borderRight: '1px solid var(--border)', paddingRight: 16 }}>
+                    Updated: {new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }).format(new Date(lastEvaluated))}
+                  </div>
+                )}
+                <div className="pt-fee-toggle-container">
+                  <span className={`pt-fee-toggle-label ${!includeFees ? 'active' : ''}`} onClick={() => setIncludeFees(false)}>Gross</span>
+                  <label className="pt-switch">
+                    <input type="checkbox" checked={includeFees} onChange={e => setIncludeFees(e.target.checked)} />
+                    <span className="pt-slider"></span>
+                  </label>
+                  <span className={`pt-fee-toggle-label ${includeFees ? 'active' : ''}`} onClick={() => setIncludeFees(true)}>Net</span>
+                </div>
               </div>
 
               {trading && (
-                <div className="pt-live-badge">
-                  <div className="pt-live-dot" />
-                  Monitoring
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <div className="pt-live-badge" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text)' }}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M21 12C21 16.9706 16.9706 21 12 21C7.02944 21 3 16.9706 3 12C3 7.02944 7.02944 3 12 3C15.5398 3 18.5997 5.04419 20.0886 8M20.0886 8H16.0886M20.0886 8V4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                    {timeRemaining !== null && timeRemaining <= 60 ? `${timeRemaining}s` : ''}
+                  </div>
+                  <div className="pt-live-badge">
+                    <div className="pt-live-dot" />
+                    Monitoring
+                  </div>
                 </div>
               )}
             </div>
