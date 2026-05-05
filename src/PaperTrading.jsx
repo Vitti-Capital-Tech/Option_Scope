@@ -6,6 +6,7 @@ import {
 import { normalizeIv, toFiniteNumber, matchesOptionType, formatTime } from './scannerUtils';
 import { useTabListener } from './useTabSync';
 import { supabase } from './supabase';
+import { getClaudeReview, getGroqReview } from './aiService';
 
 const UNDERLYINGS = ['BTC', 'ETH'];
 
@@ -22,10 +23,27 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const [selExpiry, setSelExpiry] = useState('');
   const [spotPrice, setSpotPrice] = useState(null);
   const [trading, setTrading] = useState(true);
+
   const [includeFees, setIncludeFees] = useState(false);
 
   const [positions, setPositions] = useState([]); // Active positions
   const [tradeHistory, setTradeHistory] = useState([]); // Closed trades
+  const [aiReviews, setAiReviews] = useState({}); // { tradeId: { claude: string, groq: string } }
+  const [selectedTradeId, setSelectedTradeId] = useState(null); // For AI review modal
+
+  const fetchTopTradesMemory = async () => {
+    try {
+      const { data } = await supabase
+        .from('trade_history')
+        .select('*')
+        .gt('realized_net_pnl', 0)
+        .order('realized_net_pnl', { ascending: false })
+        .limit(3);
+      return data || [];
+    } catch (e) {
+      return [];
+    }
+  };
 
   const [tickerData, setTickerData] = useState({});
   const latestTickerDataRef = useRef({});
@@ -40,7 +58,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
   const [lastEvaluated, setLastEvaluated] = useState(0);
   const [timeRemaining, setTimeRemaining] = useState(null);
-  const allOpenedTradeIdsRef = useRef(new Set());
 
   const [config, setConfig] = useState(() => {
     const saved = localStorage.getItem('vitti_algo_config');
@@ -49,10 +66,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     }
     return {
       minStrikeDiff: 800,
-      minIvDiff: 5,
-      maxRatioDeviation: 0.25,
-      minSellPremium: 10,
-      maxNetPremium: 20,
+      minIvDiff: 3,
+      maxRatioDeviation: 0.35,
+      minSellPremium: 8,
+      maxNetPremium: 25,
     };
   });
 
@@ -96,7 +113,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       } else if (data) {
         // Map snake_case from DB to camelCase used in app
         const mapped = data.map(t => {
-          allOpenedTradeIdsRef.current.add(t.trade_id);
           return {
             ...t,
             id: t.trade_id,
@@ -114,15 +130,74 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             totalFees: t.total_fees,
             exitReason: t.exit_reason,
             sellQty: t.sell_qty,
-            strikeDiff: t.strike_diff
+            strikeDiff: t.strike_diff,
+            claudeReview: t.claude_review,
+            groqReview: t.groq_review
           };
         });
+        
+        // Populate aiReviews state from fetched history
+        const initialReviews = {};
+        mapped.forEach(t => {
+          if (t.claudeReview || t.groqReview) {
+            initialReviews[t.id] = { claude: t.claudeReview, groq: t.groqReview };
+          }
+        });
+        setAiReviews(initialReviews);
         setTradeHistory(mapped);
       }
     };
     fetchHistory();
   }, []);
 
+
+  const runManualAiReview = async (tradeId) => {
+    const trade = tradeHistory.find(t => t.id === tradeId) || positions.find(t => t.id === tradeId);
+    if (!trade) return;
+
+    // Set a placeholder to show loading
+    setAiReviews(prev => ({
+      ...prev,
+      [tradeId]: { claude: null, groq: null }
+    }));
+
+    try {
+      const memory = await fetchTopTradesMemory();
+      const [claude, groq] = await Promise.all([
+        getClaudeReview(trade, trade.exitTime ? 'EXIT' : 'ENTRY', memory),
+        getGroqReview(trade, trade.exitTime ? 'EXIT' : 'ENTRY', memory)
+      ]);
+      setAiReviews(prev => ({
+        ...prev,
+        [tradeId]: { claude, groq }
+      }));
+
+      // Update Supabase with the new review
+      await supabase
+        .from('trade_history')
+        .update({
+          claude_review: claude,
+          groq_review: groq
+        })
+        .eq('trade_id', tradeId);
+
+    } catch (e) {
+      console.error('Manual AI Error:', e);
+    }
+  };
+
+  const clearHistory = () => {
+    if (window.confirm("Are you sure you want to clear the local trade history? This will allow the algo to re-enter previous strike pairs.")) {
+      setTradeHistory([]);
+      setAiReviews({});
+    }
+  };
+
+  useEffect(() => {
+    if (selectedTradeId && (!aiReviews[selectedTradeId] || (!aiReviews[selectedTradeId].claude && !aiReviews[selectedTradeId].groq))) {
+      runManualAiReview(selectedTradeId);
+    }
+  }, [selectedTradeId]);
 
   // ── Fetch spot price ────────────────────────────────────────────────────
   useEffect(() => {
@@ -223,7 +298,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     if (!trading || !spotPrice) return;
 
     const allTickers = Object.values(tickerData);
-    if (allTickers.length < expectedTickerCount * 0.1) return; // Wait for enough data
+    if (allTickers.length === 0) return; // Wait for at least one ticker
 
     const nowTime = Date.now();
     const shouldEvaluateAlgo = nowTime - lastEvaluatedRef.current > 60000;
@@ -399,27 +474,19 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           exitReason = forceExits.get(pos.id);
         } else {
           const matchingSpread = topSpreads.find(s => s.buyLeg.symbol === pos.buyLeg.symbol);
+          
           if (matchingSpread) {
-            // Buy strike is still in top 3.
+            // BUY STRIKE IS THE SAME -> Update sell leg if it changed
             if (matchingSpread.sellLeg.symbol !== pos.sellLeg.symbol) {
-              // Recommended sell leg changed -> Try to update
-              // Check if the new sell leg is already "taken" by another existing position's buy or sell leg
-              // (Wait, we'll check usedSets below for safety)
               isUpdated = true;
               updatedSpread = matchingSpread;
             } else {
-              // Buy and Sell both still match top spread perfectly
+              // Stay as is
             }
           } else {
-            // Buy strike lost Top 3. Check if Sell strike is still recommended for ANY top spread
-            const sellStillInTop = topSpreads.some(s => s.sellLeg.symbol === pos.sellLeg.symbol);
-            if (!sellStillInTop) {
-              // BOTH changed.
-              shouldExit = true;
-              exitReason = 'Both Buy & Sell strikes changed';
-            } else {
-              // Stay in current spread because Sell leg is still top-tier
-            }
+            // BUY STRIKE CHANGED -> Exit
+            shouldExit = true;
+            exitReason = 'Buy Strike lost Top 3 position';
           }
         }
 
@@ -445,9 +512,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             const newSellEntry = updatedSpread.sellLeg.markPrice;
             const newSellFee = calculateFee(newSellEntry, spotPrice, updatedSpread.sellQty, updatedSpread.sellLeg.lotSize);
             const newEntryFee = (pos.entryFee || 0) + exitSellFee + newSellFee;
+            // Update ID
             const newId = `${updatedSpread.buyLeg.symbol}_${updatedSpread.sellLeg.symbol}`;
-            
-            allOpenedTradeIdsRef.current.add(newId);
             remaining.push({
               ...pos,
               id: newId,
@@ -490,33 +556,51 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       if (exited.length > 0) {
         setTradeHistory(th => [...exited, ...th]);
 
-        // Persist to Supabase
+        // Trigger AI Reviews and Persist to Supabase
         exited.forEach(async (t) => {
-          const { error } = await supabase
-            .from('trade_history')
-            .insert([{
-              trade_id: t.id,
-              underlying: underlying,
-              expiry: selExpiry,
-              type: t.type,
-              buy_leg: JSON.stringify(t.buyLeg),
-              sell_leg: JSON.stringify(t.sellLeg),
-              sell_qty: t.sellQty,
-              strike_diff: t.strikeDiff,
-              entry_time: t.entryTime.toISOString(),
-              exit_time: t.exitTime.toISOString(),
-              entry_buy_price: t.entryBuyPrice,
-              entry_sell_price: t.entrySellPrice,
-              exit_buy_price: t.exitBuyPrice,
-              exit_sell_price: t.exitSellPrice,
-              realized_gross_pnl: t.realizedGrossPnl,
-              realized_net_pnl: t.realizedNetPnl,
-              exit_fee: t.exitFee,
-              total_fees: t.totalFees,
-              margin: t.margin,
-              exit_reason: t.exitReason
-            }]);
-          if (error) console.error('Error saving trade to Supabase:', error);
+          try {
+            const memory = await fetchTopTradesMemory();
+            const [claude, groq] = await Promise.all([
+              getClaudeReview(t, 'EXIT', memory),
+              getGroqReview(t, 'EXIT', memory)
+            ]);
+            
+            setAiReviews(prev => ({
+              ...prev,
+              [t.id]: { claude, groq }
+            }));
+
+            // Persist to Supabase with Reviews
+            const { error } = await supabase
+              .from('trade_history')
+              .insert([{
+                trade_id: t.id,
+                underlying: underlying,
+                expiry: selExpiry,
+                type: t.type,
+                buy_leg: JSON.stringify(t.buyLeg),
+                sell_leg: JSON.stringify(t.sellLeg),
+                sell_qty: t.sellQty,
+                strike_diff: t.strikeDiff,
+                entry_time: t.entryTime.toISOString(),
+                exit_time: t.exitTime.toISOString(),
+                entry_buy_price: t.entryBuyPrice,
+                entry_sell_price: t.entrySellPrice,
+                exit_buy_price: t.exitBuyPrice,
+                exit_sell_price: t.exitSellPrice,
+                realized_gross_pnl: t.realizedGrossPnl,
+                realized_net_pnl: t.realizedNetPnl,
+                exit_fee: t.exitFee,
+                total_fees: t.totalFees,
+                margin: t.margin,
+                exit_reason: t.exitReason,
+                claude_review: claude,
+                groq_review: groq
+              }]);
+            if (error) console.error('Error saving trade to Supabase:', error);
+          } catch (err) {
+            console.error('Error in AI/Supabase exit logic:', err);
+          }
         });
       }
 
@@ -530,16 +614,18 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
         const id = `${spread.buyLeg.symbol}_${spread.sellLeg.symbol}`;
         
-        // Skip if this specific combo was ever traded before (to avoid repetitive fees)
-        if (allOpenedTradeIdsRef.current.has(id)) continue;
+        // Skip if this specific pair is already in Trade History (Client Rule)
+        const inHistory = tradeHistory.some(h => h.id === id);
+        if (inHistory) {
+          console.log(`Algo: Skipping ${id} - Already in Trade History.`);
+          continue;
+        }
 
         const exists = remaining.find(p => p.id === id);
-        // Also skip if either the buy or sell strike is already "covered" by an active position
         const buyCovered = usedBuySymbols.has(spread.buyLeg.symbol);
         const sellCovered = usedSellSymbols.has(spread.sellLeg.symbol);
 
         if (!exists && !buyCovered && !sellCovered) {
-          allOpenedTradeIdsRef.current.add(id);
           usedBuySymbols.add(spread.buyLeg.symbol);
           usedSellSymbols.add(spread.sellLeg.symbol);
           // Margin: 100% for long (1x), 200x leverage for short leg (Value / 200)
@@ -551,7 +637,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           const entrySellFee = calculateFee(spread.sellLeg.markPrice, spotPrice, spread.sellQty, spread.sellLeg.lotSize);
           const entryFee = entryBuyFee + entrySellFee;
 
-          remaining.push({
+          const newPos = {
             id,
             type: spread.buyLeg.type,
             buyLeg: spread.buyLeg,
@@ -569,7 +655,25 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             currentExitFee: entryFee,
             currentTotalFees: entryFee * 2,
             margin
-          });
+          };
+          remaining.push(newPos);
+
+          // Trigger AI Reviews for Entries
+          (async () => {
+            try {
+              const memory = await fetchTopTradesMemory();
+              const [claude, groq] = await Promise.all([
+                getClaudeReview(newPos, 'ENTRY', memory),
+                getGroqReview(newPos, 'ENTRY', memory)
+              ]);
+              setAiReviews(prev => ({
+                ...prev,
+                [id]: { claude, groq }
+              }));
+            } catch (e) {
+              console.error('AI Review Entry Error:', e);
+            }
+          })();
         }
       }
 
@@ -962,7 +1066,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                   <thead><tr>
                     <th>Type</th><th>Buy Strike</th><th>Sell Strike</th><th>Sell Qty</th>
                     <th>Entry Net</th><th>Current Net</th><th>Unrl P&L</th>
-                    <th>Margin</th><th>Duration</th>
+                    <th>Margin</th><th>AI</th><th>Duration</th>
                   </tr></thead>
                   <tbody>
                     {positions.map(p => {
@@ -984,6 +1088,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                               <span>${p.margin.toFixed(0)}</span>
                               <div className="pt-margin-bar"><div className="pt-margin-fill" style={{ width: `${Math.min(100, (p.margin / (totalMargin || 1)) * 100)}%` }} /></div>
                             </div>
+                          </td>
+                          <td>
+                            <button className="pt-ai-btn" onClick={() => setSelectedTradeId(p.id)} title="View AI Analysis">
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
+                            </button>
                           </td>
                           <td><span className="pt-duration">{fmtDuration(new Date() - p.entryTime)}</span></td>
                         </tr>
@@ -1007,6 +1116,28 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                 <div className="pt-history-stats">
                   <span className="pt-history-stat">Net: <span className={`value ${totalRealizedPnl >= 0 ? 'green' : 'red'}`}>{totalRealizedPnl > 0 ? '+' : ''}{totalRealizedPnl.toFixed(2)}</span></span>
                   <span className="pt-history-stat">W/L: <span className="value green">{wins}</span>/<span className="value red">{tradeHistory.length - wins}</span></span>
+                  <button className="pt-export-btn" onClick={clearHistory} style={{ color: 'var(--red)', borderColor: 'rgba(235, 77, 75, 0.3)', background: 'rgba(235, 77, 75, 0.1)' }}>
+                    Clear History
+                  </button>
+                  <button 
+                    className="pt-export-btn" 
+                    onClick={() => {
+                      const data = tradeHistory.map(t => ({
+                        ...t,
+                        ai_reviews: aiReviews[t.id] || null
+                      }));
+                      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = `vitti_ai_training_data_${new Date().toISOString().split('T')[0]}.json`;
+                      a.click();
+                    }}
+                    title="Download Dataset for AI Fine-Tuning"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
+                    Export for AI
+                  </button>
                 </div>
               )}
             </div>
@@ -1023,7 +1154,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                 <table className="pt-table">
                   <thead><tr>
                     <th>Exit Time</th><th>Type</th><th>Buy / Sell Strike</th>
-                    <th>Realized P&L</th><th>Margin</th><th>Exit Reason</th>
+                    <th>Realized P&L</th><th>Margin</th><th>AI</th><th>Exit Reason</th>
                   </tr></thead>
                   <tbody>
                     {tradeHistory.map((t, i) => {
@@ -1039,6 +1170,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                           </td>
                           <td><span className={`pt-pnl ${pnlValue > 0 ? 'positive' : pnlValue < 0 ? 'negative' : 'zero'}`}>{pnlValue > 0 ? '+' : ''}{pnlValue.toFixed(2)}</span></td>
                           <td>${t.margin.toFixed(0)}</td>
+                          <td>
+                            <button className="pt-ai-btn" onClick={() => setSelectedTradeId(t.id)} title="View AI Analysis">
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
+                            </button>
+                          </td>
                           <td><span className={`pt-exit-badge ${exitBadgeClass(t.exitReason)}`}>{t.exitReason}</span></td>
                         </tr>
                       )
@@ -1049,6 +1185,46 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             )}
           </div>
         </div>
+        {/* ── AI Review Modal ───────────────────────── */}
+        {selectedTradeId && (
+          <div className="pt-modal-overlay" onClick={() => setSelectedTradeId(null)}>
+            <div className="pt-modal" onClick={e => e.stopPropagation()}>
+              <div className="pt-modal-header">
+                <h3>Trade AI Analysis</h3>
+                <button className="pt-modal-close" onClick={() => setSelectedTradeId(null)}>&times;</button>
+              </div>
+              <div className="pt-modal-body">
+                {(!aiReviews[selectedTradeId] || (!aiReviews[selectedTradeId].claude && !aiReviews[selectedTradeId].groq)) ? (
+                  <div className="ai-loading">
+                    <div className="ai-spinner"></div>
+                    <p>AI models are analyzing the trade context...</p>
+                  </div>
+                ) : (
+                  <div className="ai-review-grid">
+                    <div className="ai-review-box">
+                      <div className="ai-header claude">
+                        <img src="https://anthropic.com/favicon.ico" alt="Claude" />
+                        Claude 3.5 Sonnet
+                      </div>
+                      <div className="ai-content">
+                        {aiReviews[selectedTradeId]?.claude || "Analysis pending..."}
+                      </div>
+                    </div>
+                    <div className="ai-review-box">
+                      <div className="ai-header groq">
+                        <img src="https://groq.com/favicon.ico" alt="Groq" />
+                        Llama 3.3 (70B)
+                      </div>
+                      <div className="ai-content">
+                        {aiReviews[selectedTradeId]?.groq || "Analysis pending..."}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
