@@ -58,7 +58,7 @@ Provide a brief observation on the setup/execution and suggest any improvements 
 
 export const getClaudeReview = async (trade, eventType, history = []) => {
   if (!ANTHROPIC_API_KEY) return 'Claude API Key missing';
-
+  
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -69,7 +69,7 @@ export const getClaudeReview = async (trade, eventType, history = []) => {
         'anthropic-dangerous-direct-browser-access': 'true'
       },
       body: JSON.stringify({
-        model: 'claude-3-5-sonnet-20240620',
+        model: 'claude-3-5-sonnet-latest',
         max_tokens: 500,
         messages: [{
           role: 'user',
@@ -77,9 +77,9 @@ export const getClaudeReview = async (trade, eventType, history = []) => {
         }]
       })
     });
-
+    
     const data = await response.json().catch(() => null);
-
+    
     if (!response.ok) {
       return `Claude Error (${response.status}): ${data?.error?.message || response.statusText}`;
     }
@@ -101,7 +101,7 @@ export const getGroqReview = async (trade, eventType, history = []) => {
   if (!GROQ_API_KEY) return 'Groq API Key missing';
 
   try {
-    const response = await fetch(GROQ_URL, {
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
