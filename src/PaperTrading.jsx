@@ -132,10 +132,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             sellQty: t.sell_qty,
             strikeDiff: t.strike_diff,
             underlying: t.underlying,
-            realizedGrossPnl: t.realized_gross_pnl,
-            realizedNetPnl: t.realized_net_pnl,
             claudeReview: t.claude_review,
-            groqReview: t.groq_review
+            groq_review: t.groq_review
           };
         });
 
@@ -470,21 +468,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           shouldExit = true;
           exitReason = forceExits.get(pos.id);
         } else {
-          const matchingSpread = topSpreads.find(s => s.buyLeg.symbol === pos.buyLeg.symbol);
-
-          if (matchingSpread) {
-            // BUY STRIKE IS THE SAME -> Update sell leg if it changed
-            if (matchingSpread.sellLeg.symbol !== pos.sellLeg.symbol) {
-              isUpdated = true;
-              updatedSpread = matchingSpread;
-            } else {
-              // Stay as is
-            }
-          } else {
-            // BUY STRIKE CHANGED -> Exit
+          // Rule: If buy strike loses its position (out of Top 3), exit it.
+          const stillInTop3 = topSpreads.some(s => s.buyLeg.symbol === pos.buyLeg.symbol);
+          if (!stillInTop3) {
             shouldExit = true;
             exitReason = 'Buy Strike lost Top 3 position';
           }
+          // Note: Sell-leg updates are removed as per request ("if buy strike changes, then, only exit it")
         }
 
         if (shouldExit) {
@@ -499,40 +489,20 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             totalFees,
             exitReason
           });
-        } else if (isUpdated) {
-          // Check for strike duplicates before updating
-          if (usedBuySymbols.has(updatedSpread.buyLeg.symbol) || usedSellSymbols.has(updatedSpread.sellLeg.symbol)) {
-            exited.push({ ...pos, exitTime: new Date(), exitBuyPrice: latestBuy, exitSellPrice: latestSell, realizedGrossPnl: grossPnl, realizedNetPnl: grossPnl - totalFees, exitFee, totalFees, exitReason: 'Strike Conflict on Update' });
-          } else {
-            const oldLegRealizedPnl = -sellPnl;
-            const newAccumulated = (pos.accumulatedSellPnl || 0) + oldLegRealizedPnl;
-            const newSellEntry = updatedSpread.sellLeg.markPrice;
-            const newSellFee = calculateFee(newSellEntry, spotPrice, updatedSpread.sellQty, updatedSpread.sellLeg.lotSize);
-            const newEntryFee = (pos.entryFee || 0) + exitSellFee + newSellFee;
-            // Update ID
-            const newId = `${updatedSpread.buyLeg.symbol}_${updatedSpread.sellLeg.symbol}`;
-            remaining.push({
-              ...pos,
-              id: newId,
-              sellLeg: updatedSpread.sellLeg,
-              sellQty: updatedSpread.sellQty,
-              entrySellPrice: newSellEntry,
-              accumulatedSellPnl: newAccumulated,
-              entryFee: newEntryFee,
-              currentBuyPrice: latestBuy,
-              currentSellPrice: newSellEntry,
-              unrealizedGrossPnl: buyPnl + newAccumulated,
-              unrealizedNetPnl: (buyPnl + newAccumulated) - (newEntryFee + exitBuyFee + calculateFee(newSellEntry, spotPrice, updatedSpread.sellQty, updatedSpread.sellLeg.lotSize)),
-              strikeDiff: updatedSpread.strikeDiff,
-              netPremium: updatedSpread.netPremium
-            });
-            usedBuySymbols.add(updatedSpread.buyLeg.symbol);
-            usedSellSymbols.add(updatedSpread.sellLeg.symbol);
-          }
         } else {
-          // Regular stay
+          // Regular stay - check for conflicts
           if (usedBuySymbols.has(pos.buyLeg.symbol) || usedSellSymbols.has(pos.sellLeg.symbol)) {
-            exited.push({ ...pos, exitTime: new Date(), exitBuyPrice: latestBuy, exitSellPrice: latestSell, realizedGrossPnl: grossPnl, realizedNetPnl: grossPnl - totalFees, exitFee, totalFees, exitReason: 'Strike Conflict' });
+            exited.push({
+              ...pos,
+              exitTime: new Date(),
+              exitBuyPrice: latestBuy,
+              exitSellPrice: latestSell,
+              realizedGrossPnl: grossPnl,
+              realizedNetPnl: grossPnl - totalFees,
+              exitFee,
+              totalFees,
+              exitReason: 'Strike Conflict'
+            });
           } else {
             remaining.push({
               ...pos,
@@ -750,22 +720,22 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       alert('Trade history is empty. Export will be available once trades are closed.');
       return;
     }
-    const headers = ['Entry Time', 'Exit Time', 'Type', 'Buy Strike', 'Sell Strike', 'Sell Qty', 'Entry Net Premium', 'Exit Net Premium', 'Gross PnL', 'Total Fees', 'Net PnL', 'Margin', 'Exit Reason'];
+    const headers = ['Entry Time', 'Exit Time', 'Type', 'Ratio', 'Buy Strike', 'Sell Strike', 'Entry Buy Price', 'Entry Sell Price', 'Exit Buy Price', 'Exit Sell Price', 'Gross PnL', 'Total Fees', 'Net PnL', 'Margin', 'Exit Reason'];
     const rows = tradeHistory.map(t => {
-      const entryNet = t.entryBuyPrice - (t.sellQty * t.entrySellPrice);
-      const exitNet = t.exitBuyPrice - (t.sellQty * t.exitSellPrice);
       return [
         formatTime(t.entryTime),
         formatTime(t.exitTime),
         t.type.toUpperCase(),
+        `1:${t.sellQty}`,
         t.buyLeg.strike,
         t.sellLeg.strike,
-        t.sellQty,
-        entryNet.toFixed(2),
-        exitNet.toFixed(2),
-        (t.realizedGrossPnl || t.realizedPnl || 0).toFixed(2),
+        t.entryBuyPrice || '',
+        t.entrySellPrice || '',
+        t.exitBuyPrice || '',
+        t.exitSellPrice || '',
+        (t.realizedGrossPnl || 0).toFixed(2),
         (t.totalFees || 0).toFixed(2),
-        (t.realizedNetPnl || t.realizedPnl || 0).toFixed(2),
+        (t.realizedNetPnl || 0).toFixed(2),
         t.margin.toFixed(2),
         t.exitReason
       ].join(',');
@@ -1148,8 +1118,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               <div className="pt-table-scroll">
                 <table className="pt-table">
                   <thead><tr>
-                    <th>Exit Time</th><th>Type</th><th>Buy / Sell Strike</th>
-                    <th>Realized P&L</th><th>Margin</th><th>AI</th><th>Exit Reason</th>
+                    <th>Exit Time</th>
+                    <th>Type / Ratio</th>
+                    <th>Buy / Sell Strike</th>
+                    <th>In (Buy / Sell)</th>
+                    <th>Out (Buy / Sell)</th>
+                    <th>Realized P&L</th>
+                    <th>AI</th>
+                    <th>Exit Reason</th>
                   </tr></thead>
                   <tbody>
                     {tradeHistory.map((t, i) => {
@@ -1157,14 +1133,38 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                       return (
                         <tr key={i}>
                           <td style={{ color: 'var(--text-dim)' }}>{formatTime(t.exitTime)}</td>
-                          <td><span className={`pt-type-badge ${t.type}`}>{t.type.toUpperCase()}</span></td>
                           <td>
-                            <span className="pt-strike-buy">{t.buyLeg.strike.toLocaleString()}</span>
-                            <span className="pt-strike-separator"> / </span>
-                            <span className="pt-strike-sell">{t.sellLeg.strike.toLocaleString()}</span>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                              <span className={`pt-type-badge ${t.type}`}>{t.type.toUpperCase()}</span>
+                              <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 600 }}>1:{t.sellQty}</span>
+                            </div>
                           </td>
-                          <td><span className={`pt-pnl ${pnlValue > 0 ? 'positive' : pnlValue < 0 ? 'negative' : 'zero'}`}>{pnlValue > 0 ? '+' : ''}{pnlValue.toFixed(2)}</span></td>
-                          <td>${t.margin.toFixed(0)}</td>
+                          <td>
+                            <div style={{ display: 'flex', flexDirection: 'column' }}>
+                              <span className="pt-strike-buy">{t.buyLeg.strike.toLocaleString()}</span>
+                              <span className="pt-strike-sell" style={{ fontSize: '11px', opacity: 0.8 }}>{t.sellLeg.strike.toLocaleString()}</span>
+                            </div>
+                          </td>
+                          <td>
+                            <div style={{ display: 'flex', flexDirection: 'column', fontSize: '12px' }}>
+                              <span style={{ color: '#3fb950' }}>{t.entryBuyPrice?.toFixed(1)}</span>
+                              <span style={{ color: '#f85149' }}>{t.entrySellPrice?.toFixed(1)}</span>
+                            </div>
+                          </td>
+                          <td>
+                            <div style={{ display: 'flex', flexDirection: 'column', fontSize: '12px' }}>
+                              <span style={{ color: '#3fb950' }}>{t.exitBuyPrice?.toFixed(1)}</span>
+                              <span style={{ color: '#f85149' }}>{t.exitSellPrice?.toFixed(1)}</span>
+                            </div>
+                          </td>
+                          <td>
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+                              <span className={`pt-pnl ${pnlValue > 0 ? 'positive' : pnlValue < 0 ? 'negative' : 'zero'}`}>
+                                {pnlValue > 0 ? '+' : ''}{pnlValue.toFixed(2)}
+                              </span>
+                              <span style={{ fontSize: '10px', color: 'var(--text-dim)' }}>Margin: ${t.margin?.toFixed(0)}</span>
+                            </div>
+                          </td>
                           <td>
                             <button className="pt-ai-btn" onClick={() => setSelectedTradeId(t.id)} title="View AI Analysis">
                               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>

@@ -119,7 +119,7 @@ export const getGroqReview = async (trade, eventType, history = []) => {
   if (!GROQ_API_KEY) return 'Groq API Key missing';
 
   try {
-    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    const response = await fetch(GROQ_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
