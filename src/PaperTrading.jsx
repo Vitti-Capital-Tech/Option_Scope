@@ -40,6 +40,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
   const [lastEvaluated, setLastEvaluated] = useState(0);
   const [timeRemaining, setTimeRemaining] = useState(null);
+  const allOpenedTradeIdsRef = useRef(new Set());
 
   const [config, setConfig] = useState(() => {
     const saved = localStorage.getItem('vitti_algo_config');
@@ -94,25 +95,28 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         console.error('Error fetching trade history:', error);
       } else if (data) {
         // Map snake_case from DB to camelCase used in app
-        const mapped = data.map(t => ({
-          ...t,
-          id: t.trade_id,
-          buyLeg: JSON.parse(t.buy_leg),
-          sellLeg: JSON.parse(t.sell_leg),
-          entryTime: new Date(t.entry_time),
-          exitTime: new Date(t.exit_time),
-          entryBuyPrice: t.entry_buy_price,
-          entrySellPrice: t.entry_sell_price,
-          exitBuyPrice: t.exit_buy_price,
-          exitSellPrice: t.exit_sell_price,
-          realizedGrossPnl: t.realized_gross_pnl,
-          realizedNetPnl: t.realized_net_pnl,
-          exitFee: t.exit_fee,
-          totalFees: t.total_fees,
-          exitReason: t.exit_reason,
-          sellQty: t.sell_qty,
-          strikeDiff: t.strike_diff
-        }));
+        const mapped = data.map(t => {
+          allOpenedTradeIdsRef.current.add(t.trade_id);
+          return {
+            ...t,
+            id: t.trade_id,
+            buyLeg: JSON.parse(t.buy_leg),
+            sellLeg: JSON.parse(t.sell_leg),
+            entryTime: new Date(t.entry_time),
+            exitTime: new Date(t.exit_time),
+            entryBuyPrice: t.entry_buy_price,
+            entrySellPrice: t.entry_sell_price,
+            exitBuyPrice: t.exit_buy_price,
+            exitSellPrice: t.exit_sell_price,
+            realizedGrossPnl: t.realized_gross_pnl,
+            realizedNetPnl: t.realized_net_pnl,
+            exitFee: t.exit_fee,
+            totalFees: t.total_fees,
+            exitReason: t.exit_reason,
+            sellQty: t.sell_qty,
+            strikeDiff: t.strike_diff
+          };
+        });
         setTradeHistory(mapped);
       }
     };
@@ -343,12 +347,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         if (distA !== distB) return distA - distB;
         return a.netPremium - b.netPremium;
       });
-      // Pick top 3 with UNIQUE buy strikes
+      // Pick top 3 with UNIQUE buy AND sell strikes
       const unique = [];
       const seenBuyStrikes = new Set();
+      const seenSellStrikes = new Set();
       for (const pair of validPairs) {
-        if (seenBuyStrikes.has(pair.buyLeg.strike)) continue;
+        if (seenBuyStrikes.has(pair.buyLeg.strike) || seenSellStrikes.has(pair.sellLeg.strike)) continue;
         seenBuyStrikes.add(pair.buyLeg.strike);
+        seenSellStrikes.add(pair.sellLeg.strike);
         unique.push(pair);
         if (unique.length >= 3) break;
       }
@@ -368,6 +374,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     setPositions(prev => {
       const remaining = [];
       const exited = [];
+      const usedBuySymbols = new Set();
+      const usedSellSymbols = new Set();
 
       for (const pos of prev) {
         let shouldExit = false;
@@ -375,33 +383,45 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         let isUpdated = false;
         let updatedSpread = null;
 
+        // Get latest prices for PnL calculation even if exiting
+        const latestBuy = tickerData[pos.buyLeg.symbol]?.markPrice || pos.buyLeg.markPrice;
+        const latestSell = tickerData[pos.sellLeg.symbol]?.markPrice || pos.sellLeg.markPrice;
+        const buyPnl = (latestBuy - pos.entryBuyPrice) * pos.buyLeg.lotSize;
+        const sellPnl = (latestSell - pos.entrySellPrice) * pos.sellLeg.lotSize * pos.sellQty;
+        const grossPnl = buyPnl - sellPnl + (pos.accumulatedSellPnl || 0);
+        const exitBuyFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize);
+        const exitSellFee = calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
+        const exitFee = exitBuyFee + exitSellFee;
+        const totalFees = (pos.entryFee || 0) + exitFee;
+
         if (forceExits.has(pos.id)) {
           shouldExit = true;
           exitReason = forceExits.get(pos.id);
         } else {
           const matchingSpread = topSpreads.find(s => s.buyLeg.symbol === pos.buyLeg.symbol);
-          if (!matchingSpread) {
-            shouldExit = true;
-            exitReason = 'Buy Strike Lost Top 3';
-          } else if (matchingSpread.sellLeg.symbol !== pos.sellLeg.symbol) {
-            isUpdated = true;
-            updatedSpread = matchingSpread;
+          if (matchingSpread) {
+            // Buy strike is still in top 3.
+            if (matchingSpread.sellLeg.symbol !== pos.sellLeg.symbol) {
+              // Recommended sell leg changed -> Try to update
+              // Check if the new sell leg is already "taken" by another existing position's buy or sell leg
+              // (Wait, we'll check usedSets below for safety)
+              isUpdated = true;
+              updatedSpread = matchingSpread;
+            } else {
+              // Buy and Sell both still match top spread perfectly
+            }
+          } else {
+            // Buy strike lost Top 3. Check if Sell strike is still recommended for ANY top spread
+            const sellStillInTop = topSpreads.some(s => s.sellLeg.symbol === pos.sellLeg.symbol);
+            if (!sellStillInTop) {
+              // BOTH changed.
+              shouldExit = true;
+              exitReason = 'Both Buy & Sell strikes changed';
+            } else {
+              // Stay in current spread because Sell leg is still top-tier
+            }
           }
         }
-
-        // Get latest prices for PnL
-        const latestBuy = tickerData[pos.buyLeg.symbol]?.markPrice || pos.buyLeg.markPrice;
-        const latestSell = tickerData[pos.sellLeg.symbol]?.markPrice || pos.sellLeg.markPrice;
-
-        // Include lotSize in PnL calculation
-        const buyPnl = (latestBuy - pos.entryBuyPrice) * pos.buyLeg.lotSize;
-        const sellPnl = (latestSell - pos.entrySellPrice) * pos.sellLeg.lotSize * pos.sellQty;
-        const grossPnl = buyPnl - sellPnl + (pos.accumulatedSellPnl || 0);
-
-        const exitBuyFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize);
-        const exitSellFee = calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
-        const exitFee = exitBuyFee + exitSellFee;
-        const totalFees = (pos.entryFee || 0) + exitFee;
 
         if (shouldExit) {
           exited.push({
@@ -416,43 +436,53 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             exitReason
           });
         } else if (isUpdated) {
-          const oldLegRealizedPnl = -sellPnl; // Since we are short, positive sellPnl is a loss.
-          const newAccumulated = (pos.accumulatedSellPnl || 0) + oldLegRealizedPnl;
-          const newSellEntry = updatedSpread.sellLeg.markPrice;
-          const newSellFee = calculateFee(newSellEntry, spotPrice, updatedSpread.sellQty, updatedSpread.sellLeg.lotSize);
-          const newEntryFee = (pos.entryFee || 0) + exitSellFee + newSellFee;
-
-          const newGrossPnl = buyPnl - 0 + newAccumulated; // 0 PnL on new sell leg right at entry
-          const newExitSellFee = calculateFee(newSellEntry, spotPrice, updatedSpread.sellQty, updatedSpread.sellLeg.lotSize);
-          const newTotalFees = newEntryFee + exitBuyFee + newExitSellFee;
-
-          remaining.push({
-            ...pos,
-            id: `${updatedSpread.buyLeg.symbol}_${updatedSpread.sellLeg.symbol}`,
-            sellLeg: updatedSpread.sellLeg,
-            sellQty: updatedSpread.sellQty,
-            entrySellPrice: newSellEntry,
-            accumulatedSellPnl: newAccumulated,
-            entryFee: newEntryFee,
-            currentBuyPrice: latestBuy,
-            currentSellPrice: newSellEntry,
-            unrealizedGrossPnl: newGrossPnl,
-            unrealizedNetPnl: newGrossPnl - newTotalFees,
-            currentExitFee: exitBuyFee + newExitSellFee,
-            currentTotalFees: newTotalFees,
-            strikeDiff: updatedSpread.strikeDiff,
-            netPremium: updatedSpread.netPremium
-          });
+          // Check for strike duplicates before updating
+          if (usedBuySymbols.has(updatedSpread.buyLeg.symbol) || usedSellSymbols.has(updatedSpread.sellLeg.symbol)) {
+            exited.push({ ...pos, exitTime: new Date(), exitBuyPrice: latestBuy, exitSellPrice: latestSell, realizedGrossPnl: grossPnl, realizedNetPnl: grossPnl - totalFees, exitFee, totalFees, exitReason: 'Strike Conflict on Update' });
+          } else {
+            const oldLegRealizedPnl = -sellPnl; 
+            const newAccumulated = (pos.accumulatedSellPnl || 0) + oldLegRealizedPnl;
+            const newSellEntry = updatedSpread.sellLeg.markPrice;
+            const newSellFee = calculateFee(newSellEntry, spotPrice, updatedSpread.sellQty, updatedSpread.sellLeg.lotSize);
+            const newEntryFee = (pos.entryFee || 0) + exitSellFee + newSellFee;
+            const newId = `${updatedSpread.buyLeg.symbol}_${updatedSpread.sellLeg.symbol}`;
+            
+            allOpenedTradeIdsRef.current.add(newId);
+            remaining.push({
+              ...pos,
+              id: newId,
+              sellLeg: updatedSpread.sellLeg,
+              sellQty: updatedSpread.sellQty,
+              entrySellPrice: newSellEntry,
+              accumulatedSellPnl: newAccumulated,
+              entryFee: newEntryFee,
+              currentBuyPrice: latestBuy,
+              currentSellPrice: newSellEntry,
+              unrealizedGrossPnl: buyPnl + newAccumulated,
+              unrealizedNetPnl: (buyPnl + newAccumulated) - (newEntryFee + exitBuyFee + calculateFee(newSellEntry, spotPrice, updatedSpread.sellQty, updatedSpread.sellLeg.lotSize)),
+              strikeDiff: updatedSpread.strikeDiff,
+              netPremium: updatedSpread.netPremium
+            });
+            usedBuySymbols.add(updatedSpread.buyLeg.symbol);
+            usedSellSymbols.add(updatedSpread.sellLeg.symbol);
+          }
         } else {
-          remaining.push({
-            ...pos,
-            currentBuyPrice: latestBuy,
-            currentSellPrice: latestSell,
-            unrealizedGrossPnl: grossPnl,
-            unrealizedNetPnl: grossPnl - totalFees,
-            currentExitFee: exitFee,
-            currentTotalFees: totalFees
-          });
+          // Regular stay
+          if (usedBuySymbols.has(pos.buyLeg.symbol) || usedSellSymbols.has(pos.sellLeg.symbol)) {
+            exited.push({ ...pos, exitTime: new Date(), exitBuyPrice: latestBuy, exitSellPrice: latestSell, realizedGrossPnl: grossPnl, realizedNetPnl: grossPnl - totalFees, exitFee, totalFees, exitReason: 'Strike Conflict' });
+          } else {
+            remaining.push({
+              ...pos,
+              currentBuyPrice: latestBuy,
+              currentSellPrice: latestSell,
+              unrealizedGrossPnl: grossPnl,
+              unrealizedNetPnl: grossPnl - totalFees,
+              currentExitFee: exitFee,
+              currentTotalFees: totalFees
+            });
+            usedBuySymbols.add(pos.buyLeg.symbol);
+            usedSellSymbols.add(pos.sellLeg.symbol);
+          }
         }
       }
 
@@ -499,8 +529,19 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         }
 
         const id = `${spread.buyLeg.symbol}_${spread.sellLeg.symbol}`;
+        
+        // Skip if this specific combo was ever traded before (to avoid repetitive fees)
+        if (allOpenedTradeIdsRef.current.has(id)) continue;
+
         const exists = remaining.find(p => p.id === id);
-        if (!exists) {
+        // Also skip if either the buy or sell strike is already "covered" by an active position
+        const buyCovered = usedBuySymbols.has(spread.buyLeg.symbol);
+        const sellCovered = usedSellSymbols.has(spread.sellLeg.symbol);
+
+        if (!exists && !buyCovered && !sellCovered) {
+          allOpenedTradeIdsRef.current.add(id);
+          usedBuySymbols.add(spread.buyLeg.symbol);
+          usedSellSymbols.add(spread.sellLeg.symbol);
           // Margin: 100% for long (1x), 200x leverage for short leg (Value / 200)
           const longMargin = spread.buyLeg.markPrice * spread.buyLeg.lotSize * 1;
           const shortMargin = (spread.sellLeg.markPrice * spread.sellLeg.lotSize * spread.sellQty) / 200;
