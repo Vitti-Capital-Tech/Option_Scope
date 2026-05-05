@@ -138,7 +138,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             groqReview: t.groq_review
           };
         });
-        
+
         // Populate aiReviews state from fetched history
         const initialReviews = {};
         mapped.forEach(t => {
@@ -471,7 +471,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           exitReason = forceExits.get(pos.id);
         } else {
           const matchingSpread = topSpreads.find(s => s.buyLeg.symbol === pos.buyLeg.symbol);
-          
+
           if (matchingSpread) {
             // BUY STRIKE IS THE SAME -> Update sell leg if it changed
             if (matchingSpread.sellLeg.symbol !== pos.sellLeg.symbol) {
@@ -504,7 +504,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           if (usedBuySymbols.has(updatedSpread.buyLeg.symbol) || usedSellSymbols.has(updatedSpread.sellLeg.symbol)) {
             exited.push({ ...pos, exitTime: new Date(), exitBuyPrice: latestBuy, exitSellPrice: latestSell, realizedGrossPnl: grossPnl, realizedNetPnl: grossPnl - totalFees, exitFee, totalFees, exitReason: 'Strike Conflict on Update' });
           } else {
-            const oldLegRealizedPnl = -sellPnl; 
+            const oldLegRealizedPnl = -sellPnl;
             const newAccumulated = (pos.accumulatedSellPnl || 0) + oldLegRealizedPnl;
             const newSellEntry = updatedSpread.sellLeg.markPrice;
             const newSellFee = calculateFee(newSellEntry, spotPrice, updatedSpread.sellQty, updatedSpread.sellLeg.lotSize);
@@ -561,7 +561,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               getClaudeReview(t, 'EXIT', memory),
               getGroqReview(t, 'EXIT', memory)
             ]);
-            
+
             setAiReviews(prev => ({
               ...prev,
               [t.id]: { claude, groq }
@@ -610,7 +610,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         }
 
         const id = `${spread.buyLeg.symbol}_${spread.sellLeg.symbol}`;
-        
+
         // Skip if this specific pair is already in Trade History (Client Rule)
         const inHistory = tradeHistory.some(h => h.id === id);
         if (inHistory) {
@@ -1114,8 +1114,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                 <div className="pt-history-stats">
                   <span className="pt-history-stat">Net: <span className={`value ${totalRealizedPnl >= 0 ? 'green' : 'red'}`}>{totalRealizedPnl > 0 ? '+' : ''}{totalRealizedPnl.toFixed(2)}</span></span>
                   <span className="pt-history-stat">W/L: <span className="value green">{wins}</span>/<span className="value red">{tradeHistory.length - wins}</span></span>
-                  <button 
-                    className="pt-export-btn" 
+                  <button
+                    className="pt-export-btn"
                     onClick={() => {
                       const data = tradeHistory.map(t => ({
                         ...t,
@@ -1199,7 +1199,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                     <div className="ai-review-box">
                       <div className="ai-header claude">
                         <img src="https://anthropic.com/favicon.ico" alt="Claude" />
-                        Claude 3.5 Sonnet
+                        Claude Sonnet 4.6
                       </div>
                       <div className="ai-content">
                         {aiReviews[selectedTradeId]?.claude || "Analysis pending..."}

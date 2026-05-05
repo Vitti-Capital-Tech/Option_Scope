@@ -17,8 +17,8 @@ const formatTradePrompt = (trade, eventType, history = []) => {
   const {
     id, underlying, type, buyLeg, sellLeg, sellQty, strikeDiff,
     entryTime, exitTime, entryBuyPrice, entrySellPrice,
-    exitBuyPrice, exitSellPrice, 
-    realizedGrossPnl, realizedNetPnl, 
+    exitBuyPrice, exitSellPrice,
+    realizedGrossPnl, realizedNetPnl,
     unrealizedGrossPnl, unrealizedNetPnl,
     totalFees, margin, exitReason
   } = trade;
@@ -27,12 +27,12 @@ const formatTradePrompt = (trade, eventType, history = []) => {
 
   let prompt = `### IMPORTANT: ANALYZE ONLY THE "CURRENT TRADE" BELOW ###\n`;
   prompt += `### USE THE "REFERENCE" SECTION ONLY FOR CONTEXT ###\n\n`;
-  
+
   // Include History (Memory) if available
   if (history && history.length > 0) {
     prompt += `### REFERENCE: SUCCESSFUL PAST TRADES (CONTEXT) ###\n`;
     history.forEach((past, i) => {
-      prompt += `Reference Example ${i+1}: P&L: +$${Number(past.realized_net_pnl).toFixed(2)} | Asset: ${past.underlying} | Strategy: ${past.type} | Strike Diff: ${past.strike_diff}\n`;
+      prompt += `Reference Example ${i + 1}: P&L: +$${Number(past.realized_net_pnl).toFixed(2)} | Asset: ${past.underlying} | Strategy: ${past.type} | Strike Diff: ${past.strike_diff}\n`;
     });
     prompt += `\n`;
   }
@@ -50,14 +50,14 @@ Entry Buy Price: ${entryBuyPrice}
 Entry Sell Price: ${entrySellPrice}
 ${eventType === 'EXIT' ? `Exit Buy Price: ${exitBuyPrice} | Exit Sell Price: ${exitSellPrice}` : ''}
 -----------------------------------------
-${eventType === 'EXIT' 
-    ? `FINAL REALIZED P&L:
+${eventType === 'EXIT'
+      ? `FINAL REALIZED P&L:
    - Market (Gross): $${Number(realizedGrossPnl).toFixed(2)}
    - After Fees (Net): $${Number(realizedNetPnl).toFixed(2)}`
-    : `CURRENT UNREALIZED P&L:
+      : `CURRENT UNREALIZED P&L:
    - Market (Gross): $${Number(unrealizedGrossPnl).toFixed(2)}
    - After Fees (Net): $${Number(unrealizedNetPnl).toFixed(2)}`
-}
+    }
 Total Fees: $${Number(totalFees).toFixed(2)}
 Margin Used: $${Number(margin).toFixed(2)}
 ${eventType === 'EXIT' ? `Exit Reason: ${exitReason}` : ''}
@@ -76,9 +76,9 @@ INSTRUCTION:
 
 export const getClaudeReview = async (trade, eventType, history = []) => {
   if (!ANTHROPIC_API_KEY) return 'Claude API Key missing';
-  
+
   try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+    const response = await fetch(CLAUDE_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -87,17 +87,17 @@ export const getClaudeReview = async (trade, eventType, history = []) => {
         'anthropic-dangerous-direct-browser-access': 'true'
       },
       body: JSON.stringify({
-        model: 'claude-3-5-sonnet-latest',
-        max_tokens: 500,
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1000, // Increased to 1000 to allow for more detailed analysis
         messages: [{
           role: 'user',
           content: formatTradePrompt(trade, eventType, history)
         }]
       })
     });
-    
+
     const data = await response.json().catch(() => null);
-    
+
     if (!response.ok) {
       return `Claude Error (${response.status}): ${data?.error?.message || response.statusText}`;
     }
