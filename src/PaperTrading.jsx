@@ -197,7 +197,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
           const buyPnl = (latestBuy - pos.entryBuyPrice) * pos.buyLeg.lotSize;
           const sellPnl = (latestSell - pos.entrySellPrice) * pos.sellLeg.lotSize * pos.sellQty;
-          const grossPnl = buyPnl - sellPnl;
+          const grossPnl = buyPnl - sellPnl + (pos.accumulatedSellPnl || 0);
 
           const exitBuyFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize);
           const exitSellFee = calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
@@ -333,13 +333,21 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       for (const pos of prev) {
         let shouldExit = false;
         let exitReason = '';
+        let isUpdated = false;
+        let updatedSpread = null;
 
         if (forceExits.has(pos.id)) {
           shouldExit = true;
           exitReason = forceExits.get(pos.id);
-        } else if (!currentTopIds.has(pos.id)) {
-          shouldExit = true;
-          exitReason = 'Lost Top 3 Position';
+        } else {
+          const matchingSpread = topSpreads.find(s => s.buyLeg.symbol === pos.buyLeg.symbol);
+          if (!matchingSpread) {
+            shouldExit = true;
+            exitReason = 'Buy Strike Lost Top 3';
+          } else if (matchingSpread.sellLeg.symbol !== pos.sellLeg.symbol) {
+            isUpdated = true;
+            updatedSpread = matchingSpread;
+          }
         }
 
         // Get latest prices for PnL
@@ -349,7 +357,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         // Include lotSize in PnL calculation
         const buyPnl = (latestBuy - pos.entryBuyPrice) * pos.buyLeg.lotSize;
         const sellPnl = (latestSell - pos.entrySellPrice) * pos.sellLeg.lotSize * pos.sellQty;
-        const grossPnl = buyPnl - sellPnl;
+        const grossPnl = buyPnl - sellPnl + (pos.accumulatedSellPnl || 0);
 
         const exitBuyFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize);
         const exitSellFee = calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
@@ -367,6 +375,34 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             exitFee,
             totalFees,
             exitReason
+          });
+        } else if (isUpdated) {
+          const oldLegRealizedPnl = -sellPnl; // Since we are short, positive sellPnl is a loss.
+          const newAccumulated = (pos.accumulatedSellPnl || 0) + oldLegRealizedPnl;
+          const newSellEntry = updatedSpread.sellLeg.markPrice;
+          const newSellFee = calculateFee(newSellEntry, spotPrice, updatedSpread.sellQty, updatedSpread.sellLeg.lotSize);
+          const newEntryFee = (pos.entryFee || 0) + exitSellFee + newSellFee;
+
+          const newGrossPnl = buyPnl - 0 + newAccumulated; // 0 PnL on new sell leg right at entry
+          const newExitSellFee = calculateFee(newSellEntry, spotPrice, updatedSpread.sellQty, updatedSpread.sellLeg.lotSize);
+          const newTotalFees = newEntryFee + exitBuyFee + newExitSellFee;
+
+          remaining.push({
+            ...pos,
+            id: `${updatedSpread.buyLeg.symbol}_${updatedSpread.sellLeg.symbol}`,
+            sellLeg: updatedSpread.sellLeg,
+            sellQty: updatedSpread.sellQty,
+            entrySellPrice: newSellEntry,
+            accumulatedSellPnl: newAccumulated,
+            entryFee: newEntryFee,
+            currentBuyPrice: latestBuy,
+            currentSellPrice: newSellEntry,
+            unrealizedGrossPnl: newGrossPnl,
+            unrealizedNetPnl: newGrossPnl - newTotalFees,
+            currentExitFee: exitBuyFee + newExitSellFee,
+            currentTotalFees: newTotalFees,
+            strikeDiff: updatedSpread.strikeDiff,
+            netPremium: updatedSpread.netPremium
           });
         } else {
           remaining.push({
