@@ -100,10 +100,6 @@ export default function ResultTable({
                 <th>IV Diff</th>
                 <th>Buy Δ / Sell Δ</th>
                 <th>Net Δ</th>
-                <th>Net Θ</th>
-                <th>Net Γ</th>
-                <th>Net ν</th>
-                <th>Net ρ</th>
               </tr>
             </thead>
             <tbody>
@@ -170,10 +166,6 @@ export default function ResultTable({
                             <span className='scanner-sell'>{bestRow.sellLeg.delta?.toFixed(4)}</span></div>
                         </td>
                         <td>{bestRow.deltaDiff.toFixed(4)}</td>
-                        <td style={{ color: '#ff7b72' }}>{bestRow.thetaDiff.toFixed(2)}</td>
-                        <td style={{ color: 'var(--accent)' }}>{bestRow.gammaDiff.toFixed(6)}</td>
-                        <td style={{ color: 'var(--comb)' }}>{bestRow.vegaDiff.toFixed(2)}</td>
-                        <td style={{ color: '#58a6ff' }}>{bestRow.rhoDiff.toFixed(4)}</td>
                       </tr>
 
                       {/* Other rows for this strike */}
@@ -196,10 +188,6 @@ export default function ResultTable({
                               <span className='scanner-sell'>{r.sellLeg.delta?.toFixed(4)}</span></div>
                           </td>
                           <td>{r.deltaDiff.toFixed(4)}</td>
-                          <td style={{ color: '#ff7b72' }}>{r.thetaDiff.toFixed(2)}</td>
-                          <td style={{ color: 'var(--accent)' }}>{r.gammaDiff.toFixed(6)}</td>
-                          <td style={{ color: 'var(--comb)' }}>{r.vegaDiff.toFixed(2)}</td>
-                          <td style={{ color: '#58a6ff' }}>{r.rhoDiff.toFixed(4)}</td>
                         </tr>
                       ))}
                     </React.Fragment>
