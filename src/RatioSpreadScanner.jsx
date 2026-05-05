@@ -37,7 +37,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
   const [config, setConfig] = useState(() => {
     const saved = localStorage.getItem('vitti_algo_config');
     if (saved) {
-      try { return JSON.parse(saved); } catch (e) {}
+      try { return JSON.parse(saved); } catch (e) { }
     }
     return {
       minStrikeDiff: 800,
@@ -572,7 +572,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
               />
             </div>
             <div className="form-group" style={{ marginBottom: 0, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <label style={{ marginBottom: 0 }}>Max Net Prem ($):</label>
+              <label style={{ marginBottom: 0 }}>Max Debit ($):</label>
               <input
                 type="number"
                 value={config.maxNetPremium}
