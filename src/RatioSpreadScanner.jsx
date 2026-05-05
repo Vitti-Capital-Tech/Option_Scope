@@ -6,6 +6,7 @@ import {
 import { useTabListener } from './useTabSync';
 
 const UNDERLYINGS = ['BTC', 'ETH'];
+const SCANNER_TOP_KEY = 'vitti_scanner_top_spreads_v1';
 
 import ResultTable from './ResultTable';
 import { normalizeIv, toFiniteNumber, matchesOptionType } from './scannerUtils';
@@ -48,6 +49,20 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
     };
   });
 
+  const pickTopUniqueBuyStrikes = useCallback((spreads, limit = 3) => {
+    const out = [];
+    const seenBuyStrikes = new Set();
+    for (const s of spreads) {
+      const buyStrike = s?.buyLeg?.strike;
+      if (buyStrike == null) continue;
+      if (seenBuyStrikes.has(buyStrike)) continue;
+      seenBuyStrikes.add(buyStrike);
+      out.push(s);
+      if (out.length >= limit) break;
+    }
+    return out;
+  }, []);
+
   const flushTickerBuffer = useCallback(() => {
     flushTimerRef.current = null;
     const buffered = tickerBufferRef.current;
@@ -56,6 +71,38 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
     latestTickerDataRef.current = { ...latestTickerDataRef.current, ...buffered };
     setTickerData(latestTickerDataRef.current);
   }, []);
+
+  const broadcastScannerTopSpreads = useCallback((payload) => {
+    try {
+      const ch = new BroadcastChannel('option-scope-sync');
+      ch.postMessage({ type: 'SCANNER_TOP_SPREADS_SYNC', payload, senderId: 'scanner', timestamp: Date.now() });
+      ch.close();
+    } catch (e) { }
+  }, []);
+
+  const publishTopSpreads = useCallback((calls, puts) => {
+    const topCalls = pickTopUniqueBuyStrikes(calls, 3);
+    const topPuts = pickTopUniqueBuyStrikes(puts, 3);
+    const payload = {
+      underlying,
+      expiry: selExpiry,
+      timestamp: Date.now(),
+      callTop3: topCalls.map(s => ({
+        id: `${s.buyLeg.symbol}_${s.sellLeg.symbol}`,
+        buySymbol: s.buyLeg.symbol,
+        sellSymbol: s.sellLeg.symbol,
+        buyStrike: s.buyLeg.strike
+      })),
+      putTop3: topPuts.map(s => ({
+        id: `${s.buyLeg.symbol}_${s.sellLeg.symbol}`,
+        buySymbol: s.buyLeg.symbol,
+        sellSymbol: s.sellLeg.symbol,
+        buyStrike: s.buyLeg.strike
+      }))
+    };
+    localStorage.setItem(SCANNER_TOP_KEY, JSON.stringify(payload));
+    broadcastScannerTopSpreads(payload);
+  }, [underlying, selExpiry, broadcastScannerTopSpreads, pickTopUniqueBuyStrikes]);
 
   // ── Load products on underlying change ──────────────────────────────────
   useEffect(() => {
@@ -293,11 +340,14 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
     // For Put: ATM or OTM means strike <= atmStrike
     const putTickers = allTickers.filter(t => t.type === 'put' && (atmStrike === null || t.strike <= atmStrike));
 
-    setResultsCall(scanTickers(callTickers));
-    setResultsPut(scanTickers(putTickers));
+    const nextCalls = scanTickers(callTickers);
+    const nextPuts = scanTickers(putTickers);
+    setResultsCall(nextCalls);
+    setResultsPut(nextPuts);
+    publishTopSpreads(nextCalls, nextPuts);
     setLastRefreshed(Date.now());
 
-  }, [scanning, spotPrice, config]);
+  }, [scanning, spotPrice, config, publishTopSpreads]);
 
   // Periodic and conditional scanning
   useEffect(() => {
@@ -351,7 +401,10 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
     tickerBufferRef.current = {};
     setScanning(false);
     setExpectedTickerCount(0);
-  }, []);
+    const payload = { underlying, expiry: selExpiry, timestamp: Date.now(), callTop3: [], putTop3: [] };
+    localStorage.setItem(SCANNER_TOP_KEY, JSON.stringify(payload));
+    broadcastScannerTopSpreads(payload);
+  }, [underlying, selExpiry, broadcastScannerTopSpreads]);
 
   // ── Cross-tab sync ─────────────────────────────────────────────────────
   const startScanRef = useRef(startScan);
