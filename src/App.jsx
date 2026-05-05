@@ -1715,7 +1715,13 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                         vega: callGreeks.vega + putGreeks.vega,
                         theta: callGreeks.theta + putGreeks.theta,
                         rho: callGreeks.rho + putGreeks.rho,
-                        iv: (callGreeks.iv + putGreeks.iv) / 2
+                        iv: (callGreeks.iv + putGreeks.iv) / 2,
+                        cDelta: callGreeks.delta, pDelta: putGreeks.delta,
+                        cGamma: callGreeks.gamma, pGamma: putGreeks.gamma,
+                        cVega: callGreeks.vega, pVega: putGreeks.vega,
+                        cTheta: callGreeks.theta, pTheta: putGreeks.theta,
+                        cRho: callGreeks.rho, pRho: putGreeks.rho,
+                        cIv: callGreeks.iv, pIv: putGreeks.iv
                       };
                     }
                   } else if (item.type === 'call') {
@@ -1776,27 +1782,75 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                         </div>
                         <div className="watch-price-block">
                           <span className="watch-price-label">DELTA</span>
-                          <span className="watch-price-val" style={{ color: 'var(--accent)', fontSize: 13 }}>{data.greeks?.delta != null ? data.greeks.delta.toFixed(4) : '—'}</span>
+                          {item.type === 'combined' && data.greeks?.cDelta != null ? (
+                            <div className="watch-price-val" style={{ fontSize: 11, display: 'flex', alignItems: 'center' }}>
+                              <span style={{ color: 'var(--call)' }}>{data.greeks.cDelta.toFixed(4)}</span>
+                              <span style={{ margin: '0 8px', opacity: 0.15 }}>|</span>
+                              <span style={{ color: 'var(--put)' }}>{data.greeks.pDelta.toFixed(4)}</span>
+                            </div>
+                          ) : (
+                            <span className="watch-price-val" style={{ color: 'var(--accent)', fontSize: 13 }}>{data.greeks?.delta != null ? data.greeks.delta.toFixed(4) : '—'}</span>
+                          )}
                         </div>
                         <div className="watch-price-block">
                           <span className="watch-price-label">GAMMA</span>
-                          <span className="watch-price-val" style={{ color: 'var(--accent)', fontSize: 13 }}>{data.greeks?.gamma != null ? data.greeks.gamma.toFixed(5) : '—'}</span>
+                          {item.type === 'combined' && data.greeks?.cGamma != null ? (
+                            <div className="watch-price-val" style={{ fontSize: 11, display: 'flex', alignItems: 'center' }}>
+                              <span style={{ color: 'var(--call)' }}>{data.greeks.cGamma.toFixed(5)}</span>
+                              <span style={{ margin: '0 8px', opacity: 0.15 }}>|</span>
+                              <span style={{ color: 'var(--put)' }}>{data.greeks.pGamma.toFixed(5)}</span>
+                            </div>
+                          ) : (
+                            <span className="watch-price-val" style={{ color: 'var(--accent)', fontSize: 13 }}>{data.greeks?.gamma != null ? data.greeks.gamma.toFixed(5) : '—'}</span>
+                          )}
                         </div>
                         <div className="watch-price-block">
                           <span className="watch-price-label">VEGA</span>
-                          <span className="watch-price-val" style={{ color: 'var(--comb)', fontSize: 13 }}>{data.greeks?.vega != null ? data.greeks.vega.toFixed(2) : '—'}</span>
+                          {item.type === 'combined' && data.greeks?.cVega != null ? (
+                            <div className="watch-price-val" style={{ fontSize: 11, display: 'flex', alignItems: 'center' }}>
+                              <span style={{ color: 'var(--call)' }}>{data.greeks.cVega.toFixed(2)}</span>
+                              <span style={{ margin: '0 8px', opacity: 0.15 }}>|</span>
+                              <span style={{ color: 'var(--put)' }}>{data.greeks.pVega.toFixed(2)}</span>
+                            </div>
+                          ) : (
+                            <span className="watch-price-val" style={{ color: 'var(--comb)', fontSize: 13 }}>{data.greeks?.vega != null ? data.greeks.vega.toFixed(2) : '—'}</span>
+                          )}
                         </div>
                         <div className="watch-price-block">
                           <span className="watch-price-label">THETA</span>
-                          <span className="watch-price-val" style={{ color: '#ff7b72', fontSize: 13 }}>{data.greeks?.theta != null ? data.greeks.theta.toFixed(2) : '—'}</span>
+                          {item.type === 'combined' && data.greeks?.cTheta != null ? (
+                            <div className="watch-price-val" style={{ fontSize: 11, display: 'flex', alignItems: 'center' }}>
+                              <span style={{ color: 'var(--call)' }}>{data.greeks.cTheta.toFixed(2)}</span>
+                              <span style={{ margin: '0 8px', opacity: 0.15 }}>|</span>
+                              <span style={{ color: 'var(--put)' }}>{data.greeks.pTheta.toFixed(2)}</span>
+                            </div>
+                          ) : (
+                            <span className="watch-price-val" style={{ color: '#ff7b72', fontSize: 13 }}>{data.greeks?.theta != null ? data.greeks.theta.toFixed(2) : '—'}</span>
+                          )}
                         </div>
                         <div className="watch-price-block">
                           <span className="watch-price-label">RHO</span>
-                          <span className="watch-price-val" style={{ color: '#58a6ff', fontSize: 13 }}>{data.greeks?.rho != null ? data.greeks.rho.toFixed(4) : '—'}</span>
+                          {item.type === 'combined' && data.greeks?.cRho != null ? (
+                            <div className="watch-price-val" style={{ fontSize: 11, display: 'flex', alignItems: 'center' }}>
+                              <span style={{ color: 'var(--call)' }}>{data.greeks.cRho.toFixed(4)}</span>
+                              <span style={{ margin: '0 8px', opacity: 0.15 }}>|</span>
+                              <span style={{ color: 'var(--put)' }}>{data.greeks.pRho.toFixed(4)}</span>
+                            </div>
+                          ) : (
+                            <span className="watch-price-val" style={{ color: '#58a6ff', fontSize: 13 }}>{data.greeks?.rho != null ? data.greeks.rho.toFixed(4) : '—'}</span>
+                          )}
                         </div>
                         <div className="watch-price-block">
                           <span className="watch-price-label">IV %</span>
-                          <span className="watch-price-val" style={{ color: 'var(--comb)', fontSize: 13 }}>{data.greeks?.iv != null ? (data.greeks.iv * 100).toFixed(1) : '—'}%</span>
+                          {item.type === 'combined' && data.greeks?.cIv != null ? (
+                            <div className="watch-price-val" style={{ fontSize: 11, display: 'flex', alignItems: 'center' }}>
+                              <span style={{ color: 'var(--call)' }}>{(data.greeks.cIv * 100).toFixed(1)}%</span>
+                              <span style={{ margin: '0 8px', opacity: 0.15 }}>|</span>
+                              <span style={{ color: 'var(--put)' }}>{(data.greeks.pIv * 100).toFixed(1)}%</span>
+                            </div>
+                          ) : (
+                            <span className="watch-price-val" style={{ color: 'var(--comb)', fontSize: 13 }}>{data.greeks?.iv != null ? (data.greeks.iv * 100).toFixed(1) : '—'}%</span>
+                          )}
                         </div>
                       </div>
                     </div>
