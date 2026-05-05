@@ -66,10 +66,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     }
     return {
       minStrikeDiff: 800,
-      minIvDiff: 3,
-      maxRatioDeviation: 0.35,
-      minSellPremium: 8,
-      maxNetPremium: 25,
+      minIvDiff: 5,
+      maxRatioDeviation: 0.25,
+      minSellPremium: 10,
+      maxNetPremium: 20,
     };
   });
 
