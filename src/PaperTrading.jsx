@@ -433,43 +433,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
   }, [tickerData, trading, spotPrice, config, expectedTickerCount]);
 
-  const closePosition = (posId, reason = 'Manual Exit') => {
-    setPositions(prev => {
-      const pos = prev.find(p => p.id === posId);
-      if (!pos) return prev;
-
-      const latestBuy = tickerData[pos.buyLeg.symbol]?.markPrice || pos.buyLeg.markPrice;
-      const latestSell = tickerData[pos.sellLeg.symbol]?.markPrice || pos.sellLeg.markPrice;
-      const buyPnl = (latestBuy - pos.entryBuyPrice) * pos.buyLeg.lotSize;
-      const sellPnl = (latestSell - pos.entrySellPrice) * pos.sellLeg.lotSize * pos.sellQty;
-      const grossPnl = buyPnl - sellPnl;
-
-      const exitBuyFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize);
-      const exitSellFee = calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
-      const exitFee = exitBuyFee + exitSellFee;
-      const totalFees = (pos.entryFee || 0) + exitFee;
-
-      const exitedTrade = {
-        ...pos,
-        exitTime: new Date(),
-        exitBuyPrice: latestBuy,
-        exitSellPrice: latestSell,
-        realizedGrossPnl: grossPnl,
-        realizedNetPnl: grossPnl - totalFees,
-        exitFee,
-        totalFees,
-        exitReason: reason
-      };
-
-      const now = Date.now();
-      cooldownRef.current[pos.buyLeg.symbol] = now + 60000;
-      cooldownRef.current[pos.sellLeg.symbol] = now + 60000;
-
-      setTradeHistory(th => [exitedTrade, ...th]);
-      return prev.filter(p => p.id !== posId);
-    });
-  };
-
   useEffect(() => () => {
     if (wsRef.current) wsRef.current.close();
     if (spotIntervalRef.current) clearInterval(spotIntervalRef.current);
@@ -854,7 +817,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                   <thead><tr>
                     <th>Type</th><th>Buy Strike</th><th>Sell Strike</th><th>Sell Qty</th>
                     <th>Entry Net</th><th>Current Net</th><th>Unrl P&L</th>
-                    <th>Margin</th><th>Duration</th><th style={{ textAlign: 'center' }}>Action</th>
+                    <th>Margin</th><th>Duration</th>
                   </tr></thead>
                   <tbody>
                     {positions.map(p => {
@@ -878,14 +841,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                             </div>
                           </td>
                           <td><span className="pt-duration">{fmtDuration(new Date() - p.entryTime)}</span></td>
-                          <td style={{ textAlign: 'center' }}>
-                            <button className="watch-delete-btn" title="Close Position" onClick={() => closePosition(p.id)} style={{ margin: '0 auto', color: '#f6465d' }}>
-                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <polyline points="3 6 5 6 21 6"></polyline>
-                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                              </svg>
-                            </button>
-                          </td>
                         </tr>
                       );
                     })}
