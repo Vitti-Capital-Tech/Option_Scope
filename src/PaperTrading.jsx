@@ -113,13 +113,16 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       } else if (data) {
         // Map snake_case from DB to camelCase used in app
         const mapped = data.map(t => {
+          const buyLeg = t.buy_leg ? JSON.parse(t.buy_leg) : null;
+          const sellLeg = t.sell_leg ? JSON.parse(t.sell_leg) : null;
+          
           return {
             ...t,
             id: t.trade_id,
-            buyLeg: JSON.parse(t.buy_leg),
-            sellLeg: JSON.parse(t.sell_leg),
+            buyLeg,
+            sellLeg,
             entryTime: new Date(t.entry_time),
-            exitTime: new Date(t.exit_time),
+            exitTime: t.exit_time ? new Date(t.exit_time) : null,
             entryBuyPrice: t.entry_buy_price,
             entrySellPrice: t.entry_sell_price,
             exitBuyPrice: t.exit_buy_price,
@@ -133,9 +136,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             strikeDiff: t.strike_diff,
             underlying: t.underlying,
             claudeReview: t.claude_review,
-            groq_review: t.groq_review
+            groqReview: t.groq_review
           };
         });
+
+        const active = mapped.filter(t => !t.exitTime);
+        const history = mapped.filter(t => t.exitTime);
 
         // Populate aiReviews state from fetched history
         const initialReviews = {};
@@ -145,7 +151,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           }
         });
         setAiReviews(initialReviews);
-        setTradeHistory(mapped);
+        setTradeHistory(history);
+        setPositions(active);
       }
     };
     fetchHistory();
@@ -293,15 +300,55 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     if (!trading || !spotPrice) return;
 
     const allTickers = Object.values(tickerData);
-    if (allTickers.length === 0) return; // Wait for at least one ticker
+    if (allTickers.length === 0) return;
 
     const nowTime = Date.now();
-    const shouldEvaluateAlgo = nowTime - lastEvaluatedRef.current > 60000;
+    const currentMinute = Math.floor(nowTime / 60000);
+    const lastMinute = Math.floor(lastEvaluatedRef.current / 60000);
+
+    // Sync active positions from DB every minute
+    const syncPositions = async () => {
+      const { data, error } = await supabase
+        .from('trade_history')
+        .select('*')
+        .is('exit_time', null);
+
+      if (!error && data) {
+        const mapped = data.map(t => ({
+          ...t,
+          id: t.trade_id,
+          buyLeg: t.buy_leg ? JSON.parse(t.buy_leg) : null,
+          sellLeg: t.sell_leg ? JSON.parse(t.sell_leg) : null,
+          entryTime: new Date(t.entry_time),
+          entryBuyPrice: t.entry_buy_price,
+          entrySellPrice: t.entry_sell_price,
+          sellQty: t.sell_qty,
+          strikeDiff: t.strike_diff,
+          underlying: t.underlying,
+          margin: t.margin,
+          entryFee: t.entry_fee || 0
+        })).filter(t => t.buyLeg && t.sellLeg);
+        
+        setPositions(prev => {
+          // Keep local PnL updates but sync the set of positions
+          const newPositions = mapped.map(dbPos => {
+            const localPos = prev.find(p => p.id === dbPos.id);
+            return localPos ? { ...dbPos, ...localPos } : dbPos;
+          });
+          return newPositions;
+        });
+      }
+    };
+
+    if (currentMinute > lastMinute) {
+      syncPositions();
+    }
+
+    const shouldEvaluateAlgo = currentMinute > lastMinute || lastEvaluatedRef.current === 0;
 
     if (!shouldEvaluateAlgo) {
       // Just update PnL for existing positions based on latest tickerData
       setPositions(prev => {
-        // If prev is empty, we don't need to do anything
         if (prev.length === 0) return prev;
 
         return prev.map(pos => {
@@ -331,8 +378,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       return;
     }
 
-    lastEvaluatedRef.current = nowTime;
-    setLastEvaluated(nowTime);
+    // Align lastEvaluated to the start of the current minute to sync across devices
+    const alignedNow = currentMinute * 60000;
+    lastEvaluatedRef.current = alignedNow;
+    setLastEvaluated(alignedNow);
 
     let atmStrike = null;
     let minDiff = Infinity;
@@ -537,34 +586,23 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               [t.id]: { claude, groq }
             }));
 
-            // Persist to Supabase with Reviews
+            // Update Supabase with the exit data
             const { error } = await supabase
               .from('trade_history')
-              .insert([{
-                trade_id: t.id,
-                underlying: underlying,
-                expiry: selExpiry,
-                type: t.type,
-                buy_leg: JSON.stringify(t.buyLeg),
-                sell_leg: JSON.stringify(t.sellLeg),
-                sell_qty: t.sellQty,
-                strike_diff: t.strikeDiff,
-                entry_time: t.entryTime.toISOString(),
+              .update({
                 exit_time: t.exitTime.toISOString(),
-                entry_buy_price: t.entryBuyPrice,
-                entry_sell_price: t.entrySellPrice,
-                exit_buy_price: t.exitBuyPrice,
-                exit_sell_price: t.exitSellPrice,
-                realized_gross_pnl: t.realizedGrossPnl,
-                realized_net_pnl: t.realizedNetPnl,
-                exit_fee: t.exitFee,
-                total_fees: t.totalFees,
-                margin: t.margin,
-                exit_reason: t.exitReason,
+                exit_buy_price: latestBuy,
+                exit_sell_price: latestSell,
+                realized_gross_pnl: grossPnl,
+                realized_net_pnl: grossPnl - totalFees,
+                exit_fee: exitFee,
+                total_fees: totalFees,
+                exit_reason: exitReason,
                 claude_review: claude,
                 groq_review: groq
-              }]);
-            if (error) console.error('Error saving trade to Supabase:', error);
+              })
+              .eq('trade_id', t.id);
+            if (error) console.error('Error updating trade in Supabase:', error);
           } catch (err) {
             console.error('Error in AI/Supabase exit logic:', err);
           }
@@ -626,7 +664,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           };
           remaining.push(newPos);
 
-          // Trigger AI Reviews for Entries
+          // Trigger AI Reviews for Entries and Persist to Supabase
           (async () => {
             try {
               const memory = await fetchTopTradesMemory();
@@ -634,12 +672,36 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                 getClaudeReview(newPos, 'ENTRY', memory),
                 getGroqReview(newPos, 'ENTRY', memory)
               ]);
+              
               setAiReviews(prev => ({
                 ...prev,
                 [id]: { claude, groq }
               }));
+
+              // Persist as ACTIVE position to Supabase
+              const { error } = await supabase
+                .from('trade_history')
+                .insert([{
+                  trade_id: id,
+                  underlying: underlying,
+                  expiry: selExpiry,
+                  type: newPos.type,
+                  buy_leg: JSON.stringify(newPos.buyLeg),
+                  sell_leg: JSON.stringify(newPos.sellLeg),
+                  sell_qty: newPos.sellQty,
+                  strike_diff: newPos.strikeDiff,
+                  entry_time: newPos.entryTime.toISOString(),
+                  entry_buy_price: newPos.entryBuyPrice,
+                  entry_sell_price: newPos.entrySellPrice,
+                  entry_fee: newPos.entryFee,
+                  margin: newPos.margin,
+                  claude_review: claude,
+                  groq_review: groq
+                }]);
+              if (error) console.error('Error persisting entry to Supabase:', error);
+
             } catch (e) {
-              console.error('AI Review Entry Error:', e);
+              console.error('AI Review/Entry Error:', e);
             }
           })();
         }
@@ -664,14 +726,16 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     }
 
     const timer = setInterval(() => {
-      const elapsed = Date.now() - lastEvaluated;
-      const left = Math.ceil((60000 - elapsed) / 1000);
-      setTimeRemaining(left > 0 ? left : 0);
+      const now = Date.now();
+      const nextMinute = (Math.floor(now / 60000) + 1) * 60000;
+      const left = Math.ceil((nextMinute - now) / 1000);
+      setTimeRemaining(left > 0 ? (left > 60 ? 60 : left) : 0);
     }, 1000);
 
-    const elapsed = Date.now() - lastEvaluated;
-    const left = Math.ceil((60000 - elapsed) / 1000);
-    setTimeRemaining(left > 0 ? left : 0);
+    const now = Date.now();
+    const nextMinute = (Math.floor(now / 60000) + 1) * 60000;
+    const left = Math.ceil((nextMinute - now) / 1000);
+    setTimeRemaining(left > 0 ? (left > 60 ? 60 : left) : 0);
 
     return () => clearInterval(timer);
   }, [lastEvaluated, trading]);

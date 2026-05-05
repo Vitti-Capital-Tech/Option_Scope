@@ -303,41 +303,39 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
   useEffect(() => {
     if (!scanning || !spotPrice) return;
 
-    const now = Date.now();
-    const allTickers = Object.values(tickerData);
+    const nowTime = Date.now();
+    const currentMinute = Math.floor(nowTime / 60000);
+    const lastMinute = Math.floor(lastRefreshed / 60000);
 
-    // Auto-refresh initially when we gather enough data, or every 60 seconds
-    let intervalTime = 60000;
-
-    // If no results and we have at least 10% of expected tickers, try scanning more often
-    if (resultsCall.length === 0 && resultsPut.length === 0 && allTickers.length > 2 && expectedTickerCount > 0) {
-      if (allTickers.length > expectedTickerCount * 0.1) {
-        intervalTime = 2000;
-      }
+    // Initial scan or new minute
+    if (lastRefreshed === 0 || currentMinute > lastMinute) {
+      computeSpreads();
+      return;
     }
 
-    if (now - lastRefreshed > intervalTime) {
-      computeSpreads();
+    // Fast-track initial results if we have enough data but no results yet
+    const allTickers = Object.values(tickerData);
+    if (resultsCall.length === 0 && resultsPut.length === 0 && allTickers.length > expectedTickerCount * 0.1) {
+      const elapsedSinceLast = nowTime - lastRefreshed;
+      if (elapsedSinceLast > 2000) {
+        computeSpreads();
+      }
     }
   }, [tickerData, scanning, spotPrice, expectedTickerCount, lastRefreshed, computeSpreads, resultsCall.length, resultsPut.length]);
 
   // Countdown timer for Refresh button
   useEffect(() => {
-    if (!scanning || lastRefreshed === 0) {
-      setTimeRemaining(null);
-      return;
-    }
-
     const timer = setInterval(() => {
-      const elapsed = Date.now() - lastRefreshed;
-      const left = Math.ceil((60000 - elapsed) / 1000);
-      setTimeRemaining(left > 0 ? left : 0);
+      const now = Date.now();
+      const nextMinute = (Math.floor(now / 60000) + 1) * 60000;
+      const left = Math.ceil((nextMinute - now) / 1000);
+      setTimeRemaining(left > 0 ? (left > 60 ? 60 : left) : 0);
     }, 1000);
 
-    // Immediate initial update
-    const elapsed = Date.now() - lastRefreshed;
-    const left = Math.ceil((60000 - elapsed) / 1000);
-    setTimeRemaining(left > 0 ? left : 0);
+    const now = Date.now();
+    const nextMinute = (Math.floor(now / 60000) + 1) * 60000;
+    const left = Math.ceil((nextMinute - now) / 1000);
+    setTimeRemaining(left > 0 ? (left > 60 ? 60 : left) : 0);
 
     return () => clearInterval(timer);
   }, [lastRefreshed, scanning]);
