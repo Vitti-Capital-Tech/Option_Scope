@@ -5,6 +5,7 @@ import {
 } from './api';
 import { normalizeIv, toFiniteNumber, matchesOptionType, formatTime } from './scannerUtils';
 import { useTabListener } from './useTabSync';
+import { supabase } from './supabase';
 
 const UNDERLYINGS = ['BTC', 'ETH'];
 
@@ -80,6 +81,44 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       })
       .catch(e => console.error('Failed to load products:', e));
   }, [underlying]);
+
+  // ── Supabase History Fetch ──────────────────────────
+  useEffect(() => {
+    const fetchHistory = async () => {
+      const { data, error } = await supabase
+        .from('trade_history')
+        .select('*')
+        .order('exit_time', { ascending: false });
+
+      if (error) {
+        console.error('Error fetching trade history:', error);
+      } else if (data) {
+        // Map snake_case from DB to camelCase used in app
+        const mapped = data.map(t => ({
+          ...t,
+          id: t.trade_id,
+          buyLeg: JSON.parse(t.buy_leg),
+          sellLeg: JSON.parse(t.sell_leg),
+          entryTime: new Date(t.entry_time),
+          exitTime: new Date(t.exit_time),
+          entryBuyPrice: t.entry_buy_price,
+          entrySellPrice: t.entry_sell_price,
+          exitBuyPrice: t.exit_buy_price,
+          exitSellPrice: t.exit_sell_price,
+          realizedGrossPnl: t.realized_gross_pnl,
+          realizedNetPnl: t.realized_net_pnl,
+          exitFee: t.exit_fee,
+          totalFees: t.total_fees,
+          exitReason: t.exit_reason,
+          sellQty: t.sell_qty,
+          strikeDiff: t.strike_diff
+        }));
+        setTradeHistory(mapped);
+      }
+    };
+    fetchHistory();
+  }, []);
+
 
   // ── Fetch spot price ────────────────────────────────────────────────────
   useEffect(() => {
@@ -420,6 +459,35 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       // Record exited trades
       if (exited.length > 0) {
         setTradeHistory(th => [...exited, ...th]);
+
+        // Persist to Supabase
+        exited.forEach(async (t) => {
+          const { error } = await supabase
+            .from('trade_history')
+            .insert([{
+              trade_id: t.id,
+              underlying: underlying,
+              expiry: selExpiry,
+              type: t.type,
+              buy_leg: JSON.stringify(t.buyLeg),
+              sell_leg: JSON.stringify(t.sellLeg),
+              sell_qty: t.sellQty,
+              strike_diff: t.strikeDiff,
+              entry_time: t.entryTime.toISOString(),
+              exit_time: t.exitTime.toISOString(),
+              entry_buy_price: t.entryBuyPrice,
+              entry_sell_price: t.entrySellPrice,
+              exit_buy_price: t.exitBuyPrice,
+              exit_sell_price: t.exitSellPrice,
+              realized_gross_pnl: t.realizedGrossPnl,
+              realized_net_pnl: t.realizedNetPnl,
+              exit_fee: t.exitFee,
+              total_fees: t.totalFees,
+              margin: t.margin,
+              exit_reason: t.exitReason
+            }]);
+          if (error) console.error('Error saving trade to Supabase:', error);
+        });
       }
 
       // Open new positions from top 3 that are not active
