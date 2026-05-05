@@ -189,12 +189,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     }
   };
 
-  const clearHistory = () => {
-    if (window.confirm("Are you sure you want to clear the local trade history? This will allow the algo to re-enter previous strike pairs.")) {
-      setTradeHistory([]);
-      setAiReviews({});
-    }
-  };
 
   useEffect(() => {
     if (selectedTradeId && (!aiReviews[selectedTradeId] || (!aiReviews[selectedTradeId].claude && !aiReviews[selectedTradeId].groq))) {
@@ -1120,9 +1114,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                 <div className="pt-history-stats">
                   <span className="pt-history-stat">Net: <span className={`value ${totalRealizedPnl >= 0 ? 'green' : 'red'}`}>{totalRealizedPnl > 0 ? '+' : ''}{totalRealizedPnl.toFixed(2)}</span></span>
                   <span className="pt-history-stat">W/L: <span className="value green">{wins}</span>/<span className="value red">{tradeHistory.length - wins}</span></span>
-                  <button className="pt-export-btn" onClick={clearHistory} style={{ color: 'var(--red)', borderColor: 'rgba(235, 77, 75, 0.3)', background: 'rgba(235, 77, 75, 0.1)' }}>
-                    Clear History
-                  </button>
                   <button 
                     className="pt-export-btn" 
                     onClick={() => {
