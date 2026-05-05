@@ -854,7 +854,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
 
     if (listWsRef.current) listWsRef.current.close();
 
-    const ws = new WebSocket('wss://socket.delta.exchange');
+    const ws = new WebSocket('wss://socket.india.delta.exchange');
     ws.onopen = () => {
       ws.send(JSON.stringify({
         type: 'subscribe',
@@ -912,7 +912,13 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                   vega: gC.vega + gP.vega,
                   theta: gC.theta + gP.theta,
                   rho: gC.rho + gP.rho,
-                  iv: (gC.iv + gP.iv) / 2
+                  iv: (gC.iv + gP.iv) / 2,
+                  cDelta: gC.delta, pDelta: gP.delta,
+                  cGamma: gC.gamma, pGamma: gP.gamma,
+                  cVega: gC.vega, pVega: gP.vega,
+                  cTheta: gC.theta, pTheta: gP.theta,
+                  cRho: gC.rho, pRho: gP.rho,
+                  cIv: gC.iv, pIv: gP.iv
                 };
               }
             } else if (w.type === 'call') {
@@ -1357,6 +1363,27 @@ export default function App({ onNavigate, theme, toggleTheme }) {
         // ── Data Hub: extract and store ALL WebSocket streams ──────────────
         (msg) => {
           const sym = msg.symbol;
+          
+          // ── Master Sync: Update global caches from the active stream ────────
+          if (msg.type === 'v2/ticker') {
+            const mark = parseFloat(msg.mark_price || 0);
+            const ltp = parseFloat(msg.last_price || msg.close || 0);
+            if (mark || ltp) {
+              const prev = tickerCacheRef.current[sym] || { mark: 0, ltp: 0 };
+              tickerCacheRef.current[sym] = { mark: mark || prev.mark, ltp: ltp || prev.ltp };
+            }
+            if (msg.greeks) {
+              greekCacheRef.current[sym] = {
+                delta: parseFloat(msg.greeks.delta || 0),
+                gamma: parseFloat(msg.greeks.gamma || 0),
+                vega: parseFloat(msg.greeks.vega || 0),
+                theta: parseFloat(msg.greeks.theta || 0),
+                rho: parseFloat(msg.greeks.rho || 0),
+                iv: parseFloat(msg.mark_vol ?? msg.quotes?.mark_iv ?? msg.greeks?.iv ?? 0),
+              };
+            }
+          }
+
           const side = sym === callSymRef.current ? 'call'
             : sym === putSymRef.current ? 'put'
               : null;
