@@ -32,7 +32,7 @@ const formatTradePrompt = (trade, eventType, history = []) => {
   if (history && history.length > 0) {
     prompt += `### REFERENCE: SUCCESSFUL PAST TRADES (CONTEXT) ###\n`;
     history.forEach((past, i) => {
-      prompt += `Reference Example ${i+1}: P&L: +$${past.realized_net_pnl} | Asset: ${past.underlying} | Strategy: ${past.type} | Strike Diff: ${past.strike_diff}\n`;
+      prompt += `Reference Example ${i+1}: P&L: +$${Number(past.realized_net_pnl).toFixed(2)} | Asset: ${past.underlying} | Strategy: ${past.type} | Strike Diff: ${past.strike_diff}\n`;
     });
     prompt += `\n`;
   }
@@ -52,14 +52,14 @@ ${eventType === 'EXIT' ? `Exit Buy Price: ${exitBuyPrice} | Exit Sell Price: ${e
 -----------------------------------------
 ${eventType === 'EXIT' 
     ? `FINAL REALIZED P&L:
-   - Market (Gross): $${realizedGrossPnl}
-   - After Fees (Net): $${realizedNetPnl}`
+   - Market (Gross): $${Number(realizedGrossPnl).toFixed(2)}
+   - After Fees (Net): $${Number(realizedNetPnl).toFixed(2)}`
     : `CURRENT UNREALIZED P&L:
-   - Market (Gross): $${unrealizedGrossPnl}
-   - After Fees (Net): $${unrealizedNetPnl}`
+   - Market (Gross): $${Number(unrealizedGrossPnl).toFixed(2)}
+   - After Fees (Net): $${Number(unrealizedNetPnl).toFixed(2)}`
 }
-Total Fees: $${totalFees}
-Margin Used: $${margin}
+Total Fees: $${Number(totalFees).toFixed(2)}
+Margin Used: $${Number(margin).toFixed(2)}
 ${eventType === 'EXIT' ? `Exit Reason: ${exitReason}` : ''}
 
 INSTRUCTION: 
