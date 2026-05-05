@@ -645,6 +645,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           const newPos = {
             id,
             underlying: underlying,
+            expiry: selExpiry,
             type: spread.buyLeg.type,
             buyLeg: spread.buyLeg,
             sellLeg: spread.sellLeg,
@@ -784,11 +785,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       alert('Trade history is empty. Export will be available once trades are closed.');
       return;
     }
-    const headers = ['Entry Time', 'Exit Time', 'Type', 'Ratio', 'Buy Strike', 'Sell Strike', 'Entry Buy Price', 'Entry Sell Price', 'Exit Buy Price', 'Exit Sell Price', 'Gross PnL', 'Total Fees', 'Net PnL', 'Margin', 'Exit Reason'];
+    const headers = ['Entry Time', 'Exit Time', 'Expiry', 'Type', 'Ratio', 'Buy Strike', 'Sell Strike', 'Entry Buy Price', 'Entry Sell Price', 'Exit Buy Price', 'Exit Sell Price', 'Gross PnL', 'Total Fees', 'Net PnL', 'Margin', 'Exit Reason'];
     const rows = tradeHistory.map(t => {
       return [
         formatTime(t.entryTime),
         formatTime(t.exitTime),
+        fmtExpiry(t.expiry),
         t.type.toUpperCase(),
         `1:${t.sellQty}`,
         t.buyLeg.strike,
@@ -1096,7 +1098,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               <div className="pt-table-scroll">
                 <table className="pt-table">
                   <thead><tr>
-                    <th>Type</th><th>Buy Strike</th><th>Sell Strike</th><th>Sell Qty</th>
+                    <th>Type</th><th>Expiry</th><th>Buy Strike</th><th>Sell Strike</th><th>Sell Qty</th>
                     <th>Entry Net</th><th>Current Net</th><th>Unrl P&L</th>
                     <th>Margin</th><th>AI</th><th>Duration</th>
                   </tr></thead>
@@ -1109,6 +1111,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                       return (
                         <tr key={p.id} className={`pt-row-${p.type}`}>
                           <td><span className={`pt-type-badge ${p.type}`}>{p.type.toUpperCase()}</span></td>
+                          <td><span style={{ fontSize: '12px', fontWeight: 600 }}>{fmtExpiry(p.expiry)}</span></td>
                           <td className="pt-strike pt-strike-buy">{p.buyLeg.strike.toLocaleString()}</td>
                           <td className="pt-strike pt-strike-sell">{p.sellLeg.strike.toLocaleString()}</td>
                           <td>{p.sellQty}x</td>
@@ -1183,6 +1186,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                 <table className="pt-table">
                   <thead><tr>
                     <th>Exit Time</th>
+                    <th>Expiry</th>
                     <th>Type / Ratio</th>
                     <th>Buy / Sell Strike</th>
                     <th>In (Buy / Sell)</th>
@@ -1197,6 +1201,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                       return (
                         <tr key={i}>
                           <td style={{ color: 'var(--text-dim)' }}>{formatTime(t.exitTime)}</td>
+                          <td><span style={{ fontSize: '11px', fontWeight: 600 }}>{fmtExpiry(t.expiry)}</span></td>
                           <td>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                               <span className={`pt-type-badge ${t.type}`}>{t.type.toUpperCase()}</span>
