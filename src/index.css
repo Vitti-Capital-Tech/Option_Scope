@@ -2108,7 +2108,76 @@ body.light-theme .pt-live-badge {
   }
 }
 
-@media (max-width: 768px) {
+@media (max-width: 900px) {
+  .body {
+    flex-direction: column;
+    overflow-y: auto;
+    height: auto;
+  }
+
+  .sidebar {
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    overflow-y: visible;
+    max-height: none;
+  }
+
+  .main {
+    height: 900px !important; /* Ensure enough room for watchlist + chart on mobile */
+    flex-shrink: 0;
+    overflow: visible !important;
+  }
+
+  .watchlist-container {
+    max-height: none !important;
+    overflow-y: visible !important;
+  }
+
+  .watch-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 16px;
+    padding: 16px;
+    width: 100% !important;
+    box-sizing: border-box !important;
+  }
+
+  .watch-item > div:first-child {
+    flex-direction: column;
+    align-items: flex-start !important;
+    gap: 16px !important;
+    width: 100% !important;
+  }
+
+  .watch-item-title {
+    width: 100% !important;
+  }
+
+  .watch-item-prices {
+    width: 100% !important;
+    max-width: calc(100vw - 64px) !important; /* Prevents border clipping by containing the scroll */
+    overflow-x: auto;
+    padding-bottom: 12px;
+    gap: 20px !important;
+    grid-template-columns: repeat(3, 85px) repeat(6, 125px);
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Custom scrollbar for the horizontal prices on mobile */
+  .watch-item-prices::-webkit-scrollbar {
+    height: 4px;
+  }
+  .watch-item-prices::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 2px;
+  }
+
+  .watch-price-block {
+    min-width: 85px;
+  }
+
   .pt-kpi-strip {
     grid-template-columns: repeat(2, 1fr);
     padding: 12px 16px 0;
@@ -2119,5 +2188,20 @@ body.light-theme .pt-live-badge {
   }
   .pt-control-panel {
     padding: 12px 16px;
+  }
+}
+
+@media (max-width: 480px) {
+  .navbar {
+    padding: 0 12px;
+  }
+  .logo {
+    font-size: 13px;
+  }
+  .ws-badge span {
+    display: none;
+  }
+  .pt-kpi-strip {
+    grid-template-columns: 1fr;
   }
 }
