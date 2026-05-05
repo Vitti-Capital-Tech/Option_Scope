@@ -43,7 +43,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const [config, setConfig] = useState(() => {
     const saved = localStorage.getItem('vitti_algo_config');
     if (saved) {
-      try { return JSON.parse(saved); } catch (e) {}
+      try { return JSON.parse(saved); } catch (e) { }
     }
     return {
       minStrikeDiff: 800,
@@ -190,7 +190,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       setPositions(prev => {
         // If prev is empty, we don't need to do anything
         if (prev.length === 0) return prev;
-        
+
         return prev.map(pos => {
           const latestBuy = tickerData[pos.buyLeg.symbol]?.markPrice || pos.buyLeg.markPrice;
           const latestSell = tickerData[pos.sellLeg.symbol]?.markPrice || pos.sellLeg.markPrice;
@@ -270,7 +270,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           }
 
           if ((cooldownRef.current[buyLeg.symbol] && cooldownRef.current[buyLeg.symbol] > Date.now()) ||
-              (cooldownRef.current[sellLeg.symbol] && cooldownRef.current[sellLeg.symbol] > Date.now())) continue;
+            (cooldownRef.current[sellLeg.symbol] && cooldownRef.current[sellLeg.symbol] > Date.now())) continue;
 
           const strikeDiff = Math.abs(sellLeg.strike - buyLeg.strike);
           if (strikeDiff < config.minStrikeDiff) continue;
@@ -426,7 +426,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       for (const spread of topSpreads) {
         // Double check cooldowns here because an exit in the block above might have just triggered one!
         if ((cooldownRef.current[spread.buyLeg.symbol] && cooldownRef.current[spread.buyLeg.symbol] > Date.now()) ||
-            (cooldownRef.current[spread.sellLeg.symbol] && cooldownRef.current[spread.sellLeg.symbol] > Date.now())) {
+          (cooldownRef.current[spread.sellLeg.symbol] && cooldownRef.current[spread.sellLeg.symbol] > Date.now())) {
           continue;
         }
 
@@ -717,7 +717,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               <input type="number" value={config.minSellPremium} onChange={e => updateConfig('minSellPremium', Number(e.target.value))} style={{ width: 50, padding: '4px 8px', fontSize: '13px' }} />
             </div>
             <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-              <label style={{ marginBottom: 0 }}>Max Net Prem ($):</label>
+              <label style={{ marginBottom: 0 }}>Max Debit ($):</label>
               <input type="number" value={config.maxNetPremium} onChange={e => updateConfig('maxNetPremium', Number(e.target.value))} style={{ width: 60, padding: '4px 8px', fontSize: '13px' }} />
             </div>
           </div>
