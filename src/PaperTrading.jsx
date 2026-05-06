@@ -713,15 +713,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         }
         */
 
+        const exists = remaining.find(p => p.id === id);
         const buyCovered = usedBuySymbols.has(spread.buyLeg.symbol);
 
-        if (!buyCovered) {
-          // Hard capacity limit: 3 active positions per type (Call/Put)
-          // This ensures that new scanner strikes replace old ones (if they exited) 
-          // or are ignored if we chose to keep a "better" existing strike.
-          const typeCount = remaining.filter(p => p.type === spread.buyLeg.type).length;
-          if (typeCount >= 3) continue;
-
+        if (!exists && !buyCovered) {
           usedBuySymbols.add(spread.buyLeg.symbol);
           // Margin: 100% for long (1x), 200x leverage for short leg (Value / 200)
           const longMargin = spread.buyLeg.markPrice * spread.buyLeg.lotSize * 1;
