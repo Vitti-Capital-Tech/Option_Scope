@@ -620,9 +620,32 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
       // -- Persist History to Supabase --
       if (exited.length > 0) {
-        setTradeHistory(th => [...exited, ...th]);
+        setTradeHistory(th => {
+          const existingKeys = new Set(
+            th.map(t => `${t.buyLeg?.strike}_${t.sellLeg?.strike}_${t.type}_${t.expiry}`)
+          );
+          const newTrades = exited.filter(t => {
+            const key = `${t.buyLeg?.strike}_${t.sellLeg?.strike}_${t.type}_${t.expiry}`;
+            return !existingKeys.has(key);
+          });
+          return [...newTrades, ...th];
+        });
+
         exited.forEach(async (t) => {
           try {
+            // Check for existing record before inserting
+            const { data: existing } = await supabase
+              .from('trade_history')
+              .select('trade_id')
+              .eq('underlying', t.underlying)
+              .eq('expiry', t.expiry)
+              .eq('type', t.type)
+              .eq('strike_diff', t.strikeDiff)
+              .not('exit_time', 'is', null)
+              .limit(1);
+
+            if (existing && existing.length > 0) return; // already persisted, skip
+
             await supabase.from('trade_history').insert([{
               trade_id: t.id, underlying: t.underlying, expiry: t.expiry, type: t.type,
               buy_leg: JSON.stringify(t.buyLeg), sell_leg: JSON.stringify(t.sellLeg),
