@@ -365,11 +365,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         const sellQty = Math.max(1, Math.round(rawQty / 0.25) * 0.25);
         const netPrem = buyLeg.markPrice - sellQty * sellLeg.markPrice;
 
-        if (config.maxNetPremium < 0) {
-          if (netPrem < 0 && netPrem < config.maxNetPremium) continue;
-        } else {
-          if (netPrem > 0 && netPrem > config.maxNetPremium) continue;
-        }
+        // Filter by Net Premium: Enforce a symmetric band [-max, +max]
+        // If maxNetPremium is 20, we allow netPremium from -20 (max credit) to +20 (max debit).
+        const maxNet = Math.abs(config.maxNetPremium);
+        if (netPrem < -maxNet || netPrem > maxNet) continue;
 
         validPairs.push({ buyLeg, sellLeg, strikeDiff, sellQty, netPremium: netPrem });
       }
@@ -664,13 +663,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           remaining.push(newPos);
 
           // Trigger AI Reviews for Entry
-          (async () => {
-            try {
-              const memory = await fetchTopTradesMemory();
-              const [claude, groq] = await Promise.all([getClaudeReview(newPos, 'ENTRY', memory), getGroqReview(newPos, 'ENTRY', memory)]);
-              setAiReviews(prev => ({ ...prev, [id]: { claude, groq } }));
-            } catch (e) { console.error('AI Entry Review Error:', e); }
-          })();
+          // (async () => {
+          //   try {
+          //     const memory = await fetchTopTradesMemory();
+          //     const [claude, groq] = await Promise.all([getClaudeReview(newPos, 'ENTRY', memory), getGroqReview(newPos, 'ENTRY', memory)]);
+          //     setAiReviews(prev => ({ ...prev, [id]: { claude, groq } }));
+          //   } catch (e) { console.error('AI Entry Review Error:', e); }
+          // })();
         }
       }
 
