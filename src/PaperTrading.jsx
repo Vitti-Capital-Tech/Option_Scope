@@ -516,8 +516,16 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         const exitFee = exitBuyFee + exitSellFee;
         const totalFees = (pos.entryFee || 0) + exitFee;
 
-        const stillInTop3 = currentTopBuySymbols.has(pos.buyLeg.symbol);
-        if (!stillInTop3) {
+        const stillInTop3 = currentTopBuySymbols.has(pos.buyLeg.symbol) || 
+                           topSpreads.some(s => s.buyLeg.strike === pos.buyLeg.strike && s.buyLeg.type === pos.type);
+        const hasScannerData = topSpreads.length > 0;
+        
+        // Find if there's a NEW buy strike of the same type in Top 3 that we don't have yet
+        const typeSpreads = topSpreads.filter(s => s.buyLeg.type === pos.type);
+        const currentActiveStrikes = prev.map(p => p.buyLeg.strike);
+        const newStrikesAvailable = typeSpreads.some(s => !currentActiveStrikes.includes(s.buyLeg.strike));
+
+        if (hasScannerData && !stillInTop3 && newStrikesAvailable) {
           shouldExit = true;
           exitReason = 'Buy Strike lost Top 3 position';
         } else {
