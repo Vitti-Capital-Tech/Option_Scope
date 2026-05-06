@@ -69,6 +69,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const [lastEvaluated, setLastEvaluated] = useState(0);
   const [timeRemaining, setTimeRemaining] = useState(null);
   const scannerTopRef = useRef(null);
+  const [scannerSyncVersion, setScannerSyncVersion] = useState(0);
+  const lastProcessedScannerVersionRef = useRef(0);
 
   const [config, setConfig] = useState(() => {
     const saved = localStorage.getItem('vitti_algo_config');
@@ -396,8 +398,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     const currentMinute = Math.floor(nowTime / 60000);
     const lastMinute = Math.floor(lastEvaluatedRef.current / 60000);
 
-    // Only run the complex strategy evaluation once per minute (at the top of the minute)
-    const shouldEvaluateAlgo = currentMinute > lastMinute || lastEvaluatedRef.current === 0;
+    // Only run the complex strategy evaluation once per minute OR when a fresh scanner update arrives
+    const scannerUpdated = scannerSyncVersion > lastProcessedScannerVersionRef.current;
+    const shouldEvaluateAlgo = currentMinute > lastMinute || lastEvaluatedRef.current === 0 || scannerUpdated;
+
+    if (scannerUpdated) {
+      lastProcessedScannerVersionRef.current = scannerSyncVersion;
+    }
 
     /**
      * PHASE 1: Real-time PnL & Fee Monitoring
@@ -705,7 +712,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       });
     });
 
-  }, [tickerData, trading, spotPrice, config, expectedTickerCount, underlying, selExpiry, pickTopUniqueBuyStrikes]);
+  }, [tickerData, trading, spotPrice, config, expectedTickerCount, underlying, selExpiry, pickTopUniqueBuyStrikes, scannerSyncVersion]);
 
   useEffect(() => () => {
     if (wsRef.current) wsRef.current.close();
@@ -755,6 +762,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     },
     SCANNER_TOP_SPREADS_SYNC: (payload) => {
       scannerTopRef.current = payload;
+      setScannerSyncVersion(v => v + 1);
       try {
         localStorage.setItem(SCANNER_TOP_KEY, JSON.stringify(payload));
       } catch (e) { }
