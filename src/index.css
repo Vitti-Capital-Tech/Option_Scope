@@ -854,6 +854,7 @@ select:disabled {
   cursor: pointer;
   gap: 24px;
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  min-width: max-content;
 }
 
 .watch-item:hover {

@@ -1725,7 +1725,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
             SPOT: <span style={{ color: '#e3b341', marginLeft: 8 }}>{spotPrice ? spotPrice.toLocaleString(undefined, { maximumFractionDigits: 2 }) : '—'}</span>
           </div>
 
-          <div className="watchlist-container" style={{ flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 8, overflowY: 'auto', paddingBottom: 8, minHeight: 80, maxHeight: '35vh', zIndex: 11 }}>
+          <div className="watchlist-container" style={{ flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 8, overflowY: 'auto', overflowX: 'auto', paddingBottom: 8, minHeight: 80, maxHeight: '35vh', zIndex: 11 }}>
             {watchList.length === 0 ? (
               <div style={{ color: 'var(--text-dim)', fontSize: 12, padding: 12, border: '1px dashed var(--border)', borderRadius: 8, textAlign: 'center' }}>
                 No strategies in watchlist. Add one from the sidebar.
@@ -1792,7 +1792,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                   <div key={item.id} onClick={() => setSelectedWatchId(item.id)}
                     className={`watch-item ${isSelected ? 'selected' : ''}`}
                     style={{ backgroundColor: theme == 'dark' ? '' : isSelected ? '#b8f5f7' : '#e6edf3' }}>
-                    <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 24 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 24 }}>
                       <div className="watch-item-title">
                         {item.type === 'combined' ? (
                           <><span className="badge comb">STRADDLE</span> {item.callStrike}C + {item.putStrike}P</>
