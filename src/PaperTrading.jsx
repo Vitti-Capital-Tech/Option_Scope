@@ -6,7 +6,7 @@ import {
 import { normalizeIv, toFiniteNumber, matchesOptionType, formatTime, formatDateTime } from './scannerUtils';
 import { useTabListener } from './useTabSync';
 import { supabase } from './supabase';
-import { getClaudeReview, getGroqReview } from './aiService';
+// import { getClaudeReview, getGroqReview } from './aiService';
 
 const UNDERLYINGS = ['BTC', 'ETH'];
 const SCANNER_TOP_KEY = 'vitti_scanner_top_spreads_v1';
@@ -190,47 +190,47 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   }, []);
 
 
-  const runManualAiReview = async (tradeId) => {
-    const trade = tradeHistory.find(t => t.id === tradeId) || positions.find(t => t.id === tradeId);
-    if (!trade) return;
+  // const runManualAiReview = async (tradeId) => {
+  //   const trade = tradeHistory.find(t => t.id === tradeId) || positions.find(t => t.id === tradeId);
+  //   if (!trade) return;
 
-    // Set a placeholder to show loading
-    setAiReviews(prev => ({
-      ...prev,
-      [tradeId]: { claude: null, groq: null }
-    }));
+  //   // Set a placeholder to show loading
+  //   setAiReviews(prev => ({
+  //     ...prev,
+  //     [tradeId]: { claude: null, groq: null }
+  //   }));
 
-    try {
-      const memory = await fetchTopTradesMemory();
-      const [claude, groq] = await Promise.all([
-        getClaudeReview(trade, trade.exitTime ? 'EXIT' : 'ENTRY', memory),
-        getGroqReview(trade, trade.exitTime ? 'EXIT' : 'ENTRY', memory)
-      ]);
-      setAiReviews(prev => ({
-        ...prev,
-        [tradeId]: { claude, groq }
-      }));
+  //   try {
+  //     const memory = await fetchTopTradesMemory();
+  //     const [claude, groq] = await Promise.all([
+  //       getClaudeReview(trade, trade.exitTime ? 'EXIT' : 'ENTRY', memory),
+  //       getGroqReview(trade, trade.exitTime ? 'EXIT' : 'ENTRY', memory)
+  //     ]);
+  //     setAiReviews(prev => ({
+  //       ...prev,
+  //       [tradeId]: { claude, groq }
+  //     }));
 
-      // Update Supabase with the new review
-      await supabase
-        .from('trade_history')
-        .update({
-          claude_review: claude,
-          groq_review: groq
-        })
-        .eq('trade_id', tradeId);
+  //     // Update Supabase with the new review
+  //     await supabase
+  //       .from('trade_history')
+  //       .update({
+  //         claude_review: claude,
+  //         groq_review: groq
+  //       })
+  //       .eq('trade_id', tradeId);
 
-    } catch (e) {
-      console.error('Manual AI Error:', e);
-    }
-  };
+  //   } catch (e) {
+  //     console.error('Manual AI Error:', e);
+  //   }
+  // };
 
 
-  useEffect(() => {
-    if (selectedTradeId && (!aiReviews[selectedTradeId] || (!aiReviews[selectedTradeId].claude && !aiReviews[selectedTradeId].groq))) {
-      runManualAiReview(selectedTradeId);
-    }
-  }, [selectedTradeId]);
+  // useEffect(() => {
+  //   if (selectedTradeId && (!aiReviews[selectedTradeId] || (!aiReviews[selectedTradeId].claude && !aiReviews[selectedTradeId].groq))) {
+  //     runManualAiReview(selectedTradeId);
+  //   }
+  // }, [selectedTradeId]);
 
   // ── Fetch spot price ────────────────────────────────────────────────────
   useEffect(() => {
@@ -1179,7 +1179,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                     <th>In (Buy / Sell)</th>
                     <th>Out (Buy / Sell)</th>
                     <th>Realized P&L</th>
-                    <th>AI</th>
+                    {/* <th>AI</th> */}
                     <th>Exit Reason</th>
                   </tr></thead>
                   <tbody>
@@ -1224,11 +1224,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                               <span style={{ fontSize: '10px', color: 'var(--text-dim)' }}>Margin: ${t.margin?.toFixed(0)}</span>
                             </div>
                           </td>
-                          <td>
+                          {/* <td>
                             <button className="pt-ai-btn" onClick={() => setSelectedTradeId(t.id)} title="View AI Analysis">
                               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
                             </button>
-                          </td>
+                          </td> */}
                           <td><span className={`pt-exit-badge ${exitBadgeClass(t.exitReason)}`}>{t.exitReason}</span></td>
                         </tr>
                       )
