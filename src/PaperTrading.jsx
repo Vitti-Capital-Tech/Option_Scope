@@ -516,19 +516,30 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         const exitFee = exitBuyFee + exitSellFee;
         const totalFees = (pos.entryFee || 0) + exitFee;
 
-        const stillInTop3 = currentTopBuySymbols.has(pos.buyLeg.symbol) || 
-                           topSpreads.some(s => s.buyLeg.strike === pos.buyLeg.strike && s.buyLeg.type === pos.type);
+        const stillInTop3 = currentTopBuySymbols.has(pos.buyLeg.symbol) ||
+          topSpreads.some(s => s.buyLeg.strike === pos.buyLeg.strike && s.buyLeg.type === pos.type);
         const hasScannerData = topSpreads.length > 0;
-        
+
         // Find if there's a NEW buy strike of the same type in Top 3 that we don't have yet
         const typeSpreads = topSpreads.filter(s => s.buyLeg.type === pos.type);
         const currentActiveStrikes = prev.map(p => p.buyLeg.strike);
         const newStrikesAvailable = typeSpreads.some(s => !currentActiveStrikes.includes(s.buyLeg.strike));
 
         if (hasScannerData && !stillInTop3 && newStrikesAvailable) {
-          shouldExit = true;
-          exitReason = 'Buy Strike lost Top 3 position';
-        } else {
+          const top1Spread = typeSpreads[0];
+          if (top1Spread) {
+            const top1Strike = top1Spread.buyLeg.strike;
+            const currentStrike = pos.buyLeg.strike;
+            const isPut = pos.type === 'put';
+            // Exit only if the new Rank 1 strike is "better" (higher for Put, lower for Call)
+            if (isPut ? (top1Strike > currentStrike) : (top1Strike < currentStrike)) {
+              shouldExit = true;
+              exitReason = `Buy Strike lost Top 3 and Rank 1 is ${isPut ? 'higher' : 'lower'} (${top1Strike})`;
+            }
+          }
+        }
+
+        if (!shouldExit) {
           const expectedTopPairId = topPairIdByBuySymbol.get(pos.buyLeg.symbol);
           const currentPairId = `${pos.buyLeg.symbol}_${pos.sellLeg.symbol}`;
           // If same buy strike still in top3 but scanner now prefers a different sell leg,
@@ -702,10 +713,15 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         }
         */
 
-        const exists = remaining.find(p => p.id === id);
         const buyCovered = usedBuySymbols.has(spread.buyLeg.symbol);
 
-        if (!exists && !buyCovered) {
+        if (!buyCovered) {
+          // Hard capacity limit: 3 active positions per type (Call/Put)
+          // This ensures that new scanner strikes replace old ones (if they exited) 
+          // or are ignored if we chose to keep a "better" existing strike.
+          const typeCount = remaining.filter(p => p.type === spread.buyLeg.type).length;
+          if (typeCount >= 3) continue;
+
           usedBuySymbols.add(spread.buyLeg.symbol);
           // Margin: 100% for long (1x), 200x leverage for short leg (Value / 200)
           const longMargin = spread.buyLeg.markPrice * spread.buyLeg.lotSize * 1;
