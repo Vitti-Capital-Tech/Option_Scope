@@ -91,13 +91,15 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
         id: `${s.buyLeg.symbol}_${s.sellLeg.symbol}`,
         buySymbol: s.buyLeg.symbol,
         sellSymbol: s.sellLeg.symbol,
-        buyStrike: s.buyLeg.strike
+        buyStrike: s.buyLeg.strike,
+        sellQty: s.sellQty
       })),
       putTop3: topPuts.map(s => ({
         id: `${s.buyLeg.symbol}_${s.sellLeg.symbol}`,
         buySymbol: s.buyLeg.symbol,
         sellSymbol: s.sellLeg.symbol,
-        buyStrike: s.buyLeg.strike
+        buyStrike: s.buyLeg.strike,
+        sellQty: s.sellQty
       }))
     };
     localStorage.setItem(SCANNER_TOP_KEY, JSON.stringify(payload));

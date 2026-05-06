@@ -3,7 +3,7 @@ import {
   loadProducts, getExpiries, getStrikes, getSpotPrice,
   fmtExpiry, createTickerStream
 } from './api';
-import { normalizeIv, toFiniteNumber, matchesOptionType, formatTime } from './scannerUtils';
+import { normalizeIv, toFiniteNumber, matchesOptionType, formatTime, formatDateTime } from './scannerUtils';
 import { useTabListener } from './useTabSync';
 import { supabase } from './supabase';
 import { getClaudeReview, getGroqReview } from './aiService';
@@ -460,7 +460,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       const scannerIds = [...(snapshot.callTop3 || []), ...(snapshot.putTop3 || [])];
       for (const item of scannerIds) {
         const spread = localById.get(item.id);
-        if (spread) synced.push(spread);
+        if (spread) {
+          // Force consistency: use the quantity calculated by the scanner
+          if (item.sellQty !== undefined) {
+            spread.sellQty = item.sellQty;
+          }
+          synced.push(spread);
+        }
       }
       if (scannerIds.length === 0) {
         topSpreads = localTopSpreads;
@@ -838,8 +844,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     const headers = ['Entry Time', 'Exit Time', 'Expiry', 'Type', 'Ratio', 'Buy Strike', 'Sell Strike', 'Entry Buy Price', 'Entry Sell Price', 'Exit Buy Price', 'Exit Sell Price', 'Gross PnL', 'Total Fees', 'Net PnL', 'Margin', 'Exit Reason'];
     const rows = tradeHistory.map(t => {
       return [
-        formatTime(t.entryTime),
-        formatTime(t.exitTime),
+        formatDateTime(t.entryTime),
+        formatDateTime(t.exitTime),
         fmtExpiry(t.expiry),
         t.type.toUpperCase(),
         `1:${t.sellQty}`,
@@ -1230,7 +1236,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               <div className="pt-table-scroll">
                 <table className="pt-table">
                   <thead><tr>
+                    <th>Entry Time</th>
                     <th>Exit Time</th>
+                    <th>Duration</th>
                     <th>Expiry</th>
                     <th>Type / Ratio</th>
                     <th>Buy / Sell Strike</th>
@@ -1243,9 +1251,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                   <tbody>
                     {tradeHistory.map((t, i) => {
                       const pnlValue = includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || t.realizedPnl || 0);
+                      const durationMs = t.exitTime && t.entryTime ? (t.exitTime - t.entryTime) : 0;
                       return (
                         <tr key={i}>
-                          <td style={{ color: 'var(--text-dim)' }}>{formatTime(t.exitTime)}</td>
+                          <td style={{ color: 'var(--text-dim)', fontSize: '11px', whiteSpace: 'nowrap' }}>{formatDateTime(t.entryTime)}</td>
+                          <td style={{ color: 'var(--text-dim)', fontSize: '11px', whiteSpace: 'nowrap' }}>{formatDateTime(t.exitTime)}</td>
+                          <td><span className="pt-duration" style={{ fontSize: '11px' }}>{fmtDuration(durationMs)}</span></td>
                           <td><span style={{ fontSize: '11px', fontWeight: 600 }}>{fmtExpiry(t.expiry)}</span></td>
                           <td>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
