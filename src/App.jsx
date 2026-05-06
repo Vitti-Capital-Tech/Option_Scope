@@ -190,25 +190,31 @@ const ChartPanel = forwardRef(function ChartPanel({
       if (data) {
         const isUp = data.close >= data.open;
         const valColor = isUp ? '#089981' : '#f23645'; // TradingView green/red
+        const isLight = theme === 'light';
+        const legendBg = isLight ? 'rgba(255, 255, 255, 0.95)' : 'rgba(10, 13, 18, 0.85)';
+        const legendBorder = isLight ? '#e5e7eb' : '#1e2730';
+        const labelColor = isLight ? '#4b5563' : '#9ca3af';
+        const valTextColor = isLight ? '#111827' : '#fff';
+
         let ivHtml = '';
         if (callIvRef.current) {
           const callData = param.seriesData.get(callIvRef.current);
-          if (callData) ivHtml += `<span style="color:#00d9a3;margin-left:8px;">Call IV <span style="color:#fff">${(callData.value * 100).toFixed(1)}%</span></span>`;
+          if (callData) ivHtml += `<span style="color:#00d9a3;margin-left:8px;">Call IV <span style="color:${valTextColor}">${(callData.value * 100).toFixed(1)}%</span></span>`;
         }
         if (putIvRef.current) {
           const putData = param.seriesData.get(putIvRef.current);
-          if (putData) ivHtml += `<span style="color:#ff2ebd;margin-left:8px;">Put IV <span style="color:#fff">${(putData.value * 100).toFixed(1)}%</span></span>`;
+          if (putData) ivHtml += `<span style="color:#ff2ebd;margin-left:8px;">Put IV <span style="color:${valTextColor}">${(putData.value * 100).toFixed(1)}%</span></span>`;
         }
         if (combIvRef.current) {
           const combData = param.seriesData.get(combIvRef.current);
-          if (combData) ivHtml += `<span style="color:#e3b341;margin-left:8px;">Comb IV <span style="color:#fff">${(combData.value * 100).toFixed(1)}%</span></span>`;
+          if (combData) ivHtml += `<span style="color:#e3b341;margin-left:8px;">Comb IV <span style="color:${valTextColor}">${(combData.value * 100).toFixed(1)}%</span></span>`;
         }
         legendRef.current.innerHTML = `
-          <div style="display:flex;gap:12px;background:rgba(10,13,18,0.85);padding:6px 10px;border-radius:4px;border:1px solid #1e2730;backdrop-filter:blur(4px);align-items:center;">
-            <span style="color:#fff">O <span style="color:${valColor}">${data.open}</span></span>
-            <span style="color:#fff">H <span style="color:${valColor}">${data.high}</span></span>
-            <span style="color:#fff">L <span style="color:${valColor}">${data.low}</span></span>
-            <span style="color:#fff">C <span style="color:${valColor}">${data.close}</span></span>
+          <div style="display:flex;gap:12px;background:${legendBg};padding:6px 10px;border-radius:4px;border:1px solid ${legendBorder};backdrop-filter:blur(4px);align-items:center;">
+            <span style="color:${labelColor}">O <span style="color:${valColor}">${data.open}</span></span>
+            <span style="color:${labelColor}">H <span style="color:${valColor}">${data.high}</span></span>
+            <span style="color:${labelColor}">L <span style="color:${valColor}">${data.low}</span></span>
+            <span style="color:${labelColor}">C <span style="color:${valColor}">${data.close}</span></span>
             ${ivHtml}
           </div>
         `;
@@ -466,7 +472,7 @@ const ChartPanel = forwardRef(function ChartPanel({
 
           {/* Multiple Alerts UI */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4, background: '#161b22', padding: '2px 6px', borderRadius: 6, border: '1px solid #30363d' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, background: theme === 'dark' ? '#161b22' : '#f0f2f5', padding: '2px 6px', borderRadius: 6, border: `1px solid ${theme === 'dark' ? '#30363d' : '#d1d5db'}` }}>
               <select
                 value={newAlert.dir}
                 onChange={e => setNewAlert(prev => ({ ...prev, dir: e.target.value }))}
@@ -484,7 +490,7 @@ const ChartPanel = forwardRef(function ChartPanel({
                 placeholder="Alert Price"
                 value={newAlert.price}
                 onChange={e => setNewAlert(prev => ({ ...prev, price: e.target.value }))}
-                style={{ background: 'transparent', border: 'none', color: '#e6edf3', width: 70, fontSize: 11, fontFamily: 'JetBrains Mono', outline: 'none' }}
+                style={{ background: 'transparent', border: 'none', color: theme === 'dark' ? '#e6edf3' : '#1e2329', width: 70, fontSize: 11, fontFamily: 'JetBrains Mono', outline: 'none' }}
                 onKeyDown={e => {
                   if (e.key === 'Enter' && newAlert.price) {
                     onAddAlert(newAlert.dir, newAlert.price);
@@ -543,7 +549,7 @@ const ChartPanel = forwardRef(function ChartPanel({
             left: 0,
             right: 0,
             height: '1px',
-            background: '#1e2730',
+            background: 'var(--border)',
             zIndex: 5,
             pointerEvents: 'none'
           }} />
@@ -1484,9 +1490,13 @@ export default function App({ onNavigate, theme, toggleTheme }) {
       <div style={{ position: 'fixed', top: 20, right: 20, zIndex: 9999, display: 'flex', flexDirection: 'column', gap: 10, pointerEvents: 'none' }}>
         {toasts.map(t => (
           <div key={t.id} style={{
-            background: 'rgba(10, 13, 18, 0.98)', border: '1px solid rgba(227, 179, 65, 0.3)', borderLeft: '4px solid #e3b341',
-            padding: '12px 16px', borderRadius: 8, color: '#fff', fontSize: 12, fontFamily: 'JetBrains Mono, monospace',
-            boxShadow: '0 12px 32px rgba(0,0,0,0.7)', minWidth: 280,
+            background: theme === 'dark' ? 'rgba(10, 13, 18, 0.98)' : 'rgba(255, 255, 255, 0.98)', 
+            border: `1px solid ${theme === 'dark' ? 'rgba(227, 179, 65, 0.3)' : 'rgba(227, 179, 65, 0.6)'}`, 
+            borderLeft: '4px solid #e3b341',
+            padding: '12px 16px', borderRadius: 8, 
+            color: theme === 'dark' ? '#fff' : '#1e2329', 
+            fontSize: 12, fontFamily: 'JetBrains Mono, monospace',
+            boxShadow: theme === 'dark' ? '0 12px 32px rgba(0,0,0,0.7)' : '0 12px 32px rgba(0,0,0,0.15)',
             animation: 'slideIn 0.3s ease-out'
           }}>
             <div style={{ color: '#e3b341', fontWeight: 800, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8, letterSpacing: 1 }}>
@@ -1496,7 +1506,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
               </svg>
               ALERT TRIGGERED
             </div>
-            <div style={{ color: '#e6edf3', lineHeight: 1.5, opacity: 0.9 }}>{t.msg}</div>
+            <div style={{ color: theme === 'dark' ? '#e6edf3' : '#4b5563', lineHeight: 1.5, opacity: 0.9 }}>{t.msg}</div>
           </div>
         ))}
       </div>
@@ -1555,7 +1565,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
 
         <div style={{ display: 'flex', gap: 20, alignItems: 'center' }}>
           {activeCall && (
-            <span style={{ fontFamily: 'Inter', fontSize: 11, color: '#7d8590', fontVariantNumeric: 'tabular-nums' }}>
+            <span style={{ fontFamily: 'Inter', fontSize: 11, color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums' }}>
               {activeCall} / {activePut}
             </span>
           )}
@@ -1685,7 +1695,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
               {!alertLogs.length && <div style={{ textAlign: 'center', padding: 20, color: '#484f58', fontSize: 11 }}>No alerts logged yet.</div>}
               {alertLogs.map(log => (
                 <div key={log.id} style={{
-                  padding: '6px 0', borderBottom: '1px solid #21262d', fontSize: 11,
+                  padding: '6px 0', borderBottom: '1px solid var(--border)', fontSize: 11,
                   display: 'flex', flexDirection: 'column', gap: 2
                 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -1698,7 +1708,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                     </div>
                     <span style={{ color: '#7d8590', fontSize: 10 }}>{log.time}</span>
                   </div>
-                  <div style={{ color: '#e6edf3', lineHeight: 1.4 }}>{log.msg}</div>
+                  <div style={{ color: theme === 'dark' ? '#e6edf3' : '#1e2329', lineHeight: 1.4 }}>{log.msg}</div>
                 </div>
               ))}
             </div>
@@ -1717,7 +1727,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
 
           <div className="watchlist-container" style={{ flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 8, overflowY: 'auto', paddingBottom: 8, minHeight: 80, maxHeight: '35vh', zIndex: 11 }}>
             {watchList.length === 0 ? (
-              <div style={{ color: '#7d8590', fontSize: 12, padding: 12, border: '1px dashed #1e2730', borderRadius: 8, textAlign: 'center' }}>
+              <div style={{ color: 'var(--text-dim)', fontSize: 12, padding: 12, border: '1px dashed var(--border)', borderRadius: 8, textAlign: 'center' }}>
                 No strategies in watchlist. Add one from the sidebar.
               </div>
             ) : (
@@ -1897,7 +1907,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                             {(item.alerts || []).map(a => (
                               <div key={a.id} style={{
-                                display: 'flex', alignItems: 'center', gap: 6, background: '#161b22', border: '1px solid #30363d',
+                                display: 'flex', alignItems: 'center', gap: 6, background: theme === 'dark' ? '#161b22' : 'var(--bg3)', border: '1px solid var(--border)',
                                 padding: '2px 8px', borderRadius: 4, fontSize: 10, color: a.dir === '>=' ? '#3fb950' : '#f85149', fontWeight: 700
                               }}>
                                 {a.dir} {parseFloat(a.price).toFixed(2)}
@@ -1934,7 +1944,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                               type="number"
                               placeholder="Price"
                               id={`price-${item.id}`}
-                              style={{ background: 'transparent', border: 'none', color: '#e6edf3', width: 50, fontSize: 10, fontFamily: 'JetBrains Mono', outline: 'none' }}
+                              style={{ background: 'transparent', border: 'none', color: theme === 'dark' ? '#e6edf3' : '#1e2329', width: 50, fontSize: 10, fontFamily: 'JetBrains Mono', outline: 'none' }}
                               onKeyDown={e => {
                                 if (e.key === 'Enter') {
                                   const dir = document.getElementById(`dir-${item.id}`).value;
@@ -1990,7 +2000,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
               display: 'flex', flexDirection: 'column',
               alignItems: 'center', justifyContent: 'center',
               background: theme === 'dark' ? 'rgba(10,13,18,0.96)' : 'rgba(255,255,255,0.96)',
-              borderRadius: 8, border: '1px solid #1e2730',
+              borderRadius: 8, border: '1px solid var(--border)',
               gap: 12,
             }}>
               {phase === 'loading' && <div className="spinner" />}
