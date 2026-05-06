@@ -326,7 +326,67 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     setTrading(false);
   }, []);
 
-  // Paper Trading Engine
+  /**
+   * Scans available tickers to find valid Ratio Spread pairs based on config.
+   * Returns top-3 unique buy strikes per type.
+   */
+  const scanTickers = useCallback((tickers) => {
+    const sorted = [...tickers].sort((a, b) => a.strike - b.strike);
+    const validPairs = [];
+
+    for (let i = 0; i < sorted.length; i++) {
+      for (let j = i + 1; j < sorted.length; j++) {
+        const buy = sorted[i];
+        const sell = sorted[j];
+        let buyLeg, sellLeg;
+
+        if (buy.type === 'call') {
+          buyLeg = buy; sellLeg = sell; // Call: buy lower, sell higher
+        } else {
+          buyLeg = sell; sellLeg = buy; // Put: buy higher, sell lower
+        }
+
+        const strikeDiff = Math.abs(sellLeg.strike - buyLeg.strike);
+        if (strikeDiff < config.minStrikeDiff) continue;
+        if (buyLeg.iv == null || sellLeg.iv == null) continue;
+
+        const ivDiff = Math.abs(buyLeg.iv - sellLeg.iv);
+        if (ivDiff <= config.minIvDiff) continue;
+        if (!sellLeg.markPrice || sellLeg.markPrice < config.minSellPremium) continue;
+
+        const buyDN = buyLeg.deltaNotional;
+        const sellDN = sellLeg.deltaNotional;
+        if (!buyDN || !sellDN || !buyLeg.markPrice || !sellLeg.markPrice) continue;
+
+        const ratioDeviation = Math.abs((buyLeg.markPrice / sellLeg.markPrice) - (buyDN / sellDN)) / (buyDN / sellDN);
+        if (ratioDeviation > config.maxRatioDeviation) continue;
+
+        const rawQty = buyDN / sellDN;
+        const sellQty = Math.max(1, Math.round(rawQty / 0.25) * 0.25);
+        const netPrem = buyLeg.markPrice - sellQty * sellLeg.markPrice;
+
+        if (config.maxNetPremium < 0) {
+          if (netPrem < 0 && netPrem < config.maxNetPremium) continue;
+        } else {
+          if (netPrem > 0 && netPrem > config.maxNetPremium) continue;
+        }
+
+        validPairs.push({ buyLeg, sellLeg, strikeDiff, sellQty, netPremium: netPrem });
+      }
+    }
+
+    validPairs.sort((a, b) => {
+      const distA = Math.abs(a.buyLeg.strike - spotPrice);
+      const distB = Math.abs(b.buyLeg.strike - spotPrice);
+      if (distA !== distB) return distA - distB;
+      return a.netPremium - b.netPremium;
+    });
+
+    return pickTopUniqueBuyStrikes(validPairs, 3);
+  }, [config, spotPrice, pickTopUniqueBuyStrikes]);
+
+
+  // ── Paper Trading Engine Loop ───────────────────────────────────────────────
   useEffect(() => {
     if (!trading || !spotPrice) return;
 
@@ -337,13 +397,16 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     const currentMinute = Math.floor(nowTime / 60000);
     const lastMinute = Math.floor(lastEvaluatedRef.current / 60000);
 
+    // Only run the complex strategy evaluation once per minute (at the top of the minute)
     const shouldEvaluateAlgo = currentMinute > lastMinute || lastEvaluatedRef.current === 0;
 
+    /**
+     * PHASE 1: Real-time PnL & Fee Monitoring
+     * This section updates current prices and PnL values every 10 seconds.
+     */
     if (!shouldEvaluateAlgo) {
-      // Just update PnL for existing positions based on latest tickerData
       setPositions(prev => {
         if (prev.length === 0) return prev;
-
         return prev.map(pos => {
           const latestBuy = tickerData[pos.buyLeg.symbol]?.markPrice || pos.buyLeg.markPrice;
           const latestSell = tickerData[pos.sellLeg.symbol]?.markPrice || pos.sellLeg.markPrice;
@@ -352,9 +415,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           const sellPnl = (latestSell - pos.entrySellPrice) * pos.sellLeg.lotSize * pos.sellQty;
           const grossPnl = buyPnl - sellPnl + (pos.accumulatedSellPnl || 0);
 
-          const exitBuyFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize);
-          const exitSellFee = calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
-          const exitFee = exitBuyFee + exitSellFee;
+          const exitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize) +
+            calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
           const totalFees = (pos.entryFee || 0) + exitFee;
 
           return {
@@ -371,11 +433,15 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       return;
     }
 
-    // Align lastEvaluated to the start of the current minute to sync across devices
+    /**
+     * PHASE 2: Algorithm Strategy Evaluation (Minute Cycle)
+     * This handles scanning, rotation, rolls, and trade execution.
+     */
     const alignedNow = currentMinute * 60000;
     lastEvaluatedRef.current = alignedNow;
     setLastEvaluated(alignedNow);
 
+    // Identify current ATM strike for directional filtering
     let atmStrike = null;
     let minDiff = Infinity;
     for (const t of allTickers) {
@@ -386,93 +452,31 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       }
     }
 
-    const scanTickers = (tickers) => {
-      const sorted = [...tickers].sort((a, b) => a.strike - b.strike);
-      const validPairs = [];
-      for (let i = 0; i < sorted.length; i++) {
-        for (let j = i + 1; j < sorted.length; j++) {
-          const buy = sorted[i];
-          const sell = sorted[j];
-          let buyLeg, sellLeg;
-          if (buy.type === 'call') {
-            buyLeg = buy; sellLeg = sell; // Call: buy lower, sell higher
-          } else {
-            buyLeg = sell; sellLeg = buy; // Put: buy higher, sell lower
-          }
-
-          const strikeDiff = Math.abs(sellLeg.strike - buyLeg.strike);
-          if (strikeDiff < config.minStrikeDiff) continue;
-          if (buyLeg.iv == null || sellLeg.iv == null) continue;
-          const ivDiff = Math.abs(buyLeg.iv - sellLeg.iv);
-          if (ivDiff <= config.minIvDiff) continue;
-          if (!sellLeg.markPrice || sellLeg.markPrice < config.minSellPremium) continue;
-
-          const buyDN = buyLeg.deltaNotional;
-          const sellDN = sellLeg.deltaNotional;
-          if (!buyDN || !sellDN || !buyLeg.markPrice || !sellLeg.markPrice) continue;
-
-          const ratioDeviation = Math.abs((buyLeg.markPrice / sellLeg.markPrice) - (buyDN / sellDN)) / (buyDN / sellDN);
-          if (ratioDeviation > config.maxRatioDeviation) continue;
-
-          const rawQty = buyDN / sellDN;
-          const sellQty = Math.max(1, Math.round(rawQty / 0.25) * 0.25);
-          const netPrem = buyLeg.markPrice - sellQty * sellLeg.markPrice;
-
-          if (config.maxNetPremium < 0) {
-            if (netPrem < 0 && netPrem < config.maxNetPremium) continue;
-          } else {
-            if (netPrem > 0 && netPrem > config.maxNetPremium) continue;
-          }
-
-          validPairs.push({ buyLeg, sellLeg, strikeDiff, sellQty, netPremium: netPrem });
-        }
-      }
-      validPairs.sort((a, b) => {
-        const distA = Math.abs(a.buyLeg.strike - spotPrice);
-        const distB = Math.abs(b.buyLeg.strike - spotPrice);
-        if (distA !== distB) return distA - distB;
-        return a.netPremium - b.netPremium;
-      });
-      // Keep top-3 by unique buy strikes.
-      const unique = [];
-      const seenBuyStrikes = new Set();
-      for (const pair of validPairs) {
-        if (seenBuyStrikes.has(pair.buyLeg.strike)) continue;
-        seenBuyStrikes.add(pair.buyLeg.strike);
-        unique.push(pair);
-        if (unique.length >= 3) break;
-      }
-      return unique;
-    };
-
+    // A. Local Scan: Find current Top 3 unique buy strikes per type
     const callTickers = allTickers.filter(t => t.type === 'call' && (atmStrike === null || t.strike >= atmStrike));
     const putTickers = allTickers.filter(t => t.type === 'put' && (atmStrike === null || t.strike <= atmStrike));
 
-    const topCalls = pickTopUniqueBuyStrikes(scanTickers(callTickers), 3);
-    const topPuts = pickTopUniqueBuyStrikes(scanTickers(putTickers), 3);
-    const localTopSpreads = [...topCalls, ...topPuts];
-    let topSpreads = localTopSpreads;
+    const localTopCalls = scanTickers(callTickers);
+    const localTopPuts = scanTickers(putTickers);
+    const localTopSpreads = [...localTopCalls, ...localTopPuts];
 
+    // B. Scanner Sync: Merge with external RatioSpreadScanner data if available
+    let topSpreads = localTopSpreads;
     const snapshot = scannerTopRef.current;
     if (snapshot && snapshot.underlying === underlying && snapshot.expiry === selExpiry) {
       const localById = new Map(localTopSpreads.map(s => [`${s.buyLeg.symbol}_${s.sellLeg.symbol}`, s]));
       const synced = [];
       const scannerIds = [...(snapshot.callTop3 || []), ...(snapshot.putTop3 || [])];
+
       for (const item of scannerIds) {
         const spread = localById.get(item.id);
         if (spread) {
-          // Force consistency: use the quantity calculated by the scanner
-          if (item.sellQty !== undefined) {
-            spread.sellQty = item.sellQty;
-          }
+          if (item.sellQty !== undefined) spread.sellQty = item.sellQty;
           synced.push(spread);
         }
       }
-      if (scannerIds.length === 0) {
-        topSpreads = localTopSpreads;
-      } else {
-        // Keep scanner as source-of-truth where available,
-        // then backfill from local scan so we still maintain up to 6 positions.
+
+      if (scannerIds.length > 0) {
         const seen = new Set(synced.map(s => `${s.buyLeg.symbol}_${s.sellLeg.symbol}`));
         const backfilled = [...synced];
         for (const spread of localTopSpreads) {
@@ -483,298 +487,197 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         }
         const byTypeCall = backfilled.filter(s => s.buyLeg.type === 'call');
         const byTypePut = backfilled.filter(s => s.buyLeg.type === 'put');
-        const finalCalls = pickTopUniqueBuyStrikes(byTypeCall, 3);
-        const finalPuts = pickTopUniqueBuyStrikes(byTypePut, 3);
-        topSpreads = [...finalCalls, ...finalPuts];
+        topSpreads = [...pickTopUniqueBuyStrikes(byTypeCall, 3), ...pickTopUniqueBuyStrikes(byTypePut, 3)];
       }
     }
-    const currentTopBuySymbols = new Set(topSpreads.map(s => s.buyLeg.symbol));
-    const topPairIdByBuySymbol = new Map(
-      topSpreads.map(s => [s.buyLeg.symbol, `${s.buyLeg.symbol}_${s.sellLeg.symbol}`])
-    );
 
-    // Update active positions.
-    // Simple behavior:
-    // 1) If buy strike loses top-3 position -> exit and replace.
-    // 2) If buy strike is unchanged -> evaluate ITM/ATM exits by strikeDiff thresholds.
+    const currentTopBuySymbols = new Set(topSpreads.map(s => s.buyLeg.symbol));
+    const topPairIdByBuySymbol = new Map(topSpreads.map(s => [s.buyLeg.symbol, `${s.buyLeg.symbol}_${s.sellLeg.symbol}`]));
+
+    // C. Position Maintenance (Hold / Roll / Exit)
     setPositions(prev => {
       const remaining = [];
       const exited = [];
-      const usedBuySymbols = new Set();
+      const activeBuySymbols = new Set();
 
       for (const pos of prev) {
         let shouldExit = false;
         let exitReason = '';
-        // Get latest prices for PnL calculation even if exiting
+
         const latestBuy = tickerData[pos.buyLeg.symbol]?.markPrice || pos.buyLeg.markPrice;
         const latestSell = tickerData[pos.sellLeg.symbol]?.markPrice || pos.sellLeg.markPrice;
+
         const buyPnl = (latestBuy - pos.entryBuyPrice) * pos.buyLeg.lotSize;
         const sellPnl = (latestSell - pos.entrySellPrice) * pos.sellLeg.lotSize * pos.sellQty;
         const grossPnl = buyPnl - sellPnl + (pos.accumulatedSellPnl || 0);
-        const exitBuyFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize);
-        const exitSellFee = calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
-        const exitFee = exitBuyFee + exitSellFee;
+        const exitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize) +
+          calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
         const totalFees = (pos.entryFee || 0) + exitFee;
 
-        const stillInTop3 = currentTopBuySymbols.has(pos.buyLeg.symbol) ||
+        // Condition 1: Check if still ranked in Top 3
+        const inTop3 = currentTopBuySymbols.has(pos.buyLeg.symbol) ||
           topSpreads.some(s => s.buyLeg.strike === pos.buyLeg.strike && s.buyLeg.type === pos.type);
-        const hasScannerData = topSpreads.length > 0;
 
-        // Find if there's a NEW buy strike of the same type in Top 3 that we don't have yet
         const typeSpreads = topSpreads.filter(s => s.buyLeg.type === pos.type);
         const currentActiveStrikes = prev.map(p => p.buyLeg.strike);
         const newStrikesAvailable = typeSpreads.some(s => !currentActiveStrikes.includes(s.buyLeg.strike));
 
-        if (hasScannerData && !stillInTop3 && newStrikesAvailable) {
+        // -- Rotation & Roll Logic --
+        if (topSpreads.length > 0 && !inTop3 && newStrikesAvailable) {
           const top1Spread = typeSpreads[0];
           if (top1Spread) {
             const top1Strike = top1Spread.buyLeg.strike;
             const currentStrike = pos.buyLeg.strike;
             const isPut = pos.type === 'put';
-            // Exit only if the new Rank 1 strike is "better" (higher for Put, lower for Call)
+
+            // Better Strike Rule: Only exit if the new Rank 1 strike is directionally superior
             if (isPut ? (top1Strike > currentStrike) : (top1Strike < currentStrike)) {
               shouldExit = true;
-              exitReason = `Buy Strike lost Top 3 and Rank 1 is ${isPut ? 'higher' : 'lower'} (${top1Strike})`;
+              exitReason = `Buy Strike lost Top 3 and Rank 1 is better (${top1Strike})`;
+            } else {
+              // Not better, but lost Top 3. Try to roll into another Top 3 strike to maintain a slot.
+              const rollTarget = typeSpreads.find(s => !new Set(prev.map(p => p.buyLeg.strike)).has(s.buyLeg.strike));
+
+              if (rollTarget) {
+                // Realize PnL and roll legs
+                const oldBuyPnl = (latestBuy - pos.entryBuyPrice) * pos.buyLeg.lotSize;
+                const oldSellPnl = (latestSell - pos.entrySellPrice) * pos.sellLeg.lotSize * pos.sellQty;
+                pos.accumulatedSellPnl = (pos.accumulatedSellPnl || 0) - (oldBuyPnl + oldSellPnl);
+
+                // Add roll fees (closing old legs + opening new legs)
+                pos.entryFee = (pos.entryFee || 0) + exitFee +
+                  calculateFee(rollTarget.buyLeg.markPrice, spotPrice, 1, rollTarget.buyLeg.lotSize) +
+                  calculateFee(rollTarget.sellLeg.markPrice, spotPrice, rollTarget.sellQty, rollTarget.sellLeg.lotSize);
+
+                pos.buyLeg = rollTarget.buyLeg;
+                pos.sellLeg = rollTarget.sellLeg;
+                pos.sellQty = rollTarget.sellQty;
+                pos.strikeDiff = rollTarget.strikeDiff;
+                pos.entryBuyPrice = rollTarget.buyLeg.markPrice;
+                pos.entrySellPrice = rollTarget.sellLeg.markPrice;
+                pos.margin = (pos.buyLeg.markPrice * pos.buyLeg.lotSize) +
+                  (pos.sellLeg.markPrice * pos.sellLeg.lotSize * pos.sellQty / 200);
+
+                shouldExit = false;
+              } else {
+                shouldExit = true;
+                exitReason = `Buy Strike lost Top 3, no available roll target`;
+              }
             }
           }
         }
 
+        // -- Sell-Leg Optimization (Updating Sell leg if Buy leg remains the same) --
         if (!shouldExit) {
           const expectedTopPairId = topPairIdByBuySymbol.get(pos.buyLeg.symbol);
           const currentPairId = `${pos.buyLeg.symbol}_${pos.sellLeg.symbol}`;
-          // If same buy strike still in top3 but scanner now prefers a different sell leg,
-          // replace current position with the new top-ranked pair for that buy strike.
           if (expectedTopPairId && expectedTopPairId !== currentPairId) {
             const newSpread = topSpreads.find(s => `${s.buyLeg.symbol}_${s.sellLeg.symbol}` === expectedTopPairId);
             if (newSpread) {
-              // Realize PnL for the OLD sell leg and add to accumulatedSellPnl
               const oldSellPnl = (latestSell - pos.entrySellPrice) * pos.sellLeg.lotSize * pos.sellQty;
               pos.accumulatedSellPnl = (pos.accumulatedSellPnl || 0) - oldSellPnl;
-
-              // Add fees for closing old sell leg and opening new one
-              const exitOldSellFee = calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
-              const entryNewSellFee = calculateFee(newSpread.sellLeg.markPrice, spotPrice, newSpread.sellQty, newSpread.sellLeg.lotSize);
-              pos.entryFee = (pos.entryFee || 0) + exitOldSellFee + entryNewSellFee;
-
-              // Update position fields with new sell leg info
+              pos.entryFee = (pos.entryFee || 0) +
+                calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize) +
+                calculateFee(newSpread.sellLeg.markPrice, spotPrice, newSpread.sellQty, newSpread.sellLeg.lotSize);
               pos.sellLeg = newSpread.sellLeg;
               pos.sellQty = newSpread.sellQty;
               pos.entrySellPrice = newSpread.sellLeg.markPrice;
               pos.strikeDiff = newSpread.strikeDiff;
-
-              // Recalculate margin
-              const longMargin = pos.buyLeg.markPrice * pos.buyLeg.lotSize * 1;
-              const shortMargin = (pos.sellLeg.markPrice * pos.sellLeg.lotSize * pos.sellQty) / 200;
-              pos.margin = longMargin + shortMargin;
-
-              // Do NOT exit
-              shouldExit = false;
+              pos.margin = (pos.buyLeg.markPrice * pos.buyLeg.lotSize) +
+                (pos.sellLeg.markPrice * pos.sellLeg.lotSize * pos.sellQty / 200);
             }
           }
 
+          // -- Hard Stop Exits (ATM/ITM thresholds) --
           const isCall = pos.type === 'call';
           const buyStrike = pos.buyLeg.strike;
-          if (!shouldExit && pos.strikeDiff < 1000) {
+          if (pos.strikeDiff < 1000) {
             if (isCall ? spotPrice >= buyStrike : spotPrice <= buyStrike) {
-              shouldExit = true;
-              exitReason = 'Buy Strike reached ATM (<1000 diff)';
+              shouldExit = true; exitReason = 'Buy Strike reached ATM (<1000 diff)';
             }
-          } else if (!shouldExit && pos.strikeDiff < 1200) {
-            if ((isCall ? spotPrice - buyStrike : buyStrike - spotPrice) >= 200) {
-              shouldExit = true;
-              exitReason = '200 points ITM (<1200 diff)';
-            }
-          } else if (!shouldExit && pos.strikeDiff < 1400) {
-            if ((isCall ? spotPrice - buyStrike : buyStrike - spotPrice) >= 300) {
-              shouldExit = true;
-              exitReason = '300 points ITM (<1400 diff)';
-            }
+          } else if (pos.strikeDiff < 1200 && (isCall ? spotPrice - buyStrike : buyStrike - spotPrice) >= 200) {
+            shouldExit = true; exitReason = '200 points ITM (<1200 diff)';
+          } else if (pos.strikeDiff < 1400 && (isCall ? spotPrice - buyStrike : buyStrike - spotPrice) >= 300) {
+            shouldExit = true; exitReason = '300 points ITM (<1400 diff)';
           }
         }
 
+        // -- Record or Keep Position --
         if (shouldExit) {
           exited.push({
-            ...pos,
-            exitTime: new Date(),
-            exitBuyPrice: latestBuy,
-            exitSellPrice: latestSell,
-            realizedGrossPnl: grossPnl,
-            realizedNetPnl: grossPnl - totalFees,
-            exitFee,
-            totalFees,
-            exitReason,
-            _latestBuy: latestBuy,
-            _latestSell: latestSell
+            ...pos, exitTime: new Date(), exitBuyPrice: latestBuy, exitSellPrice: latestSell,
+            realizedGrossPnl: grossPnl, realizedNetPnl: grossPnl - totalFees,
+            exitFee, totalFees, exitReason, _latestBuy: latestBuy, _latestSell: latestSell
           });
         } else {
           remaining.push({
-            ...pos,
-            currentBuyPrice: latestBuy,
-            currentSellPrice: latestSell,
-            unrealizedGrossPnl: grossPnl,
-            unrealizedNetPnl: grossPnl - totalFees,
-            currentExitFee: exitFee,
-            currentTotalFees: totalFees
+            ...pos, currentBuyPrice: latestBuy, currentSellPrice: latestSell,
+            unrealizedGrossPnl: grossPnl, unrealizedNetPnl: grossPnl - totalFees,
+            currentExitFee: exitFee, currentTotalFees: totalFees
           });
-          usedBuySymbols.add(pos.buyLeg.symbol);
+          activeBuySymbols.add(pos.buyLeg.symbol);
         }
       }
 
-      // Record exited trades
+      // -- Persist History to Supabase --
       if (exited.length > 0) {
         setTradeHistory(th => [...exited, ...th]);
-
-        // Trigger AI Reviews and Persist to Supabase
         exited.forEach(async (t) => {
           try {
-            // 1. Persist the closed trade basic data to Supabase IMMEDIATELY
-            console.log(`Supabase: Attempting to insert trade ${t.id}...`);
-            const { error: insertError } = await supabase
-              .from('trade_history')
-              .insert([{
-                trade_id: t.id,
-                underlying: t.underlying,
-                expiry: t.expiry,
-                type: t.type,
-                buy_leg: JSON.stringify(t.buyLeg),
-                sell_leg: JSON.stringify(t.sellLeg),
-                sell_qty: t.sellQty,
-                strike_diff: t.strikeDiff,
-                entry_time: t.entryTime.toISOString(),
-                entry_buy_price: t.entryBuyPrice,
-                entry_sell_price: t.entrySellPrice,
-                margin: t.margin,
-                exit_time: t.exitTime.toISOString(),
-                exit_buy_price: t._latestBuy,
-                exit_sell_price: t._latestSell,
-                realized_gross_pnl: t.realizedGrossPnl,
-                realized_net_pnl: t.realizedNetPnl,
-                exit_fee: t.exitFee,
-                total_fees: t.totalFees,
-                exit_reason: t.exitReason
-              }]);
-
-            if (insertError) {
-              console.error('Supabase Insert Error:', { insertError, tradeId: t.id });
-              // We continue to AI review anyway for the local UI state
-            } else {
-              console.log(`Supabase: Trade ${t.id} persisted successfully.`);
-            }
-
-            // 2. Trigger AI Reviews (Async, won't block the initial insert anymore)
-            // const memory = await fetchTopTradesMemory();
-            // const [claude, groq] = await Promise.all([
-            //   getClaudeReview(t, 'EXIT', memory),
-            //   getGroqReview(t, 'EXIT', memory)
-            // ]);
-
-            // setAiReviews(prev => ({
-            //   ...prev,
-            //   [t.id]: { claude, groq }
-            // }));
-
-            // // 3. Update the record with AI reviews once ready
-            // if (!insertError) {
-            //   const { error: updateError } = await supabase
-            //     .from('trade_history')
-            //     .update({
-            //       claude_review: claude,
-            //       groq_review: groq
-            //     })
-            //     .eq('trade_id', t.id);
-
-            //   if (updateError) console.error('Supabase Update Error (AI Reviews):', updateError);
-            // }
-
-          } catch (err) {
-            console.error('Error in AI/Supabase exit logic:', err);
-          }
+            await supabase.from('trade_history').insert([{
+              trade_id: t.id, underlying: t.underlying, expiry: t.expiry, type: t.type,
+              buy_leg: JSON.stringify(t.buyLeg), sell_leg: JSON.stringify(t.sellLeg),
+              sell_qty: t.sellQty, strike_diff: t.strikeDiff, entry_time: t.entryTime.toISOString(),
+              entry_buy_price: t.entryBuyPrice, entry_sell_price: t.entrySellPrice, margin: t.margin,
+              exit_time: t.exitTime.toISOString(), exit_buy_price: t._latestBuy, exit_sell_price: t._latestSell,
+              realized_gross_pnl: t.realizedGrossPnl, realized_net_pnl: t.realizedNetPnl,
+              exit_fee: t.exitFee, total_fees: t.totalFees, exit_reason: t.exitReason
+            }]);
+          } catch (err) { console.error('Supabase Persist Error:', err); }
         });
       }
 
-      // Internal helper cleanup for persisted exits.
-      exited.forEach(t => {
-        delete t._latestBuy;
-        delete t._latestSell;
-      });
-
-      // Open new positions from top 3 that are not active
+      // D. Open New Positions (Entry Evaluation)
       for (const spread of topSpreads) {
-        // Keep trade_id short and unique to avoid DB length constraints.
-        const id = `T${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+        const buyCovered = activeBuySymbols.has(spread.buyLeg.symbol);
 
-        // Skip if this specific pair is already in Trade History (Client Rule)
-        // Removed to allow re-entry of trades that were incorrectly exited
-        /*
-        const inHistory = tradeHistory.some(h => h.id === id);
-        if (inHistory) {
-          console.log(`Algo: Skipping ${id} - Already in Trade History.`);
-          continue;
-        }
-        */
+        if (!buyCovered) {
+          // Hard capacity limit: Max 3 positions per type (Call/Put)
+          const currentCount = remaining.filter(p => p.type === spread.buyLeg.type).length;
+          if (currentCount >= 3) continue;
 
-        const exists = remaining.find(p => p.id === id);
-        const buyCovered = usedBuySymbols.has(spread.buyLeg.symbol);
-
-        if (!exists && !buyCovered) {
-          usedBuySymbols.add(spread.buyLeg.symbol);
-          // Margin: 100% for long (1x), 200x leverage for short leg (Value / 200)
-          const longMargin = spread.buyLeg.markPrice * spread.buyLeg.lotSize * 1;
-          const shortMargin = (spread.sellLeg.markPrice * spread.sellLeg.lotSize * spread.sellQty) / 200;
-          const margin = longMargin + shortMargin;
-
+          activeBuySymbols.add(spread.buyLeg.symbol);
           const entryBuyFee = calculateFee(spread.buyLeg.markPrice, spotPrice, 1, spread.buyLeg.lotSize);
           const entrySellFee = calculateFee(spread.sellLeg.markPrice, spotPrice, spread.sellQty, spread.sellLeg.lotSize);
           const entryFee = entryBuyFee + entrySellFee;
 
+          const id = `T${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
           const newPos = {
-            id,
-            underlying: underlying,
-            expiry: selExpiry,
-            type: spread.buyLeg.type,
-            buyLeg: spread.buyLeg,
-            sellLeg: spread.sellLeg,
-            sellQty: spread.sellQty,
-            strikeDiff: spread.strikeDiff,
-            entryTime: new Date(),
-            entryBuyPrice: spread.buyLeg.markPrice,
-            entrySellPrice: spread.sellLeg.markPrice,
-            currentBuyPrice: spread.buyLeg.markPrice,
-            currentSellPrice: spread.sellLeg.markPrice,
-            unrealizedGrossPnl: 0,
-            unrealizedNetPnl: -entryFee,
-            entryFee,
-            currentExitFee: entryFee,
-            currentTotalFees: entryFee * 2,
-            margin
+            id, underlying, expiry: selExpiry, type: spread.buyLeg.type,
+            buyLeg: spread.buyLeg, sellLeg: spread.sellLeg, sellQty: spread.sellQty,
+            strikeDiff: spread.strikeDiff, entryTime: new Date(), entryBuyPrice: spread.buyLeg.markPrice,
+            entrySellPrice: spread.sellLeg.markPrice, currentBuyPrice: spread.buyLeg.markPrice,
+            currentSellPrice: spread.sellLeg.markPrice, unrealizedGrossPnl: 0, unrealizedNetPnl: -entryFee,
+            entryFee, currentExitFee: entryFee, currentTotalFees: entryFee * 2,
+            margin: (spread.buyLeg.markPrice * spread.buyLeg.lotSize) + (spread.sellLeg.markPrice * spread.sellLeg.lotSize * spread.sellQty / 200)
           };
           remaining.push(newPos);
 
-          // Trigger AI Reviews for Entries and Persist to Supabase
+          // Trigger AI Reviews for Entry
           (async () => {
             try {
               const memory = await fetchTopTradesMemory();
-              const [claude, groq] = await Promise.all([
-                getClaudeReview(newPos, 'ENTRY', memory),
-                getGroqReview(newPos, 'ENTRY', memory)
-              ]);
-
-              setAiReviews(prev => ({
-                ...prev,
-                [id]: { claude, groq }
-              }));
-
-            } catch (e) {
-              console.error('AI Review/Entry Error:', e);
-            }
+              const [claude, groq] = await Promise.all([getClaudeReview(newPos, 'ENTRY', memory), getGroqReview(newPos, 'ENTRY', memory)]);
+              setAiReviews(prev => ({ ...prev, [id]: { claude, groq } }));
+            } catch (e) { console.error('AI Entry Review Error:', e); }
           })();
         }
       }
 
+      // Final sort for dashboard display
       return [...remaining].sort((a, b) => {
         if (a.type === b.type) {
-          if (a.type === 'call') return a.buyLeg.strike - b.buyLeg.strike; // CALL ascending
-          return b.buyLeg.strike - a.buyLeg.strike; // PUT descending
+          return a.type === 'call' ? a.buyLeg.strike - b.buyLeg.strike : b.buyLeg.strike - a.buyLeg.strike;
         }
         return a.type === 'call' ? -1 : 1;
       });
@@ -844,16 +747,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       return newConfig;
     });
   };
-
-  const handleStartTrading = useCallback(() => {
-    startTrading();
-    tabBroadcast('TRADING_START', { underlying, expiry: selExpiry });
-  }, [startTrading, tabBroadcast, underlying, selExpiry]);
-
-  const handleStopTrading = useCallback(() => {
-    stopTrading();
-    tabBroadcast('TRADING_STOP', {});
-  }, [stopTrading, tabBroadcast]);
 
   const exportCSV = () => {
     if (!tradeHistory.length) {
