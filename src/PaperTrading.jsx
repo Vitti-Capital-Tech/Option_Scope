@@ -414,7 +414,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           const ratioDeviation = Math.abs((buyLeg.markPrice / sellLeg.markPrice) - (buyDN / sellDN)) / (buyDN / sellDN);
           if (ratioDeviation > config.maxRatioDeviation) continue;
 
-          const sellQty = Math.max(1, Math.round((buyDN / sellDN) / 0.25) * 0.25);
+          const rawQty = buyDN / sellDN;
+          const sellQty = Math.max(1, Math.round(rawQty / 0.25) * 0.25);
           const netPrem = buyLeg.markPrice - sellQty * sellLeg.markPrice;
 
           if (config.maxNetPremium < 0) {
