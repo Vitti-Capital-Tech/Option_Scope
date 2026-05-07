@@ -387,8 +387,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   }, [config, spotPrice, pickTopUniqueBuyStrikes]);
 
 
-  // ── Paper Trading Engine Loop ───────────────────────────────────────────────
-  useEffect(() => {
+  const evaluateStrategy = useCallback((force = false) => {
     if (!trading || !spotPrice) return;
 
     const allTickers = Object.values(latestTickerDataRef.current);
@@ -398,9 +397,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     const currentMinute = Math.floor(nowTime / 60000);
     const lastMinute = Math.floor(lastEvaluatedRef.current / 60000);
 
-    // Only run the complex strategy evaluation once per minute OR when a fresh scanner update arrives
+    // Only run the complex strategy evaluation once per minute OR when a fresh scanner update arrives OR if forced
     const scannerUpdated = scannerSyncVersion > lastProcessedScannerVersionRef.current;
-    const shouldEvaluateAlgo = currentMinute > lastMinute || lastEvaluatedRef.current === 0 || scannerUpdated;
+    const shouldEvaluateAlgo = force || currentMinute > lastMinute || lastEvaluatedRef.current === 0 || scannerUpdated;
 
     if (scannerUpdated) {
       lastProcessedScannerVersionRef.current = scannerSyncVersion;
@@ -520,51 +519,24 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
         const totalFees = (pos.entryFee || 0) + exitFee;
 
-        // Condition 1: Check if still ranked in Top 3
-        const inTop3 = currentTopBuySymbols.has(pos.buyLeg.symbol) ||
-          topSpreads.some(s => s.buyLeg.strike === pos.buyLeg.strike && s.buyLeg.type === pos.type);
-
+        // Condition: Check if buy strike is still ranked in Top 3 for its type
         const typeSpreads = topSpreads.filter(s => s.buyLeg.type === pos.type);
-        const currentActiveStrikes = prev.map(p => p.buyLeg.strike);
-        const newStrikesAvailable = typeSpreads.some(s => !currentActiveStrikes.includes(s.buyLeg.strike));
+        const inTop3 = typeSpreads.some(s => s.buyLeg.strike === pos.buyLeg.strike);
 
-        // -- Rotation & Roll Logic --
-        if (topSpreads.length > 0 && !inTop3 && newStrikesAvailable) {
-          const top1Spread = typeSpreads[0];
-          if (top1Spread) {
-            const top1Strike = top1Spread.buyLeg.strike;
-            const currentStrike = pos.buyLeg.strike;
-            const isPut = pos.type === 'put';
+        if (topSpreads.length > 0 && !inTop3) {
+          const currentActiveStrikes = prev.map(p => p.buyLeg.strike);
+          const newStrikesAvailable = typeSpreads.some(s => !currentActiveStrikes.includes(s.buyLeg.strike));
 
-            // Better Strike Rule: Only exit if the new Rank 1 strike is directionally superior
-            if (isPut ? (top1Strike > currentStrike) : (top1Strike < currentStrike)) {
-              shouldExit = true;
-              exitReason = `Buy Strike lost Top 3 and Rank 1 is better (${top1Strike})`;
-            } else {
-              // Not better, but lost Top 3. Try to roll into another Top 3 strike to maintain a slot.
-              const rollTarget = typeSpreads.find(s => !new Set(prev.map(p => p.buyLeg.strike)).has(s.buyLeg.strike));
+          if (newStrikesAvailable) {
+            const top1Spread = typeSpreads[0];
+            if (top1Spread) {
+              const top1Strike = top1Spread.buyLeg.strike;
+              const currentStrike = pos.buyLeg.strike;
+              const isPut = pos.type === 'put';
 
-              if (rollTarget) {
-                // Realize PnL and roll legs
-                const oldBuyPnl = (latestBuy - pos.entryBuyPrice) * pos.buyLeg.lotSize;
-                const oldSellPnl = (latestSell - pos.entrySellPrice) * pos.sellLeg.lotSize * pos.sellQty;
-                pos.accumulatedSellPnl = (pos.accumulatedSellPnl || 0) - (oldBuyPnl + oldSellPnl);
-
-                // Add roll fees (closing old legs + opening new legs)
-                pos.entryFee = (pos.entryFee || 0) + exitFee +
-                  calculateFee(rollTarget.buyLeg.markPrice, spotPrice, 1, rollTarget.buyLeg.lotSize) +
-                  calculateFee(rollTarget.sellLeg.markPrice, spotPrice, rollTarget.sellQty, rollTarget.sellLeg.lotSize);
-
-                pos.buyLeg = rollTarget.buyLeg;
-                pos.sellLeg = rollTarget.sellLeg;
-                pos.sellQty = rollTarget.sellQty;
-                pos.strikeDiff = rollTarget.strikeDiff;
-                pos.entryBuyPrice = rollTarget.buyLeg.markPrice;
-                pos.entrySellPrice = rollTarget.sellLeg.markPrice;
-                pos.margin = (pos.buyLeg.markPrice * pos.buyLeg.lotSize) +
-                  (pos.sellLeg.markPrice * pos.sellLeg.lotSize * pos.sellQty / 200);
-
-                shouldExit = false;
+              if (isPut ? (top1Strike > currentStrike) : (top1Strike < currentStrike)) {
+                shouldExit = true;
+                exitReason = `Buy Strike lost Top 3 and Rank 1 is better (${top1Strike})`;
               } else {
                 shouldExit = true;
                 exitReason = `Buy Strike lost Top 3, no available roll target`;
@@ -573,28 +545,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           }
         }
 
-        // -- Sell-Leg Optimization (Updating Sell leg if Buy leg remains the same) --
+        // Hard Stop Exits (ATM/ITM thresholds) — only if not already exiting
         if (!shouldExit) {
-          const expectedTopPairId = topPairIdByBuySymbol.get(pos.buyLeg.symbol);
-          const currentPairId = `${pos.buyLeg.symbol}_${pos.sellLeg.symbol}`;
-          if (expectedTopPairId && expectedTopPairId !== currentPairId) {
-            const newSpread = topSpreads.find(s => `${s.buyLeg.symbol}_${s.sellLeg.symbol}` === expectedTopPairId);
-            if (newSpread) {
-              const oldSellPnl = (latestSell - pos.entrySellPrice) * pos.sellLeg.lotSize * pos.sellQty;
-              pos.accumulatedSellPnl = (pos.accumulatedSellPnl || 0) - oldSellPnl;
-              pos.entryFee = (pos.entryFee || 0) +
-                calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize) +
-                calculateFee(newSpread.sellLeg.markPrice, spotPrice, newSpread.sellQty, newSpread.sellLeg.lotSize);
-              pos.sellLeg = newSpread.sellLeg;
-              pos.sellQty = newSpread.sellQty;
-              pos.entrySellPrice = newSpread.sellLeg.markPrice;
-              pos.strikeDiff = newSpread.strikeDiff;
-              pos.margin = (pos.buyLeg.markPrice * pos.buyLeg.lotSize) +
-                (pos.sellLeg.markPrice * pos.sellLeg.lotSize * pos.sellQty / 200);
-            }
-          }
-
-          // -- Hard Stop Exits (ATM/ITM thresholds) --
           const isCall = pos.type === 'call';
           const buyStrike = pos.buyLeg.strike;
           if (pos.strikeDiff < 1000) {
@@ -608,7 +560,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           }
         }
 
-        // -- Record or Keep Position --
+        // Record or Keep
         if (shouldExit) {
           exited.push({
             ...pos, exitTime: new Date(), exitBuyPrice: latestBuy, exitSellPrice: latestSell,
@@ -691,15 +643,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             margin: (spread.buyLeg.markPrice * spread.buyLeg.lotSize) + (spread.sellLeg.markPrice * spread.sellLeg.lotSize * spread.sellQty / 200)
           };
           remaining.push(newPos);
-
-          // Trigger AI Reviews for Entry
-          // (async () => {
-          //   try {
-          //     const memory = await fetchTopTradesMemory();
-          //     const [claude, groq] = await Promise.all([getClaudeReview(newPos, 'ENTRY', memory), getGroqReview(newPos, 'ENTRY', memory)]);
-          //     setAiReviews(prev => ({ ...prev, [id]: { claude, groq } }));
-          //   } catch (e) { console.error('AI Entry Review Error:', e); }
-          // })();
         }
       }
 
@@ -712,7 +655,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       });
     });
 
-  }, [tickerData, trading, spotPrice, config, expectedTickerCount, underlying, selExpiry, pickTopUniqueBuyStrikes, scannerSyncVersion]);
+  }, [trading, spotPrice, tickerData, config, underlying, selExpiry, scannerSyncVersion, pickTopUniqueBuyStrikes, scanTickers]);
+
+  // ── Paper Trading Engine Loop ───────────────────────────────────────────────
+  useEffect(() => {
+    evaluateStrategy();
+  }, [tickerData, trading, spotPrice, evaluateStrategy, scannerSyncVersion]);
 
   useEffect(() => () => {
     if (wsRef.current) wsRef.current.close();
@@ -1067,12 +1015,21 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
               {trading && (
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <div className="pt-live-badge" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text)' }}>
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <button
+                    onClick={() => evaluateStrategy(true)}
+                    title="Refresh Now"
+                    style={{
+                      background: 'var(--bg-card)', border: '1px solid var(--border)',
+                      color: 'var(--text)', borderRadius: '6px', padding: '2px 8px',
+                      display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer',
+                      fontSize: '12px', height: '24px'
+                    }}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                       <path d="M21 12C21 16.9706 16.9706 21 12 21C7.02944 21 3 16.9706 3 12C3 7.02944 7.02944 3 12 3C15.5398 3 18.5997 5.04419 20.0886 8M20.0886 8H16.0886M20.0886 8V4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                     </svg>
                     {timeRemaining !== null && timeRemaining <= 60 ? `${timeRemaining}s` : ''}
-                  </div>
+                  </button>
                   <div className="pt-live-badge">
                     <div className="pt-live-dot" />
                     Monitoring
