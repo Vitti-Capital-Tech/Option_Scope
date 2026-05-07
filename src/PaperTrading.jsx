@@ -1240,14 +1240,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                           </td>
                           <td>
                             <div style={{ display: 'flex', flexDirection: 'column', fontSize: '12px' }}>
-                              <span style={{ color: '#3fb950' }}>{t.entryBuyPrice?.toFixed(1)}</span>
-                              <span style={{ color: '#f85149' }}>{t.entrySellPrice?.toFixed(1)}</span>
+                              <span style={{ color: '#3fb950' }}>{t.entryBuyPrice?.toFixed(2)}</span>
+                              <span style={{ color: '#f85149' }}>{t.entrySellPrice?.toFixed(2)}</span>
                             </div>
                           </td>
                           <td>
                             <div style={{ display: 'flex', flexDirection: 'column', fontSize: '12px' }}>
-                              <span style={{ color: '#3fb950' }}>{t.exitBuyPrice?.toFixed(1)}</span>
-                              <span style={{ color: '#f85149' }}>{t.exitSellPrice?.toFixed(1)}</span>
+                              <span style={{ color: '#3fb950' }}>{t.exitBuyPrice?.toFixed(2)}</span>
+                              <span style={{ color: '#f85149' }}>{t.exitSellPrice?.toFixed(2)}</span>
                             </div>
                           </td>
                           <td>
