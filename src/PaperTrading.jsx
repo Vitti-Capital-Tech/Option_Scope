@@ -136,8 +136,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         // Auto-switch UI to the underlying/expiry of active trades if not set
         const first = data[0];
         if (first.underlying !== underlying || first.expiry !== selExpiry) {
-           setUnderlying(first.underlying);
-           setSelExpiry(first.expiry);
+          setUnderlying(first.underlying);
+          setSelExpiry(first.expiry);
         }
 
         const mapped = data.map(p => ({
@@ -623,22 +623,26 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       setTradeHistory(th => [...exited, ...th]);
       exited.forEach(async (t) => {
         try {
-          // Record to permanent trade_history in Supabase
-          const { error: histError } = await supabase.from('trade_history').insert([{
-            trade_id: t.id, underlying, expiry: selExpiry, type: t.type,
-            buy_leg: JSON.stringify(t.buyLeg), sell_leg: JSON.stringify(t.sellLeg),
-            sell_qty: t.sellQty, strike_diff: t.strikeDiff, entry_time: t.entryTime.toISOString(),
-            entry_buy_price: t.entryBuyPrice, entry_sell_price: t.entrySellPrice, margin: t.margin,
-            exit_time: t.exitTime.toISOString(), exit_buy_price: t._latestBuy, exit_sell_price: t._latestSell,
-            realized_gross_pnl: t.realizedGrossPnl, realized_net_pnl: t.realizedNetPnl,
-            exit_fee: t.exitFee, total_fees: t.totalFees, exit_reason: t.exitReason
-          }]);
-          if (histError) console.error('History Persist Error:', histError);
+          // Guard: Check if this trade was already moved to history by another instance
+          const { data: alreadyExited } = await supabase.from('trade_history').select('trade_id').eq('trade_id', t.id).limit(1);
+          if (alreadyExited && alreadyExited.length > 0) {
+             console.log('Sync: Trade already recorded in history by another device.');
+          } else {
+            // Record to permanent trade_history
+            const { error: histError } = await supabase.from('trade_history').insert([{
+              trade_id: t.id, underlying, expiry: selExpiry, type: t.type,
+              buy_leg: JSON.stringify(t.buyLeg), sell_leg: JSON.stringify(t.sellLeg),
+              sell_qty: t.sellQty, strike_diff: t.strikeDiff, entry_time: t.entryTime.toISOString(),
+              entry_buy_price: t.entryBuyPrice, entry_sell_price: t.entrySellPrice, margin: t.margin,
+              exit_time: t.exitTime.toISOString(), exit_buy_price: t._latestBuy, exit_sell_price: t._latestSell,
+              realized_gross_pnl: t.realizedGrossPnl, realized_net_pnl: t.realizedNetPnl,
+              exit_fee: t.exitFee, total_fees: t.totalFees, exit_reason: t.exitReason
+            }]);
+            if (histError) console.error('History Persist Error:', histError);
+          }
 
           // Delete from active_positions
-          const { error } = await supabase.from('active_positions').delete().eq('id', t.id);
-          if (error) console.error('Supabase Delete Error:', error);
-          else console.log('Supabase Delete Success:', t.id);
+          await supabase.from('active_positions').delete().eq('id', t.id);
         } catch (err) { console.error('Supabase Exit Exception:', err); }
       });
     }
@@ -646,18 +650,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     if (newEntries.length > 0) {
       newEntries.forEach(async (t) => {
         try {
-          // Deterministic Guard: Check if already entered in DB
+          // Strict Deterministic Guard: Check by attributes
           const { data: existing, error: checkError } = await supabase.from('active_positions').select('id')
             .eq('underlying', underlying).eq('expiry', selExpiry).eq('type', t.type)
             .eq('strike_diff', t.strikeDiff).limit(1);
 
-          if (checkError) {
-            console.error('Supabase Guard Check Error:', checkError);
-            return;
-          }
-
+          if (checkError) return;
           if (existing && existing.length > 0) {
-            console.log('Supabase Entry Guard: Position already exists, skipping insert.');
+            console.log('Sync Guard: Spread already active in Supabase, skipping duplicate insert.');
             return;
           }
 
@@ -669,8 +669,15 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             margin: t.margin, entry_fee: t.entryFee, accumulated_sell_pnl: 0
           }]);
 
-          if (insertError) console.error('Supabase Insert Error:', insertError);
-          else console.log('Supabase Insert Success:', t.id);
+          if (insertError) {
+             if (insertError.code === '23505') {
+               console.log('Database Guard: Blocked duplicate strike entry.');
+             } else {
+               console.error('Supabase Insert Error:', insertError);
+             }
+          } else {
+            console.log('Supabase Insert Success:', t.id);
+          }
         } catch (err) { console.error('Supabase Insert Exception:', err); }
       });
     }
@@ -1082,25 +1089,46 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               <div className="pt-table-scroll">
                 <table className="pt-table">
                   <thead><tr>
-                    <th>Type</th><th>Expiry</th><th>Buy Strike</th><th>Sell Strike</th><th>Sell Qty</th>
-                    <th>Entry Net</th><th>Current Net</th><th>Unrl P&L</th>
-                    <th>Margin</th><th>Duration</th>
+                    <th>Type / Ratio</th>
+                    <th>Expiry</th>
+                    <th>Buy / Sell Strike</th>
+                    <th>In (Buy / Sell)</th>
+                    <th>Current (Buy / Sell)</th>
+                    <th>Unrl P&L</th>
+                    <th>Margin</th>
+                    <th>Duration</th>
                   </tr></thead>
                   <tbody>
                     {positions.map(p => {
-                      const entryNet = p.entryBuyPrice - (p.sellQty * p.entrySellPrice);
-                      const currentNet = p.currentBuyPrice - (p.sellQty * p.currentSellPrice);
                       const pnlValue = includeFees ? (p.unrealizedNetPnl || 0) : (p.unrealizedGrossPnl || p.unrealizedPnl || 0);
                       const pnlClass = pnlValue > 0 ? 'positive' : pnlValue < 0 ? 'negative' : 'zero';
                       return (
                         <tr key={p.id} className={`pt-row-${p.type}`}>
-                          <td><span className={`pt-type-badge ${p.type}`}>{p.type.toUpperCase()}</span></td>
-                          <td><span style={{ fontSize: '12px', fontWeight: 600 }}>{fmtExpiry(p.expiry)}</span></td>
-                          <td className="pt-strike pt-strike-buy">{p.buyLeg.strike.toLocaleString()}</td>
-                          <td className="pt-strike pt-strike-sell">{p.sellLeg.strike.toLocaleString()}</td>
-                          <td>{p.sellQty}x</td>
-                          <td>{entryNet.toFixed(2)}</td>
-                          <td>{currentNet.toFixed(2)}</td>
+                          <td>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                              <span className={`pt-type-badge ${p.type}`}>{p.type.toUpperCase()}</span>
+                              <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 600 }}>1:{p.sellQty}</span>
+                            </div>
+                          </td>
+                          <td><span style={{ fontSize: '11px', fontWeight: 600 }}>{fmtExpiry(p.expiry)}</span></td>
+                          <td>
+                            <div style={{ display: 'flex', flexDirection: 'column' }}>
+                              <span className="pt-strike-buy">{p.buyLeg.strike.toLocaleString()}</span>
+                              <span className="pt-strike-sell" style={{ fontSize: '11px', opacity: 0.8 }}>{p.sellLeg.strike.toLocaleString()}</span>
+                            </div>
+                          </td>
+                          <td>
+                            <div style={{ display: 'flex', flexDirection: 'column', fontSize: '12px' }}>
+                              <span style={{ color: '#3fb950' }}>{p.entryBuyPrice?.toFixed(2)}</span>
+                              <span style={{ color: '#f85149' }}>{p.entrySellPrice?.toFixed(2)}</span>
+                            </div>
+                          </td>
+                          <td>
+                            <div style={{ display: 'flex', flexDirection: 'column', fontSize: '12px' }}>
+                              <span style={{ color: '#3fb950' }}>{p.currentBuyPrice?.toFixed(2)}</span>
+                              <span style={{ color: '#f85149' }}>{p.currentSellPrice?.toFixed(2)}</span>
+                            </div>
+                          </td>
                           <td><span className={`pt-pnl ${pnlClass}`}>{pnlValue > 0 ? '+' : ''}{pnlValue.toFixed(2)}</span></td>
                           <td>
                             <div className="pt-margin-cell">
