@@ -26,10 +26,33 @@ const safeParseLeg = (value) => {
 };
 
 export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
-  const [underlying, setUnderlying] = useState('BTC');
+  // config state unified with underlying and expiry
+  const [config, setConfig] = useState(() => {
+    const saved = localStorage.getItem('vitti_algo_config');
+    let base = {
+      underlying: 'BTC',
+      expiry: '',
+      minStrikeDiff: 800,
+      minIvDiff: 5,
+      maxRatioDeviation: 0.25,
+      minSellPremium: 10,
+      maxNetPremium: 20,
+    };
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        return { ...base, ...parsed };
+      } catch (e) { }
+    }
+    return base;
+  });
+
+  // Use getters for convenience
+  const underlying = config.underlying;
+  const selExpiry = config.expiry;
+
   const [products, setProducts] = useState([]);
   const [expiries, setExpiries] = useState([]);
-  const [selExpiry, setSelExpiry] = useState('');
   const [spotPrice, setSpotPrice] = useState(null);
   const [trading, setTrading] = useState(true);
 
@@ -58,19 +81,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const [scannerSyncVersion, setScannerSyncVersion] = useState(0);
   const lastProcessedScannerVersionRef = useRef(0);
 
-  const [config, setConfig] = useState(() => {
-    const saved = localStorage.getItem('vitti_algo_config');
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) { }
-    }
-    return {
-      minStrikeDiff: 800,
-      minIvDiff: 5,
-      maxRatioDeviation: 0.25,
-      minSellPremium: 10,
-      maxNetPremium: 20,
-    };
-  });
+
 
   const pickTopUniqueBuyStrikes = useCallback((spreads, limit = 3) => {
     const out = [];
@@ -109,7 +120,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
   // ── Load products ──────────────────────────────────
   useEffect(() => {
-    setExpiries([]); setSelExpiry('');
+    setExpiries([]);
     setTickerData({});
     setExpectedTickerCount(0);
     loadProducts(underlying)
@@ -121,6 +132,32 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       })
       .catch(e => console.error('Failed to load products:', e));
   }, [underlying]);
+
+  const saveSupabaseConfig = useCallback(async (newCfg) => {
+    try {
+      await supabase.from('paper_trading_config').upsert({
+        id: 'global',
+        underlying: newCfg.underlying,
+        expiry: newCfg.expiry,
+        min_strike_diff: newCfg.minStrikeDiff,
+        min_iv_diff: newCfg.minIvDiff,
+        max_ratio_deviation: newCfg.maxRatioDeviation,
+        min_sell_premium: newCfg.minSellPremium,
+        max_net_premium: newCfg.maxNetPremium,
+        updated_at: new Date().toISOString()
+      });
+    } catch (e) { }
+  }, []);
+
+  const updateConfig = (key, value) => {
+    setConfig(c => {
+      const newConfig = { ...c, [key]: value };
+      localStorage.setItem('vitti_algo_config', JSON.stringify(newConfig));
+      tabBroadcast('CONFIG_SYNC', { config: newConfig });
+      saveSupabaseConfig(newConfig);
+      return newConfig;
+    });
+  };
 
   const fetchSupabaseActivePositions = useCallback(async () => {
     try {
@@ -136,8 +173,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         // Auto-switch UI to the underlying/expiry of active trades if not set
         const first = data[0];
         if (first.underlying !== underlying || first.expiry !== selExpiry) {
-          setUnderlying(first.underlying);
-          setSelExpiry(first.expiry);
+          updateConfig('underlying', first.underlying);
+          updateConfig('expiry', first.expiry);
         }
 
         const mapped = data.map(p => ({
@@ -166,6 +203,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       const { data, error } = await supabase.from('paper_trading_config').select('*').eq('id', 'global').single();
       if (data && !error) {
         setConfig({
+          underlying: data.underlying || 'BTC',
+          expiry: data.expiry || '',
           minStrikeDiff: data.min_strike_diff,
           minIvDiff: data.min_iv_diff,
           maxRatioDeviation: data.max_ratio_deviation,
@@ -175,22 +214,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       }
     } catch (e) { }
   }, []);
-
-  const saveSupabaseConfig = useCallback(async (newCfg) => {
-    try {
-      await supabase.from('paper_trading_config').upsert({
-        id: 'global',
-        underlying: underlying,
-        expiry: selExpiry,
-        min_strike_diff: newCfg.minStrikeDiff,
-        min_iv_diff: newCfg.minIvDiff,
-        max_ratio_deviation: newCfg.maxRatioDeviation,
-        min_sell_premium: newCfg.minSellPremium,
-        max_net_premium: newCfg.maxNetPremium,
-        updated_at: new Date().toISOString()
-      });
-    } catch (e) { }
-  }, [underlying, selExpiry]);
 
   const fetchSupabaseTradeHistory = useCallback(async () => {
     try {
@@ -246,12 +269,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     return () => clearInterval(interval);
   }, [trading, fetchSupabaseActivePositions, fetchSupabaseTradeHistory, fetchSupabaseConfig]);
 
-  // Sync underlying/expiry to Supabase config whenever they change locally
-  useEffect(() => {
-    if (underlying && selExpiry) {
-      saveSupabaseConfig(config);
-    }
-  }, [underlying, selExpiry, saveSupabaseConfig, config]);
+  // Sync to Supabase handled within updateConfig or manual trigger if needed
+  // No longer need global useEffect for underlying/expiry sync as it's handled in updateConfig
 
   // ── Fetch spot price ────────────────────────────────────────────────────
   useEffect(() => {
@@ -757,16 +776,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     }
   });
 
-  const updateConfig = (key, value) => {
-    setConfig(c => {
-      const newConfig = { ...c, [key]: value };
-      localStorage.setItem('vitti_algo_config', JSON.stringify(newConfig));
-      tabBroadcast('CONFIG_SYNC', { config: newConfig });
-      saveSupabaseConfig(newConfig);
-      return newConfig;
-    });
-  };
-
   const exportCSV = () => {
     if (!tradeHistory.length) {
       alert('Trade history is empty. Export will be available once trades are closed.');
@@ -920,13 +929,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             <span className="pt-control-label">Algo</span>
             <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
               <label style={{ marginBottom: 0 }}>Underlying:</label>
-              <select value={underlying} onChange={e => { setUnderlying(e.target.value); stopTrading(); }} style={{ padding: '6px 12px', width: '100px', fontSize: '13px' }}>
+              <select value={underlying} onChange={e => { updateConfig('underlying', e.target.value); stopTrading(); }} style={{ padding: '6px 12px', width: '100px', fontSize: '13px' }}>
                 {UNDERLYINGS.map(u => <option key={u}>{u}</option>)}
               </select>
             </div>
             <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
               <label style={{ marginBottom: 0 }}>Expiry:</label>
-              <select value={selExpiry} onChange={e => { setSelExpiry(e.target.value); stopTrading(); }} disabled={!expiries.length} style={{ padding: '6px 12px', width: '160px', fontSize: '13px' }}>
+              <select value={selExpiry} onChange={e => { updateConfig('expiry', e.target.value); stopTrading(); }} disabled={!expiries.length} style={{ padding: '6px 12px', width: '160px', fontSize: '13px' }}>
                 {!expiries.length ? <option>Loading...</option> : expiries.map(e => <option key={e} value={e}>{fmtExpiry(e)}</option>)}
               </select>
             </div>
