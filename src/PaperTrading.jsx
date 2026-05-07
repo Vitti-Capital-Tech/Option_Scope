@@ -6,7 +6,6 @@ import {
 import { normalizeIv, toFiniteNumber, matchesOptionType, formatTime, formatDateTime } from './scannerUtils';
 import { useTabListener } from './useTabSync';
 import { supabase } from './supabase';
-// import { getClaudeReview, getGroqReview } from './aiService';
 
 const UNDERLYINGS = ['BTC', 'ETH'];
 const SCANNER_TOP_KEY = 'vitti_scanner_top_spreads_v1';
@@ -41,20 +40,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const [aiReviews, setAiReviews] = useState({}); // { tradeId: { claude: string, groq: string } }
   const [selectedTradeId, setSelectedTradeId] = useState(null); // For AI review modal
 
-  const fetchTopTradesMemory = async () => {
-    try {
-      const { data } = await supabase
-        .from('trade_history')
-        .select('*')
-        .gt('realized_net_pnl', 0)
-        .order('realized_net_pnl', { ascending: false })
-        .limit(3);
-      return data || [];
-    } catch (e) {
-      return [];
-    }
-  };
-
   const [tickerData, setTickerData] = useState({});
   const latestTickerDataRef = useRef({});
   const [expectedTickerCount, setExpectedTickerCount] = useState(0);
@@ -65,6 +50,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const flushTimerRef = useRef(null);
   const cooldownRef = useRef({});
   const lastEvaluatedRef = useRef(0);
+  const lastDbWriteRef = useRef(0); // Timestamp of last local Supabase write
 
   const [lastEvaluated, setLastEvaluated] = useState(0);
   const [timeRemaining, setTimeRemaining] = useState(null);
@@ -136,103 +122,87 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       .catch(e => console.error('Failed to load products:', e));
   }, [underlying]);
 
-  // ── Supabase History Fetch ──────────────────────────
-  useEffect(() => {
-    const fetchHistory = async () => {
+  const fetchSupabaseActivePositions = useCallback(async () => {
+    try {
+      if (Date.now() - lastDbWriteRef.current < 10000) return;
+      const { data, error } = await supabase
+        .from('active_positions')
+        .select('*')
+        .order('entry_time', { ascending: true });
+
+      if (error) { console.error('Error fetching active positions:', error); return; }
+
+      if (data) {
+        const mapped = data.map(p => ({
+          id: p.id, underlying: p.underlying, expiry: p.expiry, type: p.type,
+          buyLeg: safeParseLeg(p.buy_leg), sellLeg: safeParseLeg(p.sell_leg),
+          sellQty: p.sell_qty, strikeDiff: p.strike_diff, entryTime: new Date(p.entry_time),
+          entryBuyPrice: p.entry_buy_price, entrySellPrice: p.entry_sell_price,
+          margin: p.margin, entryFee: p.entry_fee, accumulatedSellPnl: p.accumulated_sell_pnl || 0,
+          currentBuyPrice: p.entry_buy_price, currentSellPrice: p.entry_sell_price,
+          unrealizedGrossPnl: 0, unrealizedNetPnl: -(p.entry_fee || 0), currentExitFee: 0, currentTotalFees: p.entry_fee || 0,
+        }));
+        const sorted = mapped.filter(p => p.buyLeg && p.sellLeg).sort((a, b) => {
+          if (a.type !== b.type) return a.type === 'call' ? -1 : 1;
+          if (a.type === 'call') return a.buyLeg.strike - b.buyLeg.strike;
+          return b.buyLeg.strike - a.buyLeg.strike;
+        });
+        setPositions(sorted);
+      }
+    } catch (e) { console.error('Fetch Active Error:', e); }
+  }, []);
+
+  const fetchSupabaseTradeHistory = useCallback(async () => {
+    try {
       const { data, error } = await supabase
         .from('trade_history')
         .select('*')
-        .not('exit_time', 'is', null)
-        .order('exit_time', { ascending: false });
+        .order('exit_time', { ascending: false })
+        .limit(50);
 
-      if (error) {
-        console.error('Error fetching trade history:', error);
-      } else if (data) {
-        // Map snake_case from DB to camelCase used in app
-        const mapped = data.map(t => {
-          const buyLeg = safeParseLeg(t.buy_leg);
-          const sellLeg = safeParseLeg(t.sell_leg);
-
-          return {
-            ...t,
-            id: t.trade_id,
-            buyLeg,
-            sellLeg,
-            entryTime: new Date(t.entry_time),
-            exitTime: t.exit_time ? new Date(t.exit_time) : null,
-            entryBuyPrice: t.entry_buy_price,
-            entrySellPrice: t.entry_sell_price,
-            exitBuyPrice: t.exit_buy_price,
-            exitSellPrice: t.exit_sell_price,
-            realizedGrossPnl: t.realized_gross_pnl,
-            realizedNetPnl: t.realized_net_pnl,
-            exitFee: t.exit_fee,
-            totalFees: t.total_fees,
-            exitReason: t.exit_reason,
-            sellQty: t.sell_qty,
-            strikeDiff: t.strike_diff,
-            underlying: t.underlying,
-            claudeReview: t.claude_review,
-            groqReview: t.groq_review
-          };
-        });
-
-        // Populate aiReviews state from fetched history
-        const initialReviews = {};
-        mapped.forEach(t => {
-          if (t.claudeReview || t.groqReview) {
-            initialReviews[t.id] = { claude: t.claudeReview, groq: t.groqReview };
-          }
-        });
-        setAiReviews(initialReviews);
-        setTradeHistory(mapped.filter(t => t.buyLeg && t.sellLeg));
+      if (error) return;
+      if (data) {
+        const mapped = data.map(t => ({
+          id: t.trade_id || t.id,
+          underlying: t.underlying,
+          expiry: t.expiry,
+          type: t.type,
+          buyLeg: safeParseLeg(t.buy_leg),
+          sellLeg: safeParseLeg(t.sell_leg),
+          sellQty: t.sell_qty,
+          strikeDiff: t.strike_diff,
+          entryTime: new Date(t.entry_time),
+          exitTime: new Date(t.exit_time),
+          entryBuyPrice: t.entry_buy_price,
+          entrySellPrice: t.entry_sell_price,
+          exitBuyPrice: t.exit_buy_price,
+          exitSellPrice: t.exit_sell_price,
+          margin: t.margin,
+          realizedGrossPnl: t.realized_gross_pnl,
+          realizedNetPnl: t.realized_net_pnl,
+          exitFee: t.exit_fee,
+          totalFees: t.total_fees,
+          exitReason: t.exit_reason
+        }));
+        setTradeHistory(mapped);
       }
-    };
-    fetchHistory();
+    } catch (e) { }
   }, []);
 
+  useEffect(() => {
+    fetchSupabaseActivePositions();
+    fetchSupabaseTradeHistory();
+  }, [fetchSupabaseActivePositions, fetchSupabaseTradeHistory]);
 
-  // const runManualAiReview = async (tradeId) => {
-  //   const trade = tradeHistory.find(t => t.id === tradeId) || positions.find(t => t.id === tradeId);
-  //   if (!trade) return;
-
-  //   // Set a placeholder to show loading
-  //   setAiReviews(prev => ({
-  //     ...prev,
-  //     [tradeId]: { claude: null, groq: null }
-  //   }));
-
-  //   try {
-  //     const memory = await fetchTopTradesMemory();
-  //     const [claude, groq] = await Promise.all([
-  //       getClaudeReview(trade, trade.exitTime ? 'EXIT' : 'ENTRY', memory),
-  //       getGroqReview(trade, trade.exitTime ? 'EXIT' : 'ENTRY', memory)
-  //     ]);
-  //     setAiReviews(prev => ({
-  //       ...prev,
-  //       [tradeId]: { claude, groq }
-  //     }));
-
-  //     // Update Supabase with the new review
-  //     await supabase
-  //       .from('trade_history')
-  //       .update({
-  //         claude_review: claude,
-  //         groq_review: groq
-  //       })
-  //       .eq('trade_id', tradeId);
-
-  //   } catch (e) {
-  //     console.error('Manual AI Error:', e);
-  //   }
-  // };
-
-
-  // useEffect(() => {
-  //   if (selectedTradeId && (!aiReviews[selectedTradeId] || (!aiReviews[selectedTradeId].claude && !aiReviews[selectedTradeId].groq))) {
-  //     runManualAiReview(selectedTradeId);
-  //   }
-  // }, [selectedTradeId]);
+  // Periodic sync every 30s to stay aligned across devices
+  useEffect(() => {
+    if (!trading) return;
+    const interval = setInterval(() => {
+      fetchSupabaseActivePositions();
+      fetchSupabaseTradeHistory();
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [trading, fetchSupabaseActivePositions, fetchSupabaseTradeHistory]);
 
   // ── Fetch spot price ────────────────────────────────────────────────────
   useEffect(() => {
@@ -254,7 +224,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     tickerBufferRef.current = {};
 
     setTrading(true);
-    // Removed setPositions([]) and setTradeHistory([]) to keep history across expiry switches
     setTickerData({});
     latestTickerDataRef.current = {};
     setExpectedTickerCount(0);
@@ -366,9 +335,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         const rawQty = buyDN / sellDN;
         const sellQty = Math.max(1, Math.round(rawQty / 0.25) * 0.25);
         const netPrem = buyLeg.markPrice - sellQty * sellLeg.markPrice;
-
-        // Filter by Net Premium: Enforce a symmetric band [-max, +max]
-        // If maxNetPremium is 20, we allow netPremium from -20 (max credit) to +20 (max debit).
         const maxNet = Math.abs(config.maxNetPremium);
         if (netPrem < -maxNet || netPrem > maxNet) continue;
 
@@ -405,14 +371,18 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       lastProcessedScannerVersionRef.current = scannerSyncVersion;
     }
 
+
     /**
      * PHASE 1: Real-time PnL & Fee Monitoring
      * This section updates current prices and PnL values every 10 seconds.
      */
     if (!shouldEvaluateAlgo) {
+      // Throttle PnL updates to every 5 seconds for stability
+      if (nowTime - lastEvaluatedRef.current < 5000) return;
+
       setPositions(prev => {
         if (prev.length === 0) return prev;
-        return prev.map(pos => {
+        const updated = prev.map(pos => {
           const latestBuy = tickerData[pos.buyLeg.symbol]?.markPrice || pos.buyLeg.markPrice;
           const latestSell = tickerData[pos.sellLeg.symbol]?.markPrice || pos.sellLeg.markPrice;
 
@@ -434,6 +404,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             currentTotalFees: totalFees
           };
         });
+        return updated;
       });
       return;
     }
@@ -496,164 +467,172 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       }
     }
 
-    const currentTopBuySymbols = new Set(topSpreads.map(s => s.buyLeg.symbol));
-    const topPairIdByBuySymbol = new Map(topSpreads.map(s => [s.buyLeg.symbol, `${s.buyLeg.symbol}_${s.sellLeg.symbol}`]));
+    // Guard: Prevent accidental exits during data gaps
+    if (topSpreads.length === 0 && !force) {
+      return;
+    }
 
-    // C. Position Maintenance (Hold / Roll / Exit)
-    setPositions(prev => {
-      const remaining = [];
-      const exited = [];
-      const activeBuySymbols = new Set();
+    // Use Ref to avoid stale closures and unnecessary dependencies
+    const prevPositions = positionsRef.current;
+    const remaining = [];
+    const exited = [];
+    const activeBuySymbols = new Set();
 
-      for (const pos of prev) {
-        let shouldExit = false;
-        let exitReason = '';
+    // 1. Maintain existing positions & detect exits
+    for (const pos of prevPositions) {
+      let shouldExit = false;
+      let exitReason = '';
 
-        const latestBuy = tickerData[pos.buyLeg.symbol]?.markPrice || pos.buyLeg.markPrice;
-        const latestSell = tickerData[pos.sellLeg.symbol]?.markPrice || pos.sellLeg.markPrice;
+      const latestBuy = tickerData[pos.buyLeg.symbol]?.markPrice || pos.buyLeg.markPrice;
+      const latestSell = tickerData[pos.sellLeg.symbol]?.markPrice || pos.sellLeg.markPrice;
+      const buyPnl = (latestBuy - pos.entryBuyPrice) * pos.buyLeg.lotSize;
+      const sellPnl = (latestSell - pos.entrySellPrice) * pos.sellLeg.lotSize * pos.sellQty;
+      const grossPnl = buyPnl - sellPnl + (pos.accumulatedSellPnl || 0);
+      const exitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize) +
+        calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
+      const totalFees = (pos.entryFee || 0) + exitFee;
 
-        const buyPnl = (latestBuy - pos.entryBuyPrice) * pos.buyLeg.lotSize;
-        const sellPnl = (latestSell - pos.entrySellPrice) * pos.sellLeg.lotSize * pos.sellQty;
-        const grossPnl = buyPnl - sellPnl + (pos.accumulatedSellPnl || 0);
-        const exitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize) +
-          calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
-        const totalFees = (pos.entryFee || 0) + exitFee;
+      const typeSpreads = topSpreads.filter(s => s.buyLeg.type === pos.type);
+      const inTop3 = typeSpreads.some(s => s.buyLeg.strike === pos.buyLeg.strike);
 
-        // Condition: Check if buy strike is still ranked in Top 3 for its type
-        const typeSpreads = topSpreads.filter(s => s.buyLeg.type === pos.type);
-        const inTop3 = typeSpreads.some(s => s.buyLeg.strike === pos.buyLeg.strike);
-
-        if (topSpreads.length > 0 && !inTop3) {
-          const currentActiveStrikes = prev.map(p => p.buyLeg.strike);
-          const newStrikesAvailable = typeSpreads.some(s => !currentActiveStrikes.includes(s.buyLeg.strike));
-
-          if (newStrikesAvailable) {
-            const top1Spread = typeSpreads[0];
-            if (top1Spread) {
-              const top1Strike = top1Spread.buyLeg.strike;
-              const currentStrike = pos.buyLeg.strike;
-              const isPut = pos.type === 'put';
-
-              if (isPut ? (top1Strike > currentStrike) : (top1Strike < currentStrike)) {
-                shouldExit = true;
-                exitReason = `Buy Strike lost Top 3 and Rank 1 is better (${top1Strike})`;
-              } else {
-                shouldExit = true;
-                exitReason = `Buy Strike lost Top 3, no available roll target`;
-              }
+      if (topSpreads.length > 0 && !inTop3) {
+        const currentActiveStrikes = prevPositions.map(p => p.buyLeg.strike);
+        const newStrikesAvailable = typeSpreads.some(s => !currentActiveStrikes.includes(s.buyLeg.strike));
+        if (newStrikesAvailable) {
+          const top1Spread = typeSpreads[0];
+          if (top1Spread) {
+            const top1Strike = top1Spread.buyLeg.strike;
+            const currentStrike = pos.buyLeg.strike;
+            const isPut = pos.type === 'put';
+            if (isPut ? (top1Strike > currentStrike) : (top1Strike < currentStrike)) {
+              shouldExit = true; exitReason = `Lost Top 3 and Rank 1 is better (${top1Strike})`;
             }
           }
         }
+      }
 
-        // Hard Stop Exits (ATM/ITM thresholds) — only if not already exiting
-        if (!shouldExit) {
-          const isCall = pos.type === 'call';
-          const buyStrike = pos.buyLeg.strike;
-          if (pos.strikeDiff < 1000) {
-            if (isCall ? spotPrice >= buyStrike : spotPrice <= buyStrike) {
-              shouldExit = true; exitReason = 'Buy Strike reached ATM (<1000 diff)';
-            }
-          } else if (pos.strikeDiff < 1200 && (isCall ? spotPrice - buyStrike : buyStrike - spotPrice) >= 200) {
-            shouldExit = true; exitReason = '200 points ITM (<1200 diff)';
-          } else if (pos.strikeDiff < 1400 && (isCall ? spotPrice - buyStrike : buyStrike - spotPrice) >= 300) {
-            shouldExit = true; exitReason = '300 points ITM (<1400 diff)';
+      if (!shouldExit) {
+        const isCall = pos.type === 'call';
+        const buyStrike = pos.buyLeg.strike;
+        if (pos.strikeDiff < 1000) {
+          if (isCall ? spotPrice >= buyStrike : spotPrice <= buyStrike) {
+            shouldExit = true; exitReason = 'Reached ATM (<1000 diff)';
           }
-        }
-
-        // Record or Keep
-        if (shouldExit) {
-          exited.push({
-            ...pos, exitTime: new Date(), exitBuyPrice: latestBuy, exitSellPrice: latestSell,
-            realizedGrossPnl: grossPnl, realizedNetPnl: grossPnl - totalFees,
-            exitFee, totalFees, exitReason, _latestBuy: latestBuy, _latestSell: latestSell
-          });
-        } else {
-          remaining.push({
-            ...pos, currentBuyPrice: latestBuy, currentSellPrice: latestSell,
-            unrealizedGrossPnl: grossPnl, unrealizedNetPnl: grossPnl - totalFees,
-            currentExitFee: exitFee, currentTotalFees: totalFees
-          });
-          activeBuySymbols.add(pos.buyLeg.symbol);
+        } else if (pos.strikeDiff < 1200 && (isCall ? spotPrice - buyStrike : buyStrike - spotPrice) >= 200) {
+          shouldExit = true; exitReason = '200 points ITM (<1200 diff)';
+        } else if (pos.strikeDiff < 1400 && (isCall ? spotPrice - buyStrike : buyStrike - spotPrice) >= 300) {
+          shouldExit = true; exitReason = '300 points ITM (<1400 diff)';
         }
       }
 
-      // -- Persist History to Supabase --
-      if (exited.length > 0) {
-        setTradeHistory(th => {
-          const existingKeys = new Set(
-            th.map(t => `${t.buyLeg?.strike}_${t.sellLeg?.strike}_${t.type}_${t.expiry}`)
-          );
-          const newTrades = exited.filter(t => {
-            const key = `${t.buyLeg?.strike}_${t.sellLeg?.strike}_${t.type}_${t.expiry}`;
-            return !existingKeys.has(key);
-          });
-          return [...newTrades, ...th];
+      if (shouldExit) {
+        exited.push({
+          ...pos, exitTime: new Date(), exitBuyPrice: latestBuy, exitSellPrice: latestSell,
+          realizedGrossPnl: grossPnl, realizedNetPnl: grossPnl - totalFees,
+          exitFee, totalFees, exitReason, _latestBuy: latestBuy, _latestSell: latestSell
         });
-
-        exited.forEach(async (t) => {
-          try {
-            // Check for existing record before inserting
-            const { data: existing } = await supabase
-              .from('trade_history')
-              .select('trade_id')
-              .eq('underlying', t.underlying)
-              .eq('expiry', t.expiry)
-              .eq('type', t.type)
-              .eq('strike_diff', t.strikeDiff)
-              .not('exit_time', 'is', null)
-              .limit(1);
-
-            if (existing && existing.length > 0) return; // already persisted, skip
-
-            await supabase.from('trade_history').insert([{
-              trade_id: t.id, underlying: t.underlying, expiry: t.expiry, type: t.type,
-              buy_leg: JSON.stringify(t.buyLeg), sell_leg: JSON.stringify(t.sellLeg),
-              sell_qty: t.sellQty, strike_diff: t.strikeDiff, entry_time: t.entryTime.toISOString(),
-              entry_buy_price: t.entryBuyPrice, entry_sell_price: t.entrySellPrice, margin: t.margin,
-              exit_time: t.exitTime.toISOString(), exit_buy_price: t._latestBuy, exit_sell_price: t._latestSell,
-              realized_gross_pnl: t.realizedGrossPnl, realized_net_pnl: t.realizedNetPnl,
-              exit_fee: t.exitFee, total_fees: t.totalFees, exit_reason: t.exitReason
-            }]);
-          } catch (err) { console.error('Supabase Persist Error:', err); }
+      } else {
+        remaining.push({
+          ...pos, currentBuyPrice: latestBuy, currentSellPrice: latestSell,
+          unrealizedGrossPnl: grossPnl, unrealizedNetPnl: grossPnl - totalFees,
+          currentExitFee: exitFee, currentTotalFees: totalFees
         });
+        activeBuySymbols.add(pos.buyLeg.symbol);
       }
+    }
 
-      // D. Open New Positions (Entry Evaluation)
-      for (const spread of topSpreads) {
-        const buyCovered = activeBuySymbols.has(spread.buyLeg.symbol);
+    // 2. Open New Positions (Entries)
+    const newEntries = [];
+    for (const spread of topSpreads) {
+      if (activeBuySymbols.has(spread.buyLeg.symbol)) continue;
+      const count = (remaining.filter(p => p.type === spread.buyLeg.type).length) + (newEntries.filter(p => p.type === spread.buyLeg.type).length);
+      if (count >= 3) continue;
 
-        if (!buyCovered) {
-          // Hard capacity limit: Max 3 positions per type (Call/Put)
-          const currentCount = remaining.filter(p => p.type === spread.buyLeg.type).length;
-          if (currentCount >= 3) continue;
+      const entryBuyFee = calculateFee(spread.buyLeg.markPrice, spotPrice, 1, spread.buyLeg.lotSize);
+      const entrySellFee = calculateFee(spread.sellLeg.markPrice, spotPrice, spread.sellQty, spread.sellLeg.lotSize);
+      const entryFee = entryBuyFee + entrySellFee;
+      const id = `T${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+      const newPos = {
+        id, underlying, expiry: selExpiry, type: spread.buyLeg.type,
+        buyLeg: spread.buyLeg, sellLeg: spread.sellLeg, sellQty: spread.sellQty,
+        strikeDiff: spread.strikeDiff, entryTime: new Date(), entryBuyPrice: spread.buyLeg.markPrice,
+        entrySellPrice: spread.sellLeg.markPrice, currentBuyPrice: spread.buyLeg.markPrice,
+        currentSellPrice: spread.sellLeg.markPrice, unrealizedGrossPnl: 0, unrealizedNetPnl: -entryFee,
+        entryFee, currentExitFee: entryFee, currentTotalFees: entryFee * 2,
+        margin: (spread.buyLeg.markPrice * spread.buyLeg.lotSize) + (spread.sellLeg.markPrice * spread.sellLeg.lotSize * spread.sellQty / 200)
+      };
+      newEntries.push(newPos);
+      activeBuySymbols.add(spread.buyLeg.symbol);
+    }
 
-          activeBuySymbols.add(spread.buyLeg.symbol);
-          const entryBuyFee = calculateFee(spread.buyLeg.markPrice, spotPrice, 1, spread.buyLeg.lotSize);
-          const entrySellFee = calculateFee(spread.sellLeg.markPrice, spotPrice, spread.sellQty, spread.sellLeg.lotSize);
-          const entryFee = entryBuyFee + entrySellFee;
+    // 3. side effects (Supabase)
+    if (exited.length > 0 || newEntries.length > 0) {
+      lastDbWriteRef.current = Date.now();
+    }
 
-          const id = `T${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-          const newPos = {
-            id, underlying, expiry: selExpiry, type: spread.buyLeg.type,
-            buyLeg: spread.buyLeg, sellLeg: spread.sellLeg, sellQty: spread.sellQty,
-            strikeDiff: spread.strikeDiff, entryTime: new Date(), entryBuyPrice: spread.buyLeg.markPrice,
-            entrySellPrice: spread.sellLeg.markPrice, currentBuyPrice: spread.buyLeg.markPrice,
-            currentSellPrice: spread.sellLeg.markPrice, unrealizedGrossPnl: 0, unrealizedNetPnl: -entryFee,
-            entryFee, currentExitFee: entryFee, currentTotalFees: entryFee * 2,
-            margin: (spread.buyLeg.markPrice * spread.buyLeg.lotSize) + (spread.sellLeg.markPrice * spread.sellLeg.lotSize * spread.sellQty / 200)
-          };
-          remaining.push(newPos);
-        }
-      }
+    if (exited.length > 0) {
+      setTradeHistory(th => [...exited, ...th]);
+      exited.forEach(async (t) => {
+        try {
+          // Record to permanent trade_history in Supabase
+          const { error: histError } = await supabase.from('trade_history').insert([{
+            trade_id: t.id, underlying, expiry: selExpiry, type: t.type,
+            buy_leg: JSON.stringify(t.buyLeg), sell_leg: JSON.stringify(t.sellLeg),
+            sell_qty: t.sellQty, strike_diff: t.strikeDiff, entry_time: t.entryTime.toISOString(),
+            entry_buy_price: t.entryBuyPrice, entry_sell_price: t.entrySellPrice, margin: t.margin,
+            exit_time: t.exitTime.toISOString(), exit_buy_price: t._latestBuy, exit_sell_price: t._latestSell,
+            realized_gross_pnl: t.realizedGrossPnl, realized_net_pnl: t.realizedNetPnl,
+            exit_fee: t.exitFee, total_fees: t.totalFees, exit_reason: t.exitReason
+          }]);
+          if (histError) console.error('History Persist Error:', histError);
 
-      // Final sort for dashboard display
-      return [...remaining].sort((a, b) => {
-        if (a.type === b.type) {
-          return a.type === 'call' ? a.buyLeg.strike - b.buyLeg.strike : b.buyLeg.strike - a.buyLeg.strike;
-        }
-        return a.type === 'call' ? -1 : 1;
+          // Delete from active_positions
+          const { error } = await supabase.from('active_positions').delete().eq('id', t.id);
+          if (error) console.error('Supabase Delete Error:', error);
+          else console.log('Supabase Delete Success:', t.id);
+        } catch (err) { console.error('Supabase Exit Exception:', err); }
       });
+    }
+
+    if (newEntries.length > 0) {
+      newEntries.forEach(async (t) => {
+        try {
+          // Deterministic Guard: Check if already entered in DB
+          const { data: existing, error: checkError } = await supabase.from('active_positions').select('id')
+            .eq('underlying', underlying).eq('expiry', selExpiry).eq('type', t.type)
+            .eq('strike_diff', t.strikeDiff).limit(1);
+
+          if (checkError) {
+            console.error('Supabase Guard Check Error:', checkError);
+            return;
+          }
+
+          if (existing && existing.length > 0) {
+            console.log('Supabase Entry Guard: Position already exists, skipping insert.');
+            return;
+          }
+
+          const { error: insertError } = await supabase.from('active_positions').insert([{
+            id: t.id, underlying, expiry: selExpiry, type: t.type,
+            buy_leg: JSON.stringify(t.buyLeg), sell_leg: JSON.stringify(t.sellLeg),
+            sell_qty: t.sellQty, strike_diff: t.strikeDiff, entry_time: t.entryTime.toISOString(),
+            entry_buy_price: t.entryBuyPrice, entry_sell_price: t.entrySellPrice,
+            margin: t.margin, entry_fee: t.entryFee, accumulated_sell_pnl: 0
+          }]);
+
+          if (insertError) console.error('Supabase Insert Error:', insertError);
+          else console.log('Supabase Insert Success:', t.id);
+        } catch (err) { console.error('Supabase Insert Exception:', err); }
+      });
+    }
+
+    // 4. Update State (Calls before Puts, Call Asc Buy Strike, Put Desc Buy Strike)
+    const finalPositions = [...remaining, ...newEntries].sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'call' ? -1 : 1;
+      if (a.type === 'call') return a.buyLeg.strike - b.buyLeg.strike;
+      return b.buyLeg.strike - a.buyLeg.strike;
     });
+    setPositions(finalPositions);
 
   }, [trading, spotPrice, tickerData, config, underlying, selExpiry, scannerSyncVersion, pickTopUniqueBuyStrikes, scanTickers]);
 
@@ -1144,7 +1123,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                     <th>In (Buy / Sell)</th>
                     <th>Out (Buy / Sell)</th>
                     <th>Realized P&L</th>
-                    {/* <th>AI</th> */}
                     <th>Exit Reason</th>
                   </tr></thead>
                   <tbody>
@@ -1189,11 +1167,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                               <span style={{ fontSize: '10px', color: 'var(--text-dim)' }}>Margin: ${t.margin?.toFixed(0)}</span>
                             </div>
                           </td>
-                          {/* <td>
-                            <button className="pt-ai-btn" onClick={() => setSelectedTradeId(t.id)} title="View AI Analysis">
-                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
-                            </button>
-                          </td> */}
                           <td><span className={`pt-exit-badge ${exitBadgeClass(t.exitReason)}`}>{t.exitReason}</span></td>
                         </tr>
                       )
@@ -1204,46 +1177,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             )}
           </div>
         </div>
-        {/* ── AI Review Modal ───────────────────────── */}
-        {selectedTradeId && (
-          <div className="pt-modal-overlay" onClick={() => setSelectedTradeId(null)}>
-            <div className="pt-modal" onClick={e => e.stopPropagation()}>
-              <div className="pt-modal-header">
-                <h3>Trade AI Analysis</h3>
-                <button className="pt-modal-close" onClick={() => setSelectedTradeId(null)}>&times;</button>
-              </div>
-              <div className="pt-modal-body">
-                {(!aiReviews[selectedTradeId] || (!aiReviews[selectedTradeId].claude && !aiReviews[selectedTradeId].groq)) ? (
-                  <div className="ai-loading">
-                    <div className="ai-spinner"></div>
-                    <p>AI models are analyzing the trade context...</p>
-                  </div>
-                ) : (
-                  <div className="ai-review-grid">
-                    <div className="ai-review-box">
-                      <div className="ai-header claude">
-                        <img src="https://anthropic.com/favicon.ico" alt="Claude" />
-                        Claude Sonnet 4.6
-                      </div>
-                      <div className="ai-content">
-                        {aiReviews[selectedTradeId]?.claude || "Analysis pending..."}
-                      </div>
-                    </div>
-                    <div className="ai-review-box">
-                      <div className="ai-header groq">
-                        <img src="https://groq.com/favicon.ico" alt="Groq" />
-                        Llama 3.3 (70B)
-                      </div>
-                      <div className="ai-content">
-                        {aiReviews[selectedTradeId]?.groq || "Analysis pending..."}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );
