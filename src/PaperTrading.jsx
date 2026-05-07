@@ -128,7 +128,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         setProducts(prods);
         const exps = getExpiries(prods);
         setExpiries(exps);
-        if (exps.length) setSelExpiry(exps[0]);
+        if (exps.length && !config.expiry) {
+          updateConfig('expiry', exps[0]);
+        }
       })
       .catch(e => console.error('Failed to load products:', e));
   }, [underlying]);
@@ -149,9 +151,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     } catch (e) { }
   }, []);
 
-  const updateConfig = (key, value) => {
+  const updateConfig = (keyOrObj, value) => {
     setConfig(c => {
-      const newConfig = { ...c, [key]: value };
+      const updates = typeof keyOrObj === 'object' ? keyOrObj : { [keyOrObj]: value };
+      const newConfig = { ...c, ...updates };
       localStorage.setItem('vitti_algo_config', JSON.stringify(newConfig));
       tabBroadcast('CONFIG_SYNC', { config: newConfig });
       saveSupabaseConfig(newConfig);
@@ -170,12 +173,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       if (error) { console.error('Error fetching active positions:', error); return; }
 
       if (data && data.length > 0) {
-        const first = data[0];
-        if (first.underlying !== underlying || first.expiry !== selExpiry) {
-          updateConfig('underlying', first.underlying);
-          updateConfig('expiry', first.expiry);
-        }
-
         const mapped = data.map(p => ({
           id: p.id, underlying: p.underlying, expiry: p.expiry, type: p.type,
           buyLeg: safeParseLeg(p.buy_leg), sellLeg: safeParseLeg(p.sell_leg),
@@ -535,10 +532,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     }
 
     // Guard: Prevent accidental exits during data gaps
-    if (topSpreads.length === 0 && !force) {
-      return;
-    }
-
     // Use Ref to avoid stale closures and unnecessary dependencies
     const prevPositions = positionsRef.current;
     const remaining = [];
@@ -583,7 +576,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         const buyStrike = pos.buyLeg.strike;
 
         // Expiry Rotation: If the position belongs to a different expiry, rotate to the currently selected one
-        if (pos.expiry !== selExpiry && typeSpreads.length > 0) {
+        if (pos.expiry !== selExpiry) {
           shouldExit = true;
           exitReason = `Rotation: Switched to ${fmtExpiry(selExpiry)}`;
         } else if (pos.strikeDiff < 1000) {
@@ -756,8 +749,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
   const { broadcast: tabBroadcast } = useTabListener({
     TRADING_START: (payload) => {
-      if (payload.underlying) setUnderlying(payload.underlying);
-      if (payload.expiry) setSelExpiry(payload.expiry);
+      const updates = {};
+      if (payload.underlying) updates.underlying = payload.underlying;
+      if (payload.expiry) updates.expiry = payload.expiry;
+      if (Object.keys(updates).length > 0) updateConfig(updates);
       setTimeout(() => startTradingRef.current(), 100);
     },
     TRADING_STOP: () => {
