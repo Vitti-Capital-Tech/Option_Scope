@@ -170,7 +170,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       if (error) { console.error('Error fetching active positions:', error); return; }
 
       if (data && data.length > 0) {
-        // Auto-switch UI to the underlying/expiry of active trades if not set
         const first = data[0];
         if (first.underlying !== underlying || first.expiry !== selExpiry) {
           updateConfig('underlying', first.underlying);
@@ -183,7 +182,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           sellQty: p.sell_qty, strikeDiff: p.strike_diff, entryTime: new Date(p.entry_time),
           entryBuyPrice: p.entry_buy_price, entrySellPrice: p.entry_sell_price,
           margin: p.margin || 0, entryFee: p.entry_fee || 0, accumulatedSellPnl: p.accumulated_sell_pnl || 0,
-          currentBuyPrice: p.entry_buy_price, currentSellPrice: p.entry_sell_price,
+          currentBuyPrice: null, currentSellPrice: null,
           unrealizedGrossPnl: 0, unrealizedNetPnl: -(p.entry_fee || 0), currentExitFee: 0, currentTotalFees: p.entry_fee || 0,
         }));
         const sorted = mapped.filter(p => p.buyLeg && p.sellLeg).sort((a, b) => {
@@ -451,11 +450,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       setPositions(prev => {
         if (prev.length === 0) return prev;
         const updated = prev.map(pos => {
-          const latestBuy = tickerData[pos.buyLeg.symbol]?.markPrice || pos.buyLeg.markPrice;
-          const latestSell = tickerData[pos.sellLeg.symbol]?.markPrice || pos.sellLeg.markPrice;
+          const latestBuy = tickerData[pos.buyLeg.symbol]?.markPrice ?? pos.currentBuyPrice ?? pos.buyLeg.markPrice;
+          const latestSell = tickerData[pos.sellLeg.symbol]?.markPrice ?? pos.currentSellPrice ?? pos.sellLeg.markPrice;
 
-          const buyPnl = (latestBuy - pos.entryBuyPrice);
-          const sellPnl = (latestSell - pos.entrySellPrice) * pos.sellQty;
+          const buyPnl = (latestBuy != null && pos.entryBuyPrice != null) ? (latestBuy - pos.entryBuyPrice) : 0;
+          const sellPnl = (latestSell != null && pos.entrySellPrice != null) ? (latestSell - pos.entrySellPrice) * pos.sellQty : 0;
           const grossPnl = (buyPnl - sellPnl) * pos.buyLeg.lotSize + (pos.accumulatedSellPnl || 0);
 
           const exitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize) +
@@ -551,10 +550,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       let shouldExit = false;
       let exitReason = '';
 
-      const latestBuy = tickerData[pos.buyLeg.symbol]?.markPrice || pos.buyLeg.markPrice;
-      const latestSell = tickerData[pos.sellLeg.symbol]?.markPrice || pos.sellLeg.markPrice;
-      const buyPnl = (latestBuy - pos.entryBuyPrice) * pos.buyLeg.lotSize;
-      const sellPnl = (latestSell - pos.entrySellPrice) * pos.sellLeg.lotSize * pos.sellQty;
+      const latestBuy = tickerData[pos.buyLeg.symbol]?.markPrice ?? pos.currentBuyPrice ?? pos.buyLeg.markPrice;
+      const latestSell = tickerData[pos.sellLeg.symbol]?.markPrice ?? pos.currentSellPrice ?? pos.sellLeg.markPrice;
+      const buyPnl = (latestBuy != null && pos.entryBuyPrice != null) ? (latestBuy - pos.entryBuyPrice) * pos.buyLeg.lotSize : 0;
+      const sellPnl = (latestSell != null && pos.entrySellPrice != null) ? (latestSell - pos.entrySellPrice) * pos.sellLeg.lotSize * pos.sellQty : 0;
       const grossPnl = buyPnl - sellPnl + (pos.accumulatedSellPnl || 0);
       const exitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize) +
         calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
@@ -1139,8 +1138,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                           </td>
                           <td>
                             <div style={{ display: 'flex', flexDirection: 'column', fontSize: '12px' }}>
-                              <span style={{ color: '#3fb950' }}>{p.currentBuyPrice?.toFixed(2)}</span>
-                              <span style={{ color: '#f85149' }}>{p.currentSellPrice?.toFixed(2)}</span>
+                              <span style={{ color: '#3fb950' }}>{p.currentBuyPrice != null ? p.currentBuyPrice.toFixed(2) : '—'}</span>
+                              <span style={{ color: '#f85149' }}>{p.currentSellPrice != null ? p.currentSellPrice.toFixed(2) : '—'}</span>
                             </div>
                           </td>
                           <td><span className={`pt-pnl ${pnlClass}`}>{pnlValue > 0 ? '+' : ''}{(pnlValue || 0).toFixed(2)}</span></td>
