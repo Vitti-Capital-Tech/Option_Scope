@@ -145,7 +145,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           buyLeg: safeParseLeg(p.buy_leg), sellLeg: safeParseLeg(p.sell_leg),
           sellQty: p.sell_qty, strikeDiff: p.strike_diff, entryTime: new Date(p.entry_time),
           entryBuyPrice: p.entry_buy_price, entrySellPrice: p.entry_sell_price,
-          margin: p.margin, entryFee: p.entry_fee, accumulatedSellPnl: p.accumulated_sell_pnl || 0,
+          margin: p.margin || 0, entryFee: p.entry_fee || 0, accumulatedSellPnl: p.accumulated_sell_pnl || 0,
           currentBuyPrice: p.entry_buy_price, currentSellPrice: p.entry_sell_price,
           unrealizedGrossPnl: 0, unrealizedNetPnl: -(p.entry_fee || 0), currentExitFee: 0, currentTotalFees: p.entry_fee || 0,
         }));
@@ -435,9 +435,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           const latestBuy = tickerData[pos.buyLeg.symbol]?.markPrice || pos.buyLeg.markPrice;
           const latestSell = tickerData[pos.sellLeg.symbol]?.markPrice || pos.sellLeg.markPrice;
 
-          const entryNet = (pos.entrySellPrice * pos.sellQty) - pos.entryBuyPrice;
-          const currentNet = (latestSell * pos.sellQty) - latestBuy;
-          const grossPnl = (entryNet - currentNet) * pos.buyLeg.lotSize + (pos.accumulatedSellPnl || 0);
+          const buyPnl = (latestBuy - pos.entryBuyPrice);
+          const sellPnl = (latestSell - pos.entrySellPrice) * pos.sellQty;
+          const grossPnl = (buyPnl - sellPnl) * pos.buyLeg.lotSize + (pos.accumulatedSellPnl || 0);
 
           const exitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize) +
             calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
@@ -563,7 +563,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       if (!shouldExit) {
         const isCall = pos.type === 'call';
         const buyStrike = pos.buyLeg.strike;
-        if (pos.strikeDiff < 1000) {
+
+        // Expiry Rotation: If the position belongs to a different expiry, rotate to the currently selected one
+        if (pos.expiry !== selExpiry && typeSpreads.length > 0) {
+          shouldExit = true;
+          exitReason = `Rotation: Switched to ${fmtExpiry(selExpiry)}`;
+        } else if (pos.strikeDiff < 1000) {
           if (isCall ? spotPrice >= buyStrike : spotPrice <= buyStrike) {
             shouldExit = true; exitReason = 'Reached ATM (<1000 diff)';
           }
@@ -626,7 +631,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           // Guard: Check if this trade was already moved to history by another instance
           const { data: alreadyExited } = await supabase.from('trade_history').select('trade_id').eq('trade_id', t.id).limit(1);
           if (alreadyExited && alreadyExited.length > 0) {
-             console.log('Sync: Trade already recorded in history by another device.');
+            console.log('Sync: Trade already recorded in history by another device.');
           } else {
             // Record to permanent trade_history
             const { error: histError } = await supabase.from('trade_history').insert([{
@@ -670,11 +675,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           }]);
 
           if (insertError) {
-             if (insertError.code === '23505') {
-               console.log('Database Guard: Blocked duplicate strike entry.');
-             } else {
-               console.error('Supabase Insert Error:', insertError);
-             }
+            if (insertError.code === '23505') {
+              console.log('Database Guard: Blocked duplicate strike entry.');
+            } else {
+              console.error('Supabase Insert Error:', insertError);
+            }
           } else {
             console.log('Supabase Insert Success:', t.id);
           }
@@ -784,7 +789,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         (t.realizedGrossPnl || 0).toFixed(2),
         (t.totalFees || 0).toFixed(2),
         (t.realizedNetPnl || 0).toFixed(2),
-        t.margin.toFixed(2),
+        (t.margin || 0).toFixed(2),
         t.exitReason
       ].join(',');
     });
@@ -798,7 +803,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   };
 
   // ── KPI Computations ──────────────────────────────────
-  const totalUnrealizedPnl = positions.reduce((s, p) => s + (includeFees ? (p.unrealizedNetPnl || 0) : (p.unrealizedGrossPnl || p.unrealizedPnl || 0)), 0);
+  const totalUnrealizedPnl = positions.filter(p => p.expiry === selExpiry).reduce((s, p) => s + (includeFees ? (p.unrealizedNetPnl || 0) : (p.unrealizedGrossPnl || p.unrealizedPnl || 0)), 0);
   const totalRealizedPnl = tradeHistory.reduce((s, t) => s + (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || t.realizedPnl || 0)), 0);
   const totalPnl = totalUnrealizedPnl + totalRealizedPnl;
   const wins = tradeHistory.filter(t => (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || t.realizedPnl || 0)) > 0).length;
@@ -1000,8 +1005,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18" /></svg>
               Active
             </span>
-            <span className="pt-kpi-value neutral">{positions.length}</span>
-            <span className="pt-kpi-sub">{positions.filter(p => p.type === 'call').length} calls / {positions.filter(p => p.type === 'put').length} puts</span>
+            <span className="pt-kpi-value neutral">{positions.filter(p => p.expiry === selExpiry).length}</span>
+            <span className="pt-kpi-sub">{positions.filter(p => p.type === 'call' && p.expiry === selExpiry).length} calls / {positions.filter(p => p.type === 'put' && p.expiry === selExpiry).length} puts</span>
           </div>
 
           <div className="pt-kpi-card accent-purple">
@@ -1018,8 +1023,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /></svg>
               Margin Used
             </span>
-            <span className="pt-kpi-value neutral">${totalMargin.toFixed(0)}</span>
-            <span className="pt-kpi-sub">Across {positions.length} position{positions.length !== 1 ? 's' : ''}</span>
+            <span className="pt-kpi-value neutral">${positions.filter(p => p.expiry === selExpiry).reduce((s, p) => s + (p.margin || 0), 0).toFixed(0)}</span>
+            <span className="pt-kpi-sub">Across {positions.filter(p => p.expiry === selExpiry).length} position{positions.filter(p => p.expiry === selExpiry).length !== 1 ? 's' : ''}</span>
           </div>
         </div>
 
@@ -1029,8 +1034,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             <div className="pt-section-header">
               <div className="pt-section-title">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></svg>
-                Active Positions
-                <span className="pt-section-count">{positions.length}</span>
+                Active Positions ({fmtExpiry(selExpiry)})
+                <span className="pt-section-count">{positions.filter(p => p.expiry === selExpiry).length}</span>
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
@@ -1099,9 +1104,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                     <th>Duration</th>
                   </tr></thead>
                   <tbody>
-                    {positions.map(p => {
-                      const pnlValue = includeFees ? (p.unrealizedNetPnl || 0) : (p.unrealizedGrossPnl || p.unrealizedPnl || 0);
-                      const pnlClass = pnlValue > 0 ? 'positive' : pnlValue < 0 ? 'negative' : 'zero';
+                    {positions.filter(p => p.expiry === selExpiry).map(p => {
+                      const pnlValue = includeFees ? p.unrealizedNetPnl : p.unrealizedGrossPnl || p.unrealizedPnl;
+                      const pnlClass = (pnlValue || 0) > 0 ? 'positive' : (pnlValue || 0) < 0 ? 'negative' : 'zero';
                       return (
                         <tr key={p.id} className={`pt-row-${p.type}`}>
                           <td>
@@ -1129,10 +1134,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                               <span style={{ color: '#f85149' }}>{p.currentSellPrice?.toFixed(2)}</span>
                             </div>
                           </td>
-                          <td><span className={`pt-pnl ${pnlClass}`}>{pnlValue > 0 ? '+' : ''}{pnlValue.toFixed(2)}</span></td>
+                          <td><span className={`pt-pnl ${pnlClass}`}>{pnlValue > 0 ? '+' : ''}{(pnlValue || 0).toFixed(2)}</span></td>
                           <td>
                             <div className="pt-margin-cell">
-                              <span>${p.margin.toFixed(0)}</span>
+                              <span>${(p.margin || 0).toFixed(0)}</span>
                               <div className="pt-margin-bar"><div className="pt-margin-fill" style={{ width: `${Math.min(100, (p.margin / (totalMargin || 1)) * 100)}%` }} /></div>
                             </div>
                           </td>
