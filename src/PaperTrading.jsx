@@ -315,6 +315,18 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       }
     }
 
+    // Also monitor symbols from existing positions of this underlying (to track P&L across expiries)
+    positionsRef.current.forEach(pos => {
+      if (pos.underlying === underlying) {
+        if (pos.buyLeg && !symbolMeta[pos.buyLeg.symbol]) {
+          symbolMeta[pos.buyLeg.symbol] = { strike: pos.buyLeg.strike, lotSize: pos.buyLeg.lotSize, type: pos.type, symbol: pos.buyLeg.symbol };
+        }
+        if (pos.sellLeg && !symbolMeta[pos.sellLeg.symbol]) {
+          symbolMeta[pos.sellLeg.symbol] = { strike: pos.sellLeg.strike, lotSize: pos.sellLeg.lotSize, type: pos.type, symbol: pos.sellLeg.symbol };
+        }
+      }
+    });
+
     const allSymbols = Object.keys(symbolMeta);
     setExpectedTickerCount(allSymbols.length);
 
@@ -575,11 +587,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         const isCall = pos.type === 'call';
         const buyStrike = pos.buyLeg.strike;
 
-        // Expiry Rotation: If the position belongs to a different expiry, rotate to the currently selected one
-        if (pos.expiry !== selExpiry) {
-          shouldExit = true;
-          exitReason = `Rotation: Switched to ${fmtExpiry(selExpiry)}`;
-        } else if (pos.strikeDiff < 1000) {
+        // Expiry Rotation removed as per user request to carry positions
+        if (pos.strikeDiff < 1000) {
           if (isCall ? spotPrice >= buyStrike : spotPrice <= buyStrike) {
             shouldExit = true; exitReason = 'Reached ATM (<1000 diff)';
           }
@@ -806,12 +815,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   };
 
   // ── KPI Computations ──────────────────────────────────
-  const totalUnrealizedPnl = positions.filter(p => p.expiry === selExpiry).reduce((s, p) => s + (includeFees ? (p.unrealizedNetPnl || 0) : (p.unrealizedGrossPnl || p.unrealizedPnl || 0)), 0);
+  const totalUnrealizedPnl = positions.filter(p => p.underlying === underlying).reduce((s, p) => s + (includeFees ? (p.unrealizedNetPnl || 0) : (p.unrealizedGrossPnl || p.unrealizedPnl || 0)), 0);
   const totalRealizedPnl = tradeHistory.reduce((s, t) => s + (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || t.realizedPnl || 0)), 0);
   const totalPnl = totalUnrealizedPnl + totalRealizedPnl;
   const wins = tradeHistory.filter(t => (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || t.realizedPnl || 0)) > 0).length;
   const winRate = tradeHistory.length > 0 ? ((wins / tradeHistory.length) * 100).toFixed(1) : '—';
-  const totalMargin = positions.reduce((s, p) => s + (p.margin || 0), 0);
+  const totalMargin = positions.filter(p => p.underlying === underlying).reduce((s, p) => s + (p.margin || 0), 0);
 
   const fmtDuration = (ms) => {
     const s = Math.floor(ms / 1000);
@@ -1008,8 +1017,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18" /></svg>
               Active
             </span>
-            <span className="pt-kpi-value neutral">{positions.filter(p => p.expiry === selExpiry).length}</span>
-            <span className="pt-kpi-sub">{positions.filter(p => p.type === 'call' && p.expiry === selExpiry).length} calls / {positions.filter(p => p.type === 'put' && p.expiry === selExpiry).length} puts</span>
+            <span className="pt-kpi-value neutral">{positions.filter(p => p.underlying === underlying).length}</span>
+            <span className="pt-kpi-sub">{positions.filter(p => p.type === 'call' && p.underlying === underlying).length} calls / {positions.filter(p => p.type === 'put' && p.underlying === underlying).length} puts</span>
           </div>
 
           <div className="pt-kpi-card accent-purple">
@@ -1026,8 +1035,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /></svg>
               Margin Used
             </span>
-            <span className="pt-kpi-value neutral">${positions.filter(p => p.expiry === selExpiry).reduce((s, p) => s + (p.margin || 0), 0).toFixed(0)}</span>
-            <span className="pt-kpi-sub">Across {positions.filter(p => p.expiry === selExpiry).length} position{positions.filter(p => p.expiry === selExpiry).length !== 1 ? 's' : ''}</span>
+            <span className="pt-kpi-value neutral">${positions.filter(p => p.underlying === underlying).reduce((s, p) => s + (p.margin || 0), 0).toFixed(0)}</span>
+            <span className="pt-kpi-sub">Across {positions.filter(p => p.underlying === underlying).length} position{positions.filter(p => p.underlying === underlying).length !== 1 ? 's' : ''}</span>
           </div>
         </div>
 
@@ -1037,8 +1046,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             <div className="pt-section-header">
               <div className="pt-section-title">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></svg>
-                Active Positions ({fmtExpiry(selExpiry)})
-                <span className="pt-section-count">{positions.filter(p => p.expiry === selExpiry).length}</span>
+                Active Positions ({underlying})
+                <span className="pt-section-count">{positions.filter(p => p.underlying === underlying).length}</span>
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
@@ -1107,7 +1116,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                     <th>Duration</th>
                   </tr></thead>
                   <tbody>
-                    {positions.filter(p => p.expiry === selExpiry).map(p => {
+                    {positions.filter(p => p.underlying === underlying).map(p => {
                       const pnlValue = includeFees ? p.unrealizedNetPnl : p.unrealizedGrossPnl || p.unrealizedPnl;
                       const pnlClass = (pnlValue || 0) > 0 ? 'positive' : (pnlValue || 0) < 0 ? 'negative' : 'zero';
                       return (
