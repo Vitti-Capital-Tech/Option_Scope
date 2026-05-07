@@ -132,7 +132,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
       if (error) { console.error('Error fetching active positions:', error); return; }
 
-      if (data) {
+      if (data && data.length > 0) {
+        // Auto-switch UI to the underlying/expiry of active trades if not set
+        const first = data[0];
+        if (first.underlying !== underlying || first.expiry !== selExpiry) {
+           setUnderlying(first.underlying);
+           setSelExpiry(first.expiry);
+        }
+
         const mapped = data.map(p => ({
           id: p.id, underlying: p.underlying, expiry: p.expiry, type: p.type,
           buyLeg: safeParseLeg(p.buy_leg), sellLeg: safeParseLeg(p.sell_leg),
@@ -148,9 +155,42 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           return b.buyLeg.strike - a.buyLeg.strike;
         });
         setPositions(sorted);
+      } else if (data) {
+        setPositions([]);
       }
     } catch (e) { console.error('Fetch Active Error:', e); }
+  }, [underlying, selExpiry]);
+
+  const fetchSupabaseConfig = useCallback(async () => {
+    try {
+      const { data, error } = await supabase.from('paper_trading_config').select('*').eq('id', 'global').single();
+      if (data && !error) {
+        setConfig({
+          minStrikeDiff: data.min_strike_diff,
+          minIvDiff: data.min_iv_diff,
+          maxRatioDeviation: data.max_ratio_deviation,
+          minSellPremium: data.min_sell_premium,
+          maxNetPremium: data.max_net_premium
+        });
+      }
+    } catch (e) { }
   }, []);
+
+  const saveSupabaseConfig = useCallback(async (newCfg) => {
+    try {
+      await supabase.from('paper_trading_config').upsert({
+        id: 'global',
+        underlying: underlying,
+        expiry: selExpiry,
+        min_strike_diff: newCfg.minStrikeDiff,
+        min_iv_diff: newCfg.minIvDiff,
+        max_ratio_deviation: newCfg.maxRatioDeviation,
+        min_sell_premium: newCfg.minSellPremium,
+        max_net_premium: newCfg.maxNetPremium,
+        updated_at: new Date().toISOString()
+      });
+    } catch (e) { }
+  }, [underlying, selExpiry]);
 
   const fetchSupabaseTradeHistory = useCallback(async () => {
     try {
@@ -192,7 +232,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   useEffect(() => {
     fetchSupabaseActivePositions();
     fetchSupabaseTradeHistory();
-  }, [fetchSupabaseActivePositions, fetchSupabaseTradeHistory]);
+    fetchSupabaseConfig();
+  }, [fetchSupabaseActivePositions, fetchSupabaseTradeHistory, fetchSupabaseConfig]);
 
   // Periodic sync every 30s to stay aligned across devices
   useEffect(() => {
@@ -200,9 +241,17 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     const interval = setInterval(() => {
       fetchSupabaseActivePositions();
       fetchSupabaseTradeHistory();
+      fetchSupabaseConfig();
     }, 30000);
     return () => clearInterval(interval);
-  }, [trading, fetchSupabaseActivePositions, fetchSupabaseTradeHistory]);
+  }, [trading, fetchSupabaseActivePositions, fetchSupabaseTradeHistory, fetchSupabaseConfig]);
+
+  // Sync underlying/expiry to Supabase config whenever they change locally
+  useEffect(() => {
+    if (underlying && selExpiry) {
+      saveSupabaseConfig(config);
+    }
+  }, [underlying, selExpiry, saveSupabaseConfig, config]);
 
   // ── Fetch spot price ────────────────────────────────────────────────────
   useEffect(() => {
@@ -386,9 +435,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           const latestBuy = tickerData[pos.buyLeg.symbol]?.markPrice || pos.buyLeg.markPrice;
           const latestSell = tickerData[pos.sellLeg.symbol]?.markPrice || pos.sellLeg.markPrice;
 
-          const buyPnl = (latestBuy - pos.entryBuyPrice) * pos.buyLeg.lotSize;
-          const sellPnl = (latestSell - pos.entrySellPrice) * pos.sellLeg.lotSize * pos.sellQty;
-          const grossPnl = buyPnl - sellPnl + (pos.accumulatedSellPnl || 0);
+          const entryNet = (pos.entrySellPrice * pos.sellQty) - pos.entryBuyPrice;
+          const currentNet = (latestSell * pos.sellQty) - latestBuy;
+          const grossPnl = (entryNet - currentNet) * pos.buyLeg.lotSize + (pos.accumulatedSellPnl || 0);
 
           const exitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize) +
             calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
@@ -701,6 +750,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       const newConfig = { ...c, [key]: value };
       localStorage.setItem('vitti_algo_config', JSON.stringify(newConfig));
       tabBroadcast('CONFIG_SYNC', { config: newConfig });
+      saveSupabaseConfig(newConfig);
       return newConfig;
     });
   };
