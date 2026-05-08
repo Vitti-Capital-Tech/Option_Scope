@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   loadProducts, getExpiries, getStrikes, getSpotPrice,
-  fmtExpiry, createTickerStream
+  fmtExpiry, createTickerStream, apiGet
 } from './api';
 import { normalizeIv, toFiniteNumber, matchesOptionType, formatTime, formatDateTime } from './scannerUtils';
 import { useTabListener } from './useTabSync';
@@ -37,6 +37,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       maxRatioDeviation: 0.25,
       minSellPremium: 10,
       maxNetPremium: 20,
+      minLongDist: 500,
     };
     if (saved) {
       try {
@@ -146,6 +147,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         max_ratio_deviation: newCfg.maxRatioDeviation,
         min_sell_premium: newCfg.minSellPremium,
         max_net_premium: newCfg.maxNetPremium,
+        min_long_dist: newCfg.minLongDist,
         updated_at: new Date().toISOString()
       });
     } catch (e) { }
@@ -178,6 +180,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           buyLeg: safeParseLeg(p.buy_leg), sellLeg: safeParseLeg(p.sell_leg),
           sellQty: p.sell_qty, strikeDiff: p.strike_diff, entryTime: new Date(p.entry_time),
           entryBuyPrice: p.entry_buy_price, entrySellPrice: p.entry_sell_price,
+          entrySpotPrice: p.entry_spot_price,
           margin: p.margin || 0, entryFee: p.entry_fee || 0, accumulatedSellPnl: p.accumulated_sell_pnl || 0,
           currentBuyPrice: null, currentSellPrice: null,
           unrealizedGrossPnl: 0, unrealizedNetPnl: -(p.entry_fee || 0), currentExitFee: 0, currentTotalFees: p.entry_fee || 0,
@@ -205,11 +208,73 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           minIvDiff: data.min_iv_diff,
           maxRatioDeviation: data.max_ratio_deviation,
           minSellPremium: data.min_sell_premium,
-          maxNetPremium: data.max_net_premium
+          maxNetPremium: data.max_net_premium,
+          minLongDist: data.min_long_dist || 500
         });
       }
     } catch (e) { }
   }, []);
+
+  const backfillActiveSpotPrices = useCallback(async () => {
+    const missing = positions.filter(p => !p.entrySpotPrice);
+    if (missing.length === 0) return;
+
+    console.log(`Backfilling spot prices for ${missing.length} positions...`);
+    const updatedPositions = [...positions];
+    let changed = false;
+
+    for (const pos of missing) {
+      try {
+        const symbol = pos.underlying === 'BTC' ? 'BTCUSD' : 'ETHUSD'; 
+        const ts = Math.floor(pos.entryTime.getTime() / 1000);
+        
+        // Try fetching MARK price for the perp
+        const candles = await apiGet('/v2/history/candles', {
+          symbol: `MARK:${symbol}`,
+          resolution: '1m',
+          start: ts - 300,
+          end: ts + 300
+        });
+
+        if (candles && candles.length > 0) {
+          // Find closest candle to entry time
+          const closest = candles.reduce((prev, curr) => {
+            return Math.abs(curr.time - ts) < Math.abs(prev.time - ts) ? curr : prev;
+          });
+          const spot = parseFloat(closest.close);
+          
+          if (spot) {
+            console.log(`Found backfill spot for ${pos.id}: ${spot}`);
+            const idx = updatedPositions.findIndex(p => p.id === pos.id);
+            if (idx !== -1) {
+              updatedPositions[idx] = { ...updatedPositions[idx], entrySpotPrice: spot };
+              changed = true;
+              // Update Supabase in background
+              supabase.from('active_positions').update({ entry_spot_price: spot }).eq('id', pos.id).then(({error}) => {
+                if (error) console.error('Backfill update error:', error);
+              });
+            }
+          }
+        }
+      } catch (e) {
+        console.error(`Failed to backfill spot for ${pos.id}:`, e);
+      }
+    }
+
+    if (changed) {
+      setPositions(updatedPositions);
+    }
+  }, [positions]);
+
+  useEffect(() => {
+    if (positions.length > 0) {
+      const hasMissing = positions.some(p => !p.entrySpotPrice);
+      if (hasMissing) {
+        const timer = setTimeout(backfillActiveSpotPrices, 2000); // Delay to not interfere with initial load
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [positions.length, backfillActiveSpotPrices]);
 
   const fetchSupabaseTradeHistory = useCallback(async () => {
     try {
@@ -236,6 +301,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           entrySellPrice: t.entry_sell_price,
           exitBuyPrice: t.exit_buy_price,
           exitSellPrice: t.exit_sell_price,
+          entrySpotPrice: t.entry_spot_price,
+          exitSpotPrice: t.exit_spot_price,
           margin: t.margin,
           realizedGrossPnl: t.realized_gross_pnl,
           realizedNetPnl: t.realized_net_pnl,
@@ -399,6 +466,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
         const ivDiff = Math.abs(buyLeg.iv - sellLeg.iv);
         if (ivDiff <= config.minIvDiff) continue;
+
+        const spotDist = Math.abs(buyLeg.strike - spotPrice);
+        if (spotDist < (config.minLongDist || 0)) continue;
+
         if (!sellLeg.markPrice || sellLeg.markPrice < config.minSellPremium) continue;
 
         const buyDN = buyLeg.deltaNotional;
@@ -602,6 +673,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       if (shouldExit) {
         exited.push({
           ...pos, exitTime: new Date(), exitBuyPrice: latestBuy, exitSellPrice: latestSell,
+          exitSpotPrice: spotPrice,
           realizedGrossPnl: grossPnl, realizedNetPnl: grossPnl - totalFees,
           exitFee, totalFees, exitReason, _latestBuy: latestBuy, _latestSell: latestSell
         });
@@ -630,7 +702,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         id, underlying, expiry: selExpiry, type: spread.buyLeg.type,
         buyLeg: spread.buyLeg, sellLeg: spread.sellLeg, sellQty: spread.sellQty,
         strikeDiff: spread.strikeDiff, entryTime: new Date(), entryBuyPrice: spread.buyLeg.markPrice,
-        entrySellPrice: spread.sellLeg.markPrice, currentBuyPrice: spread.buyLeg.markPrice,
+        entrySellPrice: spread.sellLeg.markPrice, entrySpotPrice: spotPrice, currentBuyPrice: spread.buyLeg.markPrice,
         currentSellPrice: spread.sellLeg.markPrice, unrealizedGrossPnl: 0, unrealizedNetPnl: -entryFee,
         entryFee, currentExitFee: entryFee, currentTotalFees: entryFee * 2,
         margin: (spread.buyLeg.markPrice * spread.buyLeg.lotSize) + (spread.sellLeg.markPrice * spread.sellLeg.lotSize * spread.sellQty / 200)
@@ -658,8 +730,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               trade_id: t.id, underlying, expiry: selExpiry, type: t.type,
               buy_leg: JSON.stringify(t.buyLeg), sell_leg: JSON.stringify(t.sellLeg),
               sell_qty: t.sellQty, strike_diff: t.strikeDiff, entry_time: t.entryTime.toISOString(),
-              entry_buy_price: t.entryBuyPrice, entry_sell_price: t.entrySellPrice, margin: t.margin,
+              entry_buy_price: t.entryBuyPrice, entry_sell_price: t.entrySellPrice, 
+              entry_spot_price: t.entrySpotPrice, margin: t.margin,
               exit_time: t.exitTime.toISOString(), exit_buy_price: t._latestBuy, exit_sell_price: t._latestSell,
+              exit_spot_price: t.exitSpotPrice,
               realized_gross_pnl: t.realizedGrossPnl, realized_net_pnl: t.realizedNetPnl,
               exit_fee: t.exitFee, total_fees: t.totalFees, exit_reason: t.exitReason
             }]);
@@ -691,6 +765,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             buy_leg: JSON.stringify(t.buyLeg), sell_leg: JSON.stringify(t.sellLeg),
             sell_qty: t.sellQty, strike_diff: t.strikeDiff, entry_time: t.entryTime.toISOString(),
             entry_buy_price: t.entryBuyPrice, entry_sell_price: t.entrySellPrice,
+            entry_spot_price: t.entrySpotPrice,
             margin: t.margin, entry_fee: t.entryFee, accumulated_sell_pnl: 0
           }]);
 
@@ -784,7 +859,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       alert('Trade history is empty. Export will be available once trades are closed.');
       return;
     }
-    const headers = ['Entry Time', 'Exit Time', 'Expiry', 'Type', 'Ratio', 'Buy Strike', 'Sell Strike', 'Entry Buy Price', 'Entry Sell Price', 'Exit Buy Price', 'Exit Sell Price', 'Gross PnL', 'Total Fees', 'Net PnL', 'Margin', 'Exit Reason'];
+    const headers = ['Entry Time', 'Exit Time', 'Expiry', 'Type', 'Ratio', 'Buy Strike', 'Sell Strike', 'Entry Buy Price', 'Entry Sell Price', 'Exit Buy Price', 'Exit Sell Price', 'Entry Spot', 'Exit Spot', 'Gross PnL', 'Total Fees', 'Net PnL', 'Margin', 'Exit Reason'];
     const rows = tradeHistory.map(t => {
       return [
         formatDateTime(t.entryTime),
@@ -798,6 +873,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         t.entrySellPrice || '',
         t.exitBuyPrice || '',
         t.exitSellPrice || '',
+        t.entrySpotPrice || '',
+        t.exitSpotPrice || '',
         (t.realizedGrossPnl || 0).toFixed(2),
         (t.totalFees || 0).toFixed(2),
         (t.realizedNetPnl || 0).toFixed(2),
@@ -966,6 +1043,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               <label style={{ marginBottom: 0 }}>Max Debit ($):</label>
               <input type="number" value={config.maxNetPremium} onChange={e => updateConfig('maxNetPremium', Number(e.target.value))} style={{ width: 60, padding: '4px 8px', fontSize: '13px' }} />
             </div>
+            <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <label style={{ marginBottom: 0 }}>Min Long Dist:</label>
+              <input type="number" value={config.minLongDist} onChange={e => updateConfig('minLongDist', Number(e.target.value))} style={{ width: 60, padding: '4px 8px', fontSize: '13px' }} />
+            </div>
           </div>
 
           {spotPrice && (
@@ -1109,6 +1190,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                     <th>Type / Ratio</th>
                     <th>Expiry</th>
                     <th>Buy / Sell Strike</th>
+                    <th>Entry Spot</th>
                     <th>In (Buy / Sell)</th>
                     <th>Current (Buy / Sell)</th>
                     <th>Unrl P&L</th>
@@ -1133,6 +1215,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                               <span className="pt-strike-buy">{p.buyLeg.strike.toLocaleString()}</span>
                               <span className="pt-strike-sell" style={{ fontSize: '11px', opacity: 0.8 }}>{p.sellLeg.strike.toLocaleString()}</span>
                             </div>
+                          </td>
+                          <td>
+                            <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-dim)' }}>
+                              {p.entrySpotPrice ? p.entrySpotPrice.toLocaleString() : '—'}
+                            </span>
                           </td>
                           <td>
                             <div style={{ display: 'flex', flexDirection: 'column', fontSize: '12px' }}>
@@ -1215,6 +1302,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                     <th>Expiry</th>
                     <th>Type / Ratio</th>
                     <th>Buy / Sell Strike</th>
+                    <th>Spot (In / Out)</th>
                     <th>In (Buy / Sell)</th>
                     <th>Out (Buy / Sell)</th>
                     <th>Realized P&L</th>
@@ -1240,6 +1328,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                             <div style={{ display: 'flex', flexDirection: 'column' }}>
                               <span className="pt-strike-buy">{t.buyLeg.strike.toLocaleString()}</span>
                               <span className="pt-strike-sell" style={{ fontSize: '11px', opacity: 0.8 }}>{t.sellLeg.strike.toLocaleString()}</span>
+                            </div>
+                          </td>
+                          <td>
+                            <div style={{ display: 'flex', flexDirection: 'column', fontSize: '11px' }}>
+                              <span style={{ color: 'var(--text-dim)' }}>{t.entrySpotPrice ? t.entrySpotPrice.toLocaleString() : '—'}</span>
+                              <span style={{ color: 'var(--text-dim)', opacity: 0.8 }}>{t.exitSpotPrice ? t.exitSpotPrice.toLocaleString() : '—'}</span>
                             </div>
                           </td>
                           <td>
