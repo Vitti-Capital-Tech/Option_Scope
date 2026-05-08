@@ -102,6 +102,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   }, []);
 
   const positionsRef = useRef([]);
+  const isEvaluatingRef = useRef(false);
   useEffect(() => { positionsRef.current = positions; }, [positions]);
 
   useEffect(() => {
@@ -505,7 +506,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
 
   const evaluateStrategy = useCallback((force = false) => {
-    if (!trading || !spotPrice) return;
+    if (!trading || !spotPrice || isEvaluatingRef.current) return;
+    isEvaluatingRef.current = true;
+    try {
 
     const allTickers = Object.values(latestTickerDataRef.current);
     if (allTickers.length === 0) return;
@@ -614,7 +617,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         }
         const byTypeCall = backfilled.filter(s => s.buyLeg.type === 'call');
         const byTypePut = backfilled.filter(s => s.buyLeg.type === 'put');
-        topSpreads = [...pickTopUniqueStrikes(byTypeCall, 3), ...pickTopUniqueStrikes(byTypePut, 3)];
+        const calls = pickTopUniqueStrikes(byTypeCall, 3);
+        const puts = pickTopUniqueStrikes(byTypePut, 3);
+        topSpreads = pickTopUniqueStrikes([...calls, ...puts], 6);
       }
     }
 
@@ -855,17 +860,19 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       });
     }
 
-    // 4. Update State (Calls before Puts, Call Asc Buy Strike, Put Desc Buy Strike)
     const finalPositions = [...remaining, ...newEntries].sort((a, b) => {
       if (a.type !== b.type) return a.type === 'call' ? -1 : 1;
       if (a.type === 'call') return a.buyLeg.strike - b.buyLeg.strike;
       return b.buyLeg.strike - a.buyLeg.strike;
     });
+
     setPositions(finalPositions);
+    positionsRef.current = finalPositions;
+    } finally {
+      isEvaluatingRef.current = false;
+    }
+  }, [trading, underlying, selExpiry, spotPrice, tickerData, scannerSyncVersion, pickTopUniqueStrikes, scanTickers]);
 
-  }, [trading, spotPrice, tickerData, config, underlying, selExpiry, scannerSyncVersion, pickTopUniqueStrikes, scanTickers]);
-
-  // ── Paper Trading Engine Loop ───────────────────────────────────────────────
   useEffect(() => {
     evaluateStrategy();
   }, [tickerData, trading, spotPrice, evaluateStrategy, scannerSyncVersion]);
