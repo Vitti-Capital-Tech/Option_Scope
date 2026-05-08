@@ -28,7 +28,6 @@ const safeParseLeg = (value) => {
 export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   // config state unified with underlying and expiry
   const [config, setConfig] = useState(() => {
-    const saved = localStorage.getItem('vitti_algo_config');
     let base = {
       underlying: 'BTC',
       expiry: '',
@@ -39,12 +38,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       maxNetPremium: 20,
       minLongDist: 500,
     };
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        return { ...base, ...parsed };
-      } catch (e) { }
-    }
     return base;
   });
 
@@ -161,7 +154,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     setConfig(c => {
       const updates = typeof keyOrObj === 'object' ? keyOrObj : { [keyOrObj]: value };
       const newConfig = { ...c, ...updates };
-      localStorage.setItem('vitti_algo_config', JSON.stringify(newConfig));
       tabBroadcast('CONFIG_SYNC', { config: newConfig });
       saveSupabaseConfig(newConfig);
       return newConfig;
@@ -916,13 +908,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     },
     TRADING_STOP: () => {
       stopTradingRef.current();
-    },
-    CONFIG_SYNC: (payload) => {
-      if (payload.config) {
-        setConfig(payload.config);
-        localStorage.setItem('vitti_algo_config', JSON.stringify(payload.config));
-        saveSupabaseConfig(payload.config);
-      }
     },
     SCANNER_TOP_SPREADS_SYNC: (payload) => {
       scannerTopRef.current = payload;
