@@ -37,10 +37,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
   // Configurable thresholds initialized from localStorage
   const [config, setConfig] = useState(() => {
     const saved = localStorage.getItem('vitti_algo_config');
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) { }
-    }
-    return {
+    const base = {
       minStrikeDiff: 800,
       minIvDiff: 5,
       maxRatioDeviation: 0.25,
@@ -48,16 +45,26 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
       maxNetPremium: 20,
       minLongDist: 500,
     };
+    if (saved) {
+      try { 
+        const parsed = JSON.parse(saved);
+        return { ...base, ...parsed };
+      } catch (e) { }
+    }
+    return base;
   });
 
-  const pickTopUniqueBuyStrikes = useCallback((spreads, limit = 3) => {
+  const pickTopUniqueStrikes = useCallback((spreads, limit = 3) => {
     const out = [];
-    const seenBuyStrikes = new Set();
+    const seenBuy = new Set();
+    const seenSell = new Set();
     for (const s of spreads) {
-      const buyStrike = s?.buyLeg?.strike;
-      if (buyStrike == null) continue;
-      if (seenBuyStrikes.has(buyStrike)) continue;
-      seenBuyStrikes.add(buyStrike);
+      const bStrike = s?.buyLeg?.strike;
+      const sStrike = s?.sellLeg?.strike;
+      if (bStrike == null || sStrike == null) continue;
+      if (seenBuy.has(bStrike) || seenSell.has(sStrike)) continue;
+      seenBuy.add(bStrike);
+      seenSell.add(sStrike);
       out.push(s);
       if (out.length >= limit) break;
     }
@@ -82,8 +89,8 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
   }, []);
 
   const publishTopSpreads = useCallback((calls, puts) => {
-    const topCalls = pickTopUniqueBuyStrikes(calls, 3);
-    const topPuts = pickTopUniqueBuyStrikes(puts, 3);
+    const topCalls = pickTopUniqueStrikes(calls, 3);
+    const topPuts = pickTopUniqueStrikes(puts, 3);
     const payload = {
       underlying,
       expiry: selExpiry,
@@ -105,7 +112,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
     };
     localStorage.setItem(SCANNER_TOP_KEY, JSON.stringify(payload));
     broadcastScannerTopSpreads(payload);
-  }, [underlying, selExpiry, broadcastScannerTopSpreads, pickTopUniqueBuyStrikes]);
+  }, [underlying, selExpiry, broadcastScannerTopSpreads, pickTopUniqueStrikes]);
 
   // ── Load products on underlying change ──────────────────────────────────
   useEffect(() => {
@@ -264,7 +271,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
           if (buyLeg.iv == null || sellLeg.iv == null) continue;
           const ivDiff = Math.abs(buyLeg.iv - sellLeg.iv);
           if (ivDiff <= config.minIvDiff) continue;
-          
+
           const spotDist = Math.abs(buyLeg.strike - spotPrice);
           if (spotDist < (config.minLongDist || 0)) continue;
 

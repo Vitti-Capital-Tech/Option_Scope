@@ -84,14 +84,17 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
 
 
-  const pickTopUniqueBuyStrikes = useCallback((spreads, limit = 3) => {
+  const pickTopUniqueStrikes = useCallback((spreads, limit = 3) => {
     const out = [];
-    const seenBuyStrikes = new Set();
+    const seenBuy = new Set();
+    const seenSell = new Set();
     for (const s of spreads) {
-      const buyStrike = s?.buyLeg?.strike;
-      if (buyStrike == null) continue;
-      if (seenBuyStrikes.has(buyStrike)) continue;
-      seenBuyStrikes.add(buyStrike);
+      const bStrike = s?.buyLeg?.strike;
+      const sStrike = s?.sellLeg?.strike;
+      if (bStrike == null || sStrike == null) continue;
+      if (seenBuy.has(bStrike) || seenSell.has(sStrike)) continue;
+      seenBuy.add(bStrike);
+      seenSell.add(sStrike);
       out.push(s);
       if (out.length >= limit) break;
     }
@@ -181,6 +184,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           sellQty: p.sell_qty, strikeDiff: p.strike_diff, entryTime: new Date(p.entry_time),
           entryBuyPrice: p.entry_buy_price, entrySellPrice: p.entry_sell_price,
           entrySpotPrice: p.entry_spot_price,
+          stagesExited: p.stages_exited || 0,
           margin: p.margin || 0, entryFee: p.entry_fee || 0, accumulatedSellPnl: p.accumulated_sell_pnl || 0,
           currentBuyPrice: null, currentSellPrice: null,
           unrealizedGrossPnl: 0, unrealizedNetPnl: -(p.entry_fee || 0), currentExitFee: 0, currentTotalFees: p.entry_fee || 0,
@@ -225,9 +229,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
     for (const pos of missing) {
       try {
-        const symbol = pos.underlying === 'BTC' ? 'BTCUSD' : 'ETHUSD'; 
+        const symbol = pos.underlying === 'BTC' ? 'BTCUSD' : 'ETHUSD';
         const ts = Math.floor(pos.entryTime.getTime() / 1000);
-        
+
         // Try fetching MARK price for the perp
         const candles = await apiGet('/v2/history/candles', {
           symbol: `MARK:${symbol}`,
@@ -242,7 +246,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             return Math.abs(curr.time - ts) < Math.abs(prev.time - ts) ? curr : prev;
           });
           const spot = parseFloat(closest.close);
-          
+
           if (spot) {
             console.log(`Found backfill spot for ${pos.id}: ${spot}`);
             const idx = updatedPositions.findIndex(p => p.id === pos.id);
@@ -250,7 +254,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               updatedPositions[idx] = { ...updatedPositions[idx], entrySpotPrice: spot };
               changed = true;
               // Update Supabase in background
-              supabase.from('active_positions').update({ entry_spot_price: spot }).eq('id', pos.id).then(({error}) => {
+              supabase.from('active_positions').update({ entry_spot_price: spot }).eq('id', pos.id).then(({ error }) => {
                 if (error) console.error('Backfill update error:', error);
               });
             }
@@ -496,8 +500,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       return a.netPremium - b.netPremium;
     });
 
-    return pickTopUniqueBuyStrikes(validPairs, 3);
-  }, [config, spotPrice, pickTopUniqueBuyStrikes]);
+    return pickTopUniqueStrikes(validPairs, 3);
+  }, [config, spotPrice, pickTopUniqueStrikes]);
 
 
   const evaluateStrategy = useCallback((force = false) => {
@@ -610,7 +614,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         }
         const byTypeCall = backfilled.filter(s => s.buyLeg.type === 'call');
         const byTypePut = backfilled.filter(s => s.buyLeg.type === 'put');
-        topSpreads = [...pickTopUniqueBuyStrikes(byTypeCall, 3), ...pickTopUniqueBuyStrikes(byTypePut, 3)];
+        topSpreads = [...pickTopUniqueStrikes(byTypeCall, 3), ...pickTopUniqueStrikes(byTypePut, 3)];
       }
     }
 
@@ -620,6 +624,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     const remaining = [];
     const exited = [];
     const activeBuySymbols = new Set();
+    const activeSellSymbols = new Set();
 
     // 1. Maintain existing positions & detect exits
     for (const pos of prevPositions) {
@@ -654,29 +659,97 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         }
       }
 
+      let isPartial = false;
+      let exitFraction = 1.0;
+
       if (!shouldExit) {
         const isCall = pos.type === 'call';
         const buyStrike = pos.buyLeg.strike;
+        const itmDist = isCall ? spotPrice - buyStrike : buyStrike - spotPrice;
+        const isAtmMET = isCall ? spotPrice >= buyStrike : spotPrice <= buyStrike;
+        const sExited = pos.stagesExited || 0;
 
-        // Expiry Rotation removed as per user request to carry positions
-        if (pos.strikeDiff < 1000) {
-          if (isCall ? spotPrice >= buyStrike : spotPrice <= buyStrike) {
-            shouldExit = true; exitReason = 'Reached ATM (<1000 diff)';
+        if (pos.strikeDiff <= 1000) {
+          if (isAtmMET) {
+            shouldExit = true; exitReason = 'Full Exit @ ATM (<= 1000 diff)';
           }
-        } else if (pos.strikeDiff < 1200 && (isCall ? spotPrice - buyStrike : buyStrike - spotPrice) >= 200) {
-          shouldExit = true; exitReason = '200 points ITM (<1200 diff)';
-        } else if (pos.strikeDiff < 1400 && (isCall ? spotPrice - buyStrike : buyStrike - spotPrice) >= 300) {
-          shouldExit = true; exitReason = '300 points ITM (<1400 diff)';
+        } else if (pos.strikeDiff === 1200) {
+          if (sExited === 0 && isAtmMET) {
+            isPartial = true; exitFraction = 0.5; exitReason = 'Partial Exit 50% @ ATM (1200 diff)';
+          } else if (sExited === 1 && itmDist >= 200) {
+            shouldExit = true; exitReason = 'Final Exit 50% @ 200 ITM (1200 diff)';
+          }
+        } else if (pos.strikeDiff === 1400) {
+          if (sExited === 0 && isAtmMET) {
+            isPartial = true; exitFraction = 0.3333; exitReason = 'Partial Exit 33% @ ATM (1400 diff)';
+          } else if (sExited === 1 && itmDist >= 150) {
+            isPartial = true; exitFraction = 0.5; // Exit half of remaining (1/3 of original)
+            exitReason = 'Partial Exit 33% @ 150 ITM (1400 diff)';
+          } else if (sExited === 2 && itmDist >= 300) {
+            shouldExit = true; exitReason = 'Final Exit 34% @ 300 ITM (1400 diff)';
+          }
+        } else {
+          // Fallback for other strike diffs (e.g. 1600+)
+          if (isAtmMET) {
+            shouldExit = true; exitReason = 'Full Exit @ ATM (Fallback)';
+          }
         }
       }
 
-      if (shouldExit) {
-        exited.push({
-          ...pos, exitTime: new Date(), exitBuyPrice: latestBuy, exitSellPrice: latestSell,
+      if (shouldExit || isPartial) {
+        const partGrossPnl = grossPnl * exitFraction;
+        const partEntryFee = (pos.entryFee || 0) * exitFraction;
+        const partExitFee = exitFee * exitFraction;
+        const partTotalFees = partEntryFee + partExitFee;
+        const partNetPnl = partGrossPnl - partTotalFees;
+
+        const tradeRecord = {
+          ...pos,
+          id: isPartial ? `${pos.id}-P${pos.stagesExited + 1}` : pos.id,
+          exitTime: new Date(),
+          exitBuyPrice: latestBuy,
+          exitSellPrice: latestSell,
           exitSpotPrice: spotPrice,
-          realizedGrossPnl: grossPnl, realizedNetPnl: grossPnl - totalFees,
-          exitFee, totalFees, exitReason, _latestBuy: latestBuy, _latestSell: latestSell
-        });
+          realizedGrossPnl: partGrossPnl,
+          realizedNetPnl: partNetPnl,
+          exitFee: partExitFee,
+          totalFees: partTotalFees,
+          exitReason,
+          _latestBuy: latestBuy,
+          _latestSell: latestSell,
+          _isPartial: isPartial
+        };
+
+        exited.push(tradeRecord);
+
+        if (isPartial) {
+          // Update the remaining position
+          remaining.push({
+            ...pos,
+            sellQty: pos.sellQty * (1 - exitFraction),
+            buyLeg: { ...pos.buyLeg, lotSize: pos.buyLeg.lotSize * (1 - exitFraction) },
+            margin: (pos.margin || 0) * (1 - exitFraction),
+            entryFee: (pos.entryFee || 0) * (1 - exitFraction),
+            stagesExited: (pos.stagesExited || 0) + 1,
+            currentBuyPrice: latestBuy,
+            currentSellPrice: latestSell,
+            unrealizedGrossPnl: grossPnl * (1 - exitFraction),
+            unrealizedNetPnl: (grossPnl - totalFees) * (1 - exitFraction),
+            currentExitFee: exitFee * (1 - exitFraction),
+            currentTotalFees: totalFees * (1 - exitFraction)
+          });
+          
+          // Sync partial update to Supabase in background
+          const { sellQty, buyLeg, margin, entryFee, stagesExited } = remaining[remaining.length - 1];
+          supabase.from('active_positions').update({
+            sell_qty: sellQty,
+            buy_leg: JSON.stringify(buyLeg),
+            margin,
+            entry_fee: entryFee,
+            stages_exited: stagesExited
+          }).eq('id', pos.id).then(({error}) => { if(error) console.error('Partial Sync Error:', error); });
+
+        }
       } else {
         remaining.push({
           ...pos, currentBuyPrice: latestBuy, currentSellPrice: latestSell,
@@ -684,13 +757,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           currentExitFee: exitFee, currentTotalFees: totalFees
         });
         activeBuySymbols.add(pos.buyLeg.symbol);
+        activeSellSymbols.add(pos.sellLeg.symbol);
       }
     }
 
     // 2. Open New Positions (Entries)
     const newEntries = [];
     for (const spread of topSpreads) {
-      if (activeBuySymbols.has(spread.buyLeg.symbol)) continue;
+      if (activeBuySymbols.has(spread.buyLeg.symbol) || activeSellSymbols.has(spread.sellLeg.symbol)) continue;
       const count = (remaining.filter(p => p.type === spread.buyLeg.type).length) + (newEntries.filter(p => p.type === spread.buyLeg.type).length);
       if (count >= 3) continue;
 
@@ -709,6 +783,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       };
       newEntries.push(newPos);
       activeBuySymbols.add(spread.buyLeg.symbol);
+      activeSellSymbols.add(spread.sellLeg.symbol);
     }
 
     // 3. side effects (Supabase)
@@ -730,12 +805,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               trade_id: t.id, underlying, expiry: selExpiry, type: t.type,
               buy_leg: JSON.stringify(t.buyLeg), sell_leg: JSON.stringify(t.sellLeg),
               sell_qty: t.sellQty, strike_diff: t.strikeDiff, entry_time: t.entryTime.toISOString(),
-              entry_buy_price: t.entryBuyPrice, entry_sell_price: t.entrySellPrice, 
+              entry_buy_price: t.entryBuyPrice, entry_sell_price: t.entrySellPrice,
               entry_spot_price: t.entrySpotPrice, margin: t.margin,
               exit_time: t.exitTime.toISOString(), exit_buy_price: t._latestBuy, exit_sell_price: t._latestSell,
               exit_spot_price: t.exitSpotPrice,
               realized_gross_pnl: t.realizedGrossPnl, realized_net_pnl: t.realizedNetPnl,
-              exit_fee: t.exitFee, total_fees: t.totalFees, exit_reason: t.exitReason
+              exit_fee: t.exitFee, total_fees: t.totalFees, exit_reason: t.exitReason,
+              is_partial: t._isPartial || false
             }]);
             if (histError) console.error('History Persist Error:', histError);
           }
@@ -790,7 +866,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     });
     setPositions(finalPositions);
 
-  }, [trading, spotPrice, tickerData, config, underlying, selExpiry, scannerSyncVersion, pickTopUniqueBuyStrikes, scanTickers]);
+  }, [trading, spotPrice, tickerData, config, underlying, selExpiry, scannerSyncVersion, pickTopUniqueStrikes, scanTickers]);
 
   // ── Paper Trading Engine Loop ───────────────────────────────────────────────
   useEffect(() => {
