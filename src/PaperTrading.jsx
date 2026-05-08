@@ -880,7 +880,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         newEntries.forEach(async (t) => {
           try {
             // Strict Deterministic Guard: Check by attributes
-            await supabase.from('active_positions').select('id')
+            const { data: existing, error: checkError } = await supabase.from('active_positions').select('id')
               .eq('underlying', underlying)
               .eq('expiry', selExpiry)
               .eq('type', t.type)
