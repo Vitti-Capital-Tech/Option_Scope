@@ -880,9 +880,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         newEntries.forEach(async (t) => {
           try {
             // Strict Deterministic Guard: Check by attributes
-            const { data: existing, error: checkError } = await supabase.from('active_positions').select('id')
-              .eq('underlying', underlying).eq('expiry', selExpiry).eq('type', t.type)
-              .eq('strike_diff', t.strikeDiff).limit(1);
+            await supabase.from('active_positions').select('id')
+              .eq('underlying', underlying)
+              .eq('expiry', selExpiry)
+              .eq('type', t.type)
+              .eq('buy_strike', t.buyLeg.strike)
+              .eq('sell_strike', t.sellLeg.strike)
+              .limit(1);
 
             if (checkError) return;
             if (existing && existing.length > 0) {
@@ -896,7 +900,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               sell_qty: t.sellQty, strike_diff: t.strikeDiff, entry_time: t.entryTime.toISOString(),
               entry_buy_price: t.entryBuyPrice, entry_sell_price: t.entrySellPrice,
               entry_spot_price: t.entrySpotPrice,
-              margin: t.margin, entry_fee: t.entryFee, accumulated_sell_pnl: 0
+              margin: t.margin, entry_fee: t.entryFee, accumulated_sell_pnl: 0,
+              buy_strike: t.buyLeg.strike,
+              sell_strike: t.sellLeg.strike,
             }]);
 
             if (insertError) {
