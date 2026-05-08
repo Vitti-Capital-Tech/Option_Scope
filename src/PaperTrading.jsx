@@ -59,13 +59,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
   const [tickerData, setTickerData] = useState({});
   const latestTickerDataRef = useRef({});
-  const [expectedTickerCount, setExpectedTickerCount] = useState(0);
 
   const wsRef = useRef(null);
   const spotIntervalRef = useRef(null);
   const tickerBufferRef = useRef({});
   const flushTimerRef = useRef(null);
-  const cooldownRef = useRef({});
   const lastEvaluatedRef = useRef(0);
   const lastDbWriteRef = useRef(0); // Timestamp of last local Supabase write
 
@@ -120,7 +118,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   useEffect(() => {
     setExpiries([]);
     setTickerData({});
-    setExpectedTickerCount(0);
     loadProducts(underlying)
       .then(prods => {
         setProducts(prods);
@@ -349,7 +346,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     setTrading(true);
     setTickerData({});
     latestTickerDataRef.current = {};
-    setExpectedTickerCount(0);
     lastEvaluatedRef.current = 0;
     setLastEvaluated(0);
     setTimeRemaining(null);
@@ -387,7 +383,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     });
 
     const allSymbols = Object.keys(symbolMeta);
-    setExpectedTickerCount(allSymbols.length);
 
     wsRef.current = createTickerStream(
       allSymbols,
@@ -488,7 +483,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       return a.netPremium - b.netPremium;
     });
 
-    return pickTopUniqueStrikes(validPairs, 3);
+    return pickTopUniqueStrikes(validPairs, 6);
   }, [config, spotPrice, pickTopUniqueStrikes]);
 
 
