@@ -621,16 +621,23 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       const canExit = activeCallsCount >= 3 && activePutsCount >= 3;
 
       if (!canExit && prevPositions.length > 0) {
-        console.log(`[Algo] Exit Guard Active: Calls=${activeCallsCount}, Puts=${activePutsCount}. Threshold (3/3) not met. Exits disabled.`);
+        const underlyingPositions = prevPositions.filter(p => p.underlying === underlying);
+        const uniqueIds = new Set(prevPositions.map(p => p.id)).size;
+        console.log(`[Algo] Exit Guard Active for ${underlying}: Calls=${activeCallsCount}, Puts=${activePutsCount}. Total active: ${underlyingPositions.length}. Unique IDs: ${uniqueIds}/${prevPositions.length}. Exits disabled.`);
       }
 
       const remaining = [];
       const exited = [];
-      const activeBuyStrikes = new Set();
-      const activeSellStrikes = new Set();
+      const activeStrikes = new Set();
 
       // 1. Maintain existing positions & detect exits
       for (const pos of prevPositions) {
+        // Skip positions from other underlyings - just keep them as-is
+        if (pos.underlying !== underlying) {
+          remaining.push(pos);
+          continue;
+        }
+
         let shouldExit = false;
         let exitReason = '';
 
@@ -646,7 +653,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         const typeSpreads = topSpreads.filter(s => s.buyLeg.type === pos.type);
         const inTop3 = typeSpreads.some(s => s.buyLeg.strike === pos.buyLeg.strike);
 
-        if (topSpreads.length > 0 && !inTop3) {
+        // Rotation logic: Only apply to positions of the current expiry
+        if (pos.expiry === selExpiry && topSpreads.length > 0 && !inTop3) {
           const currentActiveStrikes = prevPositions.map(p => p.buyLeg.strike);
           const newStrikesAvailable = typeSpreads.some(s => !currentActiveStrikes.includes(s.buyLeg.strike));
           if (newStrikesAvailable) {
@@ -656,7 +664,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               const currentStrike = pos.buyLeg.strike;
               const isPut = pos.type === 'put';
               if (isPut ? (top1Strike > currentStrike) : (top1Strike < currentStrike)) {
-                shouldExit = true; exitReason = `Lost Top 3 and Rank 1 is better (${top1Strike})`;
+                shouldExit = true; 
+                exitReason = `Lost Top 3 and Rank 1 is better (${top1Strike})`;
+                console.log(`[Algo] Position ${pos.buyLeg.strike}/${pos.sellLeg.strike} flagged for rotation: ${exitReason}`);
               }
             }
           }
@@ -696,11 +706,27 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
         // Apply threshold guard: Disable exits until 3 Calls AND 3 Puts are active
         if (!canExit) {
-          shouldExit = false;
-          isPartial = false;
+          if (shouldExit || isPartial) {
+            console.log(`[Algo] THRESHOLD GUARD TRIGGERED for ${pos.buyLeg.strike}/${pos.sellLeg.strike}. Blocking exit. Original Reason: ${exitReason}`);
+            shouldExit = false;
+            isPartial = false;
+          }
         }
 
         if (shouldExit || isPartial) {
+          // Absolute Final Guard - Double check canExit one last time
+          if (!canExit) {
+             console.error(`[Algo] CRITICAL: Logic reached exit push while canExit is FALSE for ${pos.buyLeg.strike}. Blocking.`);
+             shouldExit = false; isPartial = false;
+             remaining.push({
+               ...pos, currentBuyPrice: latestBuy, currentSellPrice: latestSell,
+               unrealizedGrossPnl: grossPnl, unrealizedNetPnl: grossPnl - totalFees,
+               currentExitFee: exitFee, currentTotalFees: totalFees
+             });
+             activeStrikes.add(Number(pos.buyLeg.strike));
+             activeStrikes.add(Number(pos.sellLeg.strike));
+             continue; 
+          }
           const partGrossPnl = grossPnl * exitFraction;
           const partEntryFee = (pos.entryFee || 0) * exitFraction;
           const partExitFee = exitFee * exitFraction;
@@ -760,8 +786,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             unrealizedGrossPnl: grossPnl, unrealizedNetPnl: grossPnl - totalFees,
             currentExitFee: exitFee, currentTotalFees: totalFees
           });
-          activeBuyStrikes.add(Number(pos.buyLeg.strike));
-          activeSellStrikes.add(Number(pos.sellLeg.strike));
+          activeStrikes.add(Number(pos.buyLeg.strike));
+          activeStrikes.add(Number(pos.sellLeg.strike));
         }
       }
 
@@ -770,7 +796,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       for (const spread of topSpreads) {
         const bStrike = Number(spread.buyLeg.strike);
         const sStrike = Number(spread.sellLeg.strike);
-        if (activeBuyStrikes.has(bStrike) || activeSellStrikes.has(sStrike)) continue;
+        if (activeStrikes.has(bStrike) || activeStrikes.has(sStrike)) continue;
         const count = (remaining.filter(p => p.type === spread.buyLeg.type).length) + (newEntries.filter(p => p.type === spread.buyLeg.type).length);
         if (count >= 3) continue;
 
@@ -788,8 +814,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           margin: (spread.buyLeg.markPrice * spread.buyLeg.lotSize) + (spread.sellLeg.markPrice * spread.sellLeg.lotSize * spread.sellQty / 200)
         };
         newEntries.push(newPos);
-        activeBuyStrikes.add(Number(spread.buyLeg.strike));
-        activeSellStrikes.add(Number(spread.sellLeg.strike));
+        activeStrikes.add(Number(spread.buyLeg.strike));
+        activeStrikes.add(Number(spread.sellLeg.strike));
       }
 
       // 3. side effects (Supabase)
