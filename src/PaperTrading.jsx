@@ -800,8 +800,26 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       for (const spread of topSpreads) {
         const bStrike = Number(spread.buyLeg.strike);
         const sStrike = Number(spread.sellLeg.strike);
-        if (activeStrikes.has(bStrike) || activeStrikes.has(sStrike)) continue;
-        const count = (remaining.filter(p => p.type === spread.buyLeg.type).length) + (newEntries.filter(p => p.type === spread.buyLeg.type).length);
+        const spreadType = spread.buyLeg.type;
+
+        // Only block if buy strike is already active for same type
+        const buyStrikeConflict = remaining.some(
+          p => p.type === spreadType && Number(p.buyLeg.strike) === bStrike
+        ) || newEntries.some(
+          p => p.type === spreadType && Number(p.buyLeg.strike) === bStrike
+        );
+
+        // Only block sell strike collision within same type
+        const sellStrikeConflict = remaining.some(
+          p => p.type === spreadType && Number(p.sellLeg.strike) === sStrike
+        ) || newEntries.some(
+          p => p.type === spreadType && Number(p.sellLeg.strike) === sStrike
+        );
+
+        if (buyStrikeConflict || sellStrikeConflict) continue;
+
+        const count = remaining.filter(p => p.type === spreadType).length +
+          newEntries.filter(p => p.type === spreadType).length;
         if (count >= 3) continue;
 
         const entryBuyFee = calculateFee(spread.buyLeg.markPrice, spotPrice, 1, spread.buyLeg.lotSize);
