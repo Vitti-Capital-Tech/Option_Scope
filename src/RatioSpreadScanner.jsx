@@ -10,6 +10,7 @@ const SCANNER_TOP_KEY = 'vitti_scanner_top_spreads_v1';
 
 import ResultTable from './ResultTable';
 import { normalizeIv, toFiniteNumber, matchesOptionType } from './scannerUtils';
+import { supabase } from './supabase';
 
 
 // ── Main Scanner Component ──────────────────────────────────────────────────
@@ -113,6 +114,45 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
     localStorage.setItem(SCANNER_TOP_KEY, JSON.stringify(payload));
     broadcastScannerTopSpreads(payload);
   }, [underlying, selExpiry, broadcastScannerTopSpreads, pickTopUniqueStrikes]);
+
+  const saveSupabaseConfig = useCallback(async (newCfg) => {
+    try {
+      await supabase.from('paper_trading_config').upsert({
+        id: 'global',
+        underlying: underlying, // Use current state or newCfg if available
+        expiry: selExpiry,
+        min_strike_diff: newCfg.minStrikeDiff,
+        min_iv_diff: newCfg.minIvDiff,
+        max_ratio_deviation: newCfg.maxRatioDeviation,
+        min_sell_premium: newCfg.minSellPremium,
+        max_net_premium: newCfg.maxNetPremium,
+        min_long_dist: newCfg.minLongDist,
+        updated_at: new Date().toISOString()
+      });
+    } catch (e) { }
+  }, [underlying, selExpiry]);
+
+  const fetchSupabaseConfig = useCallback(async () => {
+    try {
+      const { data, error } = await supabase.from('paper_trading_config').select('*').eq('id', 'global').single();
+      if (data && !error) {
+        setConfig({
+          minStrikeDiff: data.min_strike_diff,
+          minIvDiff: data.min_iv_diff,
+          maxRatioDeviation: data.max_ratio_deviation,
+          minSellPremium: data.min_sell_premium,
+          maxNetPremium: data.max_net_premium,
+          minLongDist: data.min_long_dist || 500
+        });
+        if (data.underlying) setUnderlying(data.underlying);
+        if (data.expiry) setSelExpiry(data.expiry);
+      }
+    } catch (e) { }
+  }, []);
+
+  useEffect(() => {
+    fetchSupabaseConfig();
+  }, [fetchSupabaseConfig]);
 
   // ── Load products on underlying change ──────────────────────────────────
   useEffect(() => {
@@ -429,7 +469,11 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
       stopScanRef.current();
     },
     CONFIG_SYNC: (payload) => {
-      if (payload.config) setConfig(payload.config);
+      if (payload.config) {
+        setConfig(payload.config);
+        if (payload.config.underlying) setUnderlying(payload.config.underlying);
+        if (payload.config.expiry) setSelExpiry(payload.config.expiry);
+      }
     }
   });
 
@@ -438,6 +482,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
       const newConfig = { ...c, [key]: value };
       localStorage.setItem('vitti_algo_config', JSON.stringify(newConfig));
       tabBroadcast('CONFIG_SYNC', { config: newConfig });
+      saveSupabaseConfig(newConfig);
       return newConfig;
     });
   };

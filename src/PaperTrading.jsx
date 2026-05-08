@@ -919,7 +919,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       stopTradingRef.current();
     },
     CONFIG_SYNC: (payload) => {
-      if (payload.config) setConfig(payload.config);
+      if (payload.config) {
+        setConfig(payload.config);
+        localStorage.setItem('vitti_algo_config', JSON.stringify(payload.config));
+        saveSupabaseConfig(payload.config);
+      }
     },
     SCANNER_TOP_SPREADS_SYNC: (payload) => {
       scannerTopRef.current = payload;
