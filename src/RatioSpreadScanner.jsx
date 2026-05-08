@@ -60,8 +60,8 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
     const seenBuy = new Set();
     const seenSell = new Set();
     for (const s of spreads) {
-      const bStrike = s?.buyLeg?.strike;
-      const sStrike = s?.sellLeg?.strike;
+      const bStrike = s?.buyLeg?.strike != null ? Number(s.buyLeg.strike) : null;
+      const sStrike = s?.sellLeg?.strike != null ? Number(s.sellLeg.strike) : null;
       if (bStrike == null || sStrike == null) continue;
       if (seenBuy.has(bStrike) || seenSell.has(sStrike)) continue;
       seenBuy.add(bStrike);
@@ -385,8 +385,8 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
     // For Put: ATM or OTM means strike <= atmStrike
     const putTickers = allTickers.filter(t => t.type === 'put' && (atmStrike === null || t.strike <= atmStrike));
 
-    const nextCalls = scanTickers(callTickers);
-    const nextPuts = scanTickers(putTickers);
+    const nextCalls = pickTopUniqueStrikes(scanTickers(callTickers), 50);
+    const nextPuts = pickTopUniqueStrikes(scanTickers(putTickers), 50);
     setResultsCall(nextCalls);
     setResultsPut(nextPuts);
     publishTopSpreads(nextCalls, nextPuts);

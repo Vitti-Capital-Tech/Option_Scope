@@ -89,8 +89,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     const seenBuy = new Set();
     const seenSell = new Set();
     for (const s of spreads) {
-      const bStrike = s?.buyLeg?.strike;
-      const sStrike = s?.sellLeg?.strike;
+      const bStrike = s?.buyLeg?.strike != null ? Number(s.buyLeg.strike) : null;
+      const sStrike = s?.sellLeg?.strike != null ? Number(s.sellLeg.strike) : null;
       if (bStrike == null || sStrike == null) continue;
       if (seenBuy.has(bStrike) || seenSell.has(sStrike)) continue;
       seenBuy.add(bStrike);
@@ -623,8 +623,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     const prevPositions = positionsRef.current;
     const remaining = [];
     const exited = [];
-    const activeBuySymbols = new Set();
-    const activeSellSymbols = new Set();
+    const activeBuyStrikes = new Set();
+    const activeSellStrikes = new Set();
 
     // 1. Maintain existing positions & detect exits
     for (const pos of prevPositions) {
@@ -688,11 +688,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           } else if (sExited === 2 && itmDist >= 300) {
             shouldExit = true; exitReason = 'Final Exit 34% @ 300 ITM (1400 diff)';
           }
-        } else {
-          // Fallback for other strike diffs (e.g. 1600+)
-          if (isAtmMET) {
-            shouldExit = true; exitReason = 'Full Exit @ ATM (Fallback)';
-          }
         }
       }
 
@@ -738,7 +733,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             currentExitFee: exitFee * (1 - exitFraction),
             currentTotalFees: totalFees * (1 - exitFraction)
           });
-          
+
           // Sync partial update to Supabase in background
           const { sellQty, buyLeg, margin, entryFee, stagesExited } = remaining[remaining.length - 1];
           supabase.from('active_positions').update({
@@ -747,7 +742,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             margin,
             entry_fee: entryFee,
             stages_exited: stagesExited
-          }).eq('id', pos.id).then(({error}) => { if(error) console.error('Partial Sync Error:', error); });
+          }).eq('id', pos.id).then(({ error }) => { if (error) console.error('Partial Sync Error:', error); });
 
         }
       } else {
@@ -756,15 +751,17 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           unrealizedGrossPnl: grossPnl, unrealizedNetPnl: grossPnl - totalFees,
           currentExitFee: exitFee, currentTotalFees: totalFees
         });
-        activeBuySymbols.add(pos.buyLeg.symbol);
-        activeSellSymbols.add(pos.sellLeg.symbol);
+        activeBuyStrikes.add(Number(pos.buyLeg.strike));
+        activeSellStrikes.add(Number(pos.sellLeg.strike));
       }
     }
 
     // 2. Open New Positions (Entries)
     const newEntries = [];
     for (const spread of topSpreads) {
-      if (activeBuySymbols.has(spread.buyLeg.symbol) || activeSellSymbols.has(spread.sellLeg.symbol)) continue;
+      const bStrike = Number(spread.buyLeg.strike);
+      const sStrike = Number(spread.sellLeg.strike);
+      if (activeBuyStrikes.has(bStrike) || activeSellStrikes.has(sStrike)) continue;
       const count = (remaining.filter(p => p.type === spread.buyLeg.type).length) + (newEntries.filter(p => p.type === spread.buyLeg.type).length);
       if (count >= 3) continue;
 
@@ -782,8 +779,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         margin: (spread.buyLeg.markPrice * spread.buyLeg.lotSize) + (spread.sellLeg.markPrice * spread.sellLeg.lotSize * spread.sellQty / 200)
       };
       newEntries.push(newPos);
-      activeBuySymbols.add(spread.buyLeg.symbol);
-      activeSellSymbols.add(spread.sellLeg.symbol);
+      activeBuyStrikes.add(Number(spread.buyLeg.strike));
+      activeSellStrikes.add(Number(spread.sellLeg.strike));
     }
 
     // 3. side effects (Supabase)
