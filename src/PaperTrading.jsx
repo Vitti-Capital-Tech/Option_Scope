@@ -310,14 +310,20 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   }, []);
 
 
-  // Periodic sync every 30s to stay aligned across devices
+  // Periodic sync every 10s to stay aligned across devices
   useEffect(() => {
     if (!trading) return;
+
+    // Initial fetch
+    fetchSupabaseActivePositions();
+    fetchSupabaseTradeHistory();
+    fetchSupabaseConfig();
+
     const interval = setInterval(() => {
       fetchSupabaseActivePositions();
       fetchSupabaseTradeHistory();
       fetchSupabaseConfig();
-    }, 30000);
+    }, 10000);
     return () => clearInterval(interval);
   }, [trading, fetchSupabaseActivePositions, fetchSupabaseTradeHistory, fetchSupabaseConfig]);
 
@@ -608,6 +614,16 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       // Guard: Prevent accidental exits during data gaps
       // Use Ref to avoid stale closures and unnecessary dependencies
       const prevPositions = positionsRef.current;
+
+      // Count active positions to check threshold for exits (3 Calls + 3 Puts)
+      const activeCallsCount = prevPositions.filter(p => p.type === 'call' && p.underlying === underlying).length;
+      const activePutsCount = prevPositions.filter(p => p.type === 'put' && p.underlying === underlying).length;
+      const canExit = activeCallsCount >= 3 && activePutsCount >= 3;
+
+      if (!canExit && prevPositions.length > 0) {
+        console.log(`[Algo] Exit Guard Active: Calls=${activeCallsCount}, Puts=${activePutsCount}. Threshold (3/3) not met. Exits disabled.`);
+      }
+
       const remaining = [];
       const exited = [];
       const activeBuyStrikes = new Set();
@@ -676,6 +692,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               shouldExit = true; exitReason = 'Final Exit 34% @ 300 ITM (1400 diff)';
             }
           }
+        }
+
+        // Apply threshold guard: Disable exits until 3 Calls AND 3 Puts are active
+        if (!canExit) {
+          shouldExit = false;
+          isPartial = false;
         }
 
         if (shouldExit || isPartial) {
@@ -1349,7 +1371,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="2"><path d="M12 8v4l3 3" /><circle cx="12" cy="12" r="10" /></svg>
                 </div>
                 <span className="pt-empty-title">No Closed Trades</span>
-                <span className="pt-empty-desc">Trades will appear here once positions are exited — either automatically by the algo or manually by you.</span>
+                <span className="pt-empty-desc">Trades will appear here once positions are exited.</span>
               </div>
             ) : (
               <div className="pt-table-scroll">
