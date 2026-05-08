@@ -46,6 +46,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
       maxRatioDeviation: 0.25,
       minSellPremium: 10,
       maxNetPremium: 20,
+      minLongDist: 500,
     };
   });
 
@@ -263,6 +264,9 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
           if (buyLeg.iv == null || sellLeg.iv == null) continue;
           const ivDiff = Math.abs(buyLeg.iv - sellLeg.iv);
           if (ivDiff <= config.minIvDiff) continue;
+          
+          const spotDist = Math.abs(buyLeg.strike - spotPrice);
+          if (spotDist < (config.minLongDist || 0)) continue;
 
           if (!sellLeg.markPrice || sellLeg.markPrice < config.minSellPremium) continue;
 
@@ -622,6 +626,15 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
                 type="number"
                 value={config.maxNetPremium}
                 onChange={e => updateConfig('maxNetPremium', Number(e.target.value))}
+                style={{ width: 60, padding: '4px 8px' }}
+              />
+            </div>
+            <div className="form-group" style={{ marginBottom: 0, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <label style={{ marginBottom: 0 }}>Min Long Dist:</label>
+              <input
+                type="number"
+                value={config.minLongDist}
+                onChange={e => updateConfig('minLongDist', Number(e.target.value))}
                 style={{ width: 60, padding: '4px 8px' }}
               />
             </div>
