@@ -123,7 +123,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         setProducts(prods);
         const exps = getExpiries(prods);
         setExpiries(exps);
-        if (exps.length && !config.expiry) {
+        if (exps.length && (!config.expiry || !exps.includes(config.expiry))) {
           updateConfig('expiry', exps[0]);
         }
       })
