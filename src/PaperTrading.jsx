@@ -483,7 +483,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       return a.netPremium - b.netPremium;
     });
 
-    return pickTopUniqueStrikes(validPairs, 6);
+    return pickTopUniqueStrikes(validPairs, 3);
   }, [config, spotPrice, pickTopUniqueStrikes]);
 
 
