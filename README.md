@@ -25,8 +25,9 @@ The project is built with a modern, serverless stack:
 
 1. **Frontend**: React (Vite) with imperative chart updates for high-frequency data.
 2. **Connectivity**: Delta Exchange WebSocket (`v2/ticker`, `trades`, `l2_updates`, `mark_price`) + REST backfill.
-3. **Chart Engine**: `lightweight-charts` with always-mounted panels to avoid remount jitter.
-4. **Proxying**: Vite local proxy and Vercel rewrites for CORS-safe API access without a custom backend.
+3. **Persistence & Sync**: Supabase (PostgreSQL) for persistent configuration, active positions, and trade history. Cross-tab synchronization via `BroadcastChannel`.
+4. **Chart Engine**: `lightweight-charts` with always-mounted panels to avoid remount jitter.
+5. **Proxying**: Vite local proxy and Vercel rewrites for CORS-safe API access without a custom backend.
 
 ## Documentation
 

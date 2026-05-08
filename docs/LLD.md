@@ -57,7 +57,22 @@ This document captures implementation details for the current multi-module appli
 
 ---
 
-## 3) Ratio Spread Scanner Internals (`RatioSpreadScanner.jsx`)
+## 3) Persistence & Synchronization Logic
+
+### Supabase Integration
+- **`paper_trading_config`**: Stores global algorithmic settings (underlying, expiry, thresholds).
+- **`active_positions`**: Real-time storage of open simulated trades.
+- **`trade_history`**: Permanent record of realized trades with exit reasons.
+- **Auto-Sync**: Config changes in one tab are broadcast via `BroadcastChannel` and persisted to Supabase, triggering updates in all other open instances.
+
+### Cross-Tab Synchronization
+- `useTabListener` hook handles message passing between modules.
+- `CONFIG_SYNC`: Synchronizes filters, underlying, and expiry.
+- `SCANNER_TOP_SPREADS_SYNC`: Shares real-time scanner analysis with the trading engine to minimize redundant calculations.
+
+---
+
+## 4) Ratio Spread Scanner Internals (`RatioSpreadScanner.jsx`)
 
 ### Market ingestion path
 
@@ -91,41 +106,44 @@ This document captures implementation details for the current multi-module appli
 - Manual refresh button triggers immediate recompute.
 - `lastRefreshed` and countdown are used for operator visibility.
 
+### Strike Uniqueness (`pickTopUniqueStrikes`)
+- Filters result sets to ensure:
+  - Each **Buy Strike** appears only once.
+  - Each **Sell Strike** appears only once.
+- Prevents overlapping or highly correlated spreads from cluttering the view.
+- Applies a "greedy" selection based on the best-sorted pairs (closest to ATM + highest edge).
+
 ### Result rendering
 
 - Results are grouped by buy strike and expandable in `ResultTable`.
-- Displays strike pair, premiums, IV diff, delta pair, sell quantity, net premium, and net delta difference.
+- Enforces unique sell strikes across different buy strike groups.
 
 ---
 
-## 4) Paper Trading Internals (`PaperTrading.jsx`)
+## 5) Paper Trading Internals (`PaperTrading.jsx`)
 
-### Live feed and preprocessing
+### Concurrency & Performance
+- **`isEvaluatingRef`**: A mutex lock preventing multiple evaluation loops from running in parallel (e.g. triggered by rapid WebSocket updates).
+- **Synchronous Tracking**: `positionsRef` is updated immediately within the evaluation loop to prevent race conditions during state transition.
+- Uses 50ms ticker buffer flush for stable table updates.
 
-- Shares product/expiry/ticker flow with scanner.
-- Uses 200ms ticker buffer flush for stable table updates.
-- Waits for minimum feed coverage (`>10%` of expected tickers) before evaluating candidates.
+### Entry Logic
+- Merges local scan data with external scanner broadcasts.
+- **Global Strike Uniqueness**: Prevents opening new positions if their buy or sell strike is already in use by any active position.
+- Limits to top 3 unique candidates per option type (Call/Put).
 
-### Entry logic
+### Rotation & Exit Logic
+- **Directional Rotation**: Positions only exit if they lose their "Top 3" rank AND a "better" (closer-to-spot) buy strike becomes available.
+- **Strike-Specific Exit Rules**:
+  - `diff <= 1000`: Full exit at ATM.
+  - `diff == 1200`: Partial (50%) at ATM, Final at 200 pts ITM.
+  - `diff == 1400`: Partial (33%) at ATM, Partial (33%) at 150 pts ITM, Final at 300 pts ITM.
+- Manual close action provided for immediate liquidity.
 
-- Builds call and put candidate sets using the same constraints as scanner.
-- Picks top 3 per side and opens simulated positions not already active.
-- Position payload includes entry prices, sell quantity, margin estimate, and type.
-
-### Exit logic
-
-- Auto-exit when spread loses top-3 ranking.
-- Additional strike-diff dependent exit rules:
-  - `< 1000`: exit when buy strike reaches ATM/ITM.
-  - `< 1200`: exit at 200 points ITM.
-  - `< 1400`: exit at 300 points ITM.
-- Supports manual close action at any time.
-
-### PnL and reporting
-
-- Unrealized/realized PnL uses lot-size-aware leg calculations.
-- Closed trades recorded in history with reason and timestamps.
-- CSV export includes entry/exit net premium, realized PnL, and margin.
+### Persistence & Sync
+- **Background Persistence**: Every trade action (entry, exit, partial) is immediately synced to Supabase.
+- **Stale Position Cleanup**: Automatically identifies and clears positions from previous expiries or underlyings.
+- **Remote Sync**: Periodically fetches active positions from Supabase (every 30s) to reconcile state across different devices.
 
 ---
 

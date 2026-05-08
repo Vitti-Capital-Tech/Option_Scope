@@ -22,6 +22,8 @@ Browser (React + Vite)
   |-- REST adapter (products, candles, spot) ---> /api proxy ---> Delta REST
   |
   |-- WebSocket adapter (ticker, greeks, trades, l2, mark_price) ---> Delta WS
+  |
+  |-- Persistence & Sync Hub (localStorage + BroadcastChannel + Supabase)
          |
          |-- Chart Data Hub + Correction Engine
          |-- Scanner Engine (filtered pair search)
@@ -33,18 +35,20 @@ Browser (React + Vite)
 - React components are route-like modules switched inside the app shell.
 - Theme toggle is shared across modules.
 - Strategy watchlist and configuration state drive the active chart context.
+- **Synchronization**: State (underlying, expiry, filters) is synchronized across tabs via `BroadcastChannel` and persisted to Supabase for cross-device consistency.
 
-### 2) Market Data Layer
+### 2) Market Data & Persistence Layer
 
 - **REST** handles product metadata, initial candle history, and correction backfills.
 - **WebSocket** handles low-latency live fields (`v2/ticker`, `mark_price`, trades, order book updates).
+- **Supabase** (PostgreSQL) stores algorithm configuration, active trading positions, and realized trade history.
 - Proxy rewrites keep the architecture serverless while handling CORS.
 
 ### 3) Runtime Engines
 
 - **Charting Engine** uses imperative refs and always-mounted chart components for smooth updates.
-- **Scanner Engine** processes option chains for valid ratio candidates using configurable thresholds.
-- **Paper Engine** reuses scanner-style candidate selection to simulate positions, exits, and realized outcomes.
+- **Scanner Engine** processes option chains for valid ratio candidates using configurable thresholds. Enforces global uniqueness of buy and sell strikes.
+- **Paper Engine** reuses scanner-style candidate selection to simulate positions, exits, and realized outcomes. Synchronizes with global DB state for multi-instance stability.
 
 ---
 
