@@ -320,11 +320,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     } catch (e) { }
   }, []);
 
-  useEffect(() => {
-    fetchSupabaseActivePositions();
-    fetchSupabaseTradeHistory();
-    fetchSupabaseConfig();
-  }, [fetchSupabaseActivePositions, fetchSupabaseTradeHistory, fetchSupabaseConfig]);
 
   // Periodic sync every 30s to stay aligned across devices
   useEffect(() => {
@@ -510,364 +505,364 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     isEvaluatingRef.current = true;
     try {
 
-    const allTickers = Object.values(latestTickerDataRef.current);
-    if (allTickers.length === 0) return;
+      const allTickers = Object.values(latestTickerDataRef.current);
+      if (allTickers.length === 0) return;
 
-    const nowTime = Date.now();
-    const currentMinute = Math.floor(nowTime / 60000);
-    const lastMinute = Math.floor(lastEvaluatedRef.current / 60000);
+      const nowTime = Date.now();
+      const currentMinute = Math.floor(nowTime / 60000);
+      const lastMinute = Math.floor(lastEvaluatedRef.current / 60000);
 
-    // Only run the complex strategy evaluation once per minute OR when a fresh scanner update arrives OR if forced
-    const scannerUpdated = scannerSyncVersion > lastProcessedScannerVersionRef.current;
-    const shouldEvaluateAlgo = force || currentMinute > lastMinute || lastEvaluatedRef.current === 0 || scannerUpdated;
+      // Only run the complex strategy evaluation once per minute OR when a fresh scanner update arrives OR if forced
+      const scannerUpdated = scannerSyncVersion > lastProcessedScannerVersionRef.current;
+      const shouldEvaluateAlgo = force || currentMinute > lastMinute || lastEvaluatedRef.current === 0 || scannerUpdated;
 
-    if (scannerUpdated) {
-      lastProcessedScannerVersionRef.current = scannerSyncVersion;
-    }
+      if (scannerUpdated) {
+        lastProcessedScannerVersionRef.current = scannerSyncVersion;
+      }
 
 
-    /**
-     * PHASE 1: Real-time PnL & Fee Monitoring
-     * This section updates current prices and PnL values every 10 seconds.
-     */
-    if (!shouldEvaluateAlgo) {
-      // Throttle PnL updates to every 5 seconds for stability
-      if (nowTime - lastEvaluatedRef.current < 5000) return;
+      /**
+       * PHASE 1: Real-time PnL & Fee Monitoring
+       * This section updates current prices and PnL values every 10 seconds.
+       */
+      if (!shouldEvaluateAlgo) {
+        // Throttle PnL updates to every 5 seconds for stability
+        if (nowTime - lastEvaluatedRef.current < 5000) return;
 
-      setPositions(prev => {
-        if (prev.length === 0) return prev;
-        const updated = prev.map(pos => {
-          const latestBuy = tickerData[pos.buyLeg.symbol]?.markPrice ?? pos.currentBuyPrice ?? pos.buyLeg.markPrice;
-          const latestSell = tickerData[pos.sellLeg.symbol]?.markPrice ?? pos.currentSellPrice ?? pos.sellLeg.markPrice;
+        setPositions(prev => {
+          if (prev.length === 0) return prev;
+          const updated = prev.map(pos => {
+            const latestBuy = tickerData[pos.buyLeg.symbol]?.markPrice ?? pos.currentBuyPrice ?? pos.buyLeg.markPrice;
+            const latestSell = tickerData[pos.sellLeg.symbol]?.markPrice ?? pos.currentSellPrice ?? pos.sellLeg.markPrice;
 
-          const buyPnl = (latestBuy != null && pos.entryBuyPrice != null) ? (latestBuy - pos.entryBuyPrice) : 0;
-          const sellPnl = (latestSell != null && pos.entrySellPrice != null) ? (latestSell - pos.entrySellPrice) * pos.sellQty : 0;
-          const grossPnl = (buyPnl - sellPnl) * pos.buyLeg.lotSize + (pos.accumulatedSellPnl || 0);
+            const buyPnl = (latestBuy != null && pos.entryBuyPrice != null) ? (latestBuy - pos.entryBuyPrice) : 0;
+            const sellPnl = (latestSell != null && pos.entrySellPrice != null) ? (latestSell - pos.entrySellPrice) * pos.sellQty : 0;
+            const grossPnl = (buyPnl - sellPnl) * pos.buyLeg.lotSize + (pos.accumulatedSellPnl || 0);
 
-          const exitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize) +
-            calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
-          const totalFees = (pos.entryFee || 0) + exitFee;
+            const exitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize) +
+              calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
+            const totalFees = (pos.entryFee || 0) + exitFee;
 
-          return {
-            ...pos,
-            currentBuyPrice: latestBuy,
-            currentSellPrice: latestSell,
-            unrealizedGrossPnl: grossPnl,
-            unrealizedNetPnl: grossPnl - totalFees,
-            currentExitFee: exitFee,
-            currentTotalFees: totalFees
-          };
+            return {
+              ...pos,
+              currentBuyPrice: latestBuy,
+              currentSellPrice: latestSell,
+              unrealizedGrossPnl: grossPnl,
+              unrealizedNetPnl: grossPnl - totalFees,
+              currentExitFee: exitFee,
+              currentTotalFees: totalFees
+            };
+          });
+          return updated;
         });
-        return updated;
-      });
-      return;
-    }
-
-    /**
-     * PHASE 2: Algorithm Strategy Evaluation (Minute Cycle)
-     * This handles scanning, rotation, rolls, and trade execution.
-     */
-    const alignedNow = currentMinute * 60000;
-    lastEvaluatedRef.current = alignedNow;
-    setLastEvaluated(alignedNow);
-
-    // Identify current ATM strike for directional filtering
-    let atmStrike = null;
-    let minDiff = Infinity;
-    for (const t of allTickers) {
-      const diff = Math.abs(t.strike - spotPrice);
-      if (diff < minDiff) {
-        minDiff = diff;
-        atmStrike = t.strike;
+        return;
       }
-    }
 
-    // A. Local Scan: Find current Top 3 unique buy strikes per type
-    const callTickers = allTickers.filter(t => t.type === 'call' && (atmStrike === null || t.strike >= atmStrike));
-    const putTickers = allTickers.filter(t => t.type === 'put' && (atmStrike === null || t.strike <= atmStrike));
+      /**
+       * PHASE 2: Algorithm Strategy Evaluation (Minute Cycle)
+       * This handles scanning, rotation, rolls, and trade execution.
+       */
+      const alignedNow = currentMinute * 60000;
+      lastEvaluatedRef.current = alignedNow;
+      setLastEvaluated(alignedNow);
 
-    const localTopCalls = scanTickers(callTickers);
-    const localTopPuts = scanTickers(putTickers);
-    const localTopSpreads = [...localTopCalls, ...localTopPuts];
-
-    // B. Scanner Sync: Merge with external RatioSpreadScanner data if available
-    let topSpreads = localTopSpreads;
-    const snapshot = scannerTopRef.current;
-    if (snapshot && snapshot.underlying === underlying && snapshot.expiry === selExpiry) {
-      const localById = new Map(localTopSpreads.map(s => [`${s.buyLeg.symbol}_${s.sellLeg.symbol}`, s]));
-      const synced = [];
-      const scannerIds = [...(snapshot.callTop3 || []), ...(snapshot.putTop3 || [])];
-
-      for (const item of scannerIds) {
-        const spread = localById.get(item.id);
-        if (spread) {
-          if (item.sellQty !== undefined) spread.sellQty = item.sellQty;
-          synced.push(spread);
+      // Identify current ATM strike for directional filtering
+      let atmStrike = null;
+      let minDiff = Infinity;
+      for (const t of allTickers) {
+        const diff = Math.abs(t.strike - spotPrice);
+        if (diff < minDiff) {
+          minDiff = diff;
+          atmStrike = t.strike;
         }
       }
 
-      if (scannerIds.length > 0) {
-        const seen = new Set(synced.map(s => `${s.buyLeg.symbol}_${s.sellLeg.symbol}`));
-        const backfilled = [...synced];
-        for (const spread of localTopSpreads) {
-          const id = `${spread.buyLeg.symbol}_${spread.sellLeg.symbol}`;
-          if (seen.has(id)) continue;
-          backfilled.push(spread);
-          if (backfilled.length >= 6) break;
+      // A. Local Scan: Find current Top 3 unique buy strikes per type
+      const callTickers = allTickers.filter(t => t.type === 'call' && (atmStrike === null || t.strike >= atmStrike));
+      const putTickers = allTickers.filter(t => t.type === 'put' && (atmStrike === null || t.strike <= atmStrike));
+
+      const localTopCalls = scanTickers(callTickers);
+      const localTopPuts = scanTickers(putTickers);
+      const localTopSpreads = [...localTopCalls, ...localTopPuts];
+
+      // B. Scanner Sync: Merge with external RatioSpreadScanner data if available
+      let topSpreads = localTopSpreads;
+      const snapshot = scannerTopRef.current;
+      if (snapshot && snapshot.underlying === underlying && snapshot.expiry === selExpiry) {
+        const localById = new Map(localTopSpreads.map(s => [`${s.buyLeg.symbol}_${s.sellLeg.symbol}`, s]));
+        const synced = [];
+        const scannerIds = [...(snapshot.callTop3 || []), ...(snapshot.putTop3 || [])];
+
+        for (const item of scannerIds) {
+          const spread = localById.get(item.id);
+          if (spread) {
+            if (item.sellQty !== undefined) spread.sellQty = item.sellQty;
+            synced.push(spread);
+          }
         }
-        const byTypeCall = backfilled.filter(s => s.buyLeg.type === 'call');
-        const byTypePut = backfilled.filter(s => s.buyLeg.type === 'put');
-        const calls = pickTopUniqueStrikes(byTypeCall, 3);
-        const puts = pickTopUniqueStrikes(byTypePut, 3);
-        topSpreads = pickTopUniqueStrikes([...calls, ...puts], 6);
+
+        if (scannerIds.length > 0) {
+          const seen = new Set(synced.map(s => `${s.buyLeg.symbol}_${s.sellLeg.symbol}`));
+          const backfilled = [...synced];
+          for (const spread of localTopSpreads) {
+            const id = `${spread.buyLeg.symbol}_${spread.sellLeg.symbol}`;
+            if (seen.has(id)) continue;
+            backfilled.push(spread);
+            if (backfilled.length >= 6) break;
+          }
+          const byTypeCall = backfilled.filter(s => s.buyLeg.type === 'call');
+          const byTypePut = backfilled.filter(s => s.buyLeg.type === 'put');
+          const calls = pickTopUniqueStrikes(byTypeCall, 3);
+          const puts = pickTopUniqueStrikes(byTypePut, 3);
+          topSpreads = pickTopUniqueStrikes([...calls, ...puts], 6);
+        }
       }
-    }
 
-    // Guard: Prevent accidental exits during data gaps
-    // Use Ref to avoid stale closures and unnecessary dependencies
-    const prevPositions = positionsRef.current;
-    const remaining = [];
-    const exited = [];
-    const activeBuyStrikes = new Set();
-    const activeSellStrikes = new Set();
+      // Guard: Prevent accidental exits during data gaps
+      // Use Ref to avoid stale closures and unnecessary dependencies
+      const prevPositions = positionsRef.current;
+      const remaining = [];
+      const exited = [];
+      const activeBuyStrikes = new Set();
+      const activeSellStrikes = new Set();
 
-    // 1. Maintain existing positions & detect exits
-    for (const pos of prevPositions) {
-      let shouldExit = false;
-      let exitReason = '';
+      // 1. Maintain existing positions & detect exits
+      for (const pos of prevPositions) {
+        let shouldExit = false;
+        let exitReason = '';
 
-      const latestBuy = tickerData[pos.buyLeg.symbol]?.markPrice ?? pos.currentBuyPrice ?? pos.buyLeg.markPrice;
-      const latestSell = tickerData[pos.sellLeg.symbol]?.markPrice ?? pos.currentSellPrice ?? pos.sellLeg.markPrice;
-      const buyPnl = (latestBuy != null && pos.entryBuyPrice != null) ? (latestBuy - pos.entryBuyPrice) * pos.buyLeg.lotSize : 0;
-      const sellPnl = (latestSell != null && pos.entrySellPrice != null) ? (latestSell - pos.entrySellPrice) * pos.sellLeg.lotSize * pos.sellQty : 0;
-      const grossPnl = buyPnl - sellPnl + (pos.accumulatedSellPnl || 0);
-      const exitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize) +
-        calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
-      const totalFees = (pos.entryFee || 0) + exitFee;
+        const latestBuy = tickerData[pos.buyLeg.symbol]?.markPrice ?? pos.currentBuyPrice ?? pos.buyLeg.markPrice;
+        const latestSell = tickerData[pos.sellLeg.symbol]?.markPrice ?? pos.currentSellPrice ?? pos.sellLeg.markPrice;
+        const buyPnl = (latestBuy != null && pos.entryBuyPrice != null) ? (latestBuy - pos.entryBuyPrice) * pos.buyLeg.lotSize : 0;
+        const sellPnl = (latestSell != null && pos.entrySellPrice != null) ? (latestSell - pos.entrySellPrice) * pos.sellLeg.lotSize * pos.sellQty : 0;
+        const grossPnl = buyPnl - sellPnl + (pos.accumulatedSellPnl || 0);
+        const exitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize) +
+          calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
+        const totalFees = (pos.entryFee || 0) + exitFee;
 
-      const typeSpreads = topSpreads.filter(s => s.buyLeg.type === pos.type);
-      const inTop3 = typeSpreads.some(s => s.buyLeg.strike === pos.buyLeg.strike);
+        const typeSpreads = topSpreads.filter(s => s.buyLeg.type === pos.type);
+        const inTop3 = typeSpreads.some(s => s.buyLeg.strike === pos.buyLeg.strike);
 
-      if (topSpreads.length > 0 && !inTop3) {
-        const currentActiveStrikes = prevPositions.map(p => p.buyLeg.strike);
-        const newStrikesAvailable = typeSpreads.some(s => !currentActiveStrikes.includes(s.buyLeg.strike));
-        if (newStrikesAvailable) {
-          const top1Spread = typeSpreads[0];
-          if (top1Spread) {
-            const top1Strike = top1Spread.buyLeg.strike;
-            const currentStrike = pos.buyLeg.strike;
-            const isPut = pos.type === 'put';
-            if (isPut ? (top1Strike > currentStrike) : (top1Strike < currentStrike)) {
-              shouldExit = true; exitReason = `Lost Top 3 and Rank 1 is better (${top1Strike})`;
+        if (topSpreads.length > 0 && !inTop3) {
+          const currentActiveStrikes = prevPositions.map(p => p.buyLeg.strike);
+          const newStrikesAvailable = typeSpreads.some(s => !currentActiveStrikes.includes(s.buyLeg.strike));
+          if (newStrikesAvailable) {
+            const top1Spread = typeSpreads[0];
+            if (top1Spread) {
+              const top1Strike = top1Spread.buyLeg.strike;
+              const currentStrike = pos.buyLeg.strike;
+              const isPut = pos.type === 'put';
+              if (isPut ? (top1Strike > currentStrike) : (top1Strike < currentStrike)) {
+                shouldExit = true; exitReason = `Lost Top 3 and Rank 1 is better (${top1Strike})`;
+              }
             }
           }
         }
-      }
 
-      let isPartial = false;
-      let exitFraction = 1.0;
+        let isPartial = false;
+        let exitFraction = 1.0;
 
-      if (!shouldExit) {
-        const isCall = pos.type === 'call';
-        const buyStrike = pos.buyLeg.strike;
-        const itmDist = isCall ? spotPrice - buyStrike : buyStrike - spotPrice;
-        const isAtmMET = isCall ? spotPrice >= buyStrike : spotPrice <= buyStrike;
-        const sExited = pos.stagesExited || 0;
+        if (!shouldExit) {
+          const isCall = pos.type === 'call';
+          const buyStrike = pos.buyLeg.strike;
+          const itmDist = isCall ? spotPrice - buyStrike : buyStrike - spotPrice;
+          const isAtmMET = isCall ? spotPrice >= buyStrike : spotPrice <= buyStrike;
+          const sExited = pos.stagesExited || 0;
 
-        if (pos.strikeDiff <= 1000) {
-          if (isAtmMET) {
-            shouldExit = true; exitReason = 'Full Exit @ ATM (<= 1000 diff)';
-          }
-        } else if (pos.strikeDiff === 1200) {
-          if (sExited === 0 && isAtmMET) {
-            isPartial = true; exitFraction = 0.5; exitReason = 'Partial Exit 50% @ ATM (1200 diff)';
-          } else if (sExited === 1 && itmDist >= 200) {
-            shouldExit = true; exitReason = 'Final Exit 50% @ 200 ITM (1200 diff)';
-          }
-        } else if (pos.strikeDiff === 1400) {
-          if (sExited === 0 && isAtmMET) {
-            isPartial = true; exitFraction = 0.3333; exitReason = 'Partial Exit 33% @ ATM (1400 diff)';
-          } else if (sExited === 1 && itmDist >= 150) {
-            isPartial = true; exitFraction = 0.5; // Exit half of remaining (1/3 of original)
-            exitReason = 'Partial Exit 33% @ 150 ITM (1400 diff)';
-          } else if (sExited === 2 && itmDist >= 300) {
-            shouldExit = true; exitReason = 'Final Exit 34% @ 300 ITM (1400 diff)';
+          if (pos.strikeDiff <= 1000) {
+            if (isAtmMET) {
+              shouldExit = true; exitReason = 'Full Exit @ ATM (<= 1000 diff)';
+            }
+          } else if (pos.strikeDiff === 1200) {
+            if (sExited === 0 && isAtmMET) {
+              isPartial = true; exitFraction = 0.5; exitReason = 'Partial Exit 50% @ ATM (1200 diff)';
+            } else if (sExited === 1 && itmDist >= 200) {
+              shouldExit = true; exitReason = 'Final Exit 50% @ 200 ITM (1200 diff)';
+            }
+          } else if (pos.strikeDiff === 1400) {
+            if (sExited === 0 && isAtmMET) {
+              isPartial = true; exitFraction = 0.3333; exitReason = 'Partial Exit 33% @ ATM (1400 diff)';
+            } else if (sExited === 1 && itmDist >= 150) {
+              isPartial = true; exitFraction = 0.5; // Exit half of remaining (1/3 of original)
+              exitReason = 'Partial Exit 33% @ 150 ITM (1400 diff)';
+            } else if (sExited === 2 && itmDist >= 300) {
+              shouldExit = true; exitReason = 'Final Exit 34% @ 300 ITM (1400 diff)';
+            }
           }
         }
-      }
 
-      if (shouldExit || isPartial) {
-        const partGrossPnl = grossPnl * exitFraction;
-        const partEntryFee = (pos.entryFee || 0) * exitFraction;
-        const partExitFee = exitFee * exitFraction;
-        const partTotalFees = partEntryFee + partExitFee;
-        const partNetPnl = partGrossPnl - partTotalFees;
+        if (shouldExit || isPartial) {
+          const partGrossPnl = grossPnl * exitFraction;
+          const partEntryFee = (pos.entryFee || 0) * exitFraction;
+          const partExitFee = exitFee * exitFraction;
+          const partTotalFees = partEntryFee + partExitFee;
+          const partNetPnl = partGrossPnl - partTotalFees;
 
-        const tradeRecord = {
-          ...pos,
-          id: isPartial ? `${pos.id}-P${pos.stagesExited + 1}` : pos.id,
-          exitTime: new Date(),
-          exitBuyPrice: latestBuy,
-          exitSellPrice: latestSell,
-          exitSpotPrice: spotPrice,
-          realizedGrossPnl: partGrossPnl,
-          realizedNetPnl: partNetPnl,
-          exitFee: partExitFee,
-          totalFees: partTotalFees,
-          exitReason,
-          _latestBuy: latestBuy,
-          _latestSell: latestSell,
-          _isPartial: isPartial
-        };
-
-        exited.push(tradeRecord);
-
-        if (isPartial) {
-          // Update the remaining position
-          remaining.push({
+          const tradeRecord = {
             ...pos,
-            sellQty: pos.sellQty * (1 - exitFraction),
-            buyLeg: { ...pos.buyLeg, lotSize: pos.buyLeg.lotSize * (1 - exitFraction) },
-            margin: (pos.margin || 0) * (1 - exitFraction),
-            entryFee: (pos.entryFee || 0) * (1 - exitFraction),
-            stagesExited: (pos.stagesExited || 0) + 1,
-            currentBuyPrice: latestBuy,
-            currentSellPrice: latestSell,
-            unrealizedGrossPnl: grossPnl * (1 - exitFraction),
-            unrealizedNetPnl: (grossPnl - totalFees) * (1 - exitFraction),
-            currentExitFee: exitFee * (1 - exitFraction),
-            currentTotalFees: totalFees * (1 - exitFraction)
+            id: isPartial ? `${pos.id}-P${pos.stagesExited + 1}` : pos.id,
+            exitTime: new Date(),
+            exitBuyPrice: latestBuy,
+            exitSellPrice: latestSell,
+            exitSpotPrice: spotPrice,
+            realizedGrossPnl: partGrossPnl,
+            realizedNetPnl: partNetPnl,
+            exitFee: partExitFee,
+            totalFees: partTotalFees,
+            exitReason,
+            _latestBuy: latestBuy,
+            _latestSell: latestSell,
+            _isPartial: isPartial
+          };
+
+          exited.push(tradeRecord);
+
+          if (isPartial) {
+            // Update the remaining position
+            remaining.push({
+              ...pos,
+              sellQty: pos.sellQty * (1 - exitFraction),
+              buyLeg: { ...pos.buyLeg, lotSize: pos.buyLeg.lotSize * (1 - exitFraction) },
+              margin: (pos.margin || 0) * (1 - exitFraction),
+              entryFee: (pos.entryFee || 0) * (1 - exitFraction),
+              stagesExited: (pos.stagesExited || 0) + 1,
+              currentBuyPrice: latestBuy,
+              currentSellPrice: latestSell,
+              unrealizedGrossPnl: grossPnl * (1 - exitFraction),
+              unrealizedNetPnl: (grossPnl - totalFees) * (1 - exitFraction),
+              currentExitFee: exitFee * (1 - exitFraction),
+              currentTotalFees: totalFees * (1 - exitFraction)
+            });
+
+            // Sync partial update to Supabase in background
+            const { sellQty, buyLeg, margin, entryFee, stagesExited } = remaining[remaining.length - 1];
+            supabase.from('active_positions').update({
+              sell_qty: sellQty,
+              buy_leg: JSON.stringify(buyLeg),
+              margin,
+              entry_fee: entryFee,
+              stages_exited: stagesExited
+            }).eq('id', pos.id).then(({ error }) => { if (error) console.error('Partial Sync Error:', error); });
+
+          }
+        } else {
+          remaining.push({
+            ...pos, currentBuyPrice: latestBuy, currentSellPrice: latestSell,
+            unrealizedGrossPnl: grossPnl, unrealizedNetPnl: grossPnl - totalFees,
+            currentExitFee: exitFee, currentTotalFees: totalFees
           });
-
-          // Sync partial update to Supabase in background
-          const { sellQty, buyLeg, margin, entryFee, stagesExited } = remaining[remaining.length - 1];
-          supabase.from('active_positions').update({
-            sell_qty: sellQty,
-            buy_leg: JSON.stringify(buyLeg),
-            margin,
-            entry_fee: entryFee,
-            stages_exited: stagesExited
-          }).eq('id', pos.id).then(({ error }) => { if (error) console.error('Partial Sync Error:', error); });
-
+          activeBuyStrikes.add(Number(pos.buyLeg.strike));
+          activeSellStrikes.add(Number(pos.sellLeg.strike));
         }
-      } else {
-        remaining.push({
-          ...pos, currentBuyPrice: latestBuy, currentSellPrice: latestSell,
-          unrealizedGrossPnl: grossPnl, unrealizedNetPnl: grossPnl - totalFees,
-          currentExitFee: exitFee, currentTotalFees: totalFees
-        });
-        activeBuyStrikes.add(Number(pos.buyLeg.strike));
-        activeSellStrikes.add(Number(pos.sellLeg.strike));
       }
-    }
 
-    // 2. Open New Positions (Entries)
-    const newEntries = [];
-    for (const spread of topSpreads) {
-      const bStrike = Number(spread.buyLeg.strike);
-      const sStrike = Number(spread.sellLeg.strike);
-      if (activeBuyStrikes.has(bStrike) || activeSellStrikes.has(sStrike)) continue;
-      const count = (remaining.filter(p => p.type === spread.buyLeg.type).length) + (newEntries.filter(p => p.type === spread.buyLeg.type).length);
-      if (count >= 3) continue;
+      // 2. Open New Positions (Entries)
+      const newEntries = [];
+      for (const spread of topSpreads) {
+        const bStrike = Number(spread.buyLeg.strike);
+        const sStrike = Number(spread.sellLeg.strike);
+        if (activeBuyStrikes.has(bStrike) || activeSellStrikes.has(sStrike)) continue;
+        const count = (remaining.filter(p => p.type === spread.buyLeg.type).length) + (newEntries.filter(p => p.type === spread.buyLeg.type).length);
+        if (count >= 3) continue;
 
-      const entryBuyFee = calculateFee(spread.buyLeg.markPrice, spotPrice, 1, spread.buyLeg.lotSize);
-      const entrySellFee = calculateFee(spread.sellLeg.markPrice, spotPrice, spread.sellQty, spread.sellLeg.lotSize);
-      const entryFee = entryBuyFee + entrySellFee;
-      const id = `T${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-      const newPos = {
-        id, underlying, expiry: selExpiry, type: spread.buyLeg.type,
-        buyLeg: spread.buyLeg, sellLeg: spread.sellLeg, sellQty: spread.sellQty,
-        strikeDiff: spread.strikeDiff, entryTime: new Date(), entryBuyPrice: spread.buyLeg.markPrice,
-        entrySellPrice: spread.sellLeg.markPrice, entrySpotPrice: spotPrice, currentBuyPrice: spread.buyLeg.markPrice,
-        currentSellPrice: spread.sellLeg.markPrice, unrealizedGrossPnl: 0, unrealizedNetPnl: -entryFee,
-        entryFee, currentExitFee: entryFee, currentTotalFees: entryFee * 2,
-        margin: (spread.buyLeg.markPrice * spread.buyLeg.lotSize) + (spread.sellLeg.markPrice * spread.sellLeg.lotSize * spread.sellQty / 200)
-      };
-      newEntries.push(newPos);
-      activeBuyStrikes.add(Number(spread.buyLeg.strike));
-      activeSellStrikes.add(Number(spread.sellLeg.strike));
-    }
+        const entryBuyFee = calculateFee(spread.buyLeg.markPrice, spotPrice, 1, spread.buyLeg.lotSize);
+        const entrySellFee = calculateFee(spread.sellLeg.markPrice, spotPrice, spread.sellQty, spread.sellLeg.lotSize);
+        const entryFee = entryBuyFee + entrySellFee;
+        const id = `T${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+        const newPos = {
+          id, underlying, expiry: selExpiry, type: spread.buyLeg.type,
+          buyLeg: spread.buyLeg, sellLeg: spread.sellLeg, sellQty: spread.sellQty,
+          strikeDiff: spread.strikeDiff, entryTime: new Date(), entryBuyPrice: spread.buyLeg.markPrice,
+          entrySellPrice: spread.sellLeg.markPrice, entrySpotPrice: spotPrice, currentBuyPrice: spread.buyLeg.markPrice,
+          currentSellPrice: spread.sellLeg.markPrice, unrealizedGrossPnl: 0, unrealizedNetPnl: -entryFee,
+          entryFee, currentExitFee: entryFee, currentTotalFees: entryFee * 2,
+          margin: (spread.buyLeg.markPrice * spread.buyLeg.lotSize) + (spread.sellLeg.markPrice * spread.sellLeg.lotSize * spread.sellQty / 200)
+        };
+        newEntries.push(newPos);
+        activeBuyStrikes.add(Number(spread.buyLeg.strike));
+        activeSellStrikes.add(Number(spread.sellLeg.strike));
+      }
 
-    // 3. side effects (Supabase)
-    if (exited.length > 0 || newEntries.length > 0) {
-      lastDbWriteRef.current = Date.now();
-    }
+      // 3. side effects (Supabase)
+      if (exited.length > 0 || newEntries.length > 0) {
+        lastDbWriteRef.current = Date.now();
+      }
 
-    if (exited.length > 0) {
-      setTradeHistory(th => [...exited, ...th]);
-      exited.forEach(async (t) => {
-        try {
-          // Guard: Check if this trade was already moved to history by another instance
-          const { data: alreadyExited } = await supabase.from('trade_history').select('trade_id').eq('trade_id', t.id).limit(1);
-          if (alreadyExited && alreadyExited.length > 0) {
-            console.log('Sync: Trade already recorded in history by another device.');
-          } else {
-            // Record to permanent trade_history
-            const { error: histError } = await supabase.from('trade_history').insert([{
-              trade_id: t.id, underlying, expiry: selExpiry, type: t.type,
+      if (exited.length > 0) {
+        setTradeHistory(th => [...exited, ...th]);
+        exited.forEach(async (t) => {
+          try {
+            // Guard: Check if this trade was already moved to history by another instance
+            const { data: alreadyExited } = await supabase.from('trade_history').select('trade_id').eq('trade_id', t.id).limit(1);
+            if (alreadyExited && alreadyExited.length > 0) {
+              console.log('Sync: Trade already recorded in history by another device.');
+            } else {
+              // Record to permanent trade_history
+              const { error: histError } = await supabase.from('trade_history').insert([{
+                trade_id: t.id, underlying, expiry: selExpiry, type: t.type,
+                buy_leg: JSON.stringify(t.buyLeg), sell_leg: JSON.stringify(t.sellLeg),
+                sell_qty: t.sellQty, strike_diff: t.strikeDiff, entry_time: t.entryTime.toISOString(),
+                entry_buy_price: t.entryBuyPrice, entry_sell_price: t.entrySellPrice,
+                entry_spot_price: t.entrySpotPrice, margin: t.margin,
+                exit_time: t.exitTime.toISOString(), exit_buy_price: t._latestBuy, exit_sell_price: t._latestSell,
+                exit_spot_price: t.exitSpotPrice,
+                realized_gross_pnl: t.realizedGrossPnl, realized_net_pnl: t.realizedNetPnl,
+                exit_fee: t.exitFee, total_fees: t.totalFees, exit_reason: t.exitReason,
+                is_partial: t._isPartial || false
+              }]);
+              if (histError) console.error('History Persist Error:', histError);
+            }
+
+            // Delete from active_positions
+            await supabase.from('active_positions').delete().eq('id', t.id);
+          } catch (err) { console.error('Supabase Exit Exception:', err); }
+        });
+      }
+
+      if (newEntries.length > 0) {
+        newEntries.forEach(async (t) => {
+          try {
+            // Strict Deterministic Guard: Check by attributes
+            const { data: existing, error: checkError } = await supabase.from('active_positions').select('id')
+              .eq('underlying', underlying).eq('expiry', selExpiry).eq('type', t.type)
+              .eq('strike_diff', t.strikeDiff).limit(1);
+
+            if (checkError) return;
+            if (existing && existing.length > 0) {
+              console.log('Sync Guard: Spread already active in Supabase, skipping duplicate insert.');
+              return;
+            }
+
+            const { error: insertError } = await supabase.from('active_positions').insert([{
+              id: t.id, underlying, expiry: selExpiry, type: t.type,
               buy_leg: JSON.stringify(t.buyLeg), sell_leg: JSON.stringify(t.sellLeg),
               sell_qty: t.sellQty, strike_diff: t.strikeDiff, entry_time: t.entryTime.toISOString(),
               entry_buy_price: t.entryBuyPrice, entry_sell_price: t.entrySellPrice,
-              entry_spot_price: t.entrySpotPrice, margin: t.margin,
-              exit_time: t.exitTime.toISOString(), exit_buy_price: t._latestBuy, exit_sell_price: t._latestSell,
-              exit_spot_price: t.exitSpotPrice,
-              realized_gross_pnl: t.realizedGrossPnl, realized_net_pnl: t.realizedNetPnl,
-              exit_fee: t.exitFee, total_fees: t.totalFees, exit_reason: t.exitReason,
-              is_partial: t._isPartial || false
+              entry_spot_price: t.entrySpotPrice,
+              margin: t.margin, entry_fee: t.entryFee, accumulated_sell_pnl: 0
             }]);
-            if (histError) console.error('History Persist Error:', histError);
-          }
 
-          // Delete from active_positions
-          await supabase.from('active_positions').delete().eq('id', t.id);
-        } catch (err) { console.error('Supabase Exit Exception:', err); }
-      });
-    }
-
-    if (newEntries.length > 0) {
-      newEntries.forEach(async (t) => {
-        try {
-          // Strict Deterministic Guard: Check by attributes
-          const { data: existing, error: checkError } = await supabase.from('active_positions').select('id')
-            .eq('underlying', underlying).eq('expiry', selExpiry).eq('type', t.type)
-            .eq('strike_diff', t.strikeDiff).limit(1);
-
-          if (checkError) return;
-          if (existing && existing.length > 0) {
-            console.log('Sync Guard: Spread already active in Supabase, skipping duplicate insert.');
-            return;
-          }
-
-          const { error: insertError } = await supabase.from('active_positions').insert([{
-            id: t.id, underlying, expiry: selExpiry, type: t.type,
-            buy_leg: JSON.stringify(t.buyLeg), sell_leg: JSON.stringify(t.sellLeg),
-            sell_qty: t.sellQty, strike_diff: t.strikeDiff, entry_time: t.entryTime.toISOString(),
-            entry_buy_price: t.entryBuyPrice, entry_sell_price: t.entrySellPrice,
-            entry_spot_price: t.entrySpotPrice,
-            margin: t.margin, entry_fee: t.entryFee, accumulated_sell_pnl: 0
-          }]);
-
-          if (insertError) {
-            if (insertError.code === '23505') {
-              console.log('Database Guard: Blocked duplicate strike entry.');
+            if (insertError) {
+              if (insertError.code === '23505') {
+                console.log('Database Guard: Blocked duplicate strike entry.');
+              } else {
+                console.error('Supabase Insert Error:', insertError);
+              }
             } else {
-              console.error('Supabase Insert Error:', insertError);
+              console.log('Supabase Insert Success:', t.id);
             }
-          } else {
-            console.log('Supabase Insert Success:', t.id);
-          }
-        } catch (err) { console.error('Supabase Insert Exception:', err); }
+          } catch (err) { console.error('Supabase Insert Exception:', err); }
+        });
+      }
+
+      const finalPositions = [...remaining, ...newEntries].sort((a, b) => {
+        if (a.type !== b.type) return a.type === 'call' ? -1 : 1;
+        if (a.type === 'call') return a.buyLeg.strike - b.buyLeg.strike;
+        return b.buyLeg.strike - a.buyLeg.strike;
       });
-    }
 
-    const finalPositions = [...remaining, ...newEntries].sort((a, b) => {
-      if (a.type !== b.type) return a.type === 'call' ? -1 : 1;
-      if (a.type === 'call') return a.buyLeg.strike - b.buyLeg.strike;
-      return b.buyLeg.strike - a.buyLeg.strike;
-    });
-
-    setPositions(finalPositions);
-    positionsRef.current = finalPositions;
+      setPositions(finalPositions);
+      positionsRef.current = finalPositions;
     } finally {
       isEvaluatingRef.current = false;
     }
