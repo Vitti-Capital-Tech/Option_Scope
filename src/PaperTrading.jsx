@@ -618,9 +618,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       // Count active positions to check threshold for exits (3 Calls + 3 Puts)
       const activeCallsCount = prevPositions.filter(p => p.type === 'call' && p.underlying === underlying).length;
       const activePutsCount = prevPositions.filter(p => p.type === 'put' && p.underlying === underlying).length;
-      const canExit = activeCallsCount >= 3 && activePutsCount >= 3;
+      const canExitCalls = activeCallsCount >= 3;
+      const canExitPuts = activePutsCount >= 3;
 
-      if (!canExit && prevPositions.length > 0) {
+      if ((!canExitCalls || !canExitPuts) && prevPositions.length > 0) {
         const underlyingPositions = prevPositions.filter(p => p.underlying === underlying);
         const uniqueIds = new Set(prevPositions.map(p => p.id)).size;
         console.log(`[Algo] Exit Guard Active for ${underlying}: Calls=${activeCallsCount}, Puts=${activePutsCount}. Total active: ${underlyingPositions.length}. Unique IDs: ${uniqueIds}/${prevPositions.length}. Exits disabled.`);
@@ -664,7 +665,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               const currentStrike = pos.buyLeg.strike;
               const isPut = pos.type === 'put';
               if (isPut ? (top1Strike > currentStrike) : (top1Strike < currentStrike)) {
-                shouldExit = true; 
+                shouldExit = true;
                 exitReason = `Lost Top 3 and Rank 1 is better (${top1Strike})`;
                 console.log(`[Algo] Position ${pos.buyLeg.strike}/${pos.sellLeg.strike} flagged for rotation: ${exitReason}`);
               }
@@ -705,9 +706,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         }
 
         // Apply threshold guard: Disable exits until 3 Calls AND 3 Puts are active
-        if (!canExit) {
+        // With this:
+        const canExitThisType = pos.type === 'call' ? canExitCalls : canExitPuts;
+        if (!canExitThisType) {
           if (shouldExit || isPartial) {
-            console.log(`[Algo] THRESHOLD GUARD TRIGGERED for ${pos.buyLeg.strike}/${pos.sellLeg.strike}. Blocking exit. Original Reason: ${exitReason}`);
+            console.log(`[Algo] THRESHOLD GUARD TRIGGERED for ${pos.type} ${pos.buyLeg.strike}/${pos.sellLeg.strike}. Blocking exit.`);
             shouldExit = false;
             isPartial = false;
           }
@@ -716,16 +719,16 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         if (shouldExit || isPartial) {
           // Absolute Final Guard - Double check canExit one last time
           if (!canExit) {
-             console.error(`[Algo] CRITICAL: Logic reached exit push while canExit is FALSE for ${pos.buyLeg.strike}. Blocking.`);
-             shouldExit = false; isPartial = false;
-             remaining.push({
-               ...pos, currentBuyPrice: latestBuy, currentSellPrice: latestSell,
-               unrealizedGrossPnl: grossPnl, unrealizedNetPnl: grossPnl - totalFees,
-               currentExitFee: exitFee, currentTotalFees: totalFees
-             });
-             activeStrikes.add(Number(pos.buyLeg.strike));
-             activeStrikes.add(Number(pos.sellLeg.strike));
-             continue; 
+            console.error(`[Algo] CRITICAL: Logic reached exit push while canExit is FALSE for ${pos.buyLeg.strike}. Blocking.`);
+            shouldExit = false; isPartial = false;
+            remaining.push({
+              ...pos, currentBuyPrice: latestBuy, currentSellPrice: latestSell,
+              unrealizedGrossPnl: grossPnl, unrealizedNetPnl: grossPnl - totalFees,
+              currentExitFee: exitFee, currentTotalFees: totalFees
+            });
+            activeStrikes.add(Number(pos.buyLeg.strike));
+            activeStrikes.add(Number(pos.sellLeg.strike));
+            continue;
           }
           const partGrossPnl = grossPnl * exitFraction;
           const partEntryFee = (pos.entryFee || 0) * exitFraction;
