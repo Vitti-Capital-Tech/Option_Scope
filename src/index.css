@@ -1878,6 +1878,12 @@ select:disabled {
   border: 1px solid rgba(14, 203, 129, 0.2);
 }
 
+.pt-exit-badge.expiry {
+  color: #ff9800;
+  background: rgba(255, 152, 0, 0.08);
+  border: 1px solid rgba(255, 152, 0, 0.2);
+}
+
 /* ── History stat line ───────────────────────────────── */
 .pt-history-stats {
   display: flex;

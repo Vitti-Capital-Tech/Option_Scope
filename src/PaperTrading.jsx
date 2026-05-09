@@ -642,6 +642,15 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         let shouldExit = false;
         let exitReason = '';
 
+        // 1. Check Expiry (Hard exit)
+        if (pos.expiry) {
+          const expiryTs = new Date(pos.expiry).getTime();
+          if (Date.now() >= expiryTs) {
+            shouldExit = true;
+            exitReason = 'Expiry Reached';
+          }
+        }
+
         const latestBuy = tickerData[pos.buyLeg.symbol]?.markPrice ?? pos.currentBuyPrice ?? pos.buyLeg.markPrice;
         const latestSell = tickerData[pos.sellLeg.symbol]?.markPrice ?? pos.currentSellPrice ?? pos.sellLeg.markPrice;
         const buyPnl = (latestBuy != null && pos.entryBuyPrice != null) ? (latestBuy - pos.entryBuyPrice) * pos.buyLeg.lotSize : 0;
@@ -655,7 +664,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         const inTop3 = typeSpreads.some(s => s.buyLeg.strike === pos.buyLeg.strike);
 
         // Rotation logic: Only apply to positions of the current expiry
-        if (pos.expiry === selExpiry && topSpreads.length > 0 && !inTop3) {
+        if (!shouldExit && pos.expiry === selExpiry && topSpreads.length > 0 && !inTop3) {
           const currentActiveStrikes = prevPositions.map(p => p.buyLeg.strike);
           const newStrikesAvailable = typeSpreads.some(s => !currentActiveStrikes.includes(s.buyLeg.strike));
           if (newStrikesAvailable) {
@@ -666,7 +675,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               const isPut = pos.type === 'put';
               if (isPut ? (top1Strike > currentStrike) : (top1Strike < currentStrike)) {
                 shouldExit = true;
-                exitReason = `Lost Top 3 and Rank 1 is better (${top1Strike})`;
+                exitReason = `Lost Top 3 and Rank 1 is better than (${top1Strike})`;
                 console.log(`[Algo] Position ${pos.buyLeg.strike}/${pos.sellLeg.strike} flagged for rotation: ${exitReason}`);
               }
             }
@@ -706,11 +715,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         }
 
         // Apply threshold guard: Disable exits until 3 Calls AND 3 Puts are active
-        // With this:
+        // Only "Lost Top 3" (rotation) exits are gated by this threshold.
+        // ATM/ITM and Expiry exits are always allowed.
         const canExitThisType = pos.type === 'call' ? canExitCalls : canExitPuts;
-        if (!canExitThisType) {
+        if (!canExitThisType && exitReason.includes('Lost Top 3')) {
           if (shouldExit || isPartial) {
-            console.log(`[Algo] THRESHOLD GUARD TRIGGERED for ${pos.type} ${pos.buyLeg.strike}/${pos.sellLeg.strike}. Blocking exit.`);
+            console.log(`[Algo] THRESHOLD GUARD TRIGGERED (Rotation) for ${pos.type} ${pos.buyLeg.strike}/${pos.sellLeg.strike}. Blocking exit.`);
             shouldExit = false;
             isPartial = false;
           }
@@ -1047,6 +1057,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     if (reason.includes('Top 3')) return 'position';
     if (reason.includes('ITM')) return 'itm';
     if (reason.includes('ATM')) return 'atm';
+    if (reason.includes('Expiry')) return 'expiry';
     return 'position';
   };
 
