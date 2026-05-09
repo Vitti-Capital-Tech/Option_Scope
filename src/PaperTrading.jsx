@@ -728,8 +728,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
         if (shouldExit || isPartial) {
           // Absolute Final Guard - Double check canExit one last time
+          // Only block if it's a rotation-based exit (Lost Top 3)
           const canExitThisTypeFinal = pos.type === 'call' ? canExitCalls : canExitPuts;
-          if (!canExitThisTypeFinal) {
+          if (!canExitThisTypeFinal && exitReason.includes('Lost Top 3')) {
             console.error(`[Algo] CRITICAL: Logic reached exit push while canExit is FALSE for ${pos.buyLeg.strike}. Blocking.`);
             shouldExit = false; isPartial = false;
             remaining.push({

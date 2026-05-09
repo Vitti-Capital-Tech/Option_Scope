@@ -139,7 +139,6 @@ This document captures implementation details for the current multi-module appli
   - `diff <= 1000`: Full exit at ATM.
   - `diff == 1200`: Partial (50%) at ATM, Final at 200 pts ITM.
   - `diff == 1400`: Partial (33.3%) at ATM, Partial (33.3%) at 150 pts ITM, Final at 300 pts ITM.
-- Manual close action provided for immediate liquidity.
 
 ### Persistence & Sync
 - **Background Persistence**: Every trade action (entry, exit, partial) is immediately synced to Supabase.
