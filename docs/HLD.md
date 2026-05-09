@@ -26,8 +26,8 @@ Browser (React + Vite)
   |-- Persistence & Sync Hub (localStorage + BroadcastChannel + Supabase)
          |
          |-- Chart Data Hub + Correction Engine
-         |-- Scanner Engine (filtered pair search)
-         |-- Paper Trading Engine (entry/exit/PnL lifecycle)
+         |-- Scanner Engine (directional pair search with ATM constraints)
+         |-- Paper Trading Engine (multi-stage entry/exit/settlement lifecycle)
 ```
 
 ### 1) UI Layer
@@ -47,8 +47,8 @@ Browser (React + Vite)
 ### 3) Runtime Engines
 
 - **Charting Engine** uses imperative refs and always-mounted chart components for smooth updates.
-- **Scanner Engine** processes option chains for valid ratio candidates using configurable thresholds. Enforces global uniqueness of buy and sell strikes.
-- **Paper Engine** reuses scanner-style candidate selection to simulate positions, exits, and realized outcomes. Synchronizes with global DB state for multi-instance stability.
+- **Scanner Engine** processes option chains for valid ratio candidates using configurable thresholds. Enforces directional filtering (Calls ≥ ATM, Puts ≤ ATM) and global uniqueness of buy/sell strikes.
+- **Paper Engine** reuses scanner-style candidate selection to simulate positions, multi-stage scale-out exits, and automated expiration settlement. Synchronizes with global DB state for multi-instance stability.
 
 ---
 

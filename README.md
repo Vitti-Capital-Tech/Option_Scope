@@ -17,7 +17,7 @@ The app is built around three workflows:
 - **Advanced Chart Tools**: SMA(20), drawing mode for S/R lines, zoom/scroll controls, and theme toggle.
 - **Watchlist and Alerts**: Track multiple strategies, monitor live + 1h high/low, and trigger toast/notification alerts.
 - **Scanner Performance Pipeline**: Buffered ticker ingestion and throttled compute cycle for large symbol sets.
-- **Paper Trade Analytics**: Margin estimate, unrealized/realized PnL, auto/manual exits, and trade history export.
+- **Paper Trade Analytics**: Margin estimate, unrealized/realized PnL, automated multi-stage exits, expiry settlement, and trade history export.
 
 ## Architecture
 

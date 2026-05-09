@@ -82,21 +82,20 @@ This document captures implementation details for the current multi-module appli
 4. Buffer incoming ticker payloads (`tickerBufferRef`) and flush in 50ms batches.
 
 ### Candidate evaluation
-
-- Universe split by option type and ATM-relative side:
-  - Calls: strike >= ATM
-  - Puts: strike <= ATM
+- **Directional Filtering**: Universe split by option type and ATM-relative side to ensure liquidity and reduce delta risk:
+  - Calls: strike >= ATM strike
+  - Puts: strike <= ATM strike
+- **Net Premium Band**: Enforces a symmetric band `[-maxNetPremium, +maxNetPremium]` allowing for both credit and debit spreads.
+- **Min Long Distance**: Ensures the long leg is at least `minLongDist` away from the current spot price.
 - Pair search is `O(N^2)` per side with constraints:
-  - `minStrikeDiff`
-  - `minIvDiff`
-  - `minSellPremium`
-  - `maxRatioDeviation`
+  - `minStrikeDiff`, `minIvDiff`, `minSellPremium`, `maxRatioDeviation`
 - Core formulas:
   - `deltaNotional = abs(delta) * lotSize`
   - `premiumRatio = buyPremium / sellPremium`
   - `deltaNotionalRatio = buyDN / sellDN`
   - `ratioDeviation = abs(premiumRatio - deltaNotionalRatio) / deltaNotionalRatio`
   - `sellQty` rounded to 0.25 steps, min 1
+- **Sorting**: Prioritizes closeness to ATM, then by net premium ascending.
 
 ### Refresh behavior
 
@@ -133,11 +132,13 @@ This document captures implementation details for the current multi-module appli
 - Limits to top 3 unique candidates per option type (Call/Put).
 
 ### Rotation & Exit Logic
+- **Automated Expiry Settlement**: Hard exit triggered when `Date.now()` exceeds the position's expiry time. Bypasses the threshold guard.
 - **Directional Rotation**: Positions only exit if they lose their "Top 3" rank AND a "better" (closer-to-spot) buy strike becomes available.
-- **Strike-Specific Exit Rules**:
+- **Threshold Guard**: "Lost Top 3" (rotation) exits are gated by a requirement of 3 active calls and 3 active puts to maintain portfolio depth.
+- **Scale-Out Exit Strategies (Bypass Guard)**:
   - `diff <= 1000`: Full exit at ATM.
   - `diff == 1200`: Partial (50%) at ATM, Final at 200 pts ITM.
-  - `diff == 1400`: Partial (33%) at ATM, Partial (33%) at 150 pts ITM, Final at 300 pts ITM.
+  - `diff == 1400`: Partial (33.3%) at ATM, Partial (33.3%) at 150 pts ITM, Final at 300 pts ITM.
 - Manual close action provided for immediate liquidity.
 
 ### Persistence & Sync
