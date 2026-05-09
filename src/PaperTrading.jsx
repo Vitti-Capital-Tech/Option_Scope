@@ -621,12 +621,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       const canExitCalls = activeCallsCount >= 3;
       const canExitPuts = activePutsCount >= 3;
 
-      if ((!canExitCalls || !canExitPuts) && prevPositions.length > 0) {
-        const underlyingPositions = prevPositions.filter(p => p.underlying === underlying);
-        const uniqueIds = new Set(prevPositions.map(p => p.id)).size;
-        console.log(`[Algo] Exit Guard Active for ${underlying}: Calls=${activeCallsCount}, Puts=${activePutsCount}. Total active: ${underlyingPositions.length}. Unique IDs: ${uniqueIds}/${prevPositions.length}. Exits disabled.`);
-      }
-
       const remaining = [];
       const exited = [];
       const activeStrikes = new Set();
