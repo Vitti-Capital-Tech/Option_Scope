@@ -314,16 +314,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   useEffect(() => {
     if (!trading) return;
 
-    // Initial fetch
-    fetchSupabaseActivePositions();
-    fetchSupabaseTradeHistory();
-    fetchSupabaseConfig();
-
     const interval = setInterval(() => {
       fetchSupabaseActivePositions();
       fetchSupabaseTradeHistory();
       fetchSupabaseConfig();
-    }, 10000);
+    }, 20000);
     return () => clearInterval(interval);
   }, [trading, fetchSupabaseActivePositions, fetchSupabaseTradeHistory, fetchSupabaseConfig]);
 
