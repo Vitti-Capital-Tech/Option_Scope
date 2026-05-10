@@ -493,7 +493,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   }, [config, spotPrice, pickTopUniqueStrikes]);
 
 
-  const evaluateStrategy = useCallback((force = false) => {
+  const evaluateStrategy = useCallback(async (force = false) => {
     if (!trading || !spotPrice || isEvaluatingRef.current) return;
     isEvaluatingRef.current = true;
     try {
@@ -778,15 +778,18 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               currentTotalFees: totalFees * (1 - exitFraction)
             });
 
-            // Sync partial update to Supabase in background
+            // Sync partial update to Supabase
             const { sellQty, buyLeg, margin, entryFee, stagesExited } = remaining[remaining.length - 1];
-            supabase.from('active_positions').update({
-              sell_qty: sellQty,
-              buy_leg: JSON.stringify(buyLeg),
-              margin,
-              entry_fee: entryFee,
-              stages_exited: stagesExited
-            }).eq('id', pos.id).then(({ error }) => { if (error) console.error('Partial Sync Error:', error); });
+            try {
+              const { error } = await supabase.from('active_positions').update({
+                sell_qty: sellQty,
+                buy_leg: JSON.stringify(buyLeg),
+                margin,
+                entry_fee: entryFee,
+                stages_exited: stagesExited
+              }).eq('id', pos.id);
+              if (error) console.error('Partial Sync Error:', error);
+            } catch (e) { console.error('Partial Sync Exception:', e); }
 
           }
         } else {
@@ -852,16 +855,16 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
       if (exited.length > 0) {
         setTradeHistory(th => [...exited, ...th]);
-        exited.forEach(async (t) => {
+        for (const t of exited) {
           try {
             // Guard: Check if this trade was already moved to history by another instance
             const { data: alreadyExited } = await supabase.from('trade_history').select('trade_id').eq('trade_id', t.id).limit(1);
             if (alreadyExited && alreadyExited.length > 0) {
-              console.log('Sync: Trade already recorded in history by another device.');
+              console.log(`Sync: Trade ${t.id} already recorded in history.`);
             } else {
               // Record to permanent trade_history
               const { error: histError } = await supabase.from('trade_history').insert([{
-                trade_id: t.id, underlying, expiry: selExpiry, type: t.type,
+                trade_id: t.id, underlying, expiry: t.expiry, type: t.type,
                 buy_leg: JSON.stringify(t.buyLeg), sell_leg: JSON.stringify(t.sellLeg),
                 sell_qty: t.sellQty, strike_diff: t.strikeDiff, entry_time: t.entryTime.toISOString(),
                 entry_buy_price: t.entryBuyPrice, entry_sell_price: t.entrySellPrice,
@@ -878,25 +881,26 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             // Delete from active_positions
             await supabase.from('active_positions').delete().eq('id', t.id);
           } catch (err) { console.error('Supabase Exit Exception:', err); }
-        });
+        }
       }
 
       if (newEntries.length > 0) {
-        newEntries.forEach(async (t) => {
+        for (const t of newEntries) {
           try {
-            // Strict Deterministic Guard: Check by attributes
-            const { data: existing, error: checkError } = await supabase.from('active_positions').select('id')
+            // Broad Deterministic Guard: Check by strikes across ALL expiries/types for this underlying
+            // This matches common DB unique constraints and prevents duplicate strike entries.
+            const { data: existing, error: checkError } = await supabase.from('active_positions').select('id, expiry, type')
               .eq('underlying', underlying)
               .eq('expiry', selExpiry)
-              .eq('type', t.type)
               .eq('buy_strike', t.buyLeg.strike)
               .eq('sell_strike', t.sellLeg.strike)
               .limit(1);
 
-            if (checkError) return;
+            if (checkError) continue;
             if (existing && existing.length > 0) {
-              console.log('Sync Guard: Spread already active in Supabase, skipping duplicate insert.');
-              return;
+              const conflict = existing[0];
+              console.log(`Sync Guard: Spread ${t.buyLeg.strike}/${t.sellLeg.strike} already active (Expiry: ${conflict.expiry}, Type: ${conflict.type}). Skipping.`);
+              continue;
             }
 
             const { error: insertError } = await supabase.from('active_positions').insert([{
@@ -912,7 +916,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
             if (insertError) {
               if (insertError.code === '23505') {
-                console.log('Database Guard: Blocked duplicate strike entry.');
+                console.log(`Database Guard: Blocked duplicate strike entry for ${t.buyLeg.strike}/${t.sellLeg.strike}.`);
               } else {
                 console.error('Supabase Insert Error:', insertError);
               }
@@ -920,7 +924,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               console.log('Supabase Insert Success:', t.id);
             }
           } catch (err) { console.error('Supabase Insert Exception:', err); }
-        });
+        }
       }
 
       const finalPositions = [...remaining, ...newEntries].sort((a, b) => {
