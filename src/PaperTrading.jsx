@@ -712,6 +712,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         // Only "Lost Top 3" (rotation) exits are gated by this threshold.
         // ATM/ITM and Expiry exits are always allowed.
         const canExitThisType = pos.type === 'call' ? currentCanExitCalls : currentCanExitPuts;
+        let rotationApproved = false; // Track if THIS position's rotation was approved
         if (!canExitThisType && exitReason.includes('Lost Top 3')) {
           if (shouldExit || isPartial) {
             console.log(`[Algo] THRESHOLD GUARD TRIGGERED (Rotation) for ${pos.type} ${pos.buyLeg.strike}/${pos.sellLeg.strike}. Blocking exit.`);
@@ -719,18 +720,19 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             isPartial = false;
           }
         } else if (canExitThisType && exitReason.includes('Lost Top 3')) {
-          // If we successfully allow a rotation, lock the guard to prevent dropping multiple positions in one scan
           if (shouldExit) {
+            // Mark rotation as approved for this position BEFORE locking the guard
+            rotationApproved = true;
+            // Lock the guard to prevent additional rotations in this same scan cycle
             if (pos.type === 'call') currentCanExitCalls = false;
             else currentCanExitPuts = false;
           }
         }
 
         if (shouldExit || isPartial) {
-          // Absolute Final Guard - Double check canExit one last time
-          // Only block if it's a rotation-based exit (Lost Top 3)
-          const canExitThisTypeFinal = pos.type === 'call' ? currentCanExitCalls : currentCanExitPuts;
-          if (!canExitThisTypeFinal && exitReason.includes('Lost Top 3')) {
+          // Absolute Final Guard - only block rotation exits that were NOT explicitly approved above
+          // (handles edge cases where shouldExit was set by non-rotation logic but exitReason contains 'Lost Top 3')
+          if (exitReason.includes('Lost Top 3') && !rotationApproved) {
             console.error(`[Algo] CRITICAL: Logic reached exit push while canExit is FALSE for ${pos.buyLeg.strike}. Blocking.`);
             shouldExit = false; isPartial = false;
             remaining.push({
