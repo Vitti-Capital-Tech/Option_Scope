@@ -613,8 +613,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       // Count active positions to check threshold for exits (3 Calls + 3 Puts)
       const activeCallsCount = prevPositions.filter(p => p.type === 'call' && p.underlying === underlying).length;
       const activePutsCount = prevPositions.filter(p => p.type === 'put' && p.underlying === underlying).length;
-      const canExitCalls = activeCallsCount >= 3;
-      const canExitPuts = activePutsCount >= 3;
+      let currentCanExitCalls = activeCallsCount >= 3;
+      let currentCanExitPuts = activePutsCount >= 3;
 
       const remaining = [];
       const exited = [];
@@ -654,7 +654,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
         // Rotation logic: Only apply to positions of the current expiry
         if (!shouldExit && pos.expiry === selExpiry && topSpreads.length > 0 && !inTop3) {
-          const currentActiveStrikes = prevPositions.map(p => p.buyLeg.strike);
+          const currentActiveStrikes = prevPositions.filter(p => p.underlying === underlying).map(p => p.buyLeg.strike);
           const newStrikesAvailable = typeSpreads.some(s => !currentActiveStrikes.includes(s.buyLeg.strike));
           if (newStrikesAvailable) {
             const top1Spread = typeSpreads[0];
@@ -706,19 +706,25 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         // Apply threshold guard: Disable exits until 3 Calls AND 3 Puts are active
         // Only "Lost Top 3" (rotation) exits are gated by this threshold.
         // ATM/ITM and Expiry exits are always allowed.
-        const canExitThisType = pos.type === 'call' ? canExitCalls : canExitPuts;
+        const canExitThisType = pos.type === 'call' ? currentCanExitCalls : currentCanExitPuts;
         if (!canExitThisType && exitReason.includes('Lost Top 3')) {
           if (shouldExit || isPartial) {
             console.log(`[Algo] THRESHOLD GUARD TRIGGERED (Rotation) for ${pos.type} ${pos.buyLeg.strike}/${pos.sellLeg.strike}. Blocking exit.`);
             shouldExit = false;
             isPartial = false;
           }
+        } else if (canExitThisType && exitReason.includes('Lost Top 3')) {
+          // If we successfully allow a rotation, lock the guard to prevent dropping multiple positions in one scan
+          if (shouldExit) {
+            if (pos.type === 'call') currentCanExitCalls = false;
+            else currentCanExitPuts = false;
+          }
         }
 
         if (shouldExit || isPartial) {
           // Absolute Final Guard - Double check canExit one last time
           // Only block if it's a rotation-based exit (Lost Top 3)
-          const canExitThisTypeFinal = pos.type === 'call' ? canExitCalls : canExitPuts;
+          const canExitThisTypeFinal = pos.type === 'call' ? currentCanExitCalls : currentCanExitPuts;
           if (!canExitThisTypeFinal && exitReason.includes('Lost Top 3')) {
             console.error(`[Algo] CRITICAL: Logic reached exit push while canExit is FALSE for ${pos.buyLeg.strike}. Blocking.`);
             shouldExit = false; isPartial = false;
@@ -805,24 +811,24 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         const sStrike = Number(spread.sellLeg.strike);
         const spreadType = spread.buyLeg.type;
 
-        // Only block if buy strike is already active for same type
+        // Only block if buy strike is already active for same type and underlying
         const buyStrikeConflict = remaining.some(
-          p => p.type === spreadType && Number(p.buyLeg.strike) === bStrike
+          p => p.underlying === underlying && p.type === spreadType && Number(p.buyLeg.strike) === bStrike
         ) || newEntries.some(
-          p => p.type === spreadType && Number(p.buyLeg.strike) === bStrike
+          p => p.underlying === underlying && p.type === spreadType && Number(p.buyLeg.strike) === bStrike
         );
 
-        // Only block sell strike collision within same type
+        // Only block sell strike collision within same type and underlying
         const sellStrikeConflict = remaining.some(
-          p => p.type === spreadType && Number(p.sellLeg.strike) === sStrike
+          p => p.underlying === underlying && p.type === spreadType && Number(p.sellLeg.strike) === sStrike
         ) || newEntries.some(
-          p => p.type === spreadType && Number(p.sellLeg.strike) === sStrike
+          p => p.underlying === underlying && p.type === spreadType && Number(p.sellLeg.strike) === sStrike
         );
 
         if (buyStrikeConflict || sellStrikeConflict) continue;
 
-        const count = remaining.filter(p => p.type === spreadType).length +
-          newEntries.filter(p => p.type === spreadType).length;
+        const count = remaining.filter(p => p.underlying === underlying && p.type === spreadType).length +
+          newEntries.filter(p => p.underlying === underlying && p.type === spreadType).length;
         if (count >= 3) continue;
 
         const entryBuyFee = calculateFee(spread.buyLeg.markPrice, spotPrice, 1, spread.buyLeg.lotSize);
