@@ -7,8 +7,8 @@ OptionScope is a real-time options intelligence workspace for Delta Exchange. It
 The app is built around three workflows:
 
 - **Charts**: Monitor call, put, or combined premium structures with live candles, Greeks, and alerting.
-- **Ratio Spread Scanner**: Discover call/put ratio opportunities using lot-size-aware delta notional alignment.
-- **Paper Trading**: Simulate strategy lifecycle (entry, live PnL, exits, history, CSV export) using the scanner logic.
+- **Ratio Spread Scanner**: Discover call/put ratio spread opportunities using lot-size-aware delta notional alignment.
+- **Paper Trading**: Fully automated strategy lifecycle simulation — entry, live PnL, multi-stage scale-out exits, rotation, expiry settlement, and trade history export.
 
 ## Key Features
 
@@ -16,7 +16,8 @@ The app is built around three workflows:
 - **Data Hub + Auto-Correction**: WebSocket for low-latency updates plus periodic REST correction for candle accuracy.
 - **Advanced Chart Tools**: SMA(20), drawing mode for S/R lines, zoom/scroll controls, and theme toggle.
 - **Watchlist and Alerts**: Track multiple strategies, monitor live + 1h high/low, and trigger toast/notification alerts.
-- **Scanner Performance Pipeline**: Buffered ticker ingestion and throttled compute cycle for large symbol sets.
+- **Scanner Performance Pipeline**: Buffered ticker ingestion (50ms batch flush) and throttled compute cycle for large symbol sets.
+- **Automated Rotation Engine**: Positions are rotated toward higher-ranked (closer-to-ATM) strikes. Rotation is gated by a portfolio threshold guard (3 calls + 3 puts) and limited to **one rotation per side per scan cycle** to prevent cascading exits.
 - **Paper Trade Analytics**: Margin estimate, unrealized/realized PnL, automated multi-stage exits, expiry settlement, and trade history export.
 
 ## Architecture

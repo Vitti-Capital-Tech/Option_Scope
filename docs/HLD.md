@@ -6,7 +6,7 @@ OptionScope is a client-side trading workstation for Delta Exchange options. It 
 
 - **Charts**: Real-time call/put/combined premium monitoring with Greeks and alerts.
 - **Ratio Spread Scanner**: Live discovery of ratio spreads based on premium-to-delta-notional alignment.
-- **Paper Trading**: Automated simulation of spread entries/exits with live PnL and trade history.
+- **Paper Trading**: Fully automated simulation of spread entry, live PnL, multi-stage scale-out exits, rotation, and expiry settlement.
 
 The user selects underlying and expiry, then the system streams option telemetry and updates UI decisions in near real-time.
 
@@ -27,7 +27,7 @@ Browser (React + Vite)
          |
          |-- Chart Data Hub + Correction Engine
          |-- Scanner Engine (directional pair search with ATM constraints)
-         |-- Paper Trading Engine (multi-stage entry/exit/settlement lifecycle)
+         |-- Paper Trading Engine (rotation + multi-stage exit + expiry settlement lifecycle)
 ```
 
 ### 1) UI Layer
@@ -47,8 +47,8 @@ Browser (React + Vite)
 ### 3) Runtime Engines
 
 - **Charting Engine** uses imperative refs and always-mounted chart components for smooth updates.
-- **Scanner Engine** processes option chains for valid ratio candidates using configurable thresholds. Enforces directional filtering (Calls ≥ ATM, Puts ≤ ATM) and global uniqueness of buy/sell strikes.
-- **Paper Engine** reuses scanner-style candidate selection to simulate positions, multi-stage scale-out exits, and automated expiration settlement. Synchronizes with global DB state for multi-instance stability.
+- **Scanner Engine** processes option chains for valid ratio candidates using configurable thresholds. Enforces directional filtering (Calls ≥ ATM, Puts ≤ ATM) and global uniqueness of buy/sell strikes per type.
+- **Paper Engine** reuses scanner-style candidate selection to simulate positions with a full exit lifecycle: rotation toward better strikes, multi-stage ATM/ITM scale-out, and automated expiry settlement. Synchronizes with Supabase for multi-instance stability.
 
 ---
 
@@ -57,8 +57,8 @@ Browser (React + Vite)
 ### Initialization
 
 1. Load product universe for the selected underlying.
-2. Derive expiries and strikes; auto-select ATM where applicable.
-3. Pull spot price and start periodic spot refresh.
+2. Derive expiries and strikes; auto-select first expiry if none is configured.
+3. Pull spot price and start periodic spot refresh (every 10s).
 
 ### Live Monitoring (Charts)
 
@@ -68,12 +68,19 @@ Browser (React + Vite)
 4. Every 5 seconds, refresh forming candle from REST.
 5. At each candle boundary (+ settle delay), refresh full history for official close integrity.
 
-### Live Scanning / Trading
+### Live Scanning
 
 1. Subscribe to all option symbols in the selected expiry.
-2. Buffer and batch ticker updates to limit render pressure.
+2. Buffer and batch ticker updates (50ms flush) to limit render pressure.
 3. Evaluate pair candidates using strike/IV/premium/deviation constraints.
-4. Publish scanner tables or simulated trading actions based on top-ranked pairs.
+4. Publish top-3 call and top-3 put candidates to the scanner table, and broadcast to Paper Trading via `BroadcastChannel`.
+
+### Paper Trading (Automated Lifecycle)
+
+1. Merge local scan candidates with real-time scanner broadcasts.
+2. Each minute, evaluate all active positions for rotation or ATM/ITM/expiry exit triggers.
+3. Open new positions up to 3 per side (calls, puts) from the ranked candidate list.
+4. Sync all entries, exits, and partial scale-outs to Supabase in real-time.
 
 ---
 
@@ -85,4 +92,5 @@ Browser (React + Vite)
 | Charting | `lightweight-charts` | High-performance OHLC rendering |
 | Streaming | Native WebSocket | Low-latency market updates |
 | Data buffering | `useRef` + batched flush | Controls re-render frequency under bursty data |
+| Persistence | Supabase (PostgreSQL) | Serverless, real-time DB with cross-device sync |
 | Styling | CSS | Fine-grained control of trading terminal aesthetics |
