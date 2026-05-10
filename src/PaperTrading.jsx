@@ -636,12 +636,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         let shouldExit = false;
         let exitReason = '';
 
-        // 1. Check Expiry (Hard exit)
+        // 1. Check Expiry (Hard exit — triggers 2 minutes early for stable settlement price)
         if (pos.expiry) {
           const expiryTs = new Date(pos.expiry).getTime();
-          if (Date.now() >= expiryTs) {
+          const EXPIRY_EARLY_EXIT_MS = 2 * 60 * 1000; // 2 minutes before expiry
+          if (Date.now() >= expiryTs - EXPIRY_EARLY_EXIT_MS) {
             shouldExit = true;
-            exitReason = 'Expiry Reached';
+            exitReason = 'Expiry Reached (2min Early)';
           }
         }
 

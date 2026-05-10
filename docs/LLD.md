@@ -148,9 +148,10 @@ This document captures implementation details for the current multi-module appli
 The evaluation loop processes each active position through a priority-ordered exit decision tree:
 
 #### Priority 1 — Expiry Settlement (Hard Exit, always runs)
-- If `Date.now() >= new Date(pos.expiry).getTime()`, the position is exited immediately.
+- If `Date.now() >= expiryTs - 2min`, the position is exited **2 minutes before** the actual expiry timestamp.
+- Early exit captures stable mark prices before the settlement spike/crash window at exact expiry.
 - **Bypasses all guards.**
-- `exitReason = 'Expiry Reached'`
+- `exitReason = 'Expiry Reached (2min Early)'`
 
 #### Priority 2 — ATM/ITM Scale-Out (based on `strikeDiff`, always runs if no expiry exit)
 Evaluated only if `shouldExit` is still `false` after the expiry check.
