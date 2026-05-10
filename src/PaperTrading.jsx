@@ -891,7 +891,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             // This matches common DB unique constraints and prevents duplicate strike entries.
             const { data: existing, error: checkError } = await supabase.from('active_positions').select('id, expiry, type')
               .eq('underlying', underlying)
-              .eq('expiry', selExpiry)
               .eq('buy_strike', t.buyLeg.strike)
               .eq('sell_strike', t.sellLeg.strike)
               .limit(1);
