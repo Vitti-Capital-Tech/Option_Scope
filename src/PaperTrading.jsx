@@ -74,7 +74,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     try {
       const { data, error } = await supabase.from('active_positions').select('*');
       if (error || !data) return;
-      
+
       console.log(`[Maintenance] Backfilling margins for ${data.length} positions...`);
       for (const p of data) {
         const buyLeg = safeParseLeg(p.buy_leg);
@@ -371,9 +371,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     const interval = setInterval(() => {
       fetchSupabaseActivePositions();
       fetchSupabaseTradeHistory();
-      fetchSupabaseConfig();
     }, 10000);
     return () => clearInterval(interval);
+
   }, [trading, fetchSupabaseActivePositions, fetchSupabaseTradeHistory, fetchSupabaseConfig]);
 
   // Sync to Supabase handled within updateConfig or manual trigger if needed
@@ -1141,8 +1141,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       try {
         localStorage.setItem(SCANNER_TOP_KEY, JSON.stringify(payload));
       } catch (e) { }
+    },
+    CONFIG_SYNC: (payload) => {
+      if (payload.config) {
+        setConfig(prev => ({ ...prev, ...payload.config }));
+      }
     }
   });
+
 
   const exportCSV = () => {
     if (!tradeHistory.length) {
@@ -1437,9 +1443,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                   <span className={`pt-fee-toggle-label ${includeFees ? 'active' : ''}`} onClick={() => setIncludeFees(true)}>Net</span>
                 </div>
               </div>
-
               {trading && (
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <div style={{ fontSize: 14, color: 'var(--text-dim)' }}>
+                    Spot Price: {spotPrice}
+                  </div>
                   <button
                     onClick={() => evaluateStrategy(true)}
                     title="Refresh Now"
