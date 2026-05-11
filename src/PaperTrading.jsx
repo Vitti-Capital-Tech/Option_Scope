@@ -756,6 +756,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           const tradeRecord = {
             ...pos,
             id: isPartial ? `${pos.id}-P${pos.stagesExited + 1}` : pos.id,
+            // For partial exits: record only the exited fraction's quantity for correct ratio display
+            sellQty: isPartial ? pos.sellQty * exitFraction : pos.sellQty,
+            buyLeg: isPartial ? { ...pos.buyLeg, lotSize: pos.buyLeg.lotSize * exitFraction } : pos.buyLeg,
+            _exitedBuyQty: isPartial ? exitFraction : 1,  // buy side of ratio (e.g. 0.5 for 50% exit)
             exitTime: new Date(),
             exitBuyPrice: latestBuy,
             exitSellPrice: latestSell,
@@ -1502,7 +1506,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                           <td>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                               <span className={`pt-type-badge ${t.type}`}>{t.type.toUpperCase()}</span>
-                              <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 600 }}>1:{t.sellQty}</span>
+                              <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 600 }}>
+                                {(t._exitedBuyQty != null ? t._exitedBuyQty : 1)}:{t.sellQty}
+                              </span>
                             </div>
                           </td>
                           <td>
