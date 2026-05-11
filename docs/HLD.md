@@ -48,7 +48,7 @@ Browser (React + Vite)
 
 - **Charting Engine** uses imperative refs and always-mounted chart components for smooth updates.
 - **Scanner Engine** processes option chains for valid ratio candidates using configurable thresholds. Enforces directional filtering (Calls ≥ ATM, Puts ≤ ATM) and global uniqueness of buy/sell strikes per type.
-- **Paper Engine** reuses scanner-style candidate selection to simulate positions with a full exit lifecycle: rotation toward better strikes, multi-stage ATM/ITM scale-out, and automated expiry settlement. Synchronizes with Supabase for multi-instance stability.
+- **Paper Engine** reuses scanner-style candidate selection to simulate positions with a full exit lifecycle: rotation toward better strikes, multi-stage ATM/ITM scale-out, and automated expiry settlement. Enforces a hard cap of 3 positions per option type — partially-exited positions hold their slot until fully closed. Synchronizes with Supabase for multi-instance stability, with a DB-level count guard preventing over-entry under race conditions.
 
 ---
 
@@ -79,8 +79,11 @@ Browser (React + Vite)
 
 1. Merge local scan candidates with real-time scanner broadcasts.
 2. Each minute, evaluate all active positions for rotation or ATM/ITM/expiry exit triggers.
-3. Open new positions up to 3 per side (calls, puts) from the ranked candidate list.
-4. Sync all entries, exits, and partial scale-outs to Supabase in real-time.
+3. **Expiry**: exit 2 minutes early for stable settlement prices.
+4. **ATM/ITM scale-out**: multi-stage partial exits based on `strikeDiff`; partially-exited positions stay in the portfolio and hold their slot.
+5. **Rotation**: exit position if a better-ranked strike is available; gated by threshold guard (min 3 per side) and limited to 1 rotation per side per cycle.
+6. Open new positions up to 3 per type from the ranked candidate list. DB count guard prevents exceeding 3 even under race conditions.
+7. Sync all entries, exits, and partial scale-outs to Supabase. Full `positions` array replacement only happens when rows are added/removed, not on routine PnL updates.
 
 ---
 

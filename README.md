@@ -18,7 +18,8 @@ The app is built around three workflows:
 - **Watchlist and Alerts**: Track multiple strategies, monitor live + 1h high/low, and trigger toast/notification alerts.
 - **Scanner Performance Pipeline**: Buffered ticker ingestion (50ms batch flush) and throttled compute cycle for large symbol sets.
 - **Automated Rotation Engine**: Positions are rotated toward higher-ranked (closer-to-ATM) strikes. Rotation is gated by a portfolio threshold guard (3 calls + 3 puts) and limited to **one rotation per side per scan cycle** to prevent cascading exits.
-- **Paper Trade Analytics**: Margin estimate, unrealized/realized PnL, automated multi-stage exits, expiry settlement, and trade history export.
+- **Hard Portfolio Cap**: Maximum 3 active positions per option type (calls/puts) enforced at both the local evaluation level and via a DB-level count guard before every Supabase insert. Partially-exited positions hold their slot until fully closed.
+- **Paper Trade Analytics**: Margin estimate, unrealized/realized PnL, multi-stage scale-out exits (expiry 2min early, ATM/ITM stages), expiry settlement, and trade history export.
 
 ## Architecture
 

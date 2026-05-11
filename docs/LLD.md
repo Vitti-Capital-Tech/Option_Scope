@@ -131,6 +131,8 @@ This document captures implementation details for the current multi-module appli
 - **`isEvaluatingRef`**: Mutex lock preventing parallel evaluation cycles from racing (triggered by rapid WebSocket or scanner sync events).
 - **`positionsRef`**: Always-current ref clone of `positions` state, read directly by the evaluation loop to avoid stale closure captures.
 - **Evaluation cadence**: Full strategy evaluation runs once per clock minute or when a new scanner broadcast arrives. PnL-only updates run every 5 seconds in between.
+- **Phase 1 (PnL update)**: Reads live prices from `latestTickerDataRef.current` — the always-fresh ref — rather than the `tickerData` React state, which can lag by up to 50ms.
+- **Phase 2 (strategy evaluation)**: Only replaces the full `positions` array (`setPositions(finalPositions)`) when there are structural changes (exits or entries). If no positions were opened or closed, uses a functional in-place map to prevent the table flash at the minute boundary.
 
 ### Ticker Subscription
 - Subscribes to all option symbols for the active expiry plus any symbols used by existing positions (to track PnL across expiry rollovers).
@@ -140,8 +142,9 @@ This document captures implementation details for the current multi-module appli
 
 1. Merge local scan candidates with external scanner top-spreads broadcast.
 2. Deduplicate: no new position is opened if its buy strike or sell strike is already active for the same type and underlying.
-3. Enforce a cap of 3 active positions per option type (calls, puts).
-4. Before inserting into Supabase, run a DB-level duplicate check by `buy_strike` + `sell_strike` + `underlying`. Database unique constraint (`23505`) is a final safety net.
+3. Hard cap of **3 active positions per option type** (calls, puts). Partially-exited positions remain in `remaining` and still count toward the cap — a partial exit does **not** free a slot.
+4. Before inserting into Supabase, a **DB-level count guard** queries the live `active_positions` table for the same type. If the DB already has 3 or more rows, the insert is skipped even if local state thought there was a slot (catches race conditions). Uses a plain `select('id')` — not `{ head: true }` which returns `null` data.
+5. A secondary strike-level duplicate check prevents inserting a spread whose buy+sell strikes are already active. Database unique constraint (`23505`) is the final safety net.
 
 ### Rotation & Exit Logic
 
@@ -197,7 +200,8 @@ currentCanExitPuts  = (activePutsCount >= 3)
 - `exitFraction` controls what portion of the position is closed (e.g. `0.5` for 50%).
 - The remaining portion has its `sellQty`, `buyLeg.lotSize`, `margin`, and `entryFee` scaled by `(1 - exitFraction)`.
 - `stagesExited` is incremented by 1 on each partial and synced to Supabase.
-- A trade history record is written for the exited fraction.
+- A trade history record is written for the exited fraction (with a synthetic ID `${pos.id}-P${stage}`).
+- **Slot rule**: A partially-exited position is still present in `remaining` and counts as an active slot. No new entry is opened to replace it until the position is **fully** exited (final stage). Only then does the slot become available.
 
 ### Persistence & Sync
 - Every trade action (entry, partial exit, full exit) is immediately written to Supabase.
