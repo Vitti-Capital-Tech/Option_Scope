@@ -54,7 +54,53 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
   const [positions, setPositions] = useState([]); // Active positions
   const [tradeHistory, setTradeHistory] = useState([]); // Closed trades
+  const [isBackfilling, setIsBackfilling] = useState(false);
+
+  const calcMargin = (buyPrice, buyLot, spot, sellQty) => {
+    const longMargin = (buyPrice || 0) * (buyLot || 1);
+    const shortValue = (spot || 0) * (sellQty || 0);
+    let leverage = 200;
+    if (shortValue <= 200000) leverage = 200;
+    else if (shortValue <= 450000) leverage = 100;
+    else if (shortValue <= 950000) leverage = 50;
+    else if (shortValue <= 1950000) leverage = 25;
+    else leverage = 25;
+    return longMargin + (shortValue / leverage);
+  };
+
+  const backfillMargins = async () => {
+    if (!spotPrice || isBackfilling) return;
+    setIsBackfilling(true);
+    try {
+      const { data, error } = await supabase.from('active_positions').select('*');
+      if (error || !data) return;
+      
+      console.log(`[Maintenance] Backfilling margins for ${data.length} positions...`);
+      for (const p of data) {
+        const buyLeg = safeParseLeg(p.buy_leg);
+        if (!buyLeg) continue;
+        const newMargin = calcMargin(p.entry_buy_price, buyLeg.lotSize, Math.max(p.entry_spot_price || spotPrice, spotPrice), p.sell_qty);
+        await supabase.from('active_positions').update({ margin: newMargin }).eq('id', p.id);
+      }
+      console.log('[Maintenance] Backfill complete.');
+      fetchSupabaseActivePositions();
+    } catch (e) {
+      console.error('Backfill Error:', e);
+    } finally {
+      setIsBackfilling(false);
+    }
+  };
+
+  const hasBackfilledRef = useRef(false);
+  useEffect(() => {
+    if (spotPrice && !hasBackfilledRef.current && !isBackfilling) {
+      hasBackfilledRef.current = true;
+      backfillMargins();
+    }
+  }, [spotPrice, isBackfilling]);
+
   const [aiReviews, setAiReviews] = useState({}); // { tradeId: { claude: string, groq: string } }
+
   const [selectedTradeId, setSelectedTradeId] = useState(null); // For AI review modal
 
   const [tickerData, setTickerData] = useState({});
@@ -505,6 +551,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       if (allTickers.length === 0) return;
 
       const nowTime = Date.now();
+
       const currentMinute = Math.floor(nowTime / 60000);
       const lastMinute = Math.floor(lastEvaluatedRef.current / 60000);
 
@@ -798,8 +845,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               ...pos,
               sellQty: pos.sellQty * (1 - exitFraction),
               buyLeg: { ...pos.buyLeg, lotSize: pos.buyLeg.lotSize * (1 - exitFraction) },
-              margin: (pos.margin || 0) * (1 - exitFraction),
+              margin: calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, Math.max(pos.entrySpotPrice || spotPrice, spotPrice), pos.sellQty) * (1 - exitFraction),
+
               entryFee: (pos.entryFee || 0) * (1 - exitFraction),
+
               stagesExited: (pos.stagesExited || 0) + 1,
               currentBuyPrice: latestBuy,
               currentSellPrice: latestSell,
@@ -829,8 +878,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           remaining.push({
             ...pos, currentBuyPrice: latestBuy, currentSellPrice: latestSell,
             unrealizedGrossPnl: grossPnl, unrealizedNetPnl: grossPnl - totalFees,
-            currentExitFee: exitFee, currentTotalFees: totalFees
+            currentExitFee: exitFee, currentTotalFees: totalFees,
+            margin: calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, Math.max(pos.entrySpotPrice || spotPrice, spotPrice), pos.sellQty)
           });
+
+
           activeStrikes.add(Number(pos.buyLeg.strike));
           activeStrikes.add(Number(pos.sellLeg.strike));
         }
@@ -877,8 +929,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           entrySellPrice: spread.sellLeg.markPrice, entrySpotPrice: spotPrice, currentBuyPrice: spread.buyLeg.markPrice,
           currentSellPrice: spread.sellLeg.markPrice, unrealizedGrossPnl: 0, unrealizedNetPnl: -entryFee,
           entryFee, currentExitFee: entryFee, currentTotalFees: entryFee * 2,
-          margin: (spread.buyLeg.markPrice * spread.buyLeg.lotSize) + (max(spread.entrySpotPrice, spotPrice) * spread.sellQty / 200)
+          margin: calcMargin(spread.buyLeg.markPrice, spread.buyLeg.lotSize, spotPrice, spread.sellQty)
         };
+
+
         newEntries.push(newPos);
         activeStrikes.add(Number(spread.buyLeg.strike));
         activeStrikes.add(Number(spread.sellLeg.strike));
@@ -1402,6 +1456,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                     </svg>
                     {timeRemaining !== null && timeRemaining <= 60 ? `${timeRemaining}s` : ''}
                   </button>
+
+
                   <div className="pt-live-badge">
                     <div className="pt-live-dot" />
                     Monitoring
