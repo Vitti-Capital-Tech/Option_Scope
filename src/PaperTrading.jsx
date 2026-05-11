@@ -302,8 +302,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           realizedNetPnl: t.realized_net_pnl,
           exitFee: t.exit_fee,
           totalFees: t.total_fees,
-          exitReason: t.exit_reason
+          exitReason: t.exit_reason,
+          _isPartial: t.is_partial || false,
+          _exitedBuyQty: t.lot_size ?? safeParseLeg(t.buy_leg)?.lotSize ?? 1,
         }));
+
         setTradeHistory(mapped);
       }
     } catch (e) { }
@@ -650,7 +653,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         // Use the always-fresh ref first; fall back to React state, then stored position price.
         // Prevents exit PnL = 0 when tickerData React state is momentarily stale at the minute boundary.
         const live = latestTickerDataRef.current;
-        const latestBuy  = live[pos.buyLeg.symbol]?.markPrice
+        const latestBuy = live[pos.buyLeg.symbol]?.markPrice
           ?? tickerData[pos.buyLeg.symbol]?.markPrice
           ?? pos.currentBuyPrice
           ?? pos.buyLeg.markPrice;
@@ -659,7 +662,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           ?? pos.currentSellPrice
           ?? pos.sellLeg.markPrice;
         // Gross PnL: per-unit price diff scaled by lotSize — consistent with Phase 1 formula
-        const buyPriceDiff  = (latestBuy  != null && pos.entryBuyPrice  != null) ? (latestBuy  - pos.entryBuyPrice)  : 0;
+        const buyPriceDiff = (latestBuy != null && pos.entryBuyPrice != null) ? (latestBuy - pos.entryBuyPrice) : 0;
         const sellPriceDiff = (latestSell != null && pos.entrySellPrice != null) ? (latestSell - pos.entrySellPrice) : 0;
         const grossPnl = (buyPriceDiff - sellPriceDiff * pos.sellQty) * pos.buyLeg.lotSize + (pos.accumulatedSellPnl || 0);
         const exitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize) +
@@ -710,14 +713,15 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             }
           } else if (pos.strikeDiff <= 1400) {
             if (sExited === 0 && isAtmMET) {
-              isPartial = true; exitFraction = 0.3333; exitReason = 'Partial Exit 33% @ ATM (<= 1400 diff)';
+              isPartial = true; exitFraction = 0.33; exitReason = 'Partial Exit 33% @ ATM (<= 1400 diff)';
             } else if (sExited === 1 && itmDist >= 150) {
-              isPartial = true; exitFraction = 0.5; // Exit half of remaining (1/3 of original)
+              isPartial = true; exitFraction = 0.5; // Exit half of remaining 0.67 to get ~0.33 of original
               exitReason = 'Partial Exit 33% @ 150 ITM (<= 1400 diff)';
             } else if (sExited === 2 && itmDist >= 300) {
               shouldExit = true; exitReason = 'Final Exit 34% @ 300 ITM (<= 1400 diff)';
             }
           }
+
         }
 
         // Apply threshold guard: Disable exits until 3 Calls AND 3 Puts are active
@@ -768,7 +772,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             // For partial exits: record only the exited fraction's quantity for correct ratio display
             sellQty: isPartial ? pos.sellQty * exitFraction : pos.sellQty,
             buyLeg: isPartial ? { ...pos.buyLeg, lotSize: pos.buyLeg.lotSize * exitFraction } : pos.buyLeg,
-            _exitedBuyQty: isPartial ? exitFraction : 1,  // buy side of ratio (e.g. 0.5 for 50% exit)
+            _exitedBuyQty: isPartial ? pos.buyLeg.lotSize * exitFraction : pos.buyLeg.lotSize,
+
             exitTime: new Date(),
             exitBuyPrice: latestBuy,
             exitSellPrice: latestSell,
@@ -808,10 +813,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               const { error } = await supabase.from('active_positions').update({
                 sell_qty: sellQty,
                 buy_leg: JSON.stringify(buyLeg),
+                lot_size: buyLeg.lotSize,
                 margin,
                 entry_fee: entryFee,
                 stages_exited: stagesExited
               }).eq('id', pos.id);
+
               if (error) console.error('Partial Sync Error:', error);
             } catch (e) { console.error('Partial Sync Exception:', e); }
 
@@ -990,6 +997,39 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       isEvaluatingRef.current = false;
     }
   }, [trading, underlying, selExpiry, spotPrice, tickerData, scannerSyncVersion, pickTopUniqueStrikes, scanTickers]);
+
+  const renderRatio = (t, showOriginal = true) => {
+    const r = t.exitReason || '';
+    let mult = 1;
+    let displayFracBuy = t._exitedBuyQty || 1;
+    
+    if (r.includes('50%')) {
+      mult = 2;
+      displayFracBuy = 0.5;
+    } else if (r.includes('33%')) {
+      mult = 3;
+      displayFracBuy = 0.33;
+    } else if (r.includes('34%')) {
+      mult = 3;
+      displayFracBuy = 0.34;
+    }
+    
+    const sellQty = t.sellQty || 0;
+    
+    // Reconstruct original sell ratio (e.g. 4.75) using the multiplier
+    const originalSell = Math.round((sellQty * mult) * 4) / 4;
+
+    if (showOriginal) {
+      return `1:${originalSell}`;
+    } else {
+      const fracBuy = displayFracBuy.toFixed(2).replace(/\.?0+$/, '');
+      const fracSell = (originalSell / mult).toFixed(2).replace(/\.?0+$/, '');
+      return `${fracBuy}:${fracSell}`;
+    }
+  };
+
+
+
 
   useEffect(() => {
     evaluateStrategy();
@@ -1516,10 +1556,22 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                           <td><span style={{ fontSize: '11px', fontWeight: 600 }}>{fmtExpiry(t.expiry)}</span></td>
                           <td>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                              <span className={`pt-type-badge ${t.type}`}>{t.type.toUpperCase()}</span>
-                              <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 600 }}>
-                                {(t._exitedBuyQty != null ? t._exitedBuyQty : 1)}:{t.sellQty}
+                              <span className={`pt-type-badge ${t.type}`}>
+                                {t.type.toUpperCase()}
+                                {(t._isPartial || t.exitReason?.includes('%')) && (
+                                  <span style={{ fontSize: '9px', marginLeft: 4, opacity: 0.8 }}>
+                                    ({t.exitReason?.match(/\d+%/)?.[0] || 'P'})
+                                  </span>
+                                )}
                               </span>
+
+
+                              <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 600 }}>
+                                {renderRatio(t, false)}
+                              </span>
+
+
+
                             </div>
                           </td>
                           <td>
@@ -1538,6 +1590,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                             <div style={{ display: 'flex', flexDirection: 'column', fontSize: '12px' }}>
                               <span style={{ color: '#3fb950' }}>{t.entryBuyPrice?.toFixed(2)}</span>
                               <span style={{ color: '#f85149' }}>{t.entrySellPrice?.toFixed(2)}</span>
+                              <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 600, marginTop: 2 }}>
+                                {renderRatio(t)}
+                              </span>
+
                             </div>
                           </td>
                           <td>
