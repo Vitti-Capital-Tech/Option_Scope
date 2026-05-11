@@ -524,9 +524,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
         setPositions(prev => {
           if (prev.length === 0) return prev;
+          const live = latestTickerDataRef.current;
           const updated = prev.map(pos => {
-            const latestBuy = tickerData[pos.buyLeg.symbol]?.markPrice ?? pos.currentBuyPrice ?? pos.buyLeg.markPrice;
-            const latestSell = tickerData[pos.sellLeg.symbol]?.markPrice ?? pos.currentSellPrice ?? pos.sellLeg.markPrice;
+            const latestBuy = live[pos.buyLeg.symbol]?.markPrice ?? pos.currentBuyPrice ?? pos.buyLeg.markPrice;
+            const latestSell = live[pos.sellLeg.symbol]?.markPrice ?? pos.currentSellPrice ?? pos.sellLeg.markPrice;
 
             const buyPnl = (latestBuy != null && pos.entryBuyPrice != null) ? (latestBuy - pos.entryBuyPrice) : 0;
             const sellPnl = (latestSell != null && pos.entrySellPrice != null) ? (latestSell - pos.entrySellPrice) * pos.sellQty : 0;
@@ -941,8 +942,19 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         return b.buyLeg.strike - a.buyLeg.strike;
       });
 
-      setPositions(finalPositions);
       positionsRef.current = finalPositions;
+
+      if (exited.length > 0 || newEntries.length > 0) {
+        // Structural change (exits or entries) — replace the full array
+        setPositions(finalPositions);
+      } else {
+        // No structural change — update PnL in-place to prevent table flash at minute boundary
+        setPositions(prev => {
+          if (prev.length === 0) return prev;
+          const byId = new Map(finalPositions.map(p => [p.id, p]));
+          return prev.map(p => byId.get(p.id) ?? p);
+        });
+      }
     } finally {
       isEvaluatingRef.current = false;
     }
