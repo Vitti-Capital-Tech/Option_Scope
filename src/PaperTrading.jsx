@@ -877,7 +877,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           entrySellPrice: spread.sellLeg.markPrice, entrySpotPrice: spotPrice, currentBuyPrice: spread.buyLeg.markPrice,
           currentSellPrice: spread.sellLeg.markPrice, unrealizedGrossPnl: 0, unrealizedNetPnl: -entryFee,
           entryFee, currentExitFee: entryFee, currentTotalFees: entryFee * 2,
-          margin: (spread.buyLeg.markPrice * spread.buyLeg.lotSize) + (spread.sellLeg.markPrice * spread.sellLeg.lotSize * spread.sellQty / 200)
+          margin: (spread.buyLeg.markPrice * spread.buyLeg.lotSize) + (max(spread.entrySpotPrice, spotPrice) * spread.sellQty / 200)
         };
         newEntries.push(newPos);
         activeStrikes.add(Number(spread.buyLeg.strike));
