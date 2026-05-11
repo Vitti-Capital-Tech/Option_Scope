@@ -647,8 +647,17 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           }
         }
 
-        const latestBuy = tickerData[pos.buyLeg.symbol]?.markPrice ?? pos.currentBuyPrice ?? pos.buyLeg.markPrice;
-        const latestSell = tickerData[pos.sellLeg.symbol]?.markPrice ?? pos.currentSellPrice ?? pos.sellLeg.markPrice;
+        // Use the always-fresh ref first; fall back to React state, then stored position price.
+        // Prevents exit PnL = 0 when tickerData React state is momentarily stale at the minute boundary.
+        const live = latestTickerDataRef.current;
+        const latestBuy  = live[pos.buyLeg.symbol]?.markPrice
+          ?? tickerData[pos.buyLeg.symbol]?.markPrice
+          ?? pos.currentBuyPrice
+          ?? pos.buyLeg.markPrice;
+        const latestSell = live[pos.sellLeg.symbol]?.markPrice
+          ?? tickerData[pos.sellLeg.symbol]?.markPrice
+          ?? pos.currentSellPrice
+          ?? pos.sellLeg.markPrice;
         // Gross PnL: per-unit price diff scaled by lotSize — consistent with Phase 1 formula
         const buyPriceDiff  = (latestBuy  != null && pos.entryBuyPrice  != null) ? (latestBuy  - pos.entryBuyPrice)  : 0;
         const sellPriceDiff = (latestSell != null && pos.entrySellPrice != null) ? (latestSell - pos.entrySellPrice) : 0;
