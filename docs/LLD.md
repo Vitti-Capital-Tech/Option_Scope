@@ -134,6 +134,23 @@ This document captures implementation details for the current multi-module appli
 - **Phase 1 (PnL update)**: Reads live prices from `latestTickerDataRef.current` — the always-fresh ref — rather than the `tickerData` React state, which can lag by up to 50ms.
 - **Phase 2 (strategy evaluation)**: Only replaces the full `positions` array (`setPositions(finalPositions)`) when there are structural changes (exits or entries). If no positions were opened or closed, uses a functional in-place map to prevent the table flash at the minute boundary.
 
+### P&L Formula
+
+Both Phase 1 (unrealized, live) and Phase 2 (realized, at exit) use the same formula:
+
+```
+grossPnl = (buyPriceDiff − sellPriceDiff × sellQty) × buyLeg.lotSize + accumulatedSellPnl
+
+where:
+  buyPriceDiff  = latestBuyPrice  − entryBuyPrice
+  sellPriceDiff = latestSellPrice − entrySellPrice
+```
+
+This treats the ratio spread as a single unit scaled by `buyLeg.lotSize`. After a partial exit, `buyLeg.lotSize` and `sellQty` are both reduced proportionally, so the formula naturally reflects the correct remaining fraction without any asymmetry.
+
+> **Why not `buyPnl = diff × buyLotSize` and `sellPnl = diff × sellLotSize × qty` separately?**  
+> `sellLeg.lotSize` is the fixed contract size and is never scaled during partial exits. Only `buyLeg.lotSize` and `sellQty` are scaled. Using separate lotSizes causes the sell-side PnL to be calculated on the wrong size whenever `buyLotSize ≠ sellLotSize`, which produces an incorrect realized PnL in trade history.
+
 ### Ticker Subscription
 - Subscribes to all option symbols for the active expiry plus any symbols used by existing positions (to track PnL across expiry rollovers).
 - Buffered 50ms flush reduces render pressure under bursty market data.
