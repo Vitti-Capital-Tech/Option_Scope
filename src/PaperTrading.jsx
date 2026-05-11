@@ -668,8 +668,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       // Count active positions to check threshold for exits (3 Calls + 3 Puts)
       const activeCallsCount = prevPositions.filter(p => p.type === 'call' && p.underlying === underlying).length;
       const activePutsCount = prevPositions.filter(p => p.type === 'put' && p.underlying === underlying).length;
-      let currentCanExitCalls = activeCallsCount >= 3;
-      let currentCanExitPuts = activePutsCount >= 3;
+      
+      let callRotationsApproved = 0;
+      let putRotationsApproved = 0;
+      const MAX_ROTATIONS_PER_CYCLE = 3;
 
       const remaining = [];
       const exited = [];
@@ -697,7 +699,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         }
 
         // Use the always-fresh ref first; fall back to React state, then stored position price.
-        // Prevents exit PnL = 0 when tickerData React state is momentarily stale at the minute boundary.
         const live = latestTickerDataRef.current;
         const latestBuy = live[pos.buyLeg.symbol]?.markPrice
           ?? tickerData[pos.buyLeg.symbol]?.markPrice
@@ -707,7 +708,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           ?? tickerData[pos.sellLeg.symbol]?.markPrice
           ?? pos.currentSellPrice
           ?? pos.sellLeg.markPrice;
-        // Gross PnL: per-unit price diff scaled by lotSize — consistent with Phase 1 formula
+
+        // Gross PnL: per-unit price diff scaled by lotSize
         const buyPriceDiff = (latestBuy != null && pos.entryBuyPrice != null) ? (latestBuy - pos.entryBuyPrice) : 0;
         const sellPriceDiff = (latestSell != null && pos.entrySellPrice != null) ? (latestSell - pos.entrySellPrice) : 0;
         const grossPnl = (buyPriceDiff - sellPriceDiff * pos.sellQty) * pos.buyLeg.lotSize + (pos.accumulatedSellPnl || 0);
@@ -716,7 +718,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         const totalFees = (pos.entryFee || 0) + exitFee;
 
         const typeSpreads = topSpreads.filter(s => s.buyLeg.type === pos.type);
-        const inTop3 = typeSpreads.some(s => s.buyLeg.strike === pos.buyLeg.strike);
+        const inTop3 = typeSpreads.slice(0, 3).some(s => s.buyLeg.strike === pos.buyLeg.strike);
 
         // Rotation logic: Only apply to positions of the current expiry
         if (!shouldExit && pos.expiry === selExpiry && topSpreads.length > 0 && !inTop3) {
@@ -761,35 +763,34 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             if (sExited === 0 && isAtmMET) {
               isPartial = true; exitFraction = 0.33; exitReason = 'Partial Exit 33% @ ATM (<= 1400 diff)';
             } else if (sExited === 1 && itmDist >= 150) {
-              isPartial = true; exitFraction = 0.5; // Exit half of remaining 0.67 to get ~0.33 of original
+              isPartial = true; exitFraction = 0.5;
               exitReason = 'Partial Exit 33% @ 150 ITM (<= 1400 diff)';
             } else if (sExited === 2 && itmDist >= 300) {
               shouldExit = true; exitReason = 'Final Exit 34% @ 300 ITM (<= 1400 diff)';
             }
           }
-
         }
 
         // Apply threshold guard: Disable exits until 3 Calls AND 3 Puts are active
-        // Only "Lost Top 3" (rotation) exits are gated by this threshold.
-        // ATM/ITM and Expiry exits are always allowed.
-        const canExitThisType = pos.type === 'call' ? currentCanExitCalls : currentCanExitPuts;
-        let rotationApproved = false; // Track if THIS position's rotation was approved
-        if (!canExitThisType && exitReason.includes('Lost Top 3')) {
+        const canRotateThisType = pos.type === 'call' 
+          ? (activeCallsCount >= 3 && callRotationsApproved < MAX_ROTATIONS_PER_CYCLE) 
+          : (activePutsCount >= 3 && putRotationsApproved < MAX_ROTATIONS_PER_CYCLE);
+
+        let rotationApproved = false;
+        if (!canRotateThisType && exitReason.includes('Lost Top 3')) {
           if (shouldExit || isPartial) {
             console.log(`[Algo] THRESHOLD GUARD TRIGGERED (Rotation) for ${pos.type} ${pos.buyLeg.strike}/${pos.sellLeg.strike}. Blocking exit.`);
             shouldExit = false;
             isPartial = false;
           }
-        } else if (canExitThisType && exitReason.includes('Lost Top 3')) {
+        } else if (canRotateThisType && exitReason.includes('Lost Top 3')) {
           if (shouldExit) {
-            // Mark rotation as approved for this position BEFORE locking the guard
             rotationApproved = true;
-            // Lock the guard to prevent additional rotations in this same scan cycle
-            if (pos.type === 'call') currentCanExitCalls = false;
-            else currentCanExitPuts = false;
+            if (pos.type === 'call') callRotationsApproved++;
+            else putRotationsApproved++;
           }
         }
+
 
         if (shouldExit || isPartial) {
           // Absolute Final Guard - only block rotation exits that were NOT explicitly approved above
