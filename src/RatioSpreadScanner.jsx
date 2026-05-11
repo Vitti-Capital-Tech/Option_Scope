@@ -294,7 +294,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
           const rawQty = buyDN / sellDN;
           const sellQty = Math.max(1, Math.round(rawQty / 0.25) * 0.25);
           if (sellQty > (config.maxSellQty || 10)) continue;
-          
+
           const deltaDiff = buyDN - sellQty * sellDN;
 
 
@@ -441,14 +441,63 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
     }
   });
 
-  const updateConfig = (key, value) => {
+  const fetchSupabaseConfig = useCallback(async () => {
+    try {
+      const { data, error } = await supabase.from('paper_trading_config').select('*').eq('id', 'global').single();
+      if (data && !error) {
+        const newCfg = {
+          underlying: data.underlying || 'BTC',
+          expiry: data.expiry || '',
+          minStrikeDiff: data.min_strike_diff ?? config.minStrikeDiff,
+          minIvDiff: data.min_iv_diff ?? config.minIvDiff,
+          maxRatioDeviation: data.max_ratio_deviation ?? config.maxRatioDeviation,
+          minSellPremium: data.min_sell_premium ?? config.minSellPremium,
+          maxNetPremium: data.max_net_premium ?? config.maxNetPremium,
+          minLongDist: data.min_long_dist ?? config.minLongDist,
+          maxSellQty: data.max_sell_qty ?? config.maxSellQty
+        };
+        setConfig(newCfg);
+        if (newCfg.underlying !== underlying) setUnderlying(newCfg.underlying);
+        if (newCfg.expiry && newCfg.expiry !== selExpiry) setSelExpiry(newCfg.expiry);
+      }
+    } catch (e) { }
+  }, [underlying, selExpiry, config]);
+
+  const saveSupabaseConfig = useCallback(async (newCfg) => {
+    try {
+      await supabase.from('paper_trading_config').upsert({
+        id: 'global',
+        underlying: newCfg.underlying,
+        expiry: newCfg.expiry,
+        min_strike_diff: newCfg.minStrikeDiff,
+        min_iv_diff: newCfg.minIvDiff,
+        max_ratio_deviation: newCfg.maxRatioDeviation,
+        min_sell_premium: newCfg.minSellPremium,
+        max_net_premium: newCfg.maxNetPremium,
+        min_long_dist: newCfg.minLongDist,
+        max_sell_qty: newCfg.maxSellQty,
+        updated_at: new Date().toISOString()
+      });
+    } catch (e) { }
+  }, []);
+
+  const updateConfig = (keyOrObj, value) => {
     setConfig(c => {
-      const newConfig = { ...c, [key]: value };
-      localStorage.setItem('vitti_algo_config', JSON.stringify(newConfig));
+      const updates = typeof keyOrObj === 'object' ? keyOrObj : { [keyOrObj]: value };
+      const newConfig = { ...c, ...updates };
+      try {
+        localStorage.setItem('vitti_algo_config', JSON.stringify(newConfig));
+      } catch (e) { }
       tabBroadcast('CONFIG_SYNC', { config: newConfig });
+      saveSupabaseConfig(newConfig);
       return newConfig;
     });
   };
+
+  useEffect(() => {
+    fetchSupabaseConfig();
+  }, []);
+
 
   // Wrapped start/stop that also broadcasts to other tabs
   const handleStartScan = useCallback(() => {
