@@ -893,7 +893,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               const { error: histError } = await supabase.from('trade_history').insert([{
                 trade_id: t.id, underlying, expiry: t.expiry, type: t.type,
                 buy_leg: JSON.stringify(t.buyLeg), sell_leg: JSON.stringify(t.sellLeg),
-                sell_qty: t.sellQty, strike_diff: t.strikeDiff, entry_time: t.entryTime.toISOString(),
+                sell_qty: t.sellQty,           // scaled by exitFraction for partials
+                lot_size: t.buyLeg.lotSize,    // scaled by exitFraction for partials
+                strike_diff: t.strikeDiff, entry_time: t.entryTime.toISOString(),
                 entry_buy_price: t.entryBuyPrice, entry_sell_price: t.entrySellPrice,
                 entry_spot_price: t.entrySpotPrice, margin: t.margin,
                 exit_time: t.exitTime.toISOString(), exit_buy_price: t._latestBuy, exit_sell_price: t._latestSell,
