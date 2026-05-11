@@ -649,9 +649,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
         const latestBuy = tickerData[pos.buyLeg.symbol]?.markPrice ?? pos.currentBuyPrice ?? pos.buyLeg.markPrice;
         const latestSell = tickerData[pos.sellLeg.symbol]?.markPrice ?? pos.currentSellPrice ?? pos.sellLeg.markPrice;
-        const buyPnl = (latestBuy != null && pos.entryBuyPrice != null) ? (latestBuy - pos.entryBuyPrice) * pos.buyLeg.lotSize : 0;
-        const sellPnl = (latestSell != null && pos.entrySellPrice != null) ? (latestSell - pos.entrySellPrice) * pos.sellLeg.lotSize * pos.sellQty : 0;
-        const grossPnl = buyPnl - sellPnl + (pos.accumulatedSellPnl || 0);
+        // Gross PnL: per-unit price diff scaled by lotSize — consistent with Phase 1 formula
+        const buyPriceDiff  = (latestBuy  != null && pos.entryBuyPrice  != null) ? (latestBuy  - pos.entryBuyPrice)  : 0;
+        const sellPriceDiff = (latestSell != null && pos.entrySellPrice != null) ? (latestSell - pos.entrySellPrice) : 0;
+        const grossPnl = (buyPriceDiff - sellPriceDiff * pos.sellQty) * pos.buyLeg.lotSize + (pos.accumulatedSellPnl || 0);
         const exitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize) +
           calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
         const totalFees = (pos.entryFee || 0) + exitFee;
