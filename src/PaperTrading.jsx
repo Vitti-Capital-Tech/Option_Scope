@@ -901,16 +901,17 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         for (const t of newEntries) {
           try {
             // DB-level count guard: verify the live DB doesn't already have 3 active positions of this type.
-            // This catches races where local `remaining` was stale (e.g. partial exits not yet flushed).
-            const { data: typeCount, error: countError } = await supabase
+            // NOTE: Do NOT use { head: true } — it returns null data. Use a plain select for actual row count.
+            const { data: activeOfType, error: countError } = await supabase
               .from('active_positions')
-              .select('id', { count: 'exact', head: true })
+              .select('id')
               .eq('underlying', underlying)
               .eq('type', t.type);
-            if (!countError && (typeCount?.length ?? 0) >= 3) {
-              console.log(`DB Count Guard: Already 3 active ${t.type}s in DB. Skipping insert for ${t.buyLeg.strike}/${t.sellLeg.strike}.`);
+            if (!countError && (activeOfType?.length ?? 0) >= 3) {
+              console.log(`DB Count Guard: Already ${activeOfType.length} active ${t.type}s in DB. Skipping insert for ${t.buyLeg.strike}/${t.sellLeg.strike}.`);
               continue;
             }
+
 
             // Broad Deterministic Guard: Check by strikes across ALL expiries/types for this underlying
             const { data: existing, error: checkError } = await supabase.from('active_positions').select('id, expiry, type')
