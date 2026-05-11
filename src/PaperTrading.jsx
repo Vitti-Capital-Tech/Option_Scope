@@ -538,8 +538,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       return a.netPremium - b.netPremium;
     });
 
-    return pickTopUniqueStrikes(validPairs, 3);
-  }, [config, spotPrice, pickTopUniqueStrikes]);
+    return validPairs.slice(0, 50);
+  }, [config, spotPrice]);
+
 
 
   const evaluateStrategy = useCallback(async (force = false) => {
@@ -656,9 +657,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           }
           const byTypeCall = backfilled.filter(s => s.buyLeg.type === 'call');
           const byTypePut = backfilled.filter(s => s.buyLeg.type === 'put');
-          const calls = pickTopUniqueStrikes(byTypeCall, 3);
-          const puts = pickTopUniqueStrikes(byTypePut, 3);
-          topSpreads = pickTopUniqueStrikes([...calls, ...puts], 6);
+          topSpreads = [...byTypeCall, ...byTypePut];
         }
       }
 
