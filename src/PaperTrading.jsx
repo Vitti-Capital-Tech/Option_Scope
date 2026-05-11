@@ -78,19 +78,17 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const pickTopUniqueStrikes = useCallback((spreads, limit = 3) => {
     const out = [];
     const seenBuy = new Set();
-    const seenSell = new Set();
     for (const s of spreads) {
       const bStrike = s?.buyLeg?.strike != null ? Number(s.buyLeg.strike) : null;
-      const sStrike = s?.sellLeg?.strike != null ? Number(s.sellLeg.strike) : null;
-      if (bStrike == null || sStrike == null) continue;
-      if (seenBuy.has(bStrike) || seenSell.has(sStrike)) continue;
+      if (bStrike == null) continue;
+      if (seenBuy.has(bStrike)) continue;
       seenBuy.add(bStrike);
-      seenSell.add(sStrike);
       out.push(s);
       if (out.length >= limit) break;
     }
     return out;
   }, []);
+
 
   const positionsRef = useRef([]);
   const isEvaluatingRef = useRef(false);
