@@ -50,7 +50,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const [spotPrice, setSpotPrice] = useState(null);
   const [trading, setTrading] = useState(true);
 
-  const [includeFees, setIncludeFees] = useState(false);
+  const [includeFees, setIncludeFees] = useState(true);
 
   const [positions, setPositions] = useState([]); // Active positions
   const [tradeHistory, setTradeHistory] = useState([]); // Closed trades
@@ -302,7 +302,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           realizedNetPnl: t.realized_net_pnl,
           exitFee: t.exit_fee,
           totalFees: t.total_fees,
+          entryFee: (t.total_fees || 0) - (t.exit_fee || 0),
           exitReason: t.exit_reason,
+
           _isPartial: t.is_partial || false,
           _exitedBuyQty: t.lot_size ?? safeParseLeg(t.buy_leg)?.lotSize ?? 1,
         }));
@@ -780,9 +782,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             exitSpotPrice: spotPrice,
             realizedGrossPnl: partGrossPnl,
             realizedNetPnl: partNetPnl,
+            entryFee: partEntryFee,
             exitFee: partExitFee,
             totalFees: partTotalFees,
             exitReason,
+
             _latestBuy: latestBuy,
             _latestSell: latestSell,
             _isPartial: isPartial
@@ -1002,7 +1006,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     const r = t.exitReason || '';
     let mult = 1;
     let displayFracBuy = t._exitedBuyQty || 1;
-    
+
     if (r.includes('50%')) {
       mult = 2;
       displayFracBuy = 0.5;
@@ -1013,9 +1017,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       mult = 3;
       displayFracBuy = 0.34;
     }
-    
+
     const sellQty = t.sellQty || 0;
-    
+
     // Reconstruct original sell ratio (e.g. 4.75) using the multiplier
     const originalSell = Math.round((sellQty * mult) * 4) / 4;
 
@@ -1540,7 +1544,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                     <th>Buy / Sell Strike</th>
                     <th>Spot (In / Out)</th>
                     <th>In (Buy / Sell)</th>
+                    <th>Entry Fee</th>
+                    <th>Exit Fee</th>
                     <th>Out (Buy / Sell)</th>
+
                     <th>Realized P&L</th>
                     <th>Exit Reason</th>
                   </tr></thead>
@@ -1596,6 +1603,17 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
                             </div>
                           </td>
+                          <td>
+                            <div style={{ display: 'flex', flexDirection: 'column', fontSize: '11px', color: 'var(--text-dim)' }}>
+                              <span>${t.entryFee?.toFixed(2) || '0.00'}</span>
+                            </div>
+                          </td>
+                          <td>
+                            <div style={{ display: 'flex', flexDirection: 'column', fontSize: '11px', color: 'var(--text-dim)' }}>
+                              <span>${t.exitFee?.toFixed(2) || '0.00'}</span>
+                            </div>
+                          </td>
+
                           <td>
                             <div style={{ display: 'flex', flexDirection: 'column', fontSize: '12px' }}>
                               <span style={{ color: '#3fb950' }}>{t.exitBuyPrice?.toFixed(2)}</span>
