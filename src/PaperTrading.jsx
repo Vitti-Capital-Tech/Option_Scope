@@ -836,8 +836,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
         if (buyStrikeConflict || sellStrikeConflict) continue;
 
+        // Count all remaining positions for this type (including partially-exited ones — they still hold a slot)
         const count = remaining.filter(p => p.underlying === underlying && p.type === spreadType).length +
           newEntries.filter(p => p.underlying === underlying && p.type === spreadType).length;
+
+        // Hard cap: never exceed 3 per type. A partial exit does NOT free up a slot.
         if (count >= 3) continue;
 
         const entryBuyFee = calculateFee(spread.buyLeg.markPrice, spotPrice, 1, spread.buyLeg.lotSize);
@@ -897,8 +900,19 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       if (newEntries.length > 0) {
         for (const t of newEntries) {
           try {
+            // DB-level count guard: verify the live DB doesn't already have 3 active positions of this type.
+            // This catches races where local `remaining` was stale (e.g. partial exits not yet flushed).
+            const { data: typeCount, error: countError } = await supabase
+              .from('active_positions')
+              .select('id', { count: 'exact', head: true })
+              .eq('underlying', underlying)
+              .eq('type', t.type);
+            if (!countError && (typeCount?.length ?? 0) >= 3) {
+              console.log(`DB Count Guard: Already 3 active ${t.type}s in DB. Skipping insert for ${t.buyLeg.strike}/${t.sellLeg.strike}.`);
+              continue;
+            }
+
             // Broad Deterministic Guard: Check by strikes across ALL expiries/types for this underlying
-            // This matches common DB unique constraints and prevents duplicate strike entries.
             const { data: existing, error: checkError } = await supabase.from('active_positions').select('id, expiry, type')
               .eq('underlying', underlying)
               .eq('buy_strike', t.buyLeg.strike)
