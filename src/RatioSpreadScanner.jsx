@@ -43,7 +43,9 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
       minSellPremium: 10,
       maxNetPremium: 20,
       minLongDist: 500,
+      maxSellQty: 10
     };
+
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
@@ -291,7 +293,10 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
 
           const rawQty = buyDN / sellDN;
           const sellQty = Math.max(1, Math.round(rawQty / 0.25) * 0.25);
+          if (sellQty > (config.maxSellQty || 10)) continue;
+          
           const deltaDiff = buyDN - sellQty * sellDN;
+
 
           const netPrem = buyLeg.markPrice - sellQty * sellLeg.markPrice;
 
@@ -627,9 +632,10 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
                 type="number"
                 value={config.minSellPremium}
                 onChange={e => updateConfig('minSellPremium', Number(e.target.value))}
-                style={{ width: 50, padding: '4px 8px' }}
+                style={{ width: 60, padding: '4px 8px' }}
               />
             </div>
+
             <div className="form-group" style={{ marginBottom: 0, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <label style={{ marginBottom: 0 }}>Max Debit ($):</label>
               <input
@@ -648,6 +654,18 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
                 style={{ width: 60, padding: '4px 8px' }}
               />
             </div>
+            <div className="form-group" style={{ marginBottom: 0, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <label style={{ marginBottom: 0 }}>Max Ratio (1:X):</label>
+              <input
+                type="number"
+                step="0.25"
+                value={config.maxSellQty}
+                onChange={e => updateConfig('maxSellQty', Number(e.target.value))}
+                style={{ width: 65, padding: '4px 8px' }}
+              />
+            </div>
+
+
           </div>
 
           <div style={{ flex: 1 }}></div>

@@ -186,8 +186,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         min_sell_premium: newCfg.minSellPremium,
         max_net_premium: newCfg.maxNetPremium,
         min_long_dist: newCfg.minLongDist,
+        max_sell_qty: newCfg.maxSellQty,
         updated_at: new Date().toISOString()
       });
+
     } catch (e) { }
   }, []);
 
@@ -247,9 +249,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           maxRatioDeviation: data.max_ratio_deviation,
           minSellPremium: data.min_sell_premium,
           maxNetPremium: data.max_net_premium,
-          minLongDist: data.min_long_dist || 500
+          minLongDist: data.min_long_dist || 500,
+          maxSellQty: data.max_sell_qty || 10
         });
       }
+
     } catch (e) { }
   }, []);
 
@@ -523,7 +527,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
         const rawQty = buyDN / sellDN;
         const sellQty = Math.max(1, Math.round(rawQty / 0.25) * 0.25);
+        if (sellQty > (config.maxSellQty || 10)) continue;
+
         const netPrem = buyLeg.markPrice - sellQty * sellLeg.markPrice;
+
         const maxNet = Math.abs(config.maxNetPremium);
         if (netPrem < -maxNet || netPrem > maxNet) continue;
 
@@ -1335,8 +1342,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             </div>
             <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
               <label style={{ marginBottom: 0 }}>Min Sell Prem ($):</label>
-              <input type="number" value={config.minSellPremium} onChange={e => updateConfig('minSellPremium', Number(e.target.value))} style={{ width: 50, padding: '4px 8px', fontSize: '13px' }} />
+              <input type="number" value={config.minSellPremium} onChange={e => updateConfig('minSellPremium', Number(e.target.value))} style={{ width: 60, padding: '4px 8px', fontSize: '13px' }} />
             </div>
+
             <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
               <label style={{ marginBottom: 0 }}>Max Debit ($):</label>
               <input type="number" value={config.maxNetPremium} onChange={e => updateConfig('maxNetPremium', Number(e.target.value))} style={{ width: 60, padding: '4px 8px', fontSize: '13px' }} />
@@ -1345,6 +1353,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               <label style={{ marginBottom: 0 }}>Min Long Dist:</label>
               <input type="number" value={config.minLongDist} onChange={e => updateConfig('minLongDist', Number(e.target.value))} style={{ width: 60, padding: '4px 8px', fontSize: '13px' }} />
             </div>
+            <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <label style={{ marginBottom: 0 }}>Max Ratio (1:X):</label>
+              <input type="number" step="0.25" value={config.maxSellQty} onChange={e => updateConfig('maxSellQty', Number(e.target.value))} style={{ width: 65, padding: '4px 8px', fontSize: '13px' }} />
+            </div>
+
+
           </div>
 
           {spotPrice && (
