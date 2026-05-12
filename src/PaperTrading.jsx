@@ -51,9 +51,28 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const [trading, setTrading] = useState(true);
 
   const [includeFees, setIncludeFees] = useState(true);
-
   const [positions, setPositions] = useState([]); // Active positions
   const [tradeHistory, setTradeHistory] = useState([]); // Closed trades
+
+  const [historyFilterDate, setHistoryFilterDate] = useState(() => {
+    const now = new Date();
+    if (now.getUTCHours() < 12) now.setUTCDate(now.getUTCDate() - 1);
+    return now.toISOString().split('T')[0];
+  });
+
+  const adjustFilterDay = (offset) => {
+    if (!historyFilterDate) return;
+    const current = new Date(historyFilterDate);
+    current.setDate(current.getDate() + offset);
+    setHistoryFilterDate(current.toISOString().split('T')[0]);
+  };
+
+  const resetToToday = () => {
+    const now = new Date();
+    if (now.getUTCHours() < 12) now.setUTCDate(now.getUTCDate() - 1);
+    setHistoryFilterDate(now.toISOString().split('T')[0]);
+  };
+
   const [isBackfilling, setIsBackfilling] = useState(false);
 
   const calcMargin = (buyPrice, buyLot, spot, sellQty) => {
@@ -100,9 +119,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   }, [spotPrice, isBackfilling]);
 
   const [aiReviews, setAiReviews] = useState({}); // { tradeId: { claude: string, groq: string } }
-
-  const [selectedTradeId, setSelectedTradeId] = useState(null); // For AI review modal
-
   const [tickerData, setTickerData] = useState({});
   const latestTickerDataRef = useRef({});
 
@@ -1254,12 +1270,26 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   };
 
   // ── KPI Computations ──────────────────────────────────
+  const filteredTradeHistory = React.useMemo(() => {
+    if (!historyFilterDate) return tradeHistory;
+    const start = new Date(`${historyFilterDate}T12:00:00Z`);
+    const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+    return tradeHistory.filter(t => {
+      const entryTime = new Date(t.entryTime);
+      const exitTime = new Date(t.exitTime);
+      return (entryTime >= start && entryTime < end) || (exitTime >= start && exitTime < end);
+    });
+  }, [tradeHistory, historyFilterDate]);
+
   const totalUnrealizedPnl = positions.filter(p => p.underlying === underlying).reduce((s, p) => s + (includeFees ? (p.unrealizedNetPnl || 0) : (p.unrealizedGrossPnl || p.unrealizedPnl || 0)), 0);
   const totalRealizedPnl = tradeHistory.reduce((s, t) => s + (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || t.realizedPnl || 0)), 0);
   const totalPnl = totalUnrealizedPnl + totalRealizedPnl;
   const wins = tradeHistory.filter(t => (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || t.realizedPnl || 0)) > 0).length;
   const winRate = tradeHistory.length > 0 ? ((wins / tradeHistory.length) * 100).toFixed(1) : '—';
   const totalMargin = positions.filter(p => p.underlying === underlying).reduce((s, p) => s + (p.margin || 0), 0);
+
+  const filteredRealizedPnl = filteredTradeHistory.reduce((s, t) => s + (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || t.realizedPnl || 0)), 0);
+  const filteredWins = filteredTradeHistory.filter(t => (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || t.realizedPnl || 0)) > 0).length;
 
   const fmtDuration = (ms) => {
     const s = Math.floor(ms / 1000);
@@ -1626,20 +1656,133 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
           {/* ── Trade History ────────────────────────── */}
           <div className="pt-section">
-            <div className="pt-section-header">
-              <div className="pt-section-title">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 8v4l3 3" /><circle cx="12" cy="12" r="10" /></svg>
-                Trade History
-                <span className="pt-section-count">{tradeHistory.length}</span>
+            <div className="pt-section-header" style={{
+              flexDirection: 'column',
+              alignItems: 'stretch',
+              gap: '16px',
+              padding: '16px 20px',
+              borderBottom: '1px solid var(--border)',
+              background: 'linear-gradient(180deg, var(--bg2) 0%, var(--bg) 100%)'
+            }}>
+              {/* Row 1: Title and Centered Filter */}
+              <div style={{ display: 'flex', alignItems: 'center', width: '100%', position: 'relative', minHeight: '36px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <div style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    width: '32px', height: '32px', borderRadius: '8px',
+                    background: 'rgba(240, 185, 11, 0.1)', color: 'var(--accent)'
+                  }}>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 8v4l3 3" /><circle cx="12" cy="12" r="10" /></svg>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column' }}>
+                    <span style={{ fontWeight: 700, fontSize: '14px', letterSpacing: '0.5px', color: 'var(--text)' }}>Trade History</span>
+                    <span style={{ fontSize: '10px', color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '1px' }}>Closed Positions</span>
+                  </div>
+                  <span style={{
+                    background: 'var(--bg3)',
+                    color: 'var(--accent)',
+                    padding: '2px 10px',
+                    borderRadius: '20px',
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    border: '1px solid rgba(240, 185, 11, 0.2)'
+                  }}>
+                    {filteredTradeHistory.length}
+                  </span>
+                </div>
+
+                {/* Centered Filter Bar */}
+                <div style={{
+                  position: 'absolute', left: '50%', transform: 'translateX(-50%)',
+                  display: 'flex', alignItems: 'center', gap: '4px',
+                  background: 'var(--bg3)', padding: '4px 8px', borderRadius: '12px',
+                  border: '1px solid var(--border)',
+                  boxShadow: '0 4px 12px rgba(0,0,0,0.15)'
+                }}>
+                  <button
+                    onClick={() => adjustFilterDay(-1)}
+                    title="Previous Day"
+                    style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', display: 'flex', padding: '6px', borderRadius: '6px', transition: 'all 0.2s' }}
+                    className="nav-btn-hover"
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+                  </button>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 8px', borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)', margin: '0 4px' }}>
+                    <input
+                      type="date"
+                      value={historyFilterDate}
+                      onChange={(e) => setHistoryFilterDate(e.target.value)}
+                      style={{
+                        background: 'none', border: 'none', color: 'var(--text)', fontSize: '13px', fontWeight: 600, padding: 0, width: '125px', outline: 'none', cursor: 'pointer'
+                      }}
+                    />
+                    <span style={{ fontSize: '10px', color: 'var(--accent)', fontWeight: 700, background: 'rgba(240, 185, 11, 0.1)', padding: '2px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
+                      12:00 UTC SESSION
+                    </span>
+                  </div>
+
+                  <button
+                    onClick={() => adjustFilterDay(1)}
+                    title="Next Day"
+                    style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', display: 'flex', padding: '6px', borderRadius: '6px', transition: 'all 0.2s' }}
+                    className="nav-btn-hover"
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                  </button>
+
+                  <button
+                    onClick={resetToToday}
+                    style={{
+                      background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: '8px',
+                      padding: '4px 12px', fontSize: '11px', color: 'var(--text)', fontWeight: 700,
+                      cursor: 'pointer', transition: 'all 0.2s', marginLeft: '4px'
+                    }}
+                    className="today-btn-hover"
+                  >
+                    TODAY
+                  </button>
+
+                  <button
+                    onClick={() => setHistoryFilterDate('')}
+                    title="Show All History"
+                    style={{
+                      background: historyFilterDate ? 'none' : 'rgba(240, 185, 11, 0.1)',
+                      border: 'none',
+                      color: historyFilterDate ? 'var(--text-dim)' : 'var(--accent)',
+                      cursor: 'pointer', display: 'flex', padding: '6px', borderRadius: '6px', marginLeft: '4px'
+                    }}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12h18M3 6h18M3 18h18" /></svg>
+                  </button>
+                </div>
               </div>
-              {tradeHistory.length > 0 && (
-                <div className="pt-history-stats">
-                  <span className="pt-history-stat">Net: <span className={`value ${totalRealizedPnl >= 0 ? 'green' : 'red'}`}>{totalRealizedPnl > 0 ? '+' : ''}{totalRealizedPnl.toFixed(2)}</span></span>
-                  <span className="pt-history-stat">W/L: <span className="value green">{wins}</span>/<span className="value red">{tradeHistory.length - wins}</span></span>
+
+              {/* Row 2: Stats and Export Aligned Right */}
+              {filteredTradeHistory.length > 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '24px', padding: '0 4px' }}>
+                  <div className="pt-history-stats" style={{ gap: '20px' }}>
+                    <div className="pt-history-stat">
+                      <span style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Net Realized:</span>
+                      <span className={`value ${filteredRealizedPnl >= 0 ? 'green' : 'red'}`} style={{ fontSize: '14px' }}>
+                        {filteredRealizedPnl > 0 ? '+' : ''}{filteredRealizedPnl.toFixed(2)}
+                      </span>
+                    </div>
+                    <div style={{ width: '1px', height: '16px', background: 'var(--border)' }} />
+                    <div className="pt-history-stat">
+                      <span style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Win / Loss:</span>
+                      <span style={{ fontSize: '14px', fontWeight: 700 }}>
+                        <span className="value green">{filteredWins}</span>
+                        <span style={{ margin: '0 4px', color: 'var(--text-dim)', fontWeight: 400 }}>/</span>
+                        <span className="value red">{filteredTradeHistory.length - filteredWins}</span>
+                      </span>
+                    </div>
+                  </div>
+
                   <button
                     className="pt-export-btn"
                     onClick={() => {
-                      const data = tradeHistory.map(t => ({
+                      const data = filteredTradeHistory.map(t => ({
                         ...t,
                         ai_reviews: aiReviews[t.id] || null
                       }));
@@ -1650,21 +1793,26 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                       a.download = `vitti_ai_training_data_${new Date().toISOString().split('T')[0]}.json`;
                       a.click();
                     }}
-                    title="Download Dataset for AI Fine-Tuning"
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: '8px',
+                      padding: '6px 14px', borderRadius: '8px',
+                      background: 'var(--bg3)', border: '1px solid var(--border)',
+                      color: 'var(--text)', fontSize: '12px', fontWeight: 600, cursor: 'pointer'
+                    }}
                   >
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
-                    Export for AI
+                    Export for AI Training
                   </button>
                 </div>
               )}
             </div>
-            {tradeHistory.length === 0 ? (
+            {filteredTradeHistory.length === 0 ? (
               <div className="pt-empty">
                 <div className="pt-empty-icon idle">
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="2"><path d="M12 8v4l3 3" /><circle cx="12" cy="12" r="10" /></svg>
                 </div>
                 <span className="pt-empty-title">No Closed Trades</span>
-                <span className="pt-empty-desc">Trades will appear here once positions are exited.</span>
+                <span className="pt-empty-desc">Trades will appear here once positions are exited for the selected day.</span>
               </div>
             ) : (
               <div className="pt-table-scroll">
@@ -1686,7 +1834,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                     <th>Exit Reason</th>
                   </tr></thead>
                   <tbody>
-                    {tradeHistory.map((t, i) => {
+                    {filteredTradeHistory.map((t, i) => {
                       const pnlValue = includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || t.realizedPnl || 0);
                       const durationMs = t.exitTime && t.entryTime ? (t.exitTime - t.entryTime) : 0;
                       return (

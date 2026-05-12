@@ -159,8 +159,23 @@ input {
   font-family: inherit;
   outline: none;
   cursor: pointer;
-  appearance: none;
-  -webkit-appearance: none;
+}
+
+input[type="date"] {
+  color-scheme: dark;
+}
+
+body.light-theme input[type="date"] {
+  color-scheme: light;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  filter: invert(1); /* Makes the default black icon white for dark theme */
+}
+
+body.light-theme input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(0); /* Keeps it dark for light theme */
 }
 
 select:focus,
