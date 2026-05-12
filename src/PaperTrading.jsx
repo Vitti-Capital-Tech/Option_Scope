@@ -1568,48 +1568,51 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-                {lastEvaluated > 0 && (
-                  <div style={{ fontSize: 12, color: 'var(--text)', borderLeft: '1px solid var(--border)', paddingLeft: 8 }}>
-                    Updated: {new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }).format(new Date(lastEvaluated))}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+                  {lastEvaluated > 0 && (
+                    <div style={{ fontSize: 12, color: 'var(--text)', borderLeft: '1px solid var(--border)', paddingLeft: 8, fontVariantNumeric: 'tabular-nums' }}>
+                      Updated: {new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }).format(new Date(lastEvaluated))}
+                    </div>
+                  )}
+                  <div className="pt-fee-toggle-container">
+                    <span className={`pt-fee-toggle-label ${!includeFees ? 'active' : ''}`} onClick={() => setIncludeFees(false)}>Gross</span>
+                    <label className="pt-switch">
+                      <input type="checkbox" checked={includeFees} onChange={e => setIncludeFees(e.target.checked)} />
+                      <span className="pt-slider"></span>
+                    </label>
+                    <span className={`pt-fee-toggle-label ${includeFees ? 'active' : ''}`} onClick={() => setIncludeFees(true)}>Net</span>
+                  </div>
+                </div>
+
+                {trading && (
+                  <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                    <div style={{ fontSize: 14, color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums' }}>
+                      Spot Price: {spotPrice}
+                    </div>
+                    <button
+                      onClick={() => evaluateStrategy(true)}
+                      disabled={!trading}
+                      title="Refresh now"
+                      style={{
+                        padding: '4px 8px', fontSize: 12, background: 'var(--bg-card)',
+                        border: '1px solid var(--border)', color: 'var(--text)',
+                        borderRadius: 4, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
+                        minWidth: '60px', justifyContent: 'center', fontVariantNumeric: 'tabular-nums'
+                      }}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M21 12C21 16.9706 16.9706 21 12 21C7.02944 21 3 16.9706 3 12C3 7.02944 7.02944 3 12 3C15.5398 3 18.5997 5.04419 20.0886 8M20.0886 8H16.0886M20.0886 8V4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                      {trading && timeRemaining !== null && timeRemaining <= 60 ? `${timeRemaining}s` : ''}
+                    </button>
+
+                    <div className="pt-live-badge">
+                      <div className="pt-live-dot" />
+                      Monitoring
+                    </div>
                   </div>
                 )}
-                <div className="pt-fee-toggle-container">
-                  <span className={`pt-fee-toggle-label ${!includeFees ? 'active' : ''}`} onClick={() => setIncludeFees(false)}>Gross</span>
-                  <label className="pt-switch">
-                    <input type="checkbox" checked={includeFees} onChange={e => setIncludeFees(e.target.checked)} />
-                    <span className="pt-slider"></span>
-                  </label>
-                  <span className={`pt-fee-toggle-label ${includeFees ? 'active' : ''}`} onClick={() => setIncludeFees(true)}>Net</span>
-                </div>
               </div>
-              {trading && (
-                <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-                  <div style={{ fontSize: 14, color: 'var(--text-dim)' }}>
-                    Spot Price: {spotPrice}
-                  </div>
-                  <button
-                    onClick={() => evaluateStrategy(true)}
-                    disabled={!trading}
-                    title="Refresh now"
-                    style={{
-                      padding: '4px 8px', fontSize: 12, background: 'var(--bg-card)',
-                      border: '1px solid var(--border)', color: 'var(--text)',
-                      borderRadius: 4, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
-                      minWidth: '50px', justifyContent: 'center'
-                    }}
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                      <path d="M21 12C21 16.9706 16.9706 21 12 21C7.02944 21 3 16.9706 3 12C3 7.02944 7.02944 3 12 3C15.5398 3 18.5997 5.04419 20.0886 8M20.0886 8H16.0886M20.0886 8V4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                    {trading && timeRemaining !== null && timeRemaining <= 60 ? `${timeRemaining}s` : ''}
-                  </button>
-
-                  <div className="pt-live-badge">
-                    <div className="pt-live-dot" />
-                    Monitoring
-                  </div>
-                </div>
-              )}
             </div>
             {positions.length === 0 ? (
               <div className="pt-empty">
