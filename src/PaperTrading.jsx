@@ -631,11 +631,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
       /**
        * PHASE 1: Real-time PnL & Fee Monitoring
-       * This section updates current prices and PnL values every 10 seconds.
+       * This section updates current prices and PnL values every 1 second.
        */
       if (!shouldEvaluateAlgo) {
-        // Throttle PnL updates to every 5 seconds for stability
-        if (nowTime - lastEvaluatedRef.current < 5000) return;
+        // Throttle PnL updates to every 1 second for stability
+        if (nowTime - lastEvaluatedRef.current < 1000) return;
 
         setPositions(prev => {
           if (prev.length === 0) return prev;
@@ -1179,6 +1179,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     // Check for scanner updates
     if (scannerSyncVersion > lastProcessedScannerVersionRef.current) {
       evaluateStrategy();
+      return;
+    }
+
+    // Frequent PnL updates (every 1s)
+    if (nowTime - lastEvaluatedRef.current >= 1000) {
+      evaluateStrategy();
     }
   }, [tickerData, trading, spotPrice, lastEvaluated, evaluateStrategy, scannerSyncVersion]);
 
@@ -1187,7 +1193,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     if (!trading) return;
     const interval = setInterval(() => {
       evaluateStrategy();
-    }, 10000);
+    }, 5000);
     return () => clearInterval(interval);
   }, [trading, evaluateStrategy]);
 
