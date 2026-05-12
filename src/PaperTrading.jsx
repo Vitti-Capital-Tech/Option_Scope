@@ -155,6 +155,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
   const positionsRef = useRef([]);
   const isEvaluatingRef = useRef(false);
+  const lastWsSymbolsRef = useRef('');
   useEffect(() => { positionsRef.current = positions; }, [positions]);
 
   useEffect(() => {
@@ -432,7 +433,16 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const startTrading = useCallback(() => {
     if (!selExpiry || !products.length) return;
 
-    if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
+    const configSymbols = [...new Set(products.map(p => p.symbol))];
+    const symHash = configSymbols.sort().join(',');
+    if (wsRef.current && lastWsSymbolsRef.current === symHash) return;
+
+    if (wsRef.current) {
+      try { wsRef.current.close(); } catch (e) { }
+      wsRef.current = null;
+    }
+    lastWsSymbolsRef.current = symHash;
+
     if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
     tickerBufferRef.current = {};
 
@@ -1569,11 +1579,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-                  {lastEvaluated > 0 && (
-                    <div style={{ fontSize: 12, color: 'var(--text)', borderLeft: '1px solid var(--border)', paddingLeft: 8, fontVariantNumeric: 'tabular-nums' }}>
-                      Updated: {new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }).format(new Date(lastEvaluated))}
-                    </div>
-                  )}
+                  <div style={{ fontSize: 12, color: 'var(--text)', borderLeft: '1px solid var(--border)', paddingLeft: 8, fontVariantNumeric: 'tabular-nums', minWidth: '160px' }}>
+                    Updated: {lastEvaluated > 0 ? new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }).format(new Date(lastEvaluated)) : '---'}
+                  </div>
                   <div className="pt-fee-toggle-container">
                     <span className={`pt-fee-toggle-label ${!includeFees ? 'active' : ''}`} onClick={() => setIncludeFees(false)}>Gross</span>
                     <label className="pt-switch">
@@ -1586,8 +1594,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
                 {trading && (
                   <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-                    <div style={{ fontSize: 14, color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums' }}>
-                      Spot Price: {spotPrice}
+                    <div style={{ fontSize: 14, color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums', minWidth: '140px' }}>
+                      Spot Price: {spotPrice || '---'}
                     </div>
                     <button
                       onClick={() => evaluateStrategy(true)}
