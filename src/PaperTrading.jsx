@@ -75,9 +75,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
   const [isBackfilling, setIsBackfilling] = useState(false);
 
-  const calcMargin = (buyPrice, buyLot, spot, sellQty) => {
+  const calcMargin = (buyPrice, buyLot, spot, sellQty, sellLot = 1) => {
     const longMargin = (buyPrice || 0) * (buyLot || 1);
-    const shortValue = (spot || 0) * (sellQty || 0);
+    const shortValue = (spot || 0) * (sellQty || 0) * sellLot;
     let leverage = 200;
     if (shortValue <= 200000) leverage = 200;
     else if (shortValue <= 450000) leverage = 100;
@@ -98,7 +98,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       for (const p of data) {
         const buyLeg = safeParseLeg(p.buy_leg);
         if (!buyLeg) continue;
-        const newMargin = calcMargin(p.entry_buy_price, buyLeg.lotSize, Math.max(p.entry_spot_price || spotPrice, spotPrice), p.sell_qty);
+        const sellLeg = safeParseLeg(p.sell_leg);
+        const newMargin = calcMargin(p.entry_buy_price, buyLeg.lotSize, Math.max(p.entry_spot_price || spotPrice, spotPrice), p.sell_qty, sellLeg?.lotSize || buyLeg.lotSize);
         await supabase.from('active_positions').update({ margin: newMargin }).eq('id', p.id);
       }
       console.log('[Maintenance] Backfill complete.');
@@ -645,7 +646,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
             const buyPnl = (latestBuy != null && pos.entryBuyPrice != null) ? (latestBuy - pos.entryBuyPrice) : 0;
             const sellPnl = (latestSell != null && pos.entrySellPrice != null) ? (latestSell - pos.entrySellPrice) * pos.sellQty : 0;
-            const grossPnl = (buyPnl - sellPnl) * pos.buyLeg.lotSize + (pos.accumulatedSellPnl || 0);
+            const grossPnl = (buyPnl * pos.buyLeg.lotSize) - (sellPnl * pos.sellLeg.lotSize) + (pos.accumulatedSellPnl || 0);
 
             const exitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize) +
               calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
@@ -780,7 +781,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         // Gross PnL: per-unit price diff scaled by lotSize
         const buyPriceDiff = (latestBuy != null && pos.entryBuyPrice != null) ? (latestBuy - pos.entryBuyPrice) : 0;
         const sellPriceDiff = (latestSell != null && pos.entrySellPrice != null) ? (latestSell - pos.entrySellPrice) : 0;
-        const grossPnl = (buyPriceDiff - sellPriceDiff * pos.sellQty) * pos.buyLeg.lotSize + (pos.accumulatedSellPnl || 0);
+        const grossPnl = (buyPriceDiff * pos.buyLeg.lotSize) - (sellPriceDiff * pos.sellQty * pos.sellLeg.lotSize) + (pos.accumulatedSellPnl || 0);
         const exitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize) +
           calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
         const totalFees = (pos.entryFee || 0) + exitFee;
@@ -913,7 +914,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               ...pos,
               sellQty: pos.sellQty * (1 - exitFraction),
               buyLeg: { ...pos.buyLeg, lotSize: pos.buyLeg.lotSize * (1 - exitFraction) },
-              margin: calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, Math.max(pos.entrySpotPrice || spotPrice, spotPrice), pos.sellQty) * (1 - exitFraction),
+              margin: calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, Math.max(pos.entrySpotPrice || spotPrice, spotPrice), pos.sellQty, pos.sellLeg.lotSize) * (1 - exitFraction),
 
               entryFee: (pos.entryFee || 0) * (1 - exitFraction),
               accumulatedSellPnl: (pos.accumulatedSellPnl || 0) * (1 - exitFraction),
@@ -948,7 +949,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             ...pos, currentBuyPrice: latestBuy, currentSellPrice: latestSell,
             unrealizedGrossPnl: grossPnl, unrealizedNetPnl: grossPnl - totalFees,
             currentExitFee: exitFee, currentTotalFees: totalFees,
-            margin: calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, Math.max(pos.entrySpotPrice || spotPrice, spotPrice), pos.sellQty)
+            margin: calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, Math.max(pos.entrySpotPrice || spotPrice, spotPrice), pos.sellQty, pos.sellLeg.lotSize)
           });
 
 
@@ -998,7 +999,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           entrySellPrice: spread.sellLeg.markPrice, entrySpotPrice: spotPrice, currentBuyPrice: spread.buyLeg.markPrice,
           currentSellPrice: spread.sellLeg.markPrice, unrealizedGrossPnl: 0, unrealizedNetPnl: -entryFee,
           entryFee, currentExitFee: entryFee, currentTotalFees: entryFee * 2,
-          margin: calcMargin(spread.buyLeg.markPrice, spread.buyLeg.lotSize, spotPrice, spread.sellQty)
+          margin: calcMargin(spread.buyLeg.markPrice, spread.buyLeg.lotSize, spotPrice, spread.sellQty, spread.sellLeg.lotSize)
         };
 
 
