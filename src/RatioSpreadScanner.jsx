@@ -114,19 +114,24 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
   }, [underlying, selExpiry, broadcastScannerTopSpreads, pickTopUniqueStrikes]);
 
 
+  const refreshProducts = useCallback(async () => {
+    try {
+      const prods = await loadProducts(underlying);
+      setProducts(prods);
+      const exps = getExpiries(prods);
+      setExpiries(exps);
+      if (exps.length && (!selExpiry || !exps.includes(selExpiry))) {
+        setSelExpiry(exps[0]);
+      }
+    } catch (e) { console.error('Failed to load products:', e); }
+  }, [underlying, selExpiry]);
+
   // ── Load products on underlying change ──────────────────────────────────
   useEffect(() => {
     setExpiries([]); setSelExpiry(''); setResultsCall([]); setResultsPut([]);
     setTickerData({});
     setExpectedTickerCount(0);
-    loadProducts(underlying)
-      .then(prods => {
-        setProducts(prods);
-        const exps = getExpiries(prods);
-        setExpiries(exps);
-        if (exps.length) setSelExpiry(exps[0]);
-      })
-      .catch(e => console.error('Failed to load products:', e));
+    refreshProducts();
   }, [underlying]);
 
   // ── Fetch spot price ────────────────────────────────────────────────────
@@ -356,6 +361,11 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
 
     setLastRefreshed(Date.now());
 
+    // Refresh products every 5 mins to catch expiries
+    const currentMinute = Math.floor(Date.now() / 60000);
+    if (currentMinute % 5 === 0) {
+      refreshProducts();
+    }
   }, [scanning, spotPrice, config, publishTopSpreads]);
 
   // Periodic and conditional scanning

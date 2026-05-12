@@ -175,20 +175,24 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     setTickerData({ ...latestTickerDataRef.current });
   }, []);
 
-  // ── Load products ──────────────────────────────────
+  const refreshProducts = useCallback(async () => {
+    try {
+      const prods = await loadProducts(underlying);
+      setProducts(prods);
+      const exps = getExpiries(prods);
+      setExpiries(exps);
+      // If current expiry is gone or empty, pick first one
+      if (exps.length && (!selExpiry || !exps.includes(selExpiry))) {
+        updateConfig('expiry', exps[0]);
+      }
+    } catch (e) { console.error('Failed to load products:', e); }
+  }, [underlying, selExpiry]);
+
+  // ── Load products on underlying change ──────────────────────────────────
   useEffect(() => {
     setExpiries([]);
     setTickerData({});
-    loadProducts(underlying)
-      .then(prods => {
-        setProducts(prods);
-        const exps = getExpiries(prods);
-        setExpiries(exps);
-        if (exps.length && (!config.expiry || !exps.includes(config.expiry))) {
-          updateConfig('expiry', exps[0]);
-        }
-      })
-      .catch(e => console.error('Failed to load products:', e));
+    refreshProducts();
   }, [underlying]);
 
   const saveSupabaseConfig = useCallback(async (newCfg) => {
@@ -675,6 +679,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       const nowAtEval = Date.now();
       lastEvaluatedRef.current = nowAtEval;
       setLastEvaluated(nowAtEval);
+
+      // Refresh product list every 5 minutes to capture expiries/new strikes
+      if (currentMinute % 5 === 0) {
+        refreshProducts();
+      }
 
       // Identify current ATM strike for directional filtering
       let atmStrike = null;
