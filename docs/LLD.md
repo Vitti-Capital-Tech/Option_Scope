@@ -130,8 +130,8 @@ This document captures implementation details for the current multi-module appli
 ### Concurrency & Performance
 - **`isEvaluatingRef`**: Mutex lock preventing parallel evaluation cycles from racing (triggered by rapid WebSocket or scanner sync events).
 - **`positionsRef`**: Always-current ref clone of `positions` state, read directly by the evaluation loop to avoid stale closure captures.
-- **Evaluation cadence**: Full strategy evaluation runs once per clock minute or when a new scanner broadcast arrives. PnL-only updates run every 5 seconds in between.
-- **Phase 1 (PnL update)**: Reads live prices from `latestTickerDataRef.current` — the always-fresh ref — rather than the `tickerData` React state, which can lag by up to 50ms.
+- **Evaluation cadence**: Full strategy evaluation runs once per clock minute or when a new scanner broadcast arrives. PnL and current price updates run every **1 second** in between for a "live" dashboard feel.
+- **Phase 1 (PnL update)**: Reads live prices from `latestTickerDataRef.current` — the always-fresh ref — every second.
 - **Phase 2 (strategy evaluation)**: Only replaces the full `positions` array (`setPositions(finalPositions)`) when there are structural changes (exits or entries). If no positions were opened or closed, uses a functional in-place map to prevent the table flash at the minute boundary.
 
 ### P&L Formula
@@ -152,8 +152,9 @@ This ensures that the long and short legs are evaluated independently based on t
 > Previously, the formula scaled the entire spread by `buyLeg.lotSize`. However, during a partial exit where both `sellQty` and `buyLeg.lotSize` are reduced, applying `buyLeg.lotSize` to the sell side caused the short leg's P&L to scale down twice (e.g., `0.5 * 0.5 = 0.25`). By isolating `sellLeg.lotSize`, the sell P&L correctly scales down linearly via the `sellQty` reduction alone.
 
 ### Ticker Subscription
-- Subscribes to all option symbols for the active expiry plus any symbols used by existing positions (to track PnL across expiry rollovers).
-- Buffered 50ms flush reduces render pressure under bursty market data.
+- **Restart Optimization**: `lastWsSymbolsRef` hashes the symbol list to prevent redundant WebSocket restarts during periodic product refreshes, avoiding the "WebSocket is closed before established" error.
+- **Auto-Refresh**: Products and expiries are re-queried from Delta every 5 minutes; if the currently selected expiry disappears (e.g. daily rollover), the UI automatically shifts to the next available date.
+- **Buffered Flush**: 50ms ticker batching reduces render pressure under high-volatility data bursts.
 
 ### Entry Logic
 
