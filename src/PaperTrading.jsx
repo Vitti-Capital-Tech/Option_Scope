@@ -1042,17 +1042,27 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             }
 
 
-            // Broad Deterministic Guard: Check by strikes across ALL expiries/types for this underlying
-            const { data: existing, error: checkError } = await supabase.from('active_positions').select('id, expiry, type')
+            // Individual Strike Guard: Check buy strike uniqueness within same type
+            const { data: buyConflict, error: buyCheckError } = await supabase.from('active_positions').select('id')
               .eq('underlying', underlying)
+              .eq('type', t.type)
               .eq('buy_strike', t.buyLeg.strike)
+              .limit(1);
+            if (buyCheckError) continue;
+            if (buyConflict && buyConflict.length > 0) {
+              console.log(`DB Guard: Buy strike ${t.buyLeg.strike} already active for ${t.type}. Skipping.`);
+              continue;
+            }
+
+            // Check sell strike uniqueness within same type
+            const { data: sellConflict, error: sellCheckError } = await supabase.from('active_positions').select('id')
+              .eq('underlying', underlying)
+              .eq('type', t.type)
               .eq('sell_strike', t.sellLeg.strike)
               .limit(1);
-
-            if (checkError) continue;
-            if (existing && existing.length > 0) {
-              const conflict = existing[0];
-              console.log(`Sync Guard: Spread ${t.buyLeg.strike}/${t.sellLeg.strike} already active (Expiry: ${conflict.expiry}, Type: ${conflict.type}). Skipping.`);
+            if (sellCheckError) continue;
+            if (sellConflict && sellConflict.length > 0) {
+              console.log(`DB Guard: Sell strike ${t.sellLeg.strike} already active for ${t.type}. Skipping.`);
               continue;
             }
 
