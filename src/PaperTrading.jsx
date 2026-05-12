@@ -765,14 +765,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             } else if (sExited === 1 && itmDist >= 200) {
               shouldExit = true; exitReason = 'Final Exit 50% @ 200 ITM (<= 1200 diff)';
             }
-          } else if (pos.strikeDiff <= 1400) {
+          } else {
             if (sExited === 0 && isAtmMET) {
-              isPartial = true; exitFraction = 0.33; exitReason = 'Partial Exit 33% @ ATM (<= 1400 diff)';
+              isPartial = true; exitFraction = 0.33; exitReason = 'Partial Exit 33% @ ATM';
             } else if (sExited === 1 && itmDist >= 150) {
               isPartial = true; exitFraction = 0.5;
-              exitReason = 'Partial Exit 33% @ 150 ITM (<= 1400 diff)';
+              exitReason = 'Partial Exit 33% @ 150 ITM';
             } else if (sExited === 2 && itmDist >= 300) {
-              shouldExit = true; exitReason = 'Final Exit 34% @ 300 ITM (<= 1400 diff)';
+              shouldExit = true; exitReason = 'Final Exit 34% @ 300 ITM';
             }
           }
         }
