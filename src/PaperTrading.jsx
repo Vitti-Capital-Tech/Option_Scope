@@ -870,7 +870,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               const { error } = await supabase.from('active_positions').update({
                 sell_qty: sellQty,
                 buy_leg: JSON.stringify(buyLeg),
-                lot_size: buyLeg.lotSize,
                 margin,
                 entry_fee: entryFee,
                 stages_exited: stagesExited
@@ -962,8 +961,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               const { error: histError } = await supabase.from('trade_history').insert([{
                 trade_id: t.id, underlying, expiry: t.expiry, type: t.type,
                 buy_leg: JSON.stringify(t.buyLeg), sell_leg: JSON.stringify(t.sellLeg),
-                sell_qty: t.sellQty,           // scaled by exitFraction for partials
-                lot_size: t.buyLeg.lotSize,    // scaled by exitFraction for partials
+                sell_qty: t.sellQty,
                 strike_diff: t.strikeDiff, entry_time: t.entryTime.toISOString(),
                 entry_buy_price: t.entryBuyPrice, entry_sell_price: t.entrySellPrice,
                 entry_spot_price: t.entrySpotPrice, margin: t.margin,
@@ -1047,7 +1045,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
       positionsRef.current = finalPositions;
 
-      if (exited.length > 0 || newEntries.length > 0) {
+      if (exited.length > 0 || successfulEntries.length > 0) {
         // Structural change (exits or entries) — replace the full array
         setPositions(finalPositions);
       } else {
@@ -1093,11 +1091,15 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     }
   };
 
-
-
-
   useEffect(() => {
     evaluateStrategy();
+
+    // Heartbeat: ensures expiry exits and PnL updates fire even if no new tickers arrive
+    const heartbeat = setInterval(() => {
+      evaluateStrategy();
+    }, 10000);
+
+    return () => clearInterval(heartbeat);
   }, [tickerData, trading, spotPrice, evaluateStrategy, scannerSyncVersion]);
 
   useEffect(() => () => {
