@@ -323,8 +323,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       const { data, error } = await supabase
         .from('trade_history')
         .select('*')
-        .order('exit_time', { ascending: false })
-        .limit(50);
+        .order('exit_time', { ascending: false });
 
       if (error) return;
       if (data) {
@@ -675,7 +674,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       // Count active positions to check threshold for exits (3 Calls + 3 Puts)
       const activeCallsCount = prevPositions.filter(p => p.type === 'call' && p.underlying === underlying).length;
       const activePutsCount = prevPositions.filter(p => p.type === 'put' && p.underlying === underlying).length;
-      
+
       let callRotationsApproved = 0;
       let putRotationsApproved = 0;
       const MAX_ROTATIONS_PER_CYCLE = 3;
@@ -779,8 +778,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         }
 
         // Apply threshold guard: Disable exits until 3 Calls AND 3 Puts are active
-        const canRotateThisType = pos.type === 'call' 
-          ? (activeCallsCount >= 3 && callRotationsApproved < MAX_ROTATIONS_PER_CYCLE) 
+        const canRotateThisType = pos.type === 'call'
+          ? (activeCallsCount >= 3 && callRotationsApproved < MAX_ROTATIONS_PER_CYCLE)
           : (activePutsCount >= 3 && putRotationsApproved < MAX_ROTATIONS_PER_CYCLE);
 
         let rotationApproved = false;
