@@ -1109,10 +1109,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         }
       }
 
-      const finalPositions = [...remaining, newEntries].sort((a, b) => {
+      const finalPositions = [...remaining, ...newEntries].sort((a, b) => {
         if (a.type !== b.type) return a.type === 'call' ? -1 : 1;
-        if (a.type === 'call') return a.buyLeg.strike - b.buyLeg.strike;
-        return b.buyLeg.strike - a.buyLeg.strike;
+        const aStrike = a.buyLeg?.strike ?? 0;
+        const bStrike = b.buyLeg?.strike ?? 0;
+        if (a.type === 'call') return aStrike - bStrike;
+        return bStrike - aStrike;
       });
 
       positionsRef.current = finalPositions;
