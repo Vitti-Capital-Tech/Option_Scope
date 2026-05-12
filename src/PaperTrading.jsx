@@ -806,26 +806,33 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         const totalFees = (pos.entryFee || 0) + exitFee;
 
         const typeSpreads = topSpreads.filter(s => s.buyLeg.type === pos.type);
-        const inTop3 = typeSpreads.slice(0, 3).some(s => s.buyLeg.strike === pos.buyLeg.strike);
+        // Use a unique ID (BuyStrike_SellStrike) to check if we are exactly in the Top 3
+        const currentId = `${pos.buyLeg.strike}_${pos.sellLeg.strike}`;
+        const inTop3 = typeSpreads.slice(0, 3).some(s => `${s.buyLeg.strike}_${s.sellLeg.strike}` === currentId);
 
         // Rotation logic: Only apply to positions of the current expiry
-        if (!shouldExit && pos.expiry === selExpiry && topSpreads.length > 0 && !inTop3) {
-          const currentActiveStrikes = prevPositions.filter(p => p.underlying === underlying).map(p => p.buyLeg.strike);
-          const newStrikesAvailable = typeSpreads.some(s => !currentActiveStrikes.includes(s.buyLeg.strike));
-          if (newStrikesAvailable) {
-            const top1Spread = typeSpreads[0];
-            if (top1Spread) {
-              const top1Strike = top1Spread.buyLeg.strike;
-              const currentStrike = pos.buyLeg.strike;
-              const isPut = pos.type === 'put';
-              if (isPut ? (top1Strike > currentStrike) : (top1Strike < currentStrike)) {
-                shouldExit = true;
-                exitReason = `Lost Top 3 and Rank 1 is better than (${top1Strike})`;
-                console.log(`[Algo] ROTATION TRIGGERED for ${pos.type} ${pos.buyLeg.strike}: ${exitReason}. Top1 is ${top1Strike}.`);
-              }
+        if (!shouldExit && pos.expiry === selExpiry && typeSpreads.length > 0 && !inTop3) {
+          const currentActiveBuyStrikes = prevPositions.filter(p => p.underlying === underlying && p.type === pos.type).map(p => p.buyLeg.strike);
+          const currentActiveSellStrikes = prevPositions.filter(p => p.underlying === underlying && p.type === pos.type).map(p => p.sellLeg.strike);
+
+          // Find the best available candidate that we don't already hold
+          const bestTarget = typeSpreads.find(s => 
+            !currentActiveBuyStrikes.includes(s.buyLeg.strike) && 
+            !currentActiveSellStrikes.includes(s.sellLeg.strike)
+          );
+
+          if (bestTarget) {
+            const targetStrike = bestTarget.buyLeg.strike;
+            const currentStrike = pos.buyLeg.strike;
+            const isPut = pos.type === 'put';
+            // Only rotate if the target is directionally better (closer to ATM)
+            if (isPut ? (targetStrike > currentStrike) : (targetStrike < currentStrike)) {
+              shouldExit = true;
+              exitReason = `Lost Top 3 and Rank 1 better target available (${targetStrike})`;
+              console.log(`[Algo] ROTATION TRIGGERED for ${pos.type} ${pos.buyLeg.strike}: ${exitReason}. Target is ${targetStrike}/${bestTarget.sellLeg.strike}.`);
             }
           } else {
-            console.log(`[Algo] Position ${pos.buyLeg.strike} not in Top 3, but no better unique strikes available in Top Spreads.`);
+            console.log(`[Algo] Position ${pos.buyLeg.strike} not in Top 3, but no better unique target (Buy+Sell) available.`);
           }
         }
 
