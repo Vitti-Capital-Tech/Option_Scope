@@ -139,17 +139,17 @@ This document captures implementation details for the current multi-module appli
 Both Phase 1 (unrealized, live) and Phase 2 (realized, at exit) use the same formula:
 
 ```
-grossPnl = (buyPriceDiff − sellPriceDiff × sellQty) × buyLeg.lotSize + accumulatedSellPnl
+grossPnl = (buyPriceDiff × buyLeg.lotSize) − (sellPriceDiff × sellQty × sellLeg.lotSize) + accumulatedSellPnl
 
 where:
   buyPriceDiff  = latestBuyPrice  − entryBuyPrice
   sellPriceDiff = latestSellPrice − entrySellPrice
 ```
 
-This treats the ratio spread as a single unit scaled by `buyLeg.lotSize`. After a partial exit, `buyLeg.lotSize` and `sellQty` are both reduced proportionally, so the formula naturally reflects the correct remaining fraction without any asymmetry.
+This ensures that the long and short legs are evaluated independently based on their own contract dimensions. During a partial exit (e.g., 50% scale-out), the engine halves the `buyLeg.lotSize` and halves the `sellQty` ratio, but **preserves** the `sellLeg.lotSize`. 
 
-> **Why not `buyPnl = diff × buyLotSize` and `sellPnl = diff × sellLotSize × qty` separately?**  
-> `sellLeg.lotSize` is the fixed contract size and is never scaled during partial exits. Only `buyLeg.lotSize` and `sellQty` are scaled. Using separate lotSizes causes the sell-side PnL to be calculated on the wrong size whenever `buyLotSize ≠ sellLotSize`, which produces an incorrect realized PnL in trade history.
+> **Why evaluate leg sizes independently?**  
+> Previously, the formula scaled the entire spread by `buyLeg.lotSize`. However, during a partial exit where both `sellQty` and `buyLeg.lotSize` are reduced, applying `buyLeg.lotSize` to the sell side caused the short leg's P&L to scale down twice (e.g., `0.5 * 0.5 = 0.25`). By isolating `sellLeg.lotSize`, the sell P&L correctly scales down linearly via the `sellQty` reduction alone.
 
 ### Ticker Subscription
 - Subscribes to all option symbols for the active expiry plus any symbols used by existing positions (to track PnL across expiry rollovers).
@@ -216,6 +216,7 @@ currentCanExitPuts  = (activePutsCount >= 3)
 ### Partial Exit Mechanics
 - `exitFraction` controls what portion of the position is closed (e.g. `0.5` for 50%).
 - The remaining portion has its `sellQty`, `buyLeg.lotSize`, `margin`, and `entryFee` scaled by `(1 - exitFraction)`.
+- The active `margin` calculation accurately applies `sellLeg.lotSize` to compute the short value (`spot * sellQty * sellLeg.lotSize`), preventing severe margin underestimation.
 - `stagesExited` is incremented by 1 on each partial and synced to Supabase.
 - A trade history record is written for the exited fraction (with a synthetic ID `${pos.id}-P${stage}`).
 - **Slot rule**: A partially-exited position is still present in `remaining` and counts as an active slot. No new entry is opened to replace it until the position is **fully** exited (final stage). Only then does the slot become available.
