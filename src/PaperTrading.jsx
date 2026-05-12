@@ -214,23 +214,37 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       if (error) { console.error('Error fetching active positions:', error); return; }
 
       if (data && data.length > 0) {
-        const mapped = data.map(p => ({
-          id: p.id, underlying: p.underlying, expiry: p.expiry, type: p.type,
-          buyLeg: safeParseLeg(p.buy_leg), sellLeg: safeParseLeg(p.sell_leg),
-          sellQty: p.sell_qty, strikeDiff: p.strike_diff, entryTime: new Date(p.entry_time),
-          entryBuyPrice: p.entry_buy_price, entrySellPrice: p.entry_sell_price,
-          entrySpotPrice: p.entry_spot_price,
-          stagesExited: p.stages_exited || 0,
-          margin: p.margin || 0, entryFee: p.entry_fee || 0, accumulatedSellPnl: p.accumulated_sell_pnl || 0,
-          currentBuyPrice: null, currentSellPrice: null,
-          unrealizedGrossPnl: 0, unrealizedNetPnl: -(p.entry_fee || 0), currentExitFee: 0, currentTotalFees: p.entry_fee || 0,
-        }));
-        const sorted = mapped.filter(p => p.buyLeg && p.sellLeg).sort((a, b) => {
-          if (a.type !== b.type) return a.type === 'call' ? -1 : 1;
-          if (a.type === 'call') return a.buyLeg.strike - b.buyLeg.strike;
-          return b.buyLeg.strike - a.buyLeg.strike;
+        setPositions(prev => {
+          const prevMap = new Map(prev.map(p => [p.id, p]));
+          const mapped = data.map(p => {
+            const existing = prevMap.get(p.id);
+            const buyLeg = safeParseLeg(p.buy_leg);
+            const sellLeg = safeParseLeg(p.sell_leg);
+
+            return {
+              id: p.id, underlying: p.underlying, expiry: p.expiry, type: p.type,
+              buyLeg, sellLeg,
+              sellQty: p.sell_qty, strikeDiff: p.strike_diff, entryTime: new Date(p.entry_time),
+              entryBuyPrice: p.entry_buy_price, entrySellPrice: p.entry_sell_price,
+              entrySpotPrice: p.entry_spot_price,
+              stagesExited: p.stages_exited || 0,
+              margin: p.margin || 0, entryFee: p.entry_fee || 0, accumulatedSellPnl: p.accumulated_sell_pnl || 0,
+              // Preserve live data from current state if available
+              currentBuyPrice: existing?.currentBuyPrice ?? null,
+              currentSellPrice: existing?.currentSellPrice ?? null,
+              unrealizedGrossPnl: existing?.unrealizedGrossPnl ?? 0,
+              unrealizedNetPnl: existing?.unrealizedNetPnl ?? -(p.entry_fee || 0),
+              currentExitFee: existing?.currentExitFee ?? 0,
+              currentTotalFees: existing?.currentTotalFees ?? (p.entry_fee || 0),
+            };
+          });
+
+          return mapped.filter(p => p.buyLeg && p.sellLeg).sort((a, b) => {
+            if (a.type !== b.type) return a.type === 'call' ? -1 : 1;
+            if (a.type === 'call') return a.buyLeg.strike - b.buyLeg.strike;
+            return b.buyLeg.strike - a.buyLeg.strike;
+          });
         });
-        setPositions(sorted);
       } else if (data) {
         setPositions([]);
       }
@@ -606,6 +620,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           });
           return updated;
         });
+        lastEvaluatedRef.current = nowTime;
         return;
       }
 
