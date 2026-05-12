@@ -896,6 +896,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               margin: calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, Math.max(pos.entrySpotPrice || spotPrice, spotPrice), pos.sellQty) * (1 - exitFraction),
 
               entryFee: (pos.entryFee || 0) * (1 - exitFraction),
+              accumulatedSellPnl: (pos.accumulatedSellPnl || 0) * (1 - exitFraction),
 
               stagesExited: (pos.stagesExited || 0) + 1,
               currentBuyPrice: latestBuy,
@@ -907,14 +908,15 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             });
 
             // Sync partial update to Supabase
-            const { sellQty, buyLeg, margin, entryFee, stagesExited } = remaining[remaining.length - 1];
+            const { sellQty, buyLeg, margin, entryFee, stagesExited, accumulatedSellPnl } = remaining[remaining.length - 1];
             try {
               const { error } = await supabase.from('active_positions').update({
                 sell_qty: sellQty,
                 buy_leg: JSON.stringify(buyLeg),
                 margin,
                 entry_fee: entryFee,
-                stages_exited: stagesExited
+                stages_exited: stagesExited,
+                accumulated_sell_pnl: accumulatedSellPnl
               }).eq('id', pos.id);
 
               if (error) console.error('Partial Sync Error:', error);
