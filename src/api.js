@@ -246,3 +246,33 @@ export function createTickerStream(symbols, onTicker, onStatus) {
     close: () => { alive = false; ws.close(); },
   };
 }
+
+/**
+ * Fetch current ticker data via REST for a batch of symbols.
+ * Used as a one-time backfill on startup before WebSocket data arrives.
+ */
+export async function getTickers(underlying, symbols) {
+  try {
+    // Fetch all products for ticker data
+    const products = await apiGet('/v2/products', { contract_types: 'call_options,put_options', states: 'live' });
+    if (!products || !Array.isArray(products)) return null;
+
+    const symbolSet = new Set(symbols);
+    const tickers = [];
+    for (const p of products) {
+      if (symbolSet.has(p.symbol)) {
+        tickers.push({
+          symbol: p.symbol,
+          mark_price: parseFloat(p.mark_price || 0),
+          last_price: parseFloat(p.last_price || p.close || 0),
+          greeks: p.greeks || null,
+          mark_vol: p.mark_vol || null,
+        });
+      }
+    }
+    return tickers;
+  } catch (e) {
+    console.error('getTickers error:', e);
+    return null;
+  }
+}

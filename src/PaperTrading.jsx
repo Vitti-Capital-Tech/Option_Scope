@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   loadProducts, getExpiries, getStrikes, getSpotPrice,
-  fmtExpiry, createTickerStream, apiGet
+  fmtExpiry, createTickerStream, apiGet, getTickers
 } from './api';
 import { normalizeIv, toFiniteNumber, matchesOptionType, formatTime, formatDateTime } from './scannerUtils';
 import { useTabListener } from './useTabSync';
@@ -455,6 +455,33 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     });
 
     const allSymbols = Object.keys(symbolMeta);
+
+    // Backfill current prices via REST to avoid "PnL = 0" glitches before first WS message
+    getTickers(underlying, allSymbols).then(res => {
+      if (res) {
+        const backfill = {};
+        res.forEach(t => {
+          const meta = symbolMeta[t.symbol];
+          if (meta) {
+            backfill[t.symbol] = {
+              symbol: t.symbol,
+              strike: meta.strike,
+              lotSize: meta.lotSize,
+              type: meta.type,
+              markPrice: toFiniteNumber(t.mark_price ?? t.last_price ?? t.close),
+              iv: normalizeIv(toFiniteNumber(t.mark_vol ?? t.quotes?.mark_iv ?? t.greeks?.iv)),
+              delta: t.greeks ? toFiniteNumber(t.greeks.delta) : null,
+              deltaNotional: t.greeks ? Math.abs(t.greeks.delta) * meta.lotSize : null,
+            };
+          }
+        });
+        latestTickerDataRef.current = { ...latestTickerDataRef.current, ...backfill };
+        setTickerData(prev => ({ ...prev, ...backfill }));
+
+        // Force evaluation now that we have prices
+        setTimeout(() => evaluateStrategy(true), 100);
+      }
+    }).catch(() => { });
 
     wsRef.current = createTickerStream(
       allSymbols,
