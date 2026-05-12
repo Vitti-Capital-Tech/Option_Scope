@@ -749,10 +749,25 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           continue;
         }
 
+        // 1. DATA GAP GUARD: Check if we have live data
+        // If the website just refreshed, websocket data takes 5-10s to load. 
+        // We MUST skip evaluating exits during this gap to avoid using stale entry prices.
+        const live = latestTickerDataRef.current;
+        const liveBuy = live[pos.buyLeg.symbol]?.markPrice ?? tickerData[pos.buyLeg.symbol]?.markPrice ?? pos.currentBuyPrice;
+        const liveSell = live[pos.sellLeg.symbol]?.markPrice ?? tickerData[pos.sellLeg.symbol]?.markPrice ?? pos.currentSellPrice;
+
+        if (liveBuy == null || liveSell == null) {
+          remaining.push(pos);
+          continue;
+        }
+
+        const latestBuy = liveBuy;
+        const latestSell = liveSell;
+
         let shouldExit = false;
         let exitReason = '';
 
-        // 1. Check Expiry (Hard exit — triggers 2 minutes early for stable settlement price)
+        // 2. Check Expiry (Hard exit — triggers 2 minutes early for stable settlement price)
         if (pos.expiry) {
           const expiryTs = new Date(pos.expiry).getTime();
           const EXPIRY_EARLY_EXIT_MS = 2 * 60 * 1000; // 2 minutes before expiry
@@ -761,17 +776,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             exitReason = 'Expiry Reached (2min Early)';
           }
         }
-
-        // Use the always-fresh ref first; fall back to React state, then stored position price.
-        const live = latestTickerDataRef.current;
-        const latestBuy = live[pos.buyLeg.symbol]?.markPrice
-          ?? tickerData[pos.buyLeg.symbol]?.markPrice
-          ?? pos.currentBuyPrice
-          ?? pos.buyLeg.markPrice;
-        const latestSell = live[pos.sellLeg.symbol]?.markPrice
-          ?? tickerData[pos.sellLeg.symbol]?.markPrice
-          ?? pos.currentSellPrice
-          ?? pos.sellLeg.markPrice;
 
         // Gross PnL: per-unit price diff scaled by lotSize
         const buyPriceDiff = (latestBuy != null && pos.entryBuyPrice != null) ? (latestBuy - pos.entryBuyPrice) : 0;
@@ -1040,8 +1044,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         }
       }
 
-      let successfulEntries = [];
-
       if (newEntries.length > 0) {
         for (const t of newEntries) {
           try {
@@ -1101,13 +1103,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               }
             } else {
               console.log('Supabase Insert Success:', t.id);
-              successfulEntries.push(t);
             }
           } catch (err) { console.error('Supabase Insert Exception:', err); }
         }
       }
 
-      const finalPositions = [...remaining, ...successfulEntries].sort((a, b) => {
+      const finalPositions = [...remaining, newEntries].sort((a, b) => {
         if (a.type !== b.type) return a.type === 'call' ? -1 : 1;
         if (a.type === 'call') return a.buyLeg.strike - b.buyLeg.strike;
         return b.buyLeg.strike - a.buyLeg.strike;
@@ -1115,7 +1116,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
       positionsRef.current = finalPositions;
 
-      if (exited.length > 0 || successfulEntries.length > 0) {
+      if (exited.length > 0 || newEntries.length > 0) {
         // Structural change (exits or entries) — replace the full array
         setPositions(finalPositions);
       } else {
@@ -1610,7 +1611,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                           <td>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                               <span className={`pt-type-badge ${p.type}`}>{p.type.toUpperCase()}</span>
-                              <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 600 }}>1:{p.sellQty}</span>
+                              <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 600 }}>1:{p.sellQty.toFixed(2)}</span>
                             </div>
                           </td>
                           <td><span style={{ fontSize: '11px', fontWeight: 600 }}>{fmtExpiry(p.expiry)}</span></td>
@@ -1829,7 +1830,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                     <th>Entry Fee</th>
                     <th>Exit Fee</th>
                     <th>Out (Buy / Sell)</th>
-
                     <th>Realized P&L</th>
                     <th>Exit Reason</th>
                   </tr></thead>
