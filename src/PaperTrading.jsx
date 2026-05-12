@@ -435,7 +435,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
     const configSymbols = [...new Set(products.map(p => p.symbol))];
     const symHash = configSymbols.sort().join(',');
-    if (wsRef.current && lastWsSymbolsRef.current === symHash) return;
+
+    // Only skip if WS is truthy, OPEN (1), and symbol hash hasn't changed
+    if (wsRef.current && wsRef.current.readyState === 1 && lastWsSymbolsRef.current === symHash) return;
 
     if (wsRef.current) {
       try { wsRef.current.close(); } catch (e) { }
@@ -550,6 +552,17 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     }
   }, [products, selExpiry, startTrading]);
 
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && trading) {
+        console.log('[Connection] Tab focused, verifying WebSocket status...');
+        startTrading();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [trading, startTrading]);
+
   const stopTrading = useCallback(() => {
     if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
     if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
@@ -620,11 +633,17 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   }, [config, spotPrice]);
 
 
-
   const evaluateStrategy = useCallback(async (force = false) => {
     if (!trading || !spotPrice || isEvaluatingRef.current) return;
     isEvaluatingRef.current = true;
     try {
+      // Health Check: If WebSocket is disconnected, restart it and return.
+      // startTrading() will handle the reconnection and subsequent evaluation.
+      if (!wsRef.current || wsRef.current.readyState !== 1) {
+        console.warn('[Algo] WebSocket not connected (ReadyState: ' + (wsRef.current?.readyState ?? 'None') + '). Restarting...');
+        startTrading();
+        return;
+      }
 
       const allTickers = Object.values(latestTickerDataRef.current);
       if (allTickers.length === 0) return;
