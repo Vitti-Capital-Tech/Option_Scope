@@ -821,9 +821,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               if (isPut ? (top1Strike > currentStrike) : (top1Strike < currentStrike)) {
                 shouldExit = true;
                 exitReason = `Lost Top 3 and Rank 1 is better than (${top1Strike})`;
-                console.log(`[Algo] Position ${pos.buyLeg.strike}/${pos.sellLeg.strike} flagged for rotation: ${exitReason}`);
+                console.log(`[Algo] ROTATION TRIGGERED for ${pos.type} ${pos.buyLeg.strike}: ${exitReason}. Top1 is ${top1Strike}.`);
               }
             }
+          } else {
+            console.log(`[Algo] Position ${pos.buyLeg.strike} not in Top 3, but no better unique strikes available in Top Spreads.`);
           }
         }
 
@@ -998,14 +1000,24 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           p => p.underlying === underlying && p.type === spreadType && Number(p.sellLeg.strike) === sStrike
         );
 
-        if (buyStrikeConflict || sellStrikeConflict) continue;
+        if (buyStrikeConflict) {
+          console.log(`[Algo] Entry Skip: Buy strike ${bStrike} already active/pending.`);
+          continue;
+        }
+        if (sellStrikeConflict) {
+          console.log(`[Algo] Entry Skip: Sell strike ${sStrike} already active/pending.`);
+          continue;
+        }
 
         // Count all remaining positions for this type (including partially-exited ones — they still hold a slot)
         const count = remaining.filter(p => p.underlying === underlying && p.type === spreadType).length +
           newEntries.filter(p => p.underlying === underlying && p.type === spreadType).length;
 
         // Hard cap: never exceed 3 per type. A partial exit does NOT free up a slot.
-        if (count >= 3) continue;
+        if (count >= 3) {
+          console.log(`[Algo] Entry Skip for ${spreadType} ${bStrike}/${sStrike}: Max positions (3) reached. Current: ${count} (Rem: ${remaining.filter(p => p.type === spreadType).length}, New: ${newEntries.filter(p => p.type === spreadType).length})`);
+          continue;
+        }
 
         const entryBuyFee = calculateFee(spread.buyLeg.markPrice, spotPrice, 1, spread.buyLeg.lotSize);
         const entrySellFee = calculateFee(spread.sellLeg.markPrice, spotPrice, spread.sellQty, spread.sellLeg.lotSize);
