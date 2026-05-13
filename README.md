@@ -17,7 +17,7 @@ The app is built around three workflows:
 - **Advanced Chart Tools**: SMA(20), drawing mode for S/R lines, zoom/scroll controls, and theme toggle.
 - **Watchlist and Alerts**: Track multiple strategies, monitor live + 1h high/low, and trigger toast/notification alerts.
 - **Scanner Performance Pipeline**: Buffered ticker ingestion (50ms batch flush) and throttled compute cycle for large symbol sets.
-- **Automated Rotation Engine**: Positions are rotated toward higher-ranked (closer-to-ATM) strikes. Rotation is gated by a portfolio threshold guard (3 calls + 3 puts) and limited to **one rotation per side per scan cycle** to prevent cascading exits.
+- **Automated Rotation Engine**: Positions are rotated toward higher-ranked (closer-to-ATM) strikes. The engine uses a surgical 1-for-1 replacement logic: each new superior unique buy strike in the market displaces exactly one lower-ranked existing position. Rotation is gated by a portfolio threshold guard (3 calls + 3 puts) and limited to 3 rotations per cycle.
 - **Hard Portfolio Cap**: Maximum 3 active positions per option type (calls/puts) enforced at both the local evaluation level and via a DB-level count guard before every Supabase insert. Partially-exited positions hold their slot until fully closed.
 - **Connection Stability**: Intelligent WebSocket hashing (`lastWsSymbolsRef`) prevents redundant restarts and "closed before established" errors.
 - **Evergreen Data Engine**: Background product/expiry refresh every 5 minutes keeps filters and candidate pools fresh without manual page reloads.

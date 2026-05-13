@@ -190,13 +190,13 @@ Evaluated only if `shouldExit` is still `false` after the expiry check.
 
 #### Priority 3 — Rotation (Gated)
 - Evaluated only if `shouldExit` is still `false` and the position's expiry matches the active `selExpiry`.
-- A position is a rotation candidate when:
-  1. Its buy strike is **not** in the current top-3 ranked spreads for its type.
-  2. At least one top-ranked spread has a buy strike **not** already held by an active position.
-  3. The top-ranked spread's buy strike is directionally **better** than the current position:
-     - **Put**: `top1Strike > currentStrike` (higher put buy strike is closer to ATM)
-     - **Call**: `top1Strike < currentStrike` (lower call buy strike is closer to ATM)
-- `exitReason = 'Lost Top 3 and Rank 1 is better than (X)'`
+- **Ranking Check**: Uses `uniqueTopSpreads` (filtered via `pickTopUniqueStrikes` to one entry per buy strike) to determine if a position is still "Top 3 quality". A position is a candidate for exit if its buy strike is no longer in the Top 3 unique buy strikes for its type.
+- **Surgical Replacement**: By ranking against unique buy strikes, the algorithm ensures a 1-for-1 replacement pattern. One new superior strike in the market will only displace the single lowest-ranked existing position.
+- **Fallback Target Search**: If a position is flagged for rotation, the engine searches the **full** `topSpreads` list (all variations) for a `bestTarget`. This allows the algorithm to "fall back" to alternative sell strikes for a new buy strike if the optimal one is blocked by a conflict with an existing position.
+- Rotation is directionally filtered:
+  - **Put**: `targetStrike > currentStrike` (higher put buy strike is closer to ATM)
+  - **Call**: `targetStrike < currentStrike` (lower call buy strike is closer to ATM)
+- `exitReason = 'Lost Top 3 and Rank 1 better target available (X)'`
 
 ### Threshold Guard (Rotation-only)
 
@@ -210,7 +210,7 @@ currentCanExitCalls = (activeCallsCount >= 3)
 currentCanExitPuts  = (activePutsCount >= 3)
 ```
 
-- Only ONE rotation is allowed per option type per scan cycle. After a rotation is approved, the guard flag (`currentCanExitCalls` or `currentCanExitPuts`) is set to `false` to block any further rotations in the same loop iteration.
+- Only THREE rotations are allowed across the entire loop iteration (`MAX_ROTATIONS_PER_CYCLE = 3`).
 - **Critical fix**: The `rotationApproved` boolean is captured **before** the guard flag is locked, and used by the Final Guard. This prevents the guard from self-blocking the very rotation it just approved.
 - ATM/ITM and Expiry exits are **never** affected by this guard.
 
