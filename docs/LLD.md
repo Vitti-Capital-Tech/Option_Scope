@@ -130,7 +130,7 @@ This document captures implementation details for the current multi-module appli
 ### Concurrency & Performance
 - **`isEvaluatingRef`**: Mutex lock preventing parallel evaluation cycles from racing (triggered by rapid WebSocket or scanner sync events).
 - **`positionsRef`**: Always-current ref clone of `positions` state, read directly by the evaluation loop to avoid stale closure captures.
-- **Evaluation cadence**: Full strategy evaluation runs once per clock minute or when a new scanner broadcast arrives. PnL and current price updates run every **1 second** in between for a "live" dashboard feel.
+- **Evaluation cadence**: Full strategy evaluation runs once per clock minute or when a new scanner broadcast arrives. PnL and current price updates run every **1 second** in between for a "live" dashboard feel. A 1-second fallback `setInterval` heartbeat guarantees the UI stays responsive even if the WebSocket stream is temporarily silent.
 - **Phase 1 (PnL update)**: Reads live prices from `latestTickerDataRef.current` — the always-fresh ref — every second.
 - **Phase 2 (strategy evaluation)**: Only replaces the full `positions` array (`setPositions(finalPositions)`) when there are structural changes (exits or entries). If no positions were opened or closed, uses a functional in-place map to prevent the table flash at the minute boundary.
 
@@ -155,6 +155,7 @@ This ensures that the long and short legs are evaluated independently based on t
 - **Restart Optimization**: `lastWsSymbolsRef` hashes the symbol list to prevent redundant WebSocket restarts during periodic product refreshes, avoiding the "WebSocket is closed before established" error.
 - **Auto-Refresh**: Products and expiries are re-queried from Delta every 5 minutes; if the currently selected expiry disappears (e.g. daily rollover), the UI automatically shifts to the next available date.
 - **Buffered Flush**: 50ms ticker batching reduces render pressure under high-volatility data bursts.
+- **Defensive Backfill (`refreshAllTickers`)**: A manual UI refresh triggers a targeted `/v2/tickers` REST request. This intelligently merges live prices without overwriting existing data if the API returns zeroes or missing fields, guaranteeing immediate price accuracy after a refresh without "0.00" UI glitches.
 
 ### Entry Logic
 

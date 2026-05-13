@@ -72,6 +72,7 @@ Browser (React + Vite)
 - **Restart Optimization**: `lastWsSymbolsRef` hashes the symbol list to prevent redundant WebSocket restarts during periodic product refreshes, avoiding the "WebSocket is closed before established" error.
 - **Auto-Refresh**: Products and expiries are re-queried from Delta every 5 minutes; if the currently selected expiry disappears (e.g. daily rollover), the UI automatically shifts to the next available date.
 - **Buffered Flush**: 50ms ticker batching reduces render pressure under high-volatility data bursts.
+- **Defensive Backfill**: A manual UI refresh triggers a targeted `/v2/tickers` REST request. This intelligently merges live prices without overwriting existing data with missing/zeroed fields, guaranteeing immediate price accuracy even if the WebSocket stream is temporarily silent.
 
 ### Live Scanning
 
@@ -87,7 +88,7 @@ Browser (React + Vite)
 3. **Expiry**: exit 2 minutes early for stable settlement prices.
 4. **ATM/ITM scale-out**: multi-stage partial exits based on `strikeDiff`; partially-exited positions stay in the portfolio, holding their slot while cleanly scaling down their PnL multipliers and margin allocations.
 5. **Rotation**: exit position if a better-ranked unique buy strike is available (surgical 1-for-1 replacement); gated by threshold guard (min 3 per side) and limited to 3 rotations per cycle. Uses `uniqueTopSpreads` for ranking to prevent multiple variations of a single strike from causing mass exits.
-6. **Auto-Maintenance**: Product and expiry list refreshed every 5 minutes to capture rollovers. Header UI uses `tabular-nums` and fixed-width containers to maintain layout stability during high-frequency (1s) PnL updates.
+6. **Auto-Maintenance**: Product and expiry list refreshed every 5 minutes to capture rollovers. Header UI uses `tabular-nums` and fixed-width containers to maintain layout stability during high-frequency (1s) PnL updates. A 1-second background heartbeat ensures the UI stays perfectly synced even during extremely quiet market periods when the WebSocket is inactive.
 7. Open new positions up to 3 per type from the ranked candidate list. DB count guard prevents exceeding 3 even under race conditions.
 8. Sync all entries, exits, and partial scale-outs to Supabase. Full `positions` array replacement only happens when rows are added/removed, not on routine PnL updates.
 

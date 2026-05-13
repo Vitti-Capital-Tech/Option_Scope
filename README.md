@@ -19,7 +19,7 @@ The app is built around three workflows:
 - **Scanner Performance Pipeline**: Buffered ticker ingestion (50ms batch flush) and throttled compute cycle for large symbol sets.
 - **Automated Rotation Engine**: Positions are rotated toward higher-ranked (closer-to-ATM) strikes. The engine uses a surgical 1-for-1 replacement logic: each new superior unique buy strike in the market displaces exactly one lower-ranked existing position. Rotation is gated by a portfolio threshold guard (3 calls + 3 puts) and limited to 3 rotations per cycle.
 - **Hard Portfolio Cap**: Maximum 3 active positions per option type (calls/puts) enforced at both the local evaluation level and via a DB-level count guard before every Supabase insert. Partially-exited positions hold their slot until fully closed.
-- **Connection Stability**: Intelligent WebSocket hashing (`lastWsSymbolsRef`) prevents redundant restarts and "closed before established" errors.
+- **Connection Stability**: Intelligent WebSocket hashing (`lastWsSymbolsRef`) prevents redundant restarts. A defensive REST backfill via `/v2/tickers` guarantees accurate prices on manual refreshes without zeroing existing data, and a 1-second fallback heartbeat keeps the UI perfectly synced even when market data streams are quiet.
 - **Evergreen Data Engine**: Background product/expiry refresh every 5 minutes keeps filters and candidate pools fresh without manual page reloads.
 - **Paper Trade Analytics**: Margin estimate (lot-size aware), unrealized/realized PnL, precise fraction-based multi-stage scale-out exits, expiry settlement, and trade history export.
 
