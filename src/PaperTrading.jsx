@@ -430,6 +430,72 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     return () => clearInterval(spotIntervalRef.current);
   }, [underlying]);
 
+  const getSymbolMeta = useCallback(() => {
+    if (!selExpiry || !products.length) return {};
+    const strikes = getStrikes(products, selExpiry);
+    const symbolMeta = {};
+    for (const strike of strikes) {
+      const callProd = products.find(p => p.settlement_time === selExpiry && parseFloat(p.strike_price) === parseFloat(strike) && matchesOptionType(p, 'call'));
+      if (callProd) {
+        const lotSize = parseFloat(callProd.contract_size ?? callProd.quoting_precision ?? 1);
+        symbolMeta[callProd.symbol] = { strike: parseFloat(strike), lotSize, type: 'call', symbol: callProd.symbol };
+      }
+      const putProd = products.find(p => p.settlement_time === selExpiry && parseFloat(p.strike_price) === parseFloat(strike) && matchesOptionType(p, 'put'));
+      if (putProd) {
+        const lotSize = parseFloat(putProd.contract_size ?? putProd.quoting_precision ?? 1);
+        symbolMeta[putProd.symbol] = { strike: parseFloat(strike), lotSize, type: 'put', symbol: putProd.symbol };
+      }
+    }
+    // Also monitor symbols from existing positions of this underlying (to track P&L across expiries)
+    positionsRef.current.forEach(pos => {
+      if (pos.underlying === underlying) {
+        if (pos.buyLeg && !symbolMeta[pos.buyLeg.symbol]) {
+          symbolMeta[pos.buyLeg.symbol] = { strike: pos.buyLeg.strike, lotSize: pos.buyLeg.lotSize, type: pos.type, symbol: pos.buyLeg.symbol };
+        }
+        if (pos.sellLeg && !symbolMeta[pos.sellLeg.symbol]) {
+          symbolMeta[pos.sellLeg.symbol] = { strike: pos.sellLeg.strike, lotSize: pos.sellLeg.lotSize, type: pos.type, symbol: pos.sellLeg.symbol };
+        }
+      }
+    });
+    return symbolMeta;
+  }, [selExpiry, products, underlying]);
+
+  const refreshAllTickers = useCallback(async () => {
+    const symbolMeta = getSymbolMeta();
+    const allSymbols = Object.keys(symbolMeta);
+    if (!allSymbols.length) return false;
+
+    try {
+      const res = await getTickers(underlying, allSymbols);
+      if (res) {
+        const backfill = {};
+        res.forEach(t => {
+          const meta = symbolMeta[t.symbol];
+          if (meta) {
+            const prev = latestTickerDataRef.current[t.symbol];
+            const markPrice = toFiniteNumber(t.mark_price ?? t.last_price ?? t.close);
+            const iv = normalizeIv(toFiniteNumber(t.mark_vol ?? t.quotes?.mark_iv ?? t.greeks?.iv));
+
+            backfill[t.symbol] = {
+              symbol: t.symbol,
+              strike: meta.strike,
+              lotSize: meta.lotSize,
+              type: meta.type,
+              markPrice: (markPrice && markPrice > 0) ? markPrice : (prev?.markPrice ?? null),
+              iv: iv ?? (prev?.iv ?? null),
+              delta: t.greeks ? toFiniteNumber(t.greeks.delta) : (prev?.delta ?? null),
+              deltaNotional: t.greeks ? Math.abs(t.greeks.delta) * meta.lotSize : (prev?.deltaNotional ?? null),
+            };
+          }
+        });
+        latestTickerDataRef.current = { ...latestTickerDataRef.current, ...backfill };
+        setTickerData(prev => ({ ...prev, ...backfill }));
+        return true;
+      }
+    } catch (e) { console.error('Manual Refresh Error:', e); }
+    return false;
+  }, [underlying, getSymbolMeta]);
+
   const startTrading = useCallback(() => {
     if (!selExpiry || !products.length) return;
 
@@ -453,66 +519,20 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     setLastEvaluated(0);
     setTimeRemaining(null);
 
-    const strikes = getStrikes(products, selExpiry);
-    if (strikes.length < 2) {
+    const symbolMeta = getSymbolMeta();
+    const allSymbols = Object.keys(symbolMeta);
+    if (allSymbols.length < 2) {
       setTrading(false);
       return;
     }
 
-    const symbolMeta = {};
-    for (const strike of strikes) {
-      const callProd = products.find(p => p.settlement_time === selExpiry && parseFloat(p.strike_price) === parseFloat(strike) && matchesOptionType(p, 'call'));
-      if (callProd) {
-        const lotSize = parseFloat(callProd.contract_size ?? callProd.quoting_precision ?? 1);
-        symbolMeta[callProd.symbol] = { strike: parseFloat(strike), lotSize, type: 'call', symbol: callProd.symbol };
-      }
-      const putProd = products.find(p => p.settlement_time === selExpiry && parseFloat(p.strike_price) === parseFloat(strike) && matchesOptionType(p, 'put'));
-      if (putProd) {
-        const lotSize = parseFloat(putProd.contract_size ?? putProd.quoting_precision ?? 1);
-        symbolMeta[putProd.symbol] = { strike: parseFloat(strike), lotSize, type: 'put', symbol: putProd.symbol };
-      }
-    }
-
-    // Also monitor symbols from existing positions of this underlying (to track P&L across expiries)
-    positionsRef.current.forEach(pos => {
-      if (pos.underlying === underlying) {
-        if (pos.buyLeg && !symbolMeta[pos.buyLeg.symbol]) {
-          symbolMeta[pos.buyLeg.symbol] = { strike: pos.buyLeg.strike, lotSize: pos.buyLeg.lotSize, type: pos.type, symbol: pos.buyLeg.symbol };
-        }
-        if (pos.sellLeg && !symbolMeta[pos.sellLeg.symbol]) {
-          symbolMeta[pos.sellLeg.symbol] = { strike: pos.sellLeg.strike, lotSize: pos.sellLeg.lotSize, type: pos.type, symbol: pos.sellLeg.symbol };
-        }
-      }
-    });
-
-    const allSymbols = Object.keys(symbolMeta);
-
     // Backfill current prices via REST to avoid "PnL = 0" glitches before first WS message
-    getTickers(underlying, allSymbols).then(res => {
-      if (res) {
-        const backfill = {};
-        res.forEach(t => {
-          const meta = symbolMeta[t.symbol];
-          if (meta) {
-            backfill[t.symbol] = {
-              symbol: t.symbol,
-              strike: meta.strike,
-              lotSize: meta.lotSize,
-              type: meta.type,
-              markPrice: toFiniteNumber(t.mark_price ?? t.last_price ?? t.close),
-              iv: normalizeIv(toFiniteNumber(t.mark_vol ?? t.quotes?.mark_iv ?? t.greeks?.iv)),
-              delta: t.greeks ? toFiniteNumber(t.greeks.delta) : null,
-              deltaNotional: t.greeks ? Math.abs(t.greeks.delta) * meta.lotSize : null,
-            };
-          }
-        });
-        latestTickerDataRef.current = { ...latestTickerDataRef.current, ...backfill };
-        setTickerData(prev => ({ ...prev, ...backfill }));
-
+    refreshAllTickers().then(success => {
+      if (success) {
         // Force evaluation now that we have prices
         setTimeout(() => evaluateStrategy(true), 100);
       }
-    }).catch(() => { });
+    });
 
     wsRef.current = createTickerStream(
       allSymbols,
@@ -541,7 +561,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       },
       () => { }
     );
-  }, [selExpiry, products, flushTickerBuffer]);
+  }, [selExpiry, products, flushTickerBuffer, getSymbolMeta, refreshAllTickers]);
 
   // ── Auto-start/restart stream when parameters change ──────────────────
   useEffect(() => {
@@ -1239,7 +1259,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     if (!trading) return;
     const interval = setInterval(() => {
       evaluateStrategy();
-    }, 5000);
+    }, 1000);
     return () => clearInterval(interval);
   }, [trading, evaluateStrategy]);
 
@@ -1623,7 +1643,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                       Spot Price: {spotPrice || '---'}
                     </div>
                     <button
-                      onClick={() => evaluateStrategy(true)}
+                      onClick={async () => {
+                        await refreshAllTickers();
+                        evaluateStrategy(true);
+                      }}
                       disabled={!trading}
                       title="Refresh now"
                       style={{

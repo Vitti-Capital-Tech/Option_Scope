@@ -253,24 +253,26 @@ export function createTickerStream(symbols, onTicker, onStatus) {
  */
 export async function getTickers(underlying, symbols) {
   try {
-    // Fetch all products for ticker data
-    const products = await apiGet('/v2/products', { contract_types: 'call_options,put_options', states: 'live' });
-    if (!products || !Array.isArray(products)) return null;
+    const res = await apiGet('/v2/tickers', {
+      underlying_asset_symbols: underlying,
+      contract_types: 'call_options,put_options'
+    });
+    if (!res || !Array.isArray(res)) return null;
 
     const symbolSet = new Set(symbols);
-    const tickers = [];
-    for (const p of products) {
-      if (symbolSet.has(p.symbol)) {
-        tickers.push({
-          symbol: p.symbol,
-          mark_price: parseFloat(p.mark_price || 0),
-          last_price: parseFloat(p.last_price || p.close || 0),
-          greeks: p.greeks || null,
-          mark_vol: p.mark_vol || null,
+    const result = [];
+    for (const t of res) {
+      if (symbolSet.has(t.symbol)) {
+        result.push({
+          symbol: t.symbol,
+          mark_price: toFiniteNumber(t.mark_price),
+          last_price: toFiniteNumber(t.last_price || t.close),
+          greeks: t.greeks || null,
+          mark_vol: t.mark_vol || t.quotes?.mark_iv || null,
         });
       }
     }
-    return tickers;
+    return result;
   } catch (e) {
     console.error('getTickers error:', e);
     return null;
