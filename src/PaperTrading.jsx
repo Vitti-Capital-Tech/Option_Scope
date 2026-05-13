@@ -37,6 +37,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       minSellPremium: 10,
       maxNetPremium: 20,
       minLongDist: 500,
+      maxSellQty: 10,
     };
     return base;
   });
@@ -800,8 +801,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         // If the website just refreshed, websocket data takes 5-10s to load. 
         // We MUST skip evaluating exits during this gap to avoid using stale entry prices.
         const live = latestTickerDataRef.current;
-        const liveBuy = live[pos.buyLeg.symbol]?.markPrice ?? tickerData[pos.buyLeg.symbol]?.markPrice ?? pos.currentBuyPrice;
-        const liveSell = live[pos.sellLeg.symbol]?.markPrice ?? tickerData[pos.sellLeg.symbol]?.markPrice ?? pos.currentSellPrice;
+        const liveBuy = live[pos.buyLeg.symbol]?.markPrice ?? pos.currentBuyPrice;
+        const liveSell = live[pos.sellLeg.symbol]?.markPrice ?? pos.currentSellPrice;
 
         if (liveBuy == null || liveSell == null) {
           remaining.push(pos);
@@ -1197,7 +1198,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     } finally {
       isEvaluatingRef.current = false;
     }
-  }, [trading, underlying, selExpiry, spotPrice, tickerData, scannerSyncVersion, pickTopUniqueStrikes, scanTickers]);
+  }, [trading, underlying, selExpiry, spotPrice, scannerSyncVersion, pickTopUniqueStrikes, scanTickers]);
 
   const renderRatio = (t, showOriginal = true) => {
     const r = t.exitReason || '';
@@ -1254,14 +1255,19 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     }
   }, [tickerData, trading, spotPrice, lastEvaluated, evaluateStrategy, scannerSyncVersion]);
 
+  const evaluateStrategyRef = useRef(evaluateStrategy);
+  useEffect(() => {
+    evaluateStrategyRef.current = evaluateStrategy;
+  }, [evaluateStrategy]);
+
   // Separate heartbeat for PnL/Expiry/Background tasks
   useEffect(() => {
     if (!trading) return;
     const interval = setInterval(() => {
-      evaluateStrategy();
+      if (evaluateStrategyRef.current) evaluateStrategyRef.current();
     }, 1000);
     return () => clearInterval(interval);
-  }, [trading, evaluateStrategy]);
+  }, [trading]);
 
   useEffect(() => () => {
     if (wsRef.current) wsRef.current.close();
@@ -1509,32 +1515,32 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             <span className="pt-control-label">Filters</span>
             <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
               <label style={{ marginBottom: 0 }}>Min Strike Diff ($):</label>
-              <input type="number" value={config.minStrikeDiff} onChange={e => updateConfig('minStrikeDiff', Number(e.target.value))} style={{ width: 60, padding: '4px 8px', fontSize: '13px' }} />
+              <input type="number" value={config.minStrikeDiff ?? ''} onChange={e => updateConfig('minStrikeDiff', Number(e.target.value))} style={{ width: 60, padding: '4px 8px', fontSize: '13px' }} />
             </div>
             <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
               <label style={{ marginBottom: 0 }}>Min IV Diff (%):</label>
-              <input type="number" value={config.minIvDiff} onChange={e => updateConfig('minIvDiff', Number(e.target.value))} style={{ width: 50, padding: '4px 8px', fontSize: '13px' }} />
+              <input type="number" value={config.minIvDiff ?? ''} onChange={e => updateConfig('minIvDiff', Number(e.target.value))} style={{ width: 50, padding: '4px 8px', fontSize: '13px' }} />
             </div>
             <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
               <label style={{ marginBottom: 0 }}>Max Ratio Dev:</label>
-              <input type="number" step="0.01" value={config.maxRatioDeviation} onChange={e => updateConfig('maxRatioDeviation', Number(e.target.value))} style={{ width: 60, padding: '4px 8px', fontSize: '13px' }} />
+              <input type="number" step="0.01" value={config.maxRatioDeviation ?? ''} onChange={e => updateConfig('maxRatioDeviation', Number(e.target.value))} style={{ width: 60, padding: '4px 8px', fontSize: '13px' }} />
             </div>
             <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
               <label style={{ marginBottom: 0 }}>Min Sell Prem ($):</label>
-              <input type="number" value={config.minSellPremium} onChange={e => updateConfig('minSellPremium', Number(e.target.value))} style={{ width: 60, padding: '4px 8px', fontSize: '13px' }} />
+              <input type="number" value={config.minSellPremium ?? ''} onChange={e => updateConfig('minSellPremium', Number(e.target.value))} style={{ width: 60, padding: '4px 8px', fontSize: '13px' }} />
             </div>
 
             <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
               <label style={{ marginBottom: 0 }}>Max Debit ($):</label>
-              <input type="number" value={config.maxNetPremium} onChange={e => updateConfig('maxNetPremium', Number(e.target.value))} style={{ width: 60, padding: '4px 8px', fontSize: '13px' }} />
+              <input type="number" value={config.maxNetPremium ?? ''} onChange={e => updateConfig('maxNetPremium', Number(e.target.value))} style={{ width: 60, padding: '4px 8px', fontSize: '13px' }} />
             </div>
             <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
               <label style={{ marginBottom: 0 }}>Min Long Dist:</label>
-              <input type="number" value={config.minLongDist} onChange={e => updateConfig('minLongDist', Number(e.target.value))} style={{ width: 60, padding: '4px 8px', fontSize: '13px' }} />
+              <input type="number" value={config.minLongDist ?? ''} onChange={e => updateConfig('minLongDist', Number(e.target.value))} style={{ width: 60, padding: '4px 8px', fontSize: '13px' }} />
             </div>
             <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
               <label style={{ marginBottom: 0 }}>Max Ratio (1:X):</label>
-              <input type="number" step="0.25" value={config.maxSellQty} onChange={e => updateConfig('maxSellQty', Number(e.target.value))} style={{ width: 65, padding: '4px 8px', fontSize: '13px' }} />
+              <input type="number" step="0.25" value={config.maxSellQty ?? ''} onChange={e => updateConfig('maxSellQty', Number(e.target.value))} style={{ width: 65, padding: '4px 8px', fontSize: '13px' }} />
             </div>
 
 
