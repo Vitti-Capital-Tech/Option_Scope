@@ -1,4 +1,5 @@
 // Delta Exchange API helpers
+import { toFiniteNumber } from './scannerUtils';
 const PROXY = '/api';
 // Keep WS host aligned with REST host (India in this project).
 const WS_URL = 'wss://socket.india.delta.exchange';
