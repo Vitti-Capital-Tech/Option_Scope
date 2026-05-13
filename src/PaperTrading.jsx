@@ -745,6 +745,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         }
       }
 
+      // C. Create a unique-by-buy-strike version for ranking purposes (prevents mass-exits)
+      // but keep the original topSpreads for the entry loop (allows falling back to other sell strikes)
+      const uniqueTopSpreads = [
+        ...pickTopUniqueStrikes(topSpreads.filter(s => s.buyLeg.type === 'call'), 10),
+        ...pickTopUniqueStrikes(topSpreads.filter(s => s.buyLeg.type === 'put'), 10)
+      ];
+
       // Guard: Prevent accidental exits during data gaps
       // Use Ref to avoid stale closures and unnecessary dependencies
       const prevPositions = positionsRef.current;
@@ -805,18 +812,17 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
         const totalFees = (pos.entryFee || 0) + exitFee;
 
-        const typeSpreads = topSpreads.filter(s => s.buyLeg.type === pos.type);
-        // Use a unique ID (BuyStrike_SellStrike) to check if we are exactly in the Top 3
-        const currentId = `${pos.buyLeg.strike}_${pos.sellLeg.strike}`;
-        const inTop3 = typeSpreads.slice(0, 3).some(s => `${s.buyLeg.strike}_${s.sellLeg.strike}` === currentId);
+        const typeSpreads = uniqueTopSpreads.filter(s => s.buyLeg.type === pos.type);
+        // Check if our current buy strike is still among the Top 3 unique buy strikes
+        const inTop3 = typeSpreads.slice(0, 3).some(s => Number(s.buyLeg.strike) === Number(pos.buyLeg.strike));
 
         // Rotation logic: Only apply to positions of the current expiry
         if (!shouldExit && pos.expiry === selExpiry && typeSpreads.length > 0 && !inTop3) {
           const currentActiveBuyStrikes = prevPositions.filter(p => p.underlying === underlying && p.type === pos.type).map(p => p.buyLeg.strike);
           const currentActiveSellStrikes = prevPositions.filter(p => p.underlying === underlying && p.type === pos.type).map(p => p.sellLeg.strike);
 
-          // Find the best available candidate that we don't already hold
-          const bestTarget = typeSpreads.find(s =>
+          // Find the best available candidate in the full list (allows falling back to other sell strikes)
+          const bestTarget = topSpreads.filter(s => s.buyLeg.type === pos.type).find(s =>
             !currentActiveBuyStrikes.includes(s.buyLeg.strike) &&
             !currentActiveSellStrikes.includes(s.sellLeg.strike)
           );
