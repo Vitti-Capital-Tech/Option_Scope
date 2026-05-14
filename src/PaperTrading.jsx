@@ -1058,6 +1058,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         const sStrike = Number(spread.sellLeg.strike);
         const spreadType = spread.buyLeg.type;
 
+        // NEW: Safety Buffer - don't enter if expiry is less than 5 minutes away
+        const minutesToExpiry = (new Date(spread.expiry).getTime() - Date.now()) / 60000;
+        if (minutesToExpiry < 5) {
+          continue; 
+        }
+
         // Only block if buy strike is already active for same type and underlying
         const buyStrikeConflict = remaining.some(
           p => p.underlying === underlying && p.type === spreadType && Number(p.buyLeg.strike) === bStrike

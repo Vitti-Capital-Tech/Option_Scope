@@ -205,7 +205,9 @@ This ensures that the long and short legs are evaluated independently based on t
 The evaluation loop processes each active position through a priority-ordered exit decision tree:
 
 #### Priority 1 — Expiry Settlement (Hard Exit, always runs)
-- If `Date.now() >= expiryTs - 2min`, the position is exited **2 minutes before** the actual expiry timestamp.
+#### 2. Exit & Entry Timing
+- **Pre-Expiry Exit**: Active positions are automatically closed **2 minutes** before the contract expires to ensure stable settlement.
+- **Entry Safety Buffer**: New positions will **not** be entered if the expiry is less than **5 minutes** away. This prevents "jitter" trades that would be immediately closed by the pre-expiry exit rule.
 - Early exit captures stable mark prices before the settlement spike/crash window at exact expiry.
 - **Bypasses all guards.**
 - `exitReason = 'Expiry Reached (2min Early)'`
