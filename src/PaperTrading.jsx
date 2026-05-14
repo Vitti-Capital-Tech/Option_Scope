@@ -1365,18 +1365,18 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
 
   const exportCSV = () => {
-    if (!tradeHistory.length) {
-      alert('Trade history is empty. Export will be available once trades are closed.');
+    if (!filteredTradeHistory.length) {
+      alert('No closed trades found for the selected filter.');
       return;
     }
     const headers = ['Entry Time', 'Exit Time', 'Expiry', 'Type', 'Ratio', 'Buy Strike', 'Sell Strike', 'Entry Buy Price', 'Entry Sell Price', 'Exit Buy Price', 'Exit Sell Price', 'Entry Spot', 'Exit Spot', 'Gross PnL', 'Total Fees', 'Net PnL', 'Margin', 'Exit Reason'];
-    const rows = tradeHistory.map(t => {
+    const rows = filteredTradeHistory.map(t => {
       return [
         formatDateTime(t.entryTime),
         formatDateTime(t.exitTime),
         fmtExpiry(t.expiry),
         t.type.toUpperCase(),
-        `1:${t.sellQty}`,
+        `${t.buyLeg.lotSize.toFixed(2)}:${t.sellQty.toFixed(2)}`,
         t.buyLeg.strike,
         t.sellLeg.strike,
         t.entryBuyPrice || '',
@@ -1397,7 +1397,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `paper_trades_${new Date().getTime()}.csv`;
+    const dateLabel = historyFilterDate || 'all_time';
+    a.download = `paper_trades_${dateLabel}_${new Date().getTime()}.csv`;
     a.click();
   };
 
@@ -1612,13 +1613,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           </div>
 
           <div style={{ flex: 1 }} />
-
-          <button className="pt-btn-export" onClick={exportCSV}>
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
-            </svg>
-            Export CSV
-          </button>
         </div>
 
         {/* ── KPI Dashboard ───────────────────────────── */}
@@ -1946,18 +1940,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
                   <button
                     className="pt-export-btn"
-                    onClick={() => {
-                      const data = filteredTradeHistory.map(t => ({
-                        ...t,
-                        ai_reviews: aiReviews[t.id] || null
-                      }));
-                      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-                      const url = URL.createObjectURL(blob);
-                      const a = document.createElement('a');
-                      a.href = url;
-                      a.download = `vitti_ai_training_data_${new Date().toISOString().split('T')[0]}.json`;
-                      a.click();
-                    }}
+                    onClick={exportCSV}
                     style={{
                       display: 'flex', alignItems: 'center', gap: '8px',
                       padding: '6px 14px', borderRadius: '8px',
@@ -1966,7 +1949,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                     }}
                   >
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
-                    Export for AI Training
+                    Export CSV
                   </button>
                 </div>
               )}
@@ -2017,14 +2000,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                                   </span>
                                 )}
                               </span>
-
-
                               <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 600 }}>
-                                {renderRatio(t, false)}
+                                {t.buyLeg.lotSize.toFixed(2)}:{t.sellQty.toFixed(2)}
                               </span>
-
-
-
                             </div>
                           </td>
                           <td>
@@ -2046,7 +2024,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                               <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 600, marginTop: 2 }}>
                                 {renderRatio(t)}
                               </span>
-
                             </div>
                           </td>
                           <td>
