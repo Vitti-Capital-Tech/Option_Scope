@@ -270,6 +270,7 @@ export async function getTickers(underlying, symbols) {
           last_price: toFiniteNumber(t.last_price || t.close),
           greeks: t.greeks || null,
           mark_vol: t.mark_vol || t.quotes?.mark_iv || null,
+          quotes: t.quotes || null
         });
       }
     }

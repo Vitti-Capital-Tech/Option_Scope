@@ -1098,8 +1098,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         // ENTRY EVALUATION:
         // Long leg: buy at ASK
         // Short leg: sell at BID
-        const entryBuyPrice = spread.buyLeg.ask ?? spread.buyLeg.markPrice;
-        const entrySellPrice = spread.sellLeg.bid ?? spread.sellLeg.markPrice;
+        const entryBuyPrice = spread.buyPrice;
+        const entrySellPrice = spread.sellPrice;
 
         const entryBuyFee = calculateFee(entryBuyPrice, spotPrice, 1, spread.buyLeg.lotSize);
         const entrySellFee = calculateFee(entrySellPrice, spotPrice, spread.sellQty, spread.sellLeg.lotSize);
