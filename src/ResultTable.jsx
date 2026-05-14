@@ -151,8 +151,8 @@ export default function ResultTable({
                           </div>
                         </td>
                         <td>{bestRow.strikeDiff.toLocaleString()}</td>
-                        <td><div><div className="scanner-buy">${bestRow.buyPrice?.toFixed(2)}</div><div>{bestRow.buyLeg.iv?.toFixed(1)}%</div></div></td>
-                        <td><div><div className="scanner-sell">${bestRow.sellPrice?.toFixed(2)}</div><div>{bestRow.sellLeg.iv?.toFixed(1)}%</div></div></td>
+                        <td><div><div className="scanner-buy">${bestRow.buyPrice?.toFixed(2)}</div><div>{bestRow.buyIv?.toFixed(1)}%</div></div></td>
+                        <td><div><div className="scanner-sell">${bestRow.sellPrice?.toFixed(2)}</div><div>{bestRow.sellIv?.toFixed(1)}%</div></div></td>
                         <td style={{ fontWeight: 700 }}>
                           <div><span className='scanner-buy'>{bestRow.buyLeg.lotSize}</span>/
                             <span className='scanner-sell'>{bestRow.sellQty}</span></div>
@@ -173,8 +173,8 @@ export default function ResultTable({
                         <tr key={`${r.buyLeg.strike}-${r.sellLeg.strike}`} className="scanner-row-sub">
                           <td><div><span className="scanner-buy">{r.buyLeg.strike.toLocaleString()}</span>/<span className="scanner-sell">{r.sellLeg.strike.toLocaleString()}</span></div></td>
                           <td>{r.strikeDiff.toLocaleString()}</td>
-                          <td><div><div className="scanner-buy">${r.buyPrice?.toFixed(2)}</div><div>{r.buyLeg.iv?.toFixed(1)}%</div></div></td>
-                          <td><div><div className="scanner-sell">${r.sellPrice?.toFixed(2)}</div><div>{r.sellLeg.iv?.toFixed(1)}%</div></div></td>
+                          <td><div><div className="scanner-buy">${r.buyPrice?.toFixed(2)}</div><div>{r.buyIv?.toFixed(1)}%</div></div></td>
+                          <td><div><div className="scanner-sell">${r.sellPrice?.toFixed(2)}</div><div>{r.sellIv?.toFixed(1)}%</div></div></td>
                           <td style={{ fontWeight: 700 }}>
                             <div><span className='scanner-buy'>{r.buyLeg.lotSize}</span>/
                               <span className='scanner-sell'>{r.sellQty}</span></div>

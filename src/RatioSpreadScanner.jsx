@@ -214,6 +214,8 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
         const markPrice = toFiniteNumber(msg.mark_price ?? msg.close ?? msg.last_price);
         const bid = toFiniteNumber(msg.quotes?.best_bid);
         const ask = toFiniteNumber(msg.quotes?.best_ask);
+        const bidIv = normalizeIv(toFiniteNumber(msg.quotes?.best_bid_iv));
+        const askIv = normalizeIv(toFiniteNumber(msg.quotes?.best_ask_iv));
         const iv = normalizeIv(toFiniteNumber(msg.mark_vol ?? msg.quotes?.mark_iv ?? msg.greeks?.iv));
         const delta = msg.greeks ? toFiniteNumber(msg.greeks.delta) : null;
         const gamma = msg.greeks ? toFiniteNumber(msg.greeks.gamma) : null;
@@ -232,6 +234,8 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
           markPrice: markPrice ?? prevBuffered?.markPrice ?? null,
           bid: bid ?? prevBuffered?.bid ?? null,
           ask: ask ?? prevBuffered?.ask ?? null,
+          bidIv: bidIv ?? prevBuffered?.bidIv ?? null,
+          askIv: askIv ?? prevBuffered?.askIv ?? null,
           iv: iv ?? prevBuffered?.iv ?? null,
           delta: delta !== null ? delta : prevBuffered?.delta,
           deltaNotional: delta !== null
@@ -277,17 +281,19 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
           const strikeDiff = Math.abs(sellLeg.strike - buyLeg.strike);
           if (strikeDiff < config.minStrikeDiff) continue;
 
-          if (buyLeg.iv == null || sellLeg.iv == null) continue;
-          const ivDiff = Math.abs(buyLeg.iv - sellLeg.iv);
+          // For Buy Leg (Long): use Ask price and Ask IV
+          // For Sell Leg (Short): use Bid price and Bid IV
+          const buyPrice = buyLeg.ask ?? buyLeg.markPrice;
+          const sellPrice = sellLeg.bid ?? sellLeg.markPrice;
+          const buyIv = buyLeg.askIv ?? buyLeg.iv;
+          const sellIv = sellLeg.bidIv ?? sellLeg.iv;
+
+          if (buyIv == null || sellIv == null) continue;
+          const ivDiff = Math.abs(buyIv - sellIv);
           if (ivDiff <= config.minIvDiff) continue;
 
           const spotDist = Math.abs(buyLeg.strike - spotPrice);
           if (spotDist < (config.minLongDist || 0)) continue;
-
-          // For Buy Leg (Long): use Ask price
-          // For Sell Leg (Short): use Bid price
-          const buyPrice = buyLeg.ask ?? buyLeg.markPrice;
-          const sellPrice = sellLeg.bid ?? sellLeg.markPrice;
 
           if (!sellPrice || sellPrice < config.minSellPremium) continue;
 
@@ -330,6 +336,8 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             sellQty,
             buyPrice,
             sellPrice,
+            buyIv,
+            sellIv,
             netPremium: netPrem.toFixed(2),
             deltaDiff
           });
