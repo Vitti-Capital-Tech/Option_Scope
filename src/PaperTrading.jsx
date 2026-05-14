@@ -56,19 +56,24 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const [tradeHistory, setTradeHistory] = useState([]); // Closed trades
 
   const [historyFilterDate, setHistoryFilterDate] = useState(() => {
-    return new Date().toLocaleDateString('en-CA');
+    // Offset by 12 hours to align with Delta 12:00 UTC settlement
+    const d = new Date();
+    d.setUTCHours(d.getUTCHours() + 12);
+    return d.toISOString().split('T')[0];
   });
 
   const adjustFilterDay = (offset) => {
     if (!historyFilterDate) return;
     const [y, m, d] = historyFilterDate.split('-').map(Number);
-    const current = new Date(y, m - 1, d);
-    current.setDate(current.getDate() + offset);
-    setHistoryFilterDate(current.toLocaleDateString('en-CA'));
+    const current = new Date(Date.UTC(y, m - 1, d)); // Create as UTC
+    current.setUTCDate(current.getUTCDate() + offset);
+    setHistoryFilterDate(current.toISOString().split('T')[0]);
   };
 
   const resetToToday = () => {
-    setHistoryFilterDate(new Date().toLocaleDateString('en-CA'));
+    const d = new Date();
+    d.setUTCHours(d.getUTCHours() + 12);
+    setHistoryFilterDate(d.toISOString().split('T')[0]);
   };
 
   const [isBackfilling, setIsBackfilling] = useState(false);
@@ -1416,15 +1421,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   // ── KPI Computations ──────────────────────────────────
   const filteredTradeHistory = React.useMemo(() => {
     if (!historyFilterDate) return tradeHistory;
-    // Parse YYYY-MM-DD into local midnight
-    const [y, m, d] = historyFilterDate.split('-').map(Number);
-    const start = new Date(y, m - 1, d, 0, 0, 0);
-    const end = new Date(y, m - 1, d, 23, 59, 59, 999);
-
+    
     return tradeHistory.filter(t => {
       if (!t.exitTime) return false;
-      const exitTime = new Date(t.exitTime);
-      return exitTime >= start && exitTime <= end;
+      // Apply 12h offset to trade exit time to match settlement cycle
+      const d = new Date(t.exitTime);
+      d.setUTCHours(d.getUTCHours() + 12);
+      const exitUtcDate = d.toISOString().split('T')[0];
+      return exitUtcDate === historyFilterDate;
     });
   }, [tradeHistory, historyFilterDate]);
 
@@ -1433,12 +1437,17 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const totalPnl = totalRealizedPnl + totalUnrealizedPnl;
 
   const todayRealizedPnl = React.useMemo(() => {
-    // Use local date string YYYY-MM-DD for comparison
-    const today = new Date().toLocaleDateString('en-CA');
+    const d = new Date();
+    d.setUTCHours(d.getUTCHours() + 12);
+    const todayUtc = d.toISOString().split('T')[0];
     return tradeHistory.reduce((s, t) => {
       if (!t.exitTime) return s;
-      const exitDate = new Date(t.exitTime).toLocaleDateString('en-CA');
-      if (exitDate === today) {
+      // Apply 12h offset to trade exit time to match settlement cycle
+      const d = new Date(t.exitTime);
+      d.setUTCHours(d.getUTCHours() + 12);
+      const exitUtcDate = d.toISOString().split('T')[0];
+      
+      if (exitUtcDate === todayUtc) {
         return s + (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || t.realizedPnl || 0));
       }
       return s;

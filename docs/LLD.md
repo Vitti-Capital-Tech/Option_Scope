@@ -67,6 +67,11 @@ This document captures implementation details for the current multi-module appli
 - **`trade_history`**: Permanent record of realized trades with entry/exit prices, spot prices, PnL, fees, and exit reason.
 - **Auto-Sync**: Config changes in one tab are broadcast via `BroadcastChannel` and persisted to Supabase, triggering updates in all other open instances.
 
+#### 5. KPI & History Implementation
+- **Today's P&L**: `todayRealizedPnl` + `totalUnrealizedPnl` (calculated on **UTC Day with 12h Settlement Offset**).
+- **Settlement-Aware Sync**: Uses `new Date() + 12h` then `toISOString().split('T')[0]` to ensure the trading day rolls over at 12:00 UTC (Delta settlement).
+- **Full-Day Filter**: Trade history filtering compares the trade's `exitTime` ISO date string against the selected offset-UTC date.
+
 ### Cross-Tab Synchronization
 - `useTabListener` hook handles message passing between modules.
 - `CONFIG_SYNC`: Propagates filter, underlying, and expiry changes from Paper Trading to the Scanner.
