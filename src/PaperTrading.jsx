@@ -56,22 +56,19 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const [tradeHistory, setTradeHistory] = useState([]); // Closed trades
 
   const [historyFilterDate, setHistoryFilterDate] = useState(() => {
-    const now = new Date();
-    if (now.getUTCHours() < 12) now.setUTCDate(now.getUTCDate() - 1);
-    return now.toISOString().split('T')[0];
+    return new Date().toLocaleDateString('en-CA');
   });
 
   const adjustFilterDay = (offset) => {
     if (!historyFilterDate) return;
-    const current = new Date(historyFilterDate);
+    const [y, m, d] = historyFilterDate.split('-').map(Number);
+    const current = new Date(y, m - 1, d);
     current.setDate(current.getDate() + offset);
-    setHistoryFilterDate(current.toISOString().split('T')[0]);
+    setHistoryFilterDate(current.toLocaleDateString('en-CA'));
   };
 
   const resetToToday = () => {
-    const now = new Date();
-    if (now.getUTCHours() < 12) now.setUTCDate(now.getUTCDate() - 1);
-    setHistoryFilterDate(now.toISOString().split('T')[0]);
+    setHistoryFilterDate(new Date().toLocaleDateString('en-CA'));
   };
 
   const [isBackfilling, setIsBackfilling] = useState(false);
@@ -1417,18 +1414,36 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   // ── KPI Computations ──────────────────────────────────
   const filteredTradeHistory = React.useMemo(() => {
     if (!historyFilterDate) return tradeHistory;
-    const start = new Date(`${historyFilterDate}T12:00:00Z`);
-    const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+    // Parse YYYY-MM-DD into local midnight
+    const [y, m, d] = historyFilterDate.split('-').map(Number);
+    const start = new Date(y, m - 1, d, 0, 0, 0);
+    const end = new Date(y, m - 1, d, 23, 59, 59, 999);
+
     return tradeHistory.filter(t => {
-      const entryTime = new Date(t.entryTime);
+      if (!t.exitTime) return false;
       const exitTime = new Date(t.exitTime);
-      return (entryTime >= start && entryTime < end) || (exitTime >= start && exitTime < end);
+      return exitTime >= start && exitTime <= end;
     });
   }, [tradeHistory, historyFilterDate]);
 
   const totalUnrealizedPnl = positions.filter(p => p.underlying === underlying).reduce((s, p) => s + (includeFees ? (p.unrealizedNetPnl || 0) : (p.unrealizedGrossPnl || p.unrealizedPnl || 0)), 0);
   const totalRealizedPnl = tradeHistory.reduce((s, t) => s + (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || t.realizedPnl || 0)), 0);
-  const totalPnl = totalUnrealizedPnl + totalRealizedPnl;
+  const totalPnl = totalRealizedPnl + totalUnrealizedPnl;
+
+  const todayRealizedPnl = React.useMemo(() => {
+    // Use local date string YYYY-MM-DD for comparison
+    const today = new Date().toLocaleDateString('en-CA'); 
+    return tradeHistory.reduce((s, t) => {
+      if (!t.exitTime) return s;
+      const exitDate = new Date(t.exitTime).toLocaleDateString('en-CA');
+      if (exitDate === today) {
+        return s + (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || t.realizedPnl || 0));
+      }
+      return s;
+    }, 0);
+  }, [tradeHistory, includeFees]);
+
+  const todayPnl = todayRealizedPnl + totalUnrealizedPnl;
   const wins = tradeHistory.filter(t => (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || t.realizedPnl || 0)) > 0).length;
   const winRate = tradeHistory.length > 0 ? ((wins / tradeHistory.length) * 100).toFixed(1) : '—';
   const totalMargin = positions.filter(p => p.underlying === underlying).reduce((s, p) => s + (p.margin || 0), 0);
@@ -1618,15 +1633,26 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
         {/* ── KPI Dashboard ───────────────────────────── */}
         <div className="pt-kpi-strip">
-          <div className={`pt-kpi-card ${totalPnl >= 0 ? 'accent-green' : 'accent-red'}`}>
+          <div className={`pt-kpi-card ${todayPnl >= 0 ? 'accent-green' : 'accent-red'}`}>
             <span className="pt-kpi-label">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2v20M17 7l-5-5-5 5" /></svg>
-              Total P&L
+              Today's P&L
+            </span>
+            <span className={`pt-kpi-value ${todayPnl > 0 ? 'positive' : todayPnl < 0 ? 'negative' : 'neutral'}`}>
+              {todayPnl > 0 ? '+' : ''}{todayPnl.toFixed(2)}
+            </span>
+            <span className="pt-kpi-sub">Realized: {todayRealizedPnl.toFixed(2)} | Unrl: {totalUnrealizedPnl.toFixed(2)}</span>
+          </div>
+
+          <div className={`pt-kpi-card ${totalPnl >= 0 ? 'accent-blue' : 'accent-red'}`} style={{ borderLeft: '4px solid var(--accent)' }}>
+            <span className="pt-kpi-label">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2v20M17 7l-5-5-5 5" /></svg>
+              All-Time P&L
             </span>
             <span className={`pt-kpi-value ${totalPnl > 0 ? 'positive' : totalPnl < 0 ? 'negative' : 'neutral'}`}>
               {totalPnl > 0 ? '+' : ''}{totalPnl.toFixed(2)}
             </span>
-            <span className="pt-kpi-sub">Realized: {totalRealizedPnl.toFixed(2)} | Unrl: {totalUnrealizedPnl.toFixed(2)}</span>
+            <span className="pt-kpi-sub">Total Realized: {totalRealizedPnl.toFixed(2)}</span>
           </div>
 
           <div className="pt-kpi-card accent-gold">
