@@ -212,6 +212,8 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
       (msg) => {
         const sym = msg.symbol;
         const markPrice = toFiniteNumber(msg.mark_price ?? msg.close ?? msg.last_price);
+        const bid = toFiniteNumber(msg.quotes?.best_bid);
+        const ask = toFiniteNumber(msg.quotes?.best_ask);
         const iv = normalizeIv(toFiniteNumber(msg.mark_vol ?? msg.quotes?.mark_iv ?? msg.greeks?.iv));
         const delta = msg.greeks ? toFiniteNumber(msg.greeks.delta) : null;
         const gamma = msg.greeks ? toFiniteNumber(msg.greeks.gamma) : null;
@@ -228,6 +230,8 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
           lotSize,
           type,
           markPrice: markPrice ?? prevBuffered?.markPrice ?? null,
+          bid: bid ?? prevBuffered?.bid ?? null,
+          ask: ask ?? prevBuffered?.ask ?? null,
           iv: iv ?? prevBuffered?.iv ?? null,
           delta: delta !== null ? delta : prevBuffered?.delta,
           deltaNotional: delta !== null
@@ -280,17 +284,22 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
           const spotDist = Math.abs(buyLeg.strike - spotPrice);
           if (spotDist < (config.minLongDist || 0)) continue;
 
-          if (!sellLeg.markPrice || sellLeg.markPrice < config.minSellPremium) continue;
+          // For Buy Leg (Long): use Ask price
+          // For Sell Leg (Short): use Bid price
+          const buyPrice = buyLeg.ask ?? buyLeg.markPrice;
+          const sellPrice = sellLeg.bid ?? sellLeg.markPrice;
+
+          if (!sellPrice || sellPrice < config.minSellPremium) continue;
 
           const buyDN = buyLeg.deltaNotional;
           const sellDN = sellLeg.deltaNotional;
 
           if (buyDN == null || sellDN == null ||
-            buyLeg.markPrice == null || sellLeg.markPrice == null ||
-            buyLeg.markPrice === 0 || sellLeg.markPrice === 0 ||
+            buyPrice == null || sellPrice == null ||
+            buyPrice === 0 || sellPrice === 0 ||
             buyDN === 0 || sellDN === 0) continue;
 
-          const premiumRatio = buyLeg.markPrice / sellLeg.markPrice;
+          const premiumRatio = buyPrice / sellPrice;
           const deltaNotionalRatio = buyDN / sellDN;
 
           const ratioDeviation = Math.abs(premiumRatio - deltaNotionalRatio) / deltaNotionalRatio;
@@ -303,7 +312,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
           const deltaDiff = buyDN - sellQty * sellDN;
 
 
-          const netPrem = buyLeg.markPrice - sellQty * sellLeg.markPrice;
+          const netPrem = buyPrice - sellQty * sellPrice;
 
           // Filter by Net Premium: Enforce a symmetric band [-max, +max]
           // If maxNetPremium is 20, we allow netPremium from -20 (max credit) to +20 (max debit).
@@ -319,6 +328,8 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             deltaNotionalRatio: deltaNotionalRatio.toFixed(3),
             ratioDeviation: (ratioDeviation * 100).toFixed(1),
             sellQty,
+            buyPrice,
+            sellPrice,
             netPremium: netPrem.toFixed(2),
             deltaDiff
           });
