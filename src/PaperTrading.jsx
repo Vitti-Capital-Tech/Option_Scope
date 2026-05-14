@@ -710,8 +710,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           if (prev.length === 0) return prev;
           const live = latestTickerDataRef.current;
           const updated = prev.map(pos => {
-            const latestBuy = live[pos.buyLeg.symbol]?.markPrice ?? pos.currentBuyPrice ?? pos.buyLeg.markPrice;
-            const latestSell = live[pos.sellLeg.symbol]?.markPrice ?? pos.currentSellPrice ?? pos.sellLeg.markPrice;
+            const tickerBuy = live[pos.buyLeg.symbol];
+            const latestBuy = tickerBuy?.bid ?? tickerBuy?.markPrice ?? pos.currentBuyPrice ?? pos.buyLeg.markPrice;
+            const tickerSell = live[pos.sellLeg.symbol];
+            const latestSell = tickerSell?.ask ?? tickerSell?.markPrice ?? pos.currentSellPrice ?? pos.sellLeg.markPrice;
 
             const buyPnl = (latestBuy != null && pos.entryBuyPrice != null) ? (latestBuy - pos.entryBuyPrice) : 0;
             const sellPnl = (latestSell != null && pos.entrySellPrice != null) ? (latestSell - pos.entrySellPrice) * pos.sellQty : 0;

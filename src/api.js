@@ -6,18 +6,18 @@ const WS_URL = 'wss://socket.india.delta.exchange';
 
 // Resolution mapping: label -> API value
 export const TF_MAP = {
-  '1m':  '1m',
-  '3m':  '3m',
-  '5m':  '5m',
+  '1m': '1m',
+  '3m': '3m',
+  '5m': '5m',
   '15m': '15m',
   '30m': '30m',
-  '1h':  '1h',
-  '2h':  '2h',
-  '4h':  '4h',
-  '6h':  '6h',
+  '1h': '1h',
+  '2h': '2h',
+  '4h': '4h',
+  '6h': '6h',
   '12h': '12h',
-  '1d':  '1d',
-  '1w':  '1w',
+  '1d': '1d',
+  '1w': '1w',
 };
 
 export const TF_SECS = {
@@ -104,9 +104,9 @@ export async function fetchCandles(symbol, resolution, startTs, endTs, priceType
   if (!Array.isArray(data)) return [];
   return data.map(c => ({
     time: parseInt(c.time),
-    open:  parseFloat(c.open),
-    high:  parseFloat(c.high),
-    low:   parseFloat(c.low),
+    open: parseFloat(c.open),
+    high: parseFloat(c.high),
+    low: parseFloat(c.low),
     close: parseFloat(c.close),
   })).sort((a, b) => a.time - b.time);
 }
@@ -115,17 +115,17 @@ export async function fetchCandles(symbol, resolution, startTs, endTs, priceType
 export function sumCandles(callCandles, putCandles) {
   if (!callCandles || !callCandles.length) return putCandles || [];
   if (!putCandles || !putCandles.length) return callCandles || [];
-  
+
   const putMap = new Map(putCandles.map(c => [c.time, c]));
   const result = [];
   for (const cc of callCandles) {
     const pc = putMap.get(cc.time);
     if (pc) {
       result.push({
-        time:  cc.time,
-        open:  cc.open  + pc.open,
-        high:  cc.high  + pc.high,
-        low:   cc.low   + pc.low,
+        time: cc.time,
+        open: cc.open + pc.open,
+        high: cc.high + pc.high,
+        low: cc.low + pc.low,
         close: cc.close + pc.close,
       });
     }
@@ -142,7 +142,7 @@ export function putSymbol(callSym) {
 export function fmtExpiry(iso) {
   if (!iso) return '';
   const d = new Date(iso);
-  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   return `${d.getUTCDate()} ${months[d.getUTCMonth()]} '${String(d.getUTCFullYear()).slice(-2)}`;
 }
 
@@ -151,7 +151,7 @@ export function findATM(strikes, spot) {
   if (!spot || !strikes.length) return strikes[0];
   return strikes.reduce((best, s) =>
     Math.abs(s - spot) < Math.abs(best - spot) ? s : best
-  , strikes[0]);
+    , strikes[0]);
 }
 
 export function createWS(callSym, putSym, resolution, priceType, onTicker, onData, onStatus) {
@@ -202,7 +202,7 @@ export function createWS(callSym, putSym, resolution, priceType, onTicker, onDat
 
   ws.onclose = () => {
     onStatus('disconnected');
-    if (alive) setTimeout(() => {}, 0); // caller decides reconnect
+    if (alive) setTimeout(() => { }, 0); // caller decides reconnect
   };
 
   return {
@@ -240,7 +240,7 @@ export function createTickerStream(symbols, onTicker, onStatus) {
 
   ws.onclose = () => {
     onStatus?.('disconnected');
-    if (alive) setTimeout(() => {}, 0);
+    if (alive) setTimeout(() => { }, 0);
   };
 
   return {
