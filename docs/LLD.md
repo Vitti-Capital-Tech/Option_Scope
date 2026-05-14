@@ -154,16 +154,16 @@ Both Phase 1 (unrealized, live) and Phase 2 (realized, at exit) use the
   - `grossPnl = (buyPnl * buyLeg.lotSize) - (sellPnl * sellLeg.lotSize)`
 
 #### 4. Rotation Displacement Reservation
-To prevent "mass exits" when a single new better strike appears, `evaluateStrategy` uses a **1-for-1 displacement** algorithm:
+To prevent "mass exits" and "orphan exits", `evaluateStrategy` uses a **1-for-1 displacement** algorithm:
 - **Worst-to-Best Sort**: Active positions are sorted by descending `abs(strike - spot)`.
 - **Target Reservation**: A `reservedTargets` Set is initialized per cycle.
-- **Matching**: For each active position, `uniqueTopSpreads` is scanned for the best candidate that is NOT already active AND NOT in `reservedTargets`.
-- **Action**: If a match is found and is directionally better (Lower strike for calls, Higher strike for puts), the position rotates and the target is added to `reservedTargets`.
+- **Conflict-Aware Matching**: For each position, the engine calculates `otherActiveBuyStrikes` and `otherActiveSellStrikes` (strikes held by the rest of the portfolio). 
+- **Validation**: A candidate is only eligible if its Buy/Sell strikes do not collide with these "other" strikes AND it hasn't been reserved.
+- **Directional Check**: If match is found and is closer to ATM, the rotation is approved and the target is reserved.
 
-#### 5. KPI & History Implementation
-- **Today's P&L**: `todayRealizedPnl` + `totalUnrealizedPnl`.
-- **Local Date Sync**: Uses `new Date().toLocaleDateString('en-CA')` for consistent `YYYY-MM-DD` formatting across initial states, manual "Today" resets, and navigation arrows.
-- **Full-Day Filter**: Trade history filtering uses local midnight boundaries: `new Date(y, m-1, d, 0, 0, 0)` to `new Date(y, m-1, d, 23, 59, 59, 999)`.
+#### 5. Exit & Entry Timing
+- **Pre-Expiry Exit**: Active positions closed **2 minutes** before expiry.
+- **Entry Safety Buffer**: No new entries allowed if expiry < **5 minutes** away. Prevents "jitter" trades that would be closed within 180 seconds.
 
 ```
 grossPnl = (buyPriceDiff × buyLeg.lotSize) − (sellPriceDiff × sellQty × sellLeg.lotSize) + accumulatedSellPnl

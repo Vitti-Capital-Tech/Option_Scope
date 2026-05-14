@@ -18,7 +18,8 @@ The app is built around three workflows:
 - **Watchlist and Alerts**: Track multiple strategies, monitor live + 1h high/low, and trigger toast/notification alerts.
 - **Scanner Performance Pipeline**: Buffered ticker ingestion (50ms batch flush) and throttled compute cycle for large symbol sets.
 - **Execution-Realistic Paper Trading**: High-fidelity simulation using Ask prices for long legs and Bid prices for short legs.
-- **Dynamic Portfolio Rotation**: Surgical 1-for-1 replacement of inferior positions with top-ranked scanner candidates.
+- **Dynamic Portfolio Rotation**: Surgical 1-for-1 replacement using **Conflict-Aware Scanning** to ensure replacement targets never collide with existing portfolio strikes.
+- **Entry Safety Guard**: 5-minute pre-expiry buffer to prevent low-probability trades right before the 2-minute mandatory exit window.
 - **Dual-Mode KPIs**: Real-time tracking of **Today's P&L** (Local Time) vs **All-Time P&L**.
 - **Liquidation-Based Valuation**: Live P&L calculated based on current market spread-crossing costs.
 - **Hard Portfolio Cap**: Maximum 3 active positions per option type (calls/puts) enforced at both the local evaluation level and via a DB-level count guard before every Supabase insert. Partially-exited positions hold their slot until fully closed.
