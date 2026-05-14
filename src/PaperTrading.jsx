@@ -92,7 +92,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       const { data, error } = await supabase.from('active_positions').select('*');
       if (error || !data) return;
 
-      console.log(`[Maintenance] Backfilling margins for ${data.length} positions...`);
       for (const p of data) {
         const buyLeg = safeParseLeg(p.buy_leg);
         if (!buyLeg) continue;
@@ -100,7 +99,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         const newMargin = calcMargin(p.entry_buy_price, buyLeg.lotSize, Math.max(p.entry_spot_price || spotPrice, spotPrice), p.sell_qty, sellLeg?.lotSize || buyLeg.lotSize);
         await supabase.from('active_positions').update({ margin: newMargin }).eq('id', p.id);
       }
-      console.log('[Maintenance] Backfill complete.');
       fetchSupabaseActivePositions();
     } catch (e) {
       console.error('Backfill Error:', e);
@@ -295,7 +293,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     const missing = positions.filter(p => !p.entrySpotPrice);
     if (missing.length === 0) return;
 
-    console.log(`Backfilling spot prices for ${missing.length} positions...`);
     const updatedPositions = [...positions];
     let changed = false;
 
@@ -320,7 +317,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           const spot = parseFloat(closest.close);
 
           if (spot) {
-            console.log(`Found backfill spot for ${pos.id}: ${spot}`);
             const idx = updatedPositions.findIndex(p => p.id === pos.id);
             if (idx !== -1) {
               updatedPositions[idx] = { ...updatedPositions[idx], entrySpotPrice: spot };
@@ -821,9 +817,17 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       const remaining = [];
       const exited = [];
       const activeStrikes = new Set();
+      const reservedTargets = new Set();
+
+      // Sort positions worst-to-best (farthest from ATM first) so inferior ones are displaced first
+      const sortedPositions = [...positionsRef.current].sort((a, b) => {
+        const distA = Math.abs(a.buyLeg.strike - spotPrice);
+        const distB = Math.abs(b.buyLeg.strike - spotPrice);
+        return distB - distA; // Descending distance (farthest first)
+      });
 
       // 1. Maintain existing positions & detect exits
-      for (const pos of prevPositions) {
+      for (const pos of sortedPositions) {
         // Skip positions from other underlyings - just keep them as-is
         if (pos.underlying !== underlying) {
           remaining.push(pos);
@@ -872,33 +876,30 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
         const totalFees = (pos.entryFee || 0) + exitFee;
 
-        const typeSpreads = uniqueTopSpreads.filter(s => s.buyLeg.type === pos.type);
         // Check if our current buy strike is still among the Top 3 unique buy strikes
-        const inTop3 = typeSpreads.slice(0, 3).some(s => Number(s.buyLeg.strike) === Number(pos.buyLeg.strike));
+        const inTop3 = uniqueTopSpreads.some(s => s.buyLeg.type === pos.type && Number(s.buyLeg.strike) === Number(pos.buyLeg.strike));
 
         // Rotation logic: Only apply to positions of the current expiry
-        if (!shouldExit && pos.expiry === selExpiry && typeSpreads.length > 0 && !inTop3) {
-          const currentActiveBuyStrikes = prevPositions.filter(p => p.underlying === underlying && p.type === pos.type).map(p => p.buyLeg.strike);
-          const currentActiveSellStrikes = prevPositions.filter(p => p.underlying === underlying && p.type === pos.type).map(p => p.sellLeg.strike);
+        if (!shouldExit && pos.expiry === selExpiry && uniqueTopSpreads.length > 0 && !inTop3) {
+          const currentActiveBuyStrikes = sortedPositions.filter(p => p.underlying === underlying && p.type === pos.type).map(p => Number(p.buyLeg.strike));
+          const currentActiveSellStrikes = sortedPositions.filter(p => p.underlying === underlying && p.type === pos.type).map(p => Number(p.sellLeg.strike));
 
-          // Find the best available candidate in the full list (allows falling back to other sell strikes)
-          const bestTarget = topSpreads.filter(s => s.buyLeg.type === pos.type).find(s =>
-            !currentActiveBuyStrikes.includes(s.buyLeg.strike) &&
-            !currentActiveSellStrikes.includes(s.sellLeg.strike)
-          );
+          // Find the best available candidate that isn't already active AND hasn't been reserved by another exit in this loop
+          const bestTarget = uniqueTopSpreads.filter(s => s.buyLeg.type === pos.type).find(s => {
+            const bS = Number(s.buyLeg.strike);
+            return !currentActiveBuyStrikes.includes(bS) && !reservedTargets.has(bS);
+          });
 
           if (bestTarget) {
-            const targetStrike = bestTarget.buyLeg.strike;
-            const currentStrike = pos.buyLeg.strike;
+            const targetStrike = Number(bestTarget.buyLeg.strike);
+            const currentStrike = Number(pos.buyLeg.strike);
             const isPut = pos.type === 'put';
             // Only rotate if the target is directionally better (closer to ATM)
             if (isPut ? (targetStrike > currentStrike) : (targetStrike < currentStrike)) {
               shouldExit = true;
               exitReason = `Lost Top 3 and Rank 1 better target available (${targetStrike})`;
-              console.log(`[Algo] ROTATION TRIGGERED for ${pos.type} ${pos.buyLeg.strike}: ${exitReason}. Target is ${targetStrike}/${bestTarget.sellLeg.strike}.`);
+              reservedTargets.add(targetStrike); // Reserve this strike so others don't rotate for it too
             }
-          } else {
-            console.log(`[Algo] Position ${pos.buyLeg.strike} not in Top 3, but no better unique target (Buy+Sell) available.`);
           }
         }
 
@@ -942,7 +943,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         let rotationApproved = false;
         if (!canRotateThisType && exitReason.includes('Lost Top 3')) {
           if (shouldExit || isPartial) {
-            console.log(`[Algo] THRESHOLD GUARD TRIGGERED (Rotation) for ${pos.type} ${pos.buyLeg.strike}/${pos.sellLeg.strike}. Blocking exit.`);
             shouldExit = false;
             isPartial = false;
           }
@@ -959,7 +959,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           // Absolute Final Guard - only block rotation exits that were NOT explicitly approved above
           // (handles edge cases where shouldExit was set by non-rotation logic but exitReason contains 'Lost Top 3')
           if (exitReason.includes('Lost Top 3') && !rotationApproved) {
-            console.error(`[Algo] CRITICAL: Logic reached exit push while canExit is FALSE for ${pos.buyLeg.strike}. Blocking.`);
             shouldExit = false; isPartial = false;
             remaining.push({
               ...pos, currentBuyPrice: latestBuy, currentSellPrice: latestSell,
@@ -1074,11 +1073,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         );
 
         if (buyStrikeConflict) {
-          console.log(`[Algo] Entry Skip: Buy strike ${bStrike} already active/pending.`);
           continue;
         }
         if (sellStrikeConflict) {
-          console.log(`[Algo] Entry Skip: Sell strike ${sStrike} already active/pending.`);
           continue;
         }
 
@@ -1088,7 +1085,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
         // Hard cap: never exceed 3 per type. A partial exit does NOT free up a slot.
         if (count >= 3) {
-          console.log(`[Algo] Entry Skip for ${spreadType} ${bStrike}/${sStrike}: Max positions (3) reached. Current: ${count} (Rem: ${remaining.filter(p => p.type === spreadType).length}, New: ${newEntries.filter(p => p.type === spreadType).length})`);
           continue;
         }
 
@@ -1130,7 +1126,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             // Guard: Check if this trade was already moved to history by another instance
             const { data: alreadyExited } = await supabase.from('trade_history').select('trade_id').eq('trade_id', t.id).limit(1);
             if (alreadyExited && alreadyExited.length > 0) {
-              console.log(`Sync: Trade ${t.id} already recorded in history.`);
             } else {
               // Record to permanent trade_history
               const { error: histError } = await supabase.from('trade_history').insert([{
@@ -1166,7 +1161,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               .eq('underlying', underlying)
               .eq('type', t.type);
             if (!countError && (activeOfType?.length ?? 0) >= 3) {
-              console.log(`DB Count Guard: Already ${activeOfType.length} active ${t.type}s in DB. Skipping insert for ${t.buyLeg.strike}/${t.sellLeg.strike}.`);
               continue;
             }
 
@@ -1179,7 +1173,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               .limit(1);
             if (buyCheckError) continue;
             if (buyConflict && buyConflict.length > 0) {
-              console.log(`DB Guard: Buy strike ${t.buyLeg.strike} already active for ${t.type}. Skipping.`);
               continue;
             }
 
@@ -1191,7 +1184,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               .limit(1);
             if (sellCheckError) continue;
             if (sellConflict && sellConflict.length > 0) {
-              console.log(`DB Guard: Sell strike ${t.sellLeg.strike} already active for ${t.type}. Skipping.`);
               continue;
             }
 
@@ -1208,12 +1200,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
             if (insertError) {
               if (insertError.code === '23505') {
-                console.log(`Database Guard: Blocked duplicate strike entry for ${t.buyLeg.strike}/${t.sellLeg.strike}.`);
+                console.error(`Database Guard: Blocked duplicate strike entry for ${t.buyLeg.strike}/${t.sellLeg.strike}.`);
               } else {
                 console.error('Supabase Insert Error:', insertError);
               }
-            } else {
-              console.log('Supabase Insert Success:', t.id);
             }
           } catch (err) { console.error('Supabase Insert Exception:', err); }
         }
