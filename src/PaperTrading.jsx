@@ -1432,7 +1432,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
   const todayRealizedPnl = React.useMemo(() => {
     // Use local date string YYYY-MM-DD for comparison
-    const today = new Date().toLocaleDateString('en-CA'); 
+    const today = new Date().toLocaleDateString('en-CA');
     return tradeHistory.reduce((s, t) => {
       if (!t.exitTime) return s;
       const exitDate = new Date(t.exitTime).toLocaleDateString('en-CA');
@@ -1785,7 +1785,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                           <td>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                               <span className={`pt-type-badge ${p.type}`}>{p.type.toUpperCase()}</span>
-                              <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 600 }}>1:{p.sellQty.toFixed(2)}</span>
+                              <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 600 }}>{p.buyLeg.lotSize.toFixed(2)}:{p.sellQty.toFixed(2)}</span>
                             </div>
                           </td>
                           <td><span style={{ fontSize: '11px', fontWeight: 600 }}>{fmtExpiry(p.expiry)}</span></td>
