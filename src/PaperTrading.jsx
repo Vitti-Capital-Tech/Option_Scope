@@ -476,6 +476,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             const prev = latestTickerDataRef.current[t.symbol];
             const markPrice = toFiniteNumber(t.mark_price ?? t.last_price ?? t.close);
             const iv = normalizeIv(toFiniteNumber(t.mark_vol ?? t.quotes?.mark_iv ?? t.greeks?.iv));
+            const bid = toFiniteNumber(t.quotes?.best_bid);
+            const ask = toFiniteNumber(t.quotes?.best_ask);
+            const bidIv = normalizeIv(toFiniteNumber(t.quotes?.best_bid_iv));
+            const askIv = normalizeIv(toFiniteNumber(t.quotes?.best_ask_iv));
 
             backfill[t.symbol] = {
               symbol: t.symbol,
@@ -483,6 +487,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               lotSize: meta.lotSize,
               type: meta.type,
               markPrice: (markPrice && markPrice > 0) ? markPrice : (prev?.markPrice ?? null),
+              bid: bid ?? (prev?.bid ?? null),
+              ask: ask ?? (prev?.ask ?? null),
+              bidIv: bidIv ?? (prev?.bidIv ?? null),
+              askIv: askIv ?? (prev?.askIv ?? null),
               iv: iv ?? (prev?.iv ?? null),
               delta: t.greeks ? toFiniteNumber(t.greeks.delta) : (prev?.delta ?? null),
               deltaNotional: t.greeks ? Math.abs(t.greeks.delta) * meta.lotSize : (prev?.deltaNotional ?? null),
@@ -540,6 +548,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       (msg) => {
         const sym = msg.symbol;
         const markPrice = toFiniteNumber(msg.mark_price ?? msg.last_price ?? msg.close);
+        const bid = toFiniteNumber(msg.quotes?.best_bid);
+        const ask = toFiniteNumber(msg.quotes?.best_ask);
+        const bidIv = normalizeIv(toFiniteNumber(msg.quotes?.best_bid_iv));
+        const askIv = normalizeIv(toFiniteNumber(msg.quotes?.best_ask_iv));
         const iv = normalizeIv(toFiniteNumber(msg.mark_vol ?? msg.quotes?.mark_iv ?? msg.greeks?.iv));
         const delta = msg.greeks ? toFiniteNumber(msg.greeks.delta) : null;
 
@@ -553,6 +565,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           lotSize: meta.lotSize,
           type: meta.type,
           markPrice: markPrice ?? prevBuffered?.markPrice ?? null,
+          bid: bid ?? prevBuffered?.bid ?? null,
+          ask: ask ?? prevBuffered?.ask ?? null,
+          bidIv: bidIv ?? prevBuffered?.bidIv ?? null,
+          askIv: askIv ?? prevBuffered?.askIv ?? null,
           iv: iv ?? prevBuffered?.iv ?? null,
           delta: delta !== null ? delta : prevBuffered?.delta,
           deltaNotional: delta !== null ? Math.abs(delta) * meta.lotSize : prevBuffered?.deltaNotional,
@@ -600,33 +616,51 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
         const strikeDiff = Math.abs(sellLeg.strike - buyLeg.strike);
         if (strikeDiff < config.minStrikeDiff) continue;
-        if (buyLeg.iv == null || sellLeg.iv == null) continue;
+        // For Buy Leg (Long): use Ask price and Ask IV
+        // For Sell Leg (Short): use Bid price and Bid IV
+        const buyPrice = buyLeg.ask ?? buyLeg.markPrice;
+        const sellPrice = sellLeg.bid ?? sellLeg.markPrice;
+        const buyIv = buyLeg.askIv ?? buyLeg.iv;
+        const sellIv = sellLeg.bidIv ?? sellLeg.iv;
 
-        const ivDiff = Math.abs(buyLeg.iv - sellLeg.iv);
+        if (buyIv == null || sellIv == null) continue;
+        const ivDiff = Math.abs(buyIv - sellIv);
         if (ivDiff <= config.minIvDiff) continue;
 
         const spotDist = Math.abs(buyLeg.strike - spotPrice);
         if (spotDist < (config.minLongDist || 0)) continue;
 
-        if (!sellLeg.markPrice || sellLeg.markPrice < config.minSellPremium) continue;
+        if (!sellPrice || sellPrice < config.minSellPremium) continue;
 
         const buyDN = buyLeg.deltaNotional;
         const sellDN = sellLeg.deltaNotional;
-        if (!buyDN || !sellDN || !buyLeg.markPrice || !sellLeg.markPrice) continue;
+        if (!buyDN || !sellDN || !buyPrice || !sellPrice) continue;
 
-        const ratioDeviation = Math.abs((buyLeg.markPrice / sellLeg.markPrice) - (buyDN / sellDN)) / (buyDN / sellDN);
+        const premiumRatio = buyPrice / sellPrice;
+        const deltaNotionalRatio = buyDN / sellDN;
+        const ratioDeviation = Math.abs(premiumRatio - deltaNotionalRatio) / deltaNotionalRatio;
         if (ratioDeviation > config.maxRatioDeviation) continue;
 
         const rawQty = buyDN / sellDN;
         const sellQty = Math.max(1, Math.round(rawQty / 0.25) * 0.25);
         if (sellQty > (config.maxSellQty || 10)) continue;
 
-        const netPrem = buyLeg.markPrice - sellQty * sellLeg.markPrice;
+        const netPrem = buyPrice - sellQty * sellPrice;
 
         const maxNet = Math.abs(config.maxNetPremium);
         if (netPrem < -maxNet || netPrem > maxNet) continue;
 
-        validPairs.push({ buyLeg, sellLeg, strikeDiff, sellQty, netPremium: netPrem });
+        validPairs.push({
+          buyLeg,
+          sellLeg,
+          strikeDiff,
+          sellQty,
+          netPremium: netPrem,
+          buyPrice,
+          sellPrice,
+          buyIv,
+          sellIv
+        });
       }
     }
 
@@ -801,16 +835,22 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         // If the website just refreshed, websocket data takes 5-10s to load. 
         // We MUST skip evaluating exits during this gap to avoid using stale entry prices.
         const live = latestTickerDataRef.current;
-        const liveBuy = live[pos.buyLeg.symbol]?.markPrice ?? pos.currentBuyPrice;
-        const liveSell = live[pos.sellLeg.symbol]?.markPrice ?? pos.currentSellPrice;
+        const tickerBuy = live[pos.buyLeg.symbol];
+        const tickerSell = live[pos.sellLeg.symbol];
 
-        if (liveBuy == null || liveSell == null) {
+        // EXIT EVALUATION:
+        // Long position (buyLeg) is exited by SELLING -> use BID
+        // Short position (sellLeg) is exited by BUYING BACK -> use ASK
+        const liveExitBuy = tickerBuy?.bid ?? tickerBuy?.markPrice ?? pos.currentBuyPrice;
+        const liveExitSell = tickerSell?.ask ?? tickerSell?.markPrice ?? pos.currentSellPrice;
+
+        if (liveExitBuy == null || liveExitSell == null) {
           remaining.push(pos);
           continue;
         }
 
-        const latestBuy = liveBuy;
-        const latestSell = liveSell;
+        const latestBuy = liveExitBuy;
+        const latestSell = liveExitSell;
 
         let shouldExit = false;
         let exitReason = '';
@@ -1053,18 +1093,24 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           continue;
         }
 
-        const entryBuyFee = calculateFee(spread.buyLeg.markPrice, spotPrice, 1, spread.buyLeg.lotSize);
-        const entrySellFee = calculateFee(spread.sellLeg.markPrice, spotPrice, spread.sellQty, spread.sellLeg.lotSize);
+        // ENTRY EVALUATION:
+        // Long leg: buy at ASK
+        // Short leg: sell at BID
+        const entryBuyPrice = spread.buyLeg.ask ?? spread.buyLeg.markPrice;
+        const entrySellPrice = spread.sellLeg.bid ?? spread.sellLeg.markPrice;
+
+        const entryBuyFee = calculateFee(entryBuyPrice, spotPrice, 1, spread.buyLeg.lotSize);
+        const entrySellFee = calculateFee(entrySellPrice, spotPrice, spread.sellQty, spread.sellLeg.lotSize);
         const entryFee = entryBuyFee + entrySellFee;
         const id = `T${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
         const newPos = {
           id, underlying, expiry: selExpiry, type: spread.buyLeg.type,
           buyLeg: spread.buyLeg, sellLeg: spread.sellLeg, sellQty: spread.sellQty,
-          strikeDiff: spread.strikeDiff, entryTime: new Date(), entryBuyPrice: spread.buyLeg.markPrice,
-          entrySellPrice: spread.sellLeg.markPrice, entrySpotPrice: spotPrice, currentBuyPrice: spread.buyLeg.markPrice,
-          currentSellPrice: spread.sellLeg.markPrice, unrealizedGrossPnl: 0, unrealizedNetPnl: -entryFee,
+          strikeDiff: spread.strikeDiff, entryTime: new Date(), entryBuyPrice,
+          entrySellPrice, entrySpotPrice: spotPrice, currentBuyPrice: entryBuyPrice,
+          currentSellPrice: entrySellPrice, unrealizedGrossPnl: 0, unrealizedNetPnl: -entryFee,
           entryFee, currentExitFee: entryFee, currentTotalFees: entryFee * 2,
-          margin: calcMargin(spread.buyLeg.markPrice, spread.buyLeg.lotSize, spotPrice, spread.sellQty, spread.sellLeg.lotSize)
+          margin: calcMargin(entryBuyPrice, spread.buyLeg.lotSize, spotPrice, spread.sellQty, spread.sellLeg.lotSize)
         };
 
 
