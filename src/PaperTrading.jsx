@@ -881,13 +881,18 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
         // Rotation logic: Only apply to positions of the current expiry
         if (!shouldExit && pos.expiry === selExpiry && uniqueTopSpreads.length > 0 && !inTop3) {
-          const currentActiveBuyStrikes = sortedPositions.filter(p => p.underlying === underlying && p.type === pos.type).map(p => Number(p.buyLeg.strike));
-          const currentActiveSellStrikes = sortedPositions.filter(p => p.underlying === underlying && p.type === pos.type).map(p => Number(p.sellLeg.strike));
+          // Calculate strikes active in OTHER positions (excluding the one we are evaluating for rotation)
+          const otherActiveBuyStrikes = sortedPositions.filter(p => p.id !== pos.id && p.underlying === underlying && p.type === pos.type).map(p => Number(p.buyLeg.strike));
+          const otherActiveSellStrikes = sortedPositions.filter(p => p.id !== pos.id && p.underlying === underlying && p.type === pos.type).map(p => Number(p.sellLeg.strike));
 
-          // Find the best available candidate that isn't already active AND hasn't been reserved by another exit in this loop
+          // Find the best available candidate that isn't already active in OTHER slots AND hasn't been reserved
           const bestTarget = uniqueTopSpreads.filter(s => s.buyLeg.type === pos.type).find(s => {
             const bS = Number(s.buyLeg.strike);
-            return !currentActiveBuyStrikes.includes(bS) && !reservedTargets.has(bS);
+            const sS = Number(s.sellLeg.strike);
+            // Must not collide with strikes held by our other 2 positions
+            const buyConflict = otherActiveBuyStrikes.includes(bS);
+            const sellConflict = otherActiveSellStrikes.includes(sS);
+            return !buyConflict && !sellConflict && !reservedTargets.has(bS);
           });
 
           if (bestTarget) {
