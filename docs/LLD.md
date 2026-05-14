@@ -14,7 +14,7 @@ This document captures implementation details for the current multi-module appli
 - `src/PaperTrading.jsx`: Auto-entry/exit/rotation simulator built on top of scanner-style candidate logic.
 - `src/ResultTable.jsx`: Reusable table renderer for grouped scanner output.
 - `src/scannerUtils.js`: Shared parsing and normalization helpers (`normalizeIv`, `toFiniteNumber`, `matchesOptionType`, `formatTime`, `formatDateTime`).
-- `src/api.js`: REST/WS abstraction layer and symbol/candle utilities.
+- `src/api.js`: REST/WS abstraction layer. Updated `getTickers` to include `quotes` (bid/ask/iv) in REST responses for accurate initial backfills.
 - `src/supabase.js`: Supabase client singleton.
 - `src/useTabSync.js`: `BroadcastChannel`-based cross-tab messaging hook.
 
@@ -95,11 +95,17 @@ This document captures implementation details for the current multi-module appli
 - **Min Long Distance**: Ensures the long leg is at least `minLongDist` away from the current spot price.
 - Pair search is `O(N²)` per side with constraints:
   - `minStrikeDiff`, `minIvDiff`, `minSellPremium`, `maxRatioDeviation`
+- **Execution-Realistic Pricing**:
+  - Long legs (buy) are evaluated using the **Ask** price and **Ask IV**.
+  - Short legs (sell) are evaluated using the **Bid** price and **Bid IV**.
 - Core formulas:
   - `deltaNotional = abs(delta) * lotSize`
-  - `premiumRatio = buyPremium / sellPremium`
+  - `buyPrice = buyLeg.ask ?? buyLeg.markPrice`
+  - `sellPrice = sellLeg.bid ?? sellLeg.markPrice`
+  - `premiumRatio = buyPrice / sellPrice`
   - `deltaNotionalRatio = buyDN / sellDN`
   - `ratioDeviation = abs(premiumRatio - deltaNotionalRatio) / deltaNotionalRatio`
+  - `ivDiff = abs(buyLeg.askIv - sellLeg.bidIv)`
   - `sellQty` rounded to 0.25 steps, min 1
 - **Sorting**: Prioritizes closeness to ATM (ascending distance), then by net premium ascending.
 
@@ -145,6 +151,14 @@ where:
   buyPriceDiff  = latestBuyPrice  − entryBuyPrice
   sellPriceDiff = latestSellPrice − entrySellPrice
 ```
+
+- **Liquidation-Based Pricing**:
+  - `latestBuyPrice` (Long leg) = `ticker.bid` (price to sell)
+  - `latestSellPrice` (Short leg) = `ticker.ask` (price to buy back)
+  - Fallback: `markPrice` is used if bid/ask is missing.
+- **Entry Pricing**:
+  - `entryBuyPrice` = `spread.buyPrice` (Ask @ entry)
+  - `entrySellPrice` = `spread.sellPrice` (Bid @ entry)
 
 This ensures that the long and short legs are evaluated independently based on their own contract dimensions. During a partial exit (e.g., 50% scale-out), the engine halves the `buyLeg.lotSize` and halves the `sellQty` ratio, but **preserves** the `sellLeg.lotSize`. 
 

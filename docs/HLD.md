@@ -78,13 +78,15 @@ Browser (React + Vite)
 
 1. Subscribe to all option symbols in the selected expiry.
 2. Buffer and batch ticker updates (50ms flush) to limit render pressure.
-3. Evaluate pair candidates using strike/IV/premium/deviation constraints.
+3. Evaluate pair candidates using strike/IV/premium/deviation constraints. Uses **execution-realistic pricing**: Long legs are evaluated at the **Ask** and Short legs at the **Bid**. Similarly, **IV Diff** is calculated using directional IVs (Ask IV for long, Bid IV for short).
 4. Publish top-3 call and top-3 put candidates to the scanner table, and broadcast to Paper Trading via `BroadcastChannel`.
 
 ### Paper Trading (Automated Lifecycle)
 
 1. Merge local scan candidates with real-time scanner broadcasts.
+   - **Execution-Realistic Entries**: New positions are entered at the Ask for long legs and Bid for short legs, capturing the true cost of crossing the spread.
 2. Each minute, evaluate all active positions for rotation or ATM/ITM/expiry exit triggers.
+   - **Liquidation-Based PnL**: Unrealized PnL is calculated based on immediate exit prices: long positions are valued at the current Bid (selling back) and short positions at the current Ask (buying back).
 3. **Expiry**: exit 2 minutes early for stable settlement prices.
 4. **ATM/ITM scale-out**: multi-stage partial exits based on `strikeDiff`; partially-exited positions stay in the portfolio, holding their slot while cleanly scaling down their PnL multipliers and margin allocations.
 5. **Rotation**: exit position if a better-ranked unique buy strike is available (surgical 1-for-1 replacement); gated by threshold guard (min 3 per side) and limited to 3 rotations per cycle. Uses `uniqueTopSpreads` for ranking to prevent multiple variations of a single strike from causing mass exits.

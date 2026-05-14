@@ -7,8 +7,8 @@ OptionScope is a real-time options intelligence workspace for Delta Exchange. It
 The app is built around three workflows:
 
 - **Charts**: Monitor call, put, or combined premium structures with live candles, Greeks, and alerting.
-- **Ratio Spread Scanner**: Discover call/put ratio spread opportunities using lot-size-aware delta notional alignment.
-- **Paper Trading**: Fully automated strategy lifecycle simulation — entry, 1s-cadence live PnL, multi-stage scale-out exits, rotation, expiry settlement, and trade history export.
+- **Ratio Spread Scanner**: Discover call/put ratio spread opportunities using lot-size-aware delta notional alignment and execution-realistic pricing (Long @ Ask, Short @ Bid).
+- **Paper Trading**: Fully automated strategy lifecycle simulation — entry at Ask/Bid, 1s-cadence live PnL based on liquidation value, multi-stage scale-out exits, rotation, expiry settlement, and trade history export.
 
 ## Key Features
 
@@ -21,7 +21,7 @@ The app is built around three workflows:
 - **Hard Portfolio Cap**: Maximum 3 active positions per option type (calls/puts) enforced at both the local evaluation level and via a DB-level count guard before every Supabase insert. Partially-exited positions hold their slot until fully closed.
 - **Connection Stability**: Intelligent WebSocket hashing (`lastWsSymbolsRef`) prevents redundant restarts. A defensive REST backfill via `/v2/tickers` guarantees accurate prices on manual refreshes without zeroing existing data, and a 1-second fallback heartbeat keeps the UI perfectly synced even when market data streams are quiet.
 - **Evergreen Data Engine**: Background product/expiry refresh every 5 minutes keeps filters and candidate pools fresh without manual page reloads.
-- **Paper Trade Analytics**: Margin estimate (lot-size aware), unrealized/realized PnL, precise fraction-based multi-stage scale-out exits, expiry settlement, and trade history export.
+- **Paper Trade Analytics**: Bid/Ask spread-aware margin estimate, unrealized/realized PnL based on liquidation value, precise fraction-based multi-stage scale-out exits, expiry settlement, and trade history export.
 
 ## Architecture
 
