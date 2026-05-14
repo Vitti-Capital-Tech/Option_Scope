@@ -17,7 +17,10 @@ The app is built around three workflows:
 - **Advanced Chart Tools**: SMA(20), drawing mode for S/R lines, zoom/scroll controls, and theme toggle.
 - **Watchlist and Alerts**: Track multiple strategies, monitor live + 1h high/low, and trigger toast/notification alerts.
 - **Scanner Performance Pipeline**: Buffered ticker ingestion (50ms batch flush) and throttled compute cycle for large symbol sets.
-- **Automated Rotation Engine**: Positions are rotated toward higher-ranked (closer-to-ATM) strikes. The engine uses a surgical 1-for-1 replacement logic: each new superior unique buy strike in the market displaces exactly one lower-ranked existing position. Rotation is gated by a portfolio threshold guard (3 calls + 3 puts) and limited to 3 rotations per cycle.
+- **Execution-Realistic Paper Trading**: High-fidelity simulation using Ask prices for long legs and Bid prices for short legs.
+- **Dynamic Portfolio Rotation**: Surgical 1-for-1 replacement of inferior positions with top-ranked scanner candidates.
+- **Dual-Mode KPIs**: Real-time tracking of **Today's P&L** (Local Time) vs **All-Time P&L**.
+- **Liquidation-Based Valuation**: Live P&L calculated based on current market spread-crossing costs.
 - **Hard Portfolio Cap**: Maximum 3 active positions per option type (calls/puts) enforced at both the local evaluation level and via a DB-level count guard before every Supabase insert. Partially-exited positions hold their slot until fully closed.
 - **Connection Stability**: Intelligent WebSocket hashing (`lastWsSymbolsRef`) prevents redundant restarts. A defensive REST backfill via `/v2/tickers` guarantees accurate prices on manual refreshes without zeroing existing data, and a 1-second fallback heartbeat keeps the UI perfectly synced even when market data streams are quiet.
 - **Evergreen Data Engine**: Background product/expiry refresh every 5 minutes keeps filters and candidate pools fresh without manual page reloads.

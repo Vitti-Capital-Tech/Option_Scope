@@ -142,7 +142,28 @@ This document captures implementation details for the current multi-module appli
 
 ### P&L Formula
 
-Both Phase 1 (unrealized, live) and Phase 2 (realized, at exit) use the same formula:
+Both Phase 1 (unrealized, live) and Phase 2 (realized, at exit) use the
+
+#### 3. PnL Formula (Liquidation Value)
+- **Current Position Valuation**:
+  - `latestBuyPrice` = Current `bid` (Liquidation)
+  - `latestSellPrice` = Current `ask` (Buy-back)
+- **Calculation**:
+  - `buyPnl = latestBuyPrice - entryBuyPrice`
+  - `sellPnl = (latestSellPrice - entrySellPrice) * sellQty`
+  - `grossPnl = (buyPnl * buyLeg.lotSize) - (sellPnl * sellLeg.lotSize)`
+
+#### 4. Rotation Displacement Reservation
+To prevent "mass exits" when a single new better strike appears, `evaluateStrategy` uses a **1-for-1 displacement** algorithm:
+- **Worst-to-Best Sort**: Active positions are sorted by descending `abs(strike - spot)`.
+- **Target Reservation**: A `reservedTargets` Set is initialized per cycle.
+- **Matching**: For each active position, `uniqueTopSpreads` is scanned for the best candidate that is NOT already active AND NOT in `reservedTargets`.
+- **Action**: If a match is found and is directionally better (Lower strike for calls, Higher strike for puts), the position rotates and the target is added to `reservedTargets`.
+
+#### 5. KPI & History Implementation
+- **Today's P&L**: `todayRealizedPnl` + `totalUnrealizedPnl`.
+- **Local Date Sync**: Uses `new Date().toLocaleDateString('en-CA')` for consistent `YYYY-MM-DD` formatting across initial states, manual "Today" resets, and navigation arrows.
+- **Full-Day Filter**: Trade history filtering uses local midnight boundaries: `new Date(y, m-1, d, 0, 0, 0)` to `new Date(y, m-1, d, 23, 59, 59, 999)`.
 
 ```
 grossPnl = (buyPriceDiff × buyLeg.lotSize) − (sellPriceDiff × sellQty × sellLeg.lotSize) + accumulatedSellPnl

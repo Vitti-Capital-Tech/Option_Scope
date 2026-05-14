@@ -88,9 +88,18 @@ Browser (React + Vite)
 2. Each minute, evaluate all active positions for rotation or ATM/ITM/expiry exit triggers.
    - **Liquidation-Based PnL**: Unrealized PnL is calculated based on immediate exit prices: long positions are valued at the current Bid (selling back) and short positions at the current Ask (buying back).
 3. **Expiry**: exit 2 minutes early for stable settlement prices.
-4. **ATM/ITM scale-out**: multi-stage partial exits based on `strikeDiff`; partially-exited positions stay in the portfolio, holding their slot while cleanly scaling down their PnL multipliers and margin allocations.
-5. **Rotation**: exit position if a better-ranked unique buy strike is available (surgical 1-for-1 replacement); gated by threshold guard (min 3 per side) and limited to 3 rotations per cycle. Uses `uniqueTopSpreads` for ranking to prevent multiple variations of a single strike from causing mass exits.
-6. **Auto-Maintenance**: Product and expiry list refreshed every 5 minutes to capture rollovers. Header UI uses `tabular-nums` and fixed-width containers to maintain layout stability during high-frequency (1s) PnL updates. A 1-second background heartbeat ensures the UI stays perfectly synced even during extremely quiet market periods when the WebSocket is inactive.
+4. **Phase 5: Dynamic Portfolio Rotation**
+The engine compares existing positions against current top scanner results:
+- **Displacement Check**: If a position is no longer in the Top 3 unique strikes AND a superior candidate (closer to ATM) is available, it is marked for rotation.
+- **1-for-1 Displacement**: To prevent mass exits, the engine uses a **Target Reservation** system. Each new superior candidate in the scanner is "claimed" by exactly one existing inferior position.
+- **Worst-First Processing**: Active positions are evaluated from farthest-to-ATM first, ensuring the least desirable legs are rotated out first.
+- **Cycle Guards**: Rotation only begins once the portfolio hits a threshold (e.g., 3 active legs) and is capped at 3 rotations per evaluation cycle.
+
+### Phase 6: Performance Monitoring & History
+- **Dual KPIs**: Tracks **Today's P&L** (Today's Realized + Current Open) using local timezone logic, and **All-Time P&L** (Total Realized + Total Open).
+- **Local History Sync**: Trade history filtering is synchronized with the user's local timezone (00:00 - 23:59 window).
+- **Supabase Persistence**: Automated logging of every entry, partial exit, and full closure for historical auditing.
+Product and expiry list refreshed every 5 minutes to capture rollovers. Header UI uses `tabular-nums` and fixed-width containers to maintain layout stability during high-frequency (1s) PnL updates. A 1-second background heartbeat ensures the UI stays perfectly synced even during extremely quiet market periods when the WebSocket is inactive.
 7. Open new positions up to 3 per type from the ranked candidate list. DB count guard prevents exceeding 3 even under race conditions.
 8. Sync all entries, exits, and partial scale-outs to Supabase. Full `positions` array replacement only happens when rows are added/removed, not on routine PnL updates.
 
