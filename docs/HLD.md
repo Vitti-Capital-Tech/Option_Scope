@@ -86,8 +86,12 @@ Browser (React + Vite)
 1. Merge local scan candidates with real-time scanner broadcasts.
    - **Execution-Realistic Entries**: New positions are entered at the Ask for long legs and Bid for short legs, capturing the true cost of crossing the spread.
 2. Each minute, evaluate all active positions for rotation or ATM/ITM/expiry exit triggers.
-   - **Liquidation-Based PnL**: Unrealized PnL is calculated based on immediate exit prices: long positions are valued at the current Bid (selling back) and short positions at the current Ask (buying back).
-3. **Expiry**: exit 2 minutes early for stable settlement prices.
+    - **Liquidation-Based PnL**: Unrealized PnL is calculated based on immediate exit prices: long positions are valued at the current Bid (selling back) and short positions at the current Ask (buying back).
+3. **Scaling & Uniqueness Guards**: 
+   - **Directional Spot Scaling**: Enforces a 0.5% price gap (rounded to 100) between entries for mean-reversion scaling.
+   - **Strike Diversification**: Ensures new long strikes are at least 400 points away from existing long strikes.
+4. **Visual Simulation Mode**: A "What-If" dashboard layer that allows users to simulate the impact of adding custom premium/credit to their strategy visually (including P&L and ratio recalculation) without affecting the underlying database.
+5. **Expiry**: exit 2 minutes early for stable settlement prices.
 4. **Phase 5: Dynamic Portfolio Rotation**
 The engine compares existing positions against current top scanner results:
 - **Displacement Check**: If a position is no longer in the Top 3 unique strikes AND a superior candidate (closer to ATM) is available, it is marked for rotation.

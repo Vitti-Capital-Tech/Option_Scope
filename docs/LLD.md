@@ -211,6 +211,12 @@ This ensures that the long and short legs are evaluated independently based on t
 3. Hard cap of **3 active positions per option type** (calls, puts). Partially-exited positions remain in `remaining` and still count toward the cap — a partial exit does **not** free a slot.
 4. Before inserting into Supabase, a **DB-level count guard** queries the live `active_positions` table for the same type. If the DB already has 3 or more rows, the insert is skipped even if local state thought there was a slot (catches race conditions). Uses a plain `select('id')` — not `{ head: true }` which returns `null` data.
 5. A secondary strike-level duplicate check prevents inserting a spread whose buy+sell strikes are already active. Database unique constraint (`23505`) is the final safety net.
+- **Visual Simulation Mode (Extra Credit)**: 
+  - Allows toggling between **Base** (original scanner ratio) and **Extra** (simulated credit) modes.
+  - Recalculates Unrealized/Realized P&L, Ratios, and KPIs in real-time across the entire dashboard.
+  - **Logic**: `Simulated Sell Qty = Base Sell Qty + (Custom Dollar Credit / Entry Sell Price)`.
+  - **Persistence**: All simulation remains in the UI layer; the Supabase database stores only the original base trades to preserve data integrity.
+  - **CSV Export**: When simulation is active, exported reports include the recalculated simulated values.
 
 ### Rotation & Exit Logic
 

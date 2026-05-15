@@ -61,6 +61,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     d.setUTCHours(d.getUTCHours() + 12);
     return d.toISOString().split('T')[0];
   });
+  const [extraCreditMode, setExtraCreditMode] = useState(false);
+  const [extraCreditAmount, setExtraCreditAmount] = useState(15);
 
   const adjustFilterDay = (offset) => {
     if (!historyFilterDate) return;
@@ -1074,7 +1076,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         // NEW: Safety Buffer - don't enter if expiry is less than 5 minutes away
         const minutesToExpiry = (new Date(spread.expiry).getTime() - Date.now()) / 60000;
         if (minutesToExpiry < 5) {
-          continue; 
+          continue;
         }
 
         // Only block if buy strike is already active for same type and underlying
@@ -1307,11 +1309,18 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     // Reconstruct original sell ratio (e.g. 4.75) using the multiplier
     const originalSell = Math.round((sellQty * mult) * 4) / 4;
 
+    // NEW: Simulated Ratio logic
+    let simSell = originalSell;
+    if (extraCreditMode && t.entrySellPrice > 0) {
+      const extraLots = extraCreditAmount / t.entrySellPrice;
+      simSell += (Math.round(extraLots / 0.25) * 0.25) * mult;
+    }
+
     if (showOriginal) {
-      return `1:${originalSell}`;
+      return `1:${simSell.toFixed(2)}`;
     } else {
       const fracBuy = displayFracBuy.toFixed(2).replace(/\.?0+$/, '');
-      const fracSell = (originalSell / mult).toFixed(2).replace(/\.?0+$/, '');
+      const fracSell = (simSell / mult).toFixed(2).replace(/\.?0+$/, '');
       return `${fracBuy}:${fracSell}`;
     }
   };
@@ -1422,12 +1431,24 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     }
     const headers = ['Entry Time', 'Exit Time', 'Expiry', 'Type', 'Ratio', 'Buy Strike', 'Sell Strike', 'Entry Buy Price', 'Entry Sell Price', 'Exit Buy Price', 'Exit Sell Price', 'Entry Spot', 'Exit Spot', 'Gross PnL', 'Total Fees', 'Net PnL', 'Margin', 'Exit Reason'];
     const rows = filteredTradeHistory.map(t => {
+      let sellQty = t.sellQty;
+      let grossPnl = t.realizedGrossPnl || 0;
+      let netPnl = t.realizedNetPnl || 0;
+
+      if (extraCreditMode && t.entrySellPrice > 0) {
+        const extraQty = Math.round((extraCreditAmount / t.entrySellPrice) / 0.25) * 0.25;
+        const extraPnl = extraQty * (t.entrySellPrice - (t.exitSellPrice || t.entrySellPrice));
+        sellQty += extraQty;
+        grossPnl += extraPnl;
+        netPnl += extraPnl;
+      }
+
       return [
         formatDateTime(t.entryTime),
         formatDateTime(t.exitTime),
         fmtExpiry(t.expiry),
         t.type.toUpperCase(),
-        `${t.buyLeg.lotSize.toFixed(2)}:${t.sellQty.toFixed(2)}`,
+        `${t.buyLeg.lotSize.toFixed(2)}:${sellQty.toFixed(2)}`,
         t.buyLeg.strike,
         t.sellLeg.strike,
         t.entryBuyPrice || '',
@@ -1436,9 +1457,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         t.exitSellPrice || '',
         t.entrySpotPrice || '',
         t.exitSpotPrice || '',
-        (t.realizedGrossPnl || 0).toFixed(2),
+        grossPnl.toFixed(2),
         (t.totalFees || 0).toFixed(2),
-        (t.realizedNetPnl || 0).toFixed(2),
+        netPnl.toFixed(2),
         (t.margin || 0).toFixed(2),
         t.exitReason
       ].join(',');
@@ -1456,7 +1477,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   // ── KPI Computations ──────────────────────────────────
   const filteredTradeHistory = React.useMemo(() => {
     if (!historyFilterDate) return tradeHistory;
-    
+
     return tradeHistory.filter(t => {
       if (!t.exitTime) return false;
       // Apply 12h offset to trade exit time to match settlement cycle
@@ -1467,8 +1488,23 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     });
   }, [tradeHistory, historyFilterDate]);
 
-  const totalUnrealizedPnl = positions.filter(p => p.underlying === underlying).reduce((s, p) => s + (includeFees ? (p.unrealizedNetPnl || 0) : (p.unrealizedGrossPnl || p.unrealizedPnl || 0)), 0);
-  const totalRealizedPnl = tradeHistory.reduce((s, t) => s + (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || t.realizedPnl || 0)), 0);
+  const totalUnrealizedPnl = positions.filter(p => p.underlying === underlying).reduce((s, p) => {
+    let val = includeFees ? (p.unrealizedNetPnl || 0) : (p.unrealizedGrossPnl || p.unrealizedPnl || 0);
+    if (extraCreditMode && p.entrySellPrice > 0) {
+      const extraQty = Math.round((extraCreditAmount / p.entrySellPrice) / 0.25) * 0.25;
+      val += extraQty * (p.entrySellPrice - (p.currentSellPrice || p.entrySellPrice));
+    }
+    return s + val;
+  }, 0);
+
+  const totalRealizedPnl = tradeHistory.reduce((s, t) => {
+    let val = includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || t.realizedPnl || 0);
+    if (extraCreditMode && t.entrySellPrice > 0) {
+      const extraQty = Math.round((extraCreditAmount / t.entrySellPrice) / 0.25) * 0.25;
+      val += extraQty * (t.entrySellPrice - (t.exitSellPrice || t.entrySellPrice));
+    }
+    return s + val;
+  }, 0);
   const totalPnl = totalRealizedPnl + totalUnrealizedPnl;
 
   const todayRealizedPnl = React.useMemo(() => {
@@ -1477,17 +1513,21 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     const todayUtc = d.toISOString().split('T')[0];
     return tradeHistory.reduce((s, t) => {
       if (!t.exitTime) return s;
-      // Apply 12h offset to trade exit time to match settlement cycle
-      const d = new Date(t.exitTime);
-      d.setUTCHours(d.getUTCHours() + 12);
-      const exitUtcDate = d.toISOString().split('T')[0];
-      
+      const dTrade = new Date(t.exitTime);
+      dTrade.setUTCHours(dTrade.getUTCHours() + 12);
+      const exitUtcDate = dTrade.toISOString().split('T')[0];
+
       if (exitUtcDate === todayUtc) {
-        return s + (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || t.realizedPnl || 0));
+        let val = includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || t.realizedPnl || 0);
+        if (extraCreditMode && t.entrySellPrice > 0) {
+          const extraQty = Math.round((extraCreditAmount / t.entrySellPrice) / 0.25) * 0.25;
+          val += extraQty * (t.entrySellPrice - (t.exitSellPrice || t.entrySellPrice));
+        }
+        return s + val;
       }
       return s;
     }, 0);
-  }, [tradeHistory, includeFees]);
+  }, [tradeHistory, includeFees, extraCreditMode, extraCreditAmount]);
 
   const todayPnl = todayRealizedPnl + totalUnrealizedPnl;
   const wins = tradeHistory.filter(t => (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || t.realizedPnl || 0)) > 0).length;
@@ -1746,6 +1786,29 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                   <div style={{ fontSize: 12, color: 'var(--text)', borderLeft: '1px solid var(--border)', paddingLeft: 8, fontVariantNumeric: 'tabular-nums', minWidth: '160px' }}>
                     Updated: {lastEvaluated > 0 ? new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }).format(new Date(lastEvaluated)) : '---'}
                   </div>
+
+                  {/* Extra Credit Toggle & Input */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', borderLeft: '1px solid var(--border)', paddingLeft: '12px' }}>
+                    <div className="pt-fee-toggle-container">
+                      <span className={`pt-fee-toggle-label ${!extraCreditMode ? 'active' : ''}`} onClick={() => setExtraCreditMode(false)}>Base</span>
+                      <label className="pt-switch">
+                        <input type="checkbox" checked={extraCreditMode} onChange={(e) => setExtraCreditMode(e.target.checked)} />
+                        <span className="pt-slider round"></span>
+                      </label>
+                      <span className={`pt-fee-toggle-label ${extraCreditMode ? 'active' : ''}`} onClick={() => setExtraCreditMode(true)}>Extra</span>
+                    </div>
+                    {extraCreditMode && (
+                      <div style={{ display: 'flex', alignItems: 'center', background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: '4px', padding: '2px 6px' }}>
+                        <span style={{ fontSize: '11px', color: 'var(--text-dim)', marginRight: '4px' }}>$</span>
+                        <input
+                          type="number"
+                          value={extraCreditAmount}
+                          onChange={(e) => setExtraCreditAmount(Number(e.target.value))}
+                          style={{ width: '40px', background: 'transparent', border: 'none', color: 'var(--accent)', fontSize: '12px', fontWeight: 'bold', outline: 'none', padding: 0 }}
+                        />
+                      </div>
+                    )}
+                  </div>
                   <div className="pt-fee-toggle-container">
                     <span className={`pt-fee-toggle-label ${!includeFees ? 'active' : ''}`} onClick={() => setIncludeFees(false)}>Gross</span>
                     <label className="pt-switch">
@@ -1819,12 +1882,17 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                     {positions.filter(p => p.underlying === underlying).map(p => {
                       const pnlValue = includeFees ? p.unrealizedNetPnl : p.unrealizedGrossPnl || p.unrealizedPnl;
                       const pnlClass = (pnlValue || 0) > 0 ? 'positive' : (pnlValue || 0) < 0 ? 'negative' : 'zero';
+                      const displaySellQty = extraCreditMode && p.entrySellPrice > 0
+                        ? p.sellQty + (Math.round((extraCreditAmount / p.entrySellPrice) / 0.25) * 0.25)
+                        : p.sellQty;
                       return (
                         <tr key={p.id} className={`pt-row-${p.type}`}>
                           <td>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                               <span className={`pt-type-badge ${p.type}`}>{p.type.toUpperCase()}</span>
-                              <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 600 }}>{p.buyLeg.lotSize.toFixed(2)}:{p.sellQty.toFixed(2)}</span>
+                              <span style={{ fontSize: '10px', color: extraCreditMode ? 'var(--accent)' : 'var(--text-dim)', fontWeight: 600 }}>
+                                {p.buyLeg.lotSize.toFixed(2)}:{displaySellQty.toFixed(2)}
+                              </span>
                             </div>
                           </td>
                           <td><span style={{ fontSize: '11px', fontWeight: 600 }}>{fmtExpiry(p.expiry)}</span></td>
@@ -1851,7 +1919,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                               <span style={{ color: '#f85149' }}>{p.currentSellPrice != null ? p.currentSellPrice.toFixed(2) : '—'}</span>
                             </div>
                           </td>
-                          <td><span className={`pt-pnl ${pnlClass}`}>{pnlValue > 0 ? '+' : ''}{(pnlValue || 0).toFixed(2)}</span></td>
+                          <td>
+                            <span className={`pt-pnl ${pnlClass}`}>
+                              {pnlValue > 0 ? '+' : ''}
+                              {(extraCreditMode && p.entrySellPrice > 0 ? (
+                                pnlValue + (Math.round((extraCreditAmount / p.entrySellPrice) / 0.25) * 0.25) * (p.entrySellPrice - (p.currentSellPrice || p.entrySellPrice))
+                              ) : pnlValue).toFixed(2)}
+                            </span>
+                          </td>
                           <td>
                             <div className="pt-margin-cell">
                               <span>${(p.margin || 0).toFixed(0)}</span>
@@ -2055,8 +2130,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                                   </span>
                                 )}
                               </span>
-                              <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 600 }}>
-                                {t.buyLeg.lotSize.toFixed(2)}:{t.sellQty.toFixed(2)}
+                              <span style={{ fontSize: '10px', color: extraCreditMode ? 'var(--accent)' : 'var(--text-dim)', fontWeight: 600 }}>
+                                {t.buyLeg.lotSize.toFixed(2)}:{(extraCreditMode && t.entrySellPrice > 0
+                                  ? t.sellQty + (Math.round((extraCreditAmount / t.entrySellPrice) / 0.25) * 0.25)
+                                  : t.sellQty).toFixed(2)}
                               </span>
                             </div>
                           </td>
@@ -2076,7 +2153,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                             <div style={{ display: 'flex', flexDirection: 'column', fontSize: '12px' }}>
                               <span style={{ color: '#3fb950' }}>{t.entryBuyPrice?.toFixed(2)}</span>
                               <span style={{ color: '#f85149' }}>{t.entrySellPrice?.toFixed(2)}</span>
-                              <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 600, marginTop: 2 }}>
+                              <span style={{ fontSize: '10px', color: extraCreditAmount && extraCreditMode ? 'var(--accent)' : 'var(--text-dim)', fontWeight: 600, marginTop: 2 }}>
                                 {renderRatio(t)}
                               </span>
                             </div>
@@ -2101,7 +2178,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                           <td>
                             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
                               <span className={`pt-pnl ${pnlValue > 0 ? 'positive' : pnlValue < 0 ? 'negative' : 'zero'}`}>
-                                {pnlValue > 0 ? '+' : ''}{pnlValue.toFixed(2)}
+                                {pnlValue > 0 ? '+' : ''}
+                                {(extraCreditMode && t.entrySellPrice > 0 ? (
+                                  pnlValue + (Math.round((extraCreditAmount / t.entrySellPrice) / 0.25) * 0.25) * (t.entrySellPrice - (t.exitSellPrice || t.entrySellPrice))
+                                ) : pnlValue).toFixed(2)}
                               </span>
                               <span style={{ fontSize: '10px', color: 'var(--text-dim)' }}>Margin: ${t.margin?.toFixed(0)}</span>
                             </div>

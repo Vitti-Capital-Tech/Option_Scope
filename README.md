@@ -19,9 +19,8 @@ The app is built around three workflows:
 - **Scanner Performance Pipeline**: Buffered ticker ingestion (50ms batch flush) and throttled compute cycle for large symbol sets.
 - **Execution-Realistic Paper Trading**: High-fidelity simulation using Ask prices for long legs and Bid prices for short legs.
 - **Dynamic Portfolio Rotation**: Surgical 1-for-1 replacement using **Conflict-Aware Scanning** to ensure replacement targets never collide with existing portfolio strikes.
-- **Entry Safety Guard**: 5-minute pre-expiry buffer to prevent low-probability trades right before the 2-minute mandatory exit window.
-- **Dual-Mode KPIs**: Real-time tracking of **Today's P&L** (Local Time) vs **All-Time P&L**.
-- **Liquidation-Based Valuation**: Live P&L calculated based on current market spread-crossing costs.
+- **Scaling & Uniqueness Guards**: Advanced entry filtering including a **0.5% Directional Spot Scaling Guard** (mean-reversion) and a **400-point Strike Diversification** rule to prevent portfolio concentration.
+- **Visual Simulation Mode (What-If)**: Instant dashboard simulation for strategy research. Toggle between **Base** and **Extra** credit modes to see recalculated P&L and ratios across active positions, history, and KPIs without affecting the database.
 - **Hard Portfolio Cap**: Maximum 3 active positions per option type (calls/puts) enforced at both the local evaluation level and via a DB-level count guard before every Supabase insert. Partially-exited positions hold their slot until fully closed.
 - **Connection Stability**: Intelligent WebSocket hashing (`lastWsSymbolsRef`) prevents redundant restarts. A defensive REST backfill via `/v2/tickers` guarantees accurate prices on manual refreshes without zeroing existing data, and a 1-second fallback heartbeat keeps the UI perfectly synced even when market data streams are quiet.
 - **Evergreen Data Engine**: Background product/expiry refresh every 5 minutes keeps filters and candidate pools fresh without manual page reloads.
