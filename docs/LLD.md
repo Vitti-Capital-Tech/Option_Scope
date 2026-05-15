@@ -217,6 +217,12 @@ This ensures that the long and short legs are evaluated independently based on t
   - **Logic**: `Simulated Sell Qty = Base Sell Qty + (Custom Dollar Credit / Entry Sell Price)`.
   - **Persistence**: All simulation remains in the UI layer; the Supabase database stores only the original base trades to preserve data integrity.
   - **CSV Export**: When simulation is active, exported reports include the recalculated simulated values.
+- **Leg Swap Rotation (Optimization)**:
+  - Detects if a superior candidate shares the **same Short Strike** as an existing position.
+  - Performs a "Leg Swap" instead of a full spread exit.
+  - **Mechanics**: Exits old Long, enters new Long, and scales Short quantity up/down at current market prices.
+  - **Weighted Averaging**: Automatically recalculates the Short leg's `entrySellPrice` using a weighted average of old and new fills.
+  - **Fee/PnL Realization**: Realizes the P&L of the swapped legs and consolidates fees into the position's metadata.
 
 ### Rotation & Exit Logic
 

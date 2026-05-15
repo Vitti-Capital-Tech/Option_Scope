@@ -91,7 +91,8 @@ Browser (React + Vite)
    - **Directional Spot Scaling**: Enforces a 0.5% price gap (rounded to 100) between entries for mean-reversion scaling.
    - **Strike Diversification**: Ensures new long strikes are at least 400 points away from existing long strikes.
 4. **Visual Simulation Mode**: A "What-If" dashboard layer that allows users to simulate the impact of adding custom premium/credit to their strategy visually (including P&L and ratio recalculation) without affecting the underlying database.
-5. **Expiry**: exit 2 minutes early for stable settlement prices.
+5. **Leg Swap Rotation**: Surgical optimization that swaps only the Long leg and adjusts the Short quantity (using weighted average entry pricing) when the Sell strike remains consistent, minimizing slippage and fees.
+6. **Expiry**: exit 2 minutes early for stable settlement prices.
 4. **Phase 5: Dynamic Portfolio Rotation**
 The engine compares existing positions against current top scanner results:
 - **Displacement Check**: If a position is no longer in the Top 3 unique strikes AND a superior candidate (closer to ATM) is available, it is marked for rotation.

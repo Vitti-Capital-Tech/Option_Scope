@@ -910,9 +910,17 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             const isPut = pos.type === 'put';
             // Only rotate if the target is directionally better (closer to ATM)
             if (isPut ? (targetStrike > currentStrike) : (targetStrike < currentStrike)) {
-              shouldExit = true;
-              exitReason = `Lost Top 3 and Rank 1 better target available (${targetStrike})`;
-              reservedTargets.add(targetStrike); // Reserve this strike so others don't rotate for it too
+              const isSellStrikeMatch = Number(bestTarget.sellLeg.strike) === Number(pos.sellLeg.strike);
+              
+              if (isSellStrikeMatch) {
+                pos._pendingLegSwap = bestTarget;
+                shouldExit = true;
+                exitReason = `Leg Swap: Buy ${currentStrike} -> ${targetStrike}`;
+              } else {
+                shouldExit = true;
+                exitReason = `Lost Top 3 and Rank 1 better target available (${targetStrike})`;
+              }
+              reservedTargets.add(targetStrike); 
             }
           }
         }
@@ -1051,6 +1059,64 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               if (error) console.error('Partial Sync Error:', error);
             } catch (e) { console.error('Partial Sync Exception:', e); }
 
+          } else if (pos._pendingLegSwap) {
+            // LEG SWAP EXECUTION:
+            // 1. Calculate P&L for the exited Long Leg
+            const longPnl = (latestBuy - pos.entryBuyPrice) * pos.buyLeg.lotSize;
+            const longExitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize);
+            const longEntryFee = (pos.entryFee || 0) * (pos.buyLeg.lotSize / (pos.buyLeg.lotSize + (pos.sellQty * pos.sellLeg.lotSize))); // Approximation
+
+            // 2. Adjust Short Leg quantity and average price
+            const target = pos._pendingLegSwap;
+            const deltaQty = target.sellQty - pos.sellQty;
+            let adjustedSellEntryPrice = pos.entrySellPrice;
+            let shortAdjustmentFee = 0;
+            let shortAdjustmentPnl = 0;
+
+            if (deltaQty > 0) {
+              // Selling more (scale up)
+              adjustedSellEntryPrice = ((pos.sellQty * pos.entrySellPrice) + (deltaQty * latestSell)) / target.sellQty;
+              shortAdjustmentFee = calculateFee(latestSell, spotPrice, Math.abs(deltaQty), pos.sellLeg.lotSize);
+            } else if (deltaQty < 0) {
+              // Buying back (scale down)
+              shortAdjustmentFee = calculateFee(latestSell, spotPrice, Math.abs(deltaQty), pos.sellLeg.lotSize);
+              shortAdjustmentPnl = (pos.entrySellPrice - latestSell) * Math.abs(deltaQty) * pos.sellLeg.lotSize;
+            }
+
+            const newLongEntryFee = calculateFee(target.buyPrice, spotPrice, 1, target.buyLeg.lotSize);
+            const totalSwapFees = longExitFee + shortAdjustmentFee + newLongEntryFee;
+
+            // 3. Create mutated position
+            const newActiveEntryFee = (pos.entryFee || 0) - longEntryFee + newLongEntryFee + shortAdjustmentFee;
+
+            const swappedPos = {
+              ...pos,
+              buyLeg: target.buyLeg,
+              sellQty: target.sellQty,
+              entryBuyPrice: target.buyPrice,
+              entrySellPrice: adjustedSellEntryPrice,
+              entryFee: newActiveEntryFee, 
+              accumulatedSellPnl: (pos.accumulatedSellPnl || 0) + longPnl + shortAdjustmentPnl,
+              entryTime: new Date(), // Reset time for rotation tracking
+              currentBuyPrice: target.buyPrice,
+              currentSellPrice: target.sellPrice,
+              margin: calcMargin(target.buyPrice, target.buyLeg.lotSize, spotPrice, target.sellQty, target.sellLeg.lotSize)
+            };
+            remaining.push(swappedPos);
+
+            // 4. Sync mutated position to Supabase
+            try {
+              await supabase.from('active_positions').update({
+                buy_leg: JSON.stringify(target.buyLeg),
+                sell_qty: target.sellQty,
+                entry_buy_price: target.buyPrice,
+                entry_sell_price: adjustedSellEntryPrice,
+                entry_fee: newActiveEntryFee,
+                accumulated_sell_pnl: swappedPos.accumulatedSellPnl,
+                entry_time: swappedPos.entryTime.toISOString(),
+                margin: swappedPos.margin
+              }).eq('id', pos.id);
+            } catch (e) { console.error('Leg Swap Sync Error:', e); }
           }
         } else {
           remaining.push({
