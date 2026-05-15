@@ -1084,7 +1084,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             }
 
             const newLongEntryFee = calculateFee(target.buyPrice, spotPrice, 1, target.buyLeg.lotSize);
-            const totalSwapFees = longExitFee + shortAdjustmentFee + newLongEntryFee;
 
             // 3. Create mutated position
             const newActiveEntryFee = (pos.entryFee || 0) - longEntryFee + newLongEntryFee + shortAdjustmentFee;
@@ -1096,7 +1095,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               entryBuyPrice: target.buyPrice,
               entrySellPrice: adjustedSellEntryPrice,
               entryFee: newActiveEntryFee, 
-              accumulatedSellPnl: (pos.accumulatedSellPnl || 0) + longPnl + shortAdjustmentPnl,
+              accumulatedSellPnl: (pos.accumulatedSellPnl || 0) + (longPnl - longExitFee) + shortAdjustmentPnl,
               entryTime: new Date(), // Reset time for rotation tracking
               currentBuyPrice: target.buyPrice,
               currentSellPrice: target.sellPrice,
