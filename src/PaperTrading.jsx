@@ -358,6 +358,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       const { data, error } = await supabase
         .from('trade_history')
         .select('*')
+        .eq('underlying', underlying)
         .order('exit_time', { ascending: false });
 
       if (error) return;
@@ -862,14 +863,15 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
         let shouldExit = false;
         let exitReason = '';
+        let zombieExitTime = null;
 
         // 2. Check Expiry (Hard exit — triggers 2 minutes early for stable settlement price)
-        if (pos.expiry) {
-          const expiryTs = new Date(pos.expiry).getTime();
-          const EXPIRY_EARLY_EXIT_MS = 2 * 60 * 1000; // 2 minutes before expiry
-          if (Date.now() >= expiryTs - EXPIRY_EARLY_EXIT_MS) {
-            shouldExit = true;
-            exitReason = 'Expiry Reached (2min Early)';
+        const expiryTs = new Date(pos.expiry).getTime();
+        if (Date.now() >= expiryTs - 120000) {
+          shouldExit = true;
+          exitReason = 'Expiry Reached (2min Early)';
+          if (Date.now() > expiryTs + 600000) {
+            zombieExitTime = new Date(expiryTs).toISOString();
           }
         }
 
@@ -1006,7 +1008,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
             _latestBuy: latestBuy,
             _latestSell: latestSell,
-            _isPartial: isPartial
+            _isPartial: isPartial,
+            zombieExitTime
           };
 
           exited.push(tradeRecord);
@@ -1151,7 +1154,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                 strike_diff: t.strikeDiff, entry_time: t.entryTime.toISOString(),
                 entry_buy_price: t.entryBuyPrice, entry_sell_price: t.entrySellPrice,
                 entry_spot_price: t.entrySpotPrice, margin: t.margin,
-                exit_time: t.exitTime.toISOString(), exit_buy_price: t._latestBuy, exit_sell_price: t._latestSell,
+                exit_time: t.zombieExitTime || new Date().toISOString(),
+                exit_buy_price: t._latestBuy, exit_sell_price: t._latestSell,
                 exit_spot_price: t.exitSpotPrice,
                 realized_gross_pnl: t.realizedGrossPnl, realized_net_pnl: t.realizedNetPnl,
                 exit_fee: t.exitFee, total_fees: t.totalFees, exit_reason: t.exitReason,
