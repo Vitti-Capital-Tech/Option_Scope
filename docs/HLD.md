@@ -96,7 +96,8 @@ Browser (React + Vite)
 4. **Phase 5: Dynamic Portfolio Rotation**
 The engine compares existing positions against current top scanner results:
 - **Displacement Check**: If a position is no longer in the Top 3 unique strikes AND a superior candidate (closer to ATM) is available, it is marked for rotation.
-- **Conflict-Aware Target Scanning**: To ensure an exit is always followed by a successful entry, the engine verifies that the replacement target strike does not collide with any **other** active positions before approving the rotation.
+- **Atomic Pre-Validation**: The engine validates the replacement candidate against the **0.5% Scaling** and **400pt Diversification** guards *before* executing the exit. If the target would be blocked, the rotation is cancelled to prevent empty portfolio slots.
+- **Conflict-Aware Target Scanning**: It also ensures replacement targets never collide with existing portfolio strikes.
 - **1-for-1 Displacement**: To prevent mass exits, the engine uses a **Target Reservation** system. Each new superior candidate in the scanner is "claimed" by exactly one existing inferior position.
 - **Worst-First Processing**: Active positions are evaluated from farthest-to-ATM first, ensuring the least desirable legs are rotated out first.
 - **Cycle Guards**: Rotation only begins once the portfolio hits a threshold (e.g., 3 active legs) and is capped at 3 rotations per evaluation cycle.

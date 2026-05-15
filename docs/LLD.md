@@ -228,6 +228,8 @@ This ensures that the long and short legs are evaluated independently based on t
 
 The evaluation loop processes each active position through a priority-ordered exit decision tree:
 
+- **Atomic Rotation Pre-Validation**: The engine validates "Better Targets" against the **0.5% Scaling Guard** and **400pt Diversification Guard** *before* authorizing an exit. This prevents "Gapped Exits" where a position is closed but the intended replacement is blocked by safety filters.
+
 #### Priority 1 — Expiry Settlement (Hard Exit, always runs)
 #### 2. Exit & Entry Timing
 - **Pre-Expiry Exit**: Active positions are automatically closed **2 minutes** before the contract expires to ensure stable settlement.
