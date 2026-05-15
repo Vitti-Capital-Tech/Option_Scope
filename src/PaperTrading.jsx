@@ -894,14 +894,28 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           const otherActiveBuyStrikes = sortedPositions.filter(p => p.id !== pos.id && p.underlying === underlying && p.type === pos.type).map(p => Number(p.buyLeg.strike));
           const otherActiveSellStrikes = sortedPositions.filter(p => p.id !== pos.id && p.underlying === underlying && p.type === pos.type).map(p => Number(p.sellLeg.strike));
 
-          // Find the best available candidate that isn't already active in OTHER slots AND hasn't been reserved
+          // Find the best available candidate that passes ALL safety guards
           const bestTarget = uniqueTopSpreads.filter(s => s.buyLeg.type === pos.type).find(s => {
             const bS = Number(s.buyLeg.strike);
             const sS = Number(s.sellLeg.strike);
-            // Must not collide with strikes held by our other 2 positions
+            
+            // 1. Strike collision check (exact match)
             const buyConflict = otherActiveBuyStrikes.includes(bS);
             const sellConflict = otherActiveSellStrikes.includes(sS);
-            return !buyConflict && !sellConflict && !reservedTargets.has(bS);
+            if (buyConflict || sellConflict || reservedTargets.has(bS)) return false;
+
+            // 2. Strict Diversification & Scaling Guards (must match Entry Logic)
+            const otherPositionsOfType = sortedPositions.filter(p => p.id !== pos.id && p.underlying === underlying && p.type === pos.type);
+            const passesGuards = otherPositionsOfType.every(p => {
+              const thresh = Math.round((p.entrySpotPrice * 0.005) / 100) * 100;
+              const spotValid = pos.type === 'call' 
+                ? spotPrice <= p.entrySpotPrice - thresh 
+                : spotPrice >= p.entrySpotPrice + thresh;
+              const strikeValid = Math.abs(bS - Number(p.buyLeg.strike)) >= 400;
+              return spotValid && strikeValid;
+            });
+
+            return passesGuards;
           });
 
           if (bestTarget) {
