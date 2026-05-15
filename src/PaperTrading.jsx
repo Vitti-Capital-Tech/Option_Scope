@@ -1107,6 +1107,37 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           continue;
         }
 
+        // NEW: Directional Spot Movement Scaling Guard (0.5% gap rounded to near 100)
+        const existingOfType = remaining.filter(p => p.underlying === underlying && p.type === spreadType);
+
+        if (existingOfType.length > 0) {
+          const candidateLongStrike = Number(spread.buyLeg.strike);
+
+          if (spreadType === 'call') {
+            // For Calls: 
+            // 1. All existing must be at least 0.5% HIGHER than current spot (scaling in on drops)
+            // 2. Long strike must be at least 400 points away from existing long strikes
+            const valid = existingOfType.every(p => {
+              const thresh = Math.round((p.entrySpotPrice * 0.005) / 100) * 100;
+              const spotValid = spotPrice <= p.entrySpotPrice - thresh;
+              const strikeValid = Math.abs(candidateLongStrike - Number(p.buyLeg.strike)) >= 400;
+              return spotValid && strikeValid;
+            });
+            if (!valid) continue;
+          } else {
+            // For Puts: 
+            // 1. All existing must be at least 0.5% LOWER than current spot (scaling in on rises)
+            // 2. Long strike must be at least 400 points away from existing long strikes
+            const valid = existingOfType.every(p => {
+              const thresh = Math.round((p.entrySpotPrice * 0.005) / 100) * 100;
+              const spotValid = spotPrice >= p.entrySpotPrice + thresh;
+              const strikeValid = Math.abs(candidateLongStrike - Number(p.buyLeg.strike)) >= 400;
+              return spotValid && strikeValid;
+            });
+            if (!valid) continue;
+          }
+        }
+
         // ENTRY EVALUATION:
         // Long leg: buy at ASK
         // Short leg: sell at BID

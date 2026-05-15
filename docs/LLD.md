@@ -200,7 +200,14 @@ This ensures that the long and short legs are evaluated independently based on t
 ### Entry Logic
 
 1. Merge local scan candidates with external scanner top-spreads broadcast.
-2. Deduplicate: no new position is opened if its buy strike or sell strike is already active for the same type and underlying.
+2. #### 1. Entry Uniqueness & Scaling
+- **Strike Uniqueness**: For each underlying/type, only one position per Buy Strike and one per Sell Strike is allowed.
+- **Spot Scaling Guard (Mean Reversion)**: New entries are restricted based on directional movement from existing entries:
+  - **Calls**: Current spot must be $\le$ (any existing Call entry spot - 0.5% threshold).
+  - **Puts**: Current spot must be $\ge$ (any existing Put entry spot + 0.5% threshold).
+- **Strike Scaling Guard**: The new long strike must be $\ge$ **400 points away** from any existing long strike of the same type.
+- **Threshold Rounding**: The 0.5% gap is rounded to the nearest 100 to ensure distinct price levels.
+- **Portfolio Depth**: Maximum 3 active positions per type (Calls/Puts) per underlying.
 3. Hard cap of **3 active positions per option type** (calls, puts). Partially-exited positions remain in `remaining` and still count toward the cap — a partial exit does **not** free a slot.
 4. Before inserting into Supabase, a **DB-level count guard** queries the live `active_positions` table for the same type. If the DB already has 3 or more rows, the insert is skipped even if local state thought there was a slot (catches race conditions). Uses a plain `select('id')` — not `{ head: true }` which returns `null` data.
 5. A secondary strike-level duplicate check prevents inserting a spread whose buy+sell strikes are already active. Database unique constraint (`23505`) is the final safety net.
