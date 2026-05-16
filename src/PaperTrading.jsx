@@ -1199,10 +1199,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             // 1. All existing must be at least 0.5% HIGHER than current spot (scaling in on drops)
             // 2. Long strike must be at least 400 points away from existing long strikes
             const valid = existingOfType.every(p => {
-              const thresh = Math.round((p.entrySpotPrice * 0.005) / 100) * 100;
-              const spotValid = spotPrice <= p.entrySpotPrice - thresh;
               const strikeValid = Math.abs(candidateLongStrike - Number(p.buyLeg.strike)) >= 400;
-              return spotValid && strikeValid;
+              return strikeValid;
             });
             if (!valid) continue;
           } else {
@@ -1210,10 +1208,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             // 1. All existing must be at least 0.5% LOWER than current spot (scaling in on rises)
             // 2. Long strike must be at least 400 points away from existing long strikes
             const valid = existingOfType.every(p => {
-              const thresh = Math.round((p.entrySpotPrice * 0.005) / 100) * 100;
-              const spotValid = spotPrice >= p.entrySpotPrice + thresh;
               const strikeValid = Math.abs(candidateLongStrike - Number(p.buyLeg.strike)) >= 400;
-              return spotValid && strikeValid;
+              return strikeValid;
             });
             if (!valid) continue;
           }
