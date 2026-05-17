@@ -4,6 +4,7 @@ import './index.css'
 import App from './App.jsx'
 import RatioSpreadScanner from './RatioSpreadScanner.jsx'
 import PaperTrading from './PaperTrading.jsx'
+import ATMExitTrading from './ATMExitTrading.jsx'
 import { useTabSync } from './useTabSync.js'
 
 function Root() {
@@ -34,6 +35,9 @@ function Root() {
       </div>
       <div style={{ display: page === 'trading' ? 'block' : 'none', height: '100%', width: '100%' }}>
         <PaperTrading onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} broadcast={broadcast} />
+      </div>
+      <div style={{ display: page === 'atm-exit' ? 'block' : 'none', height: '100%', width: '100%' }}>
+        <ATMExitTrading onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} broadcast={broadcast} />
       </div>
     </>
   );
