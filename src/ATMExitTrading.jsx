@@ -1124,7 +1124,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
                     <th>Current (Buy / Sell)</th>
                     <th>Unrl P&L</th>
                     <th>Margin</th>
-                    <th>Action</th>
+                    <th>Duration</th>
                   </tr></thead>
                   <tbody>
                     {positions.filter(p => p.underlying === underlying).map(p => {
@@ -1176,16 +1176,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
                               <div className="pt-margin-bar"><div className="pt-margin-fill" style={{ width: `${Math.min(100, (p.margin / (totalMargin || 1)) * 100)}%` }} /></div>
                             </div>
                           </td>
-                          <td>
-                            <button
-                               onClick={() => closeTrade(p)}
-                               style={{
-                                  background: 'var(--bg3)', border: '1px solid var(--border)', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', color: 'var(--text)', fontSize: '11px'
-                               }}
-                             >
-                                Close
-                             </button>
-                          </td>
+                          <td><span className="pt-duration">{fmtDuration(new Date() - p.entryTime)}</span></td>
                         </tr>
                       );
                     })}
