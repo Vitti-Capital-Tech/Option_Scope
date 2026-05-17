@@ -972,14 +972,10 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
             </div>
           )}
 
-          <button
-            className={`pt-status-badge ${trading ? 'live' : 'idle'}`}
-            onClick={trading ? stopTrading : startTrading}
-            style={{ cursor: 'pointer', border: 'none', background: trading ? 'rgba(14, 203, 129, 0.1)' : 'rgba(255,255,255,0.1)', color: trading ? '#0ecb81' : 'var(--text)' }}
-          >
-            {trading && <span className="pt-pulse"></span>}
-            {trading ? 'STOP ALGO' : 'START ALGO'}
-          </button>
+          <div className="pt-status-badge live">
+            <span className="pt-pulse"></span>
+            LIVE ALGO
+          </div>
 
           <div style={{ flex: 1 }} />
         </div>
