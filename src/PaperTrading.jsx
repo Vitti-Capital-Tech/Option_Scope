@@ -904,7 +904,20 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             const sellConflict = otherActiveSellStrikes.includes(sS);
             if (buyConflict || sellConflict || reservedTargets.has(bS)) return false;
 
-            // 2. Strict Diversification & Scaling Guards (must match Entry Logic)
+            // 2. Strict Diversification & Scaling Guards
+            // It must be 400 points away from the position being replaced
+            const stepValid = Math.abs(bS - Number(pos.buyLeg.strike)) >= 400;
+            
+            // It must also reflect a 0.5% market move from the old position's entry spot
+            const oldSpotBase = pos.entrySpotPrice || pos.entryBuyPrice || spotPrice;
+            const oldThresh = Math.round((oldSpotBase * 0.005) / 100) * 100;
+            const spotStepValid = pos.type === 'call'
+              ? spotPrice <= oldSpotBase - oldThresh
+              : spotPrice >= oldSpotBase + oldThresh;
+
+            if (!stepValid || !spotStepValid) return false;
+
+            // It must also be 400 points away from OTHER positions, and pass the 0.5% scaling guard
             const otherPositionsOfType = sortedPositions.filter(p => p.id !== pos.id && p.underlying === underlying && p.type === pos.type);
             const passesGuards = otherPositionsOfType.every(p => {
               const thresh = Math.round((p.entrySpotPrice * 0.005) / 100) * 100;
@@ -1013,7 +1026,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
           const tradeRecord = {
             ...pos,
-            id: isPartial ? `${pos.id}-P${pos.stagesExited + 1}` : pos.id,
+            id: isPartial ? `${pos.id}-P${pos.stagesExited + 1}` : (pos._pendingLegSwap ? `${pos.id}-LS-${Date.now().toString(36).toUpperCase()}` : pos.id),
             // For partial exits: record only the exited fraction's quantity for correct ratio display
             sellQty: isPartial ? pos.sellQty * exitFraction : pos.sellQty,
             buyLeg: isPartial ? { ...pos.buyLeg, lotSize: pos.buyLeg.lotSize * exitFraction } : pos.buyLeg,
