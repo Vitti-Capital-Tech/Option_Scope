@@ -2,11 +2,12 @@
 
 ## What The System Does
 
-OptionScope is a client-side trading workstation for Delta Exchange options. It has three top-level modules:
+OptionScope is a client-side trading workstation for Delta Exchange options. It has four top-level modules:
 
 - **Charts**: Real-time call/put/combined premium monitoring with Greeks and alerts.
 - **Ratio Spread Scanner**: Live discovery of ratio spreads based on premium-to-delta-notional alignment.
-- **Paper Trading**: Fully automated simulation of spread entry, live PnL, multi-stage scale-out exits, rotation, and expiry settlement.
+- **Paper Trading (Multi-Stage)**: Fully automated simulation of spread entry, live PnL, multi-stage scale-out exits (33%/50% partials), rotation with leg swaps, IV tracking, and expiry settlement.
+- **ATM Exit Trading**: A simplified, always-on trading variant with a single exit rule (100% at ATM), built-in scanner, bucketed analytics, and no partial exits.
 
 The user selects underlying and expiry, then the system streams option telemetry and updates UI decisions in near real-time.
 
@@ -17,38 +18,45 @@ The user selects underlying and expiry, then the system streams option telemetry
 ```
 Browser (React + Vite)
   |
-  |-- Navigation Shell (Charts / Scanner / Paper Trading)
+  |-- Navigation Shell (Charts / Scanner / Paper Trading / ATM Exit)
   |
   |-- REST adapter (products, candles, spot) ---> /api proxy ---> Delta REST
   |
   |-- WebSocket adapter (ticker, greeks, trades, l2, mark_price) ---> Delta WS
+  |       |
+  |       `-- Auto-reconnect (3s backoff on unexpected close)
   |
   |-- Persistence & Sync Hub (localStorage + BroadcastChannel + Supabase)
          |
          |-- Chart Data Hub + Correction Engine
          |-- Scanner Engine (directional pair search with ATM constraints)
-         |-- Paper Trading Engine (rotation + multi-stage exit + expiry settlement lifecycle)
+         |-- Paper Trading Engine (rotation + multi-stage exit + leg swap + IV tracking)
+         |-- ATM Exit Engine (rotation + ATM-only exit + bucketed analytics)
 ```
 
 ### 1) UI Layer
 
-- React components are route-like modules switched inside the app shell.
+- React components are route-like modules switched inside the app shell via `main.jsx`.
+- All four modules are always mounted (via `display: none/block`) to preserve state during navigation.
 - Theme toggle is shared across modules.
 - Strategy watchlist and configuration state drive the active chart context.
 - **Synchronization**: State (underlying, expiry, filters) is synchronized across tabs via `BroadcastChannel` and persisted to Supabase for cross-device consistency.
 
-### 2) Market Data & Persistence Layer
+### 2) Market Data & Connectivity Layer
 
 - **REST** handles product metadata, initial candle history, and correction backfills.
 - **WebSocket** handles low-latency live fields (`v2/ticker`, `mark_price`, trades, order book updates).
-- **Supabase** (PostgreSQL) stores algorithm configuration, active trading positions, and realized trade history.
+  - `createTickerStream` uses an **auto-reconnect loop**: if the WebSocket closes unexpectedly, it re-establishes the connection after a 3-second delay. This is critical for unattended VPS operation.
+  - `createWS` (used by the Charts module) delegates reconnect decisions to the caller.
+- **Supabase** (PostgreSQL) stores algorithm configuration, active trading positions, realized trade history, and bucketed analytics.
 - Proxy rewrites keep the architecture serverless while handling CORS.
 
 ### 3) Runtime Engines
 
 - **Charting Engine** uses imperative refs and always-mounted chart components for smooth updates.
 - **Scanner Engine** processes option chains for valid ratio candidates using configurable thresholds. Enforces directional filtering (Calls ≥ ATM, Puts ≤ ATM) and global uniqueness of buy/sell strikes per type.
-- **Paper Engine** reuses scanner-style candidate selection to simulate positions with a full exit lifecycle: rotation toward better strikes, multi-stage ATM/ITM scale-out, and automated expiry settlement. Enforces a hard cap of 3 positions per option type — partially-exited positions hold their slot until fully closed. Synchronizes with Supabase for multi-instance stability, with a DB-level count guard preventing over-entry under race conditions.
+- **Paper Trading Engine** reuses scanner-style candidate selection to simulate positions with a full exit lifecycle: rotation toward better strikes, multi-stage ATM/ITM scale-out, leg swap optimization, and automated expiry settlement. Enforces a hard cap of 3 positions per option type. Tracks Bid/Ask-specific IVs at entry and in real-time. Synchronizes with Supabase for multi-instance stability.
+- **ATM Exit Engine** runs an independent, self-contained scanner and evaluation loop. Uses the same entry guards (0.5% spot scaling, 400pt diversification) but a simpler exit strategy: 100% close at ATM. Persists to separate Supabase tables (`atm_exit_*`) and aggregates running trade analytics by strike diff and sell quantity buckets.
 
 ---
 
@@ -68,8 +76,9 @@ Browser (React + Vite)
 4. Every 5 seconds, refresh forming candle from REST.
 5. At each candle boundary (+ settle delay), refresh full history for official close integrity.
 
-### Ticker Subscription
+### Ticker Subscription (Shared Infrastructure)
 - **Restart Optimization**: `lastWsSymbolsRef` hashes the symbol list to prevent redundant WebSocket restarts during periodic product refreshes, avoiding the "WebSocket is closed before established" error.
+- **Auto-Reconnect**: `createTickerStream` (used by Scanner, Paper Trading, and ATM Exit) automatically reconnects after 3 seconds if the WebSocket drops. This eliminates the need for manual restarts during unattended VPS operation.
 - **Auto-Refresh**: Products and expiries are re-queried from Delta every 5 minutes; if the currently selected expiry disappears (e.g. daily rollover), the UI automatically shifts to the next available date.
 - **Buffered Flush**: 50ms ticker batching reduces render pressure under high-volatility data bursts.
 - **Defensive Backfill**: A manual UI refresh triggers a targeted `/v2/tickers` REST request. This intelligently merges live prices without overwriting existing data with missing/zeroed fields, guaranteeing immediate price accuracy even if the WebSocket stream is temporarily silent.
@@ -81,7 +90,7 @@ Browser (React + Vite)
 3. Evaluate pair candidates using strike/IV/premium/deviation constraints. Uses **execution-realistic pricing**: Long legs are evaluated at the **Ask** and Short legs at the **Bid**. Similarly, **IV Diff** is calculated using directional IVs (Ask IV for long, Bid IV for short).
 4. Publish top-3 call and top-3 put candidates to the scanner table, and broadcast to Paper Trading via `BroadcastChannel`.
 
-### Paper Trading (Automated Lifecycle)
+### Paper Trading (Multi-Stage Automated Lifecycle)
 
 1. Merge local scan candidates with real-time scanner broadcasts.
    - **Execution-Realistic Entries**: New positions are entered at the Ask for long legs and Bid for short legs, capturing the true cost of crossing the spread.
@@ -90,25 +99,41 @@ Browser (React + Vite)
 3. **Scaling & Uniqueness Guards**: 
    - **Directional Spot Scaling**: Enforces a 0.5% price gap (rounded to 100) between entries for mean-reversion scaling.
    - **Strike Diversification**: Ensures new long strikes are at least 400 points away from existing long strikes.
-4. **Visual Simulation Mode**: A "What-If" dashboard layer that allows users to simulate the impact of adding custom premium/credit to their strategy visually (including P&L and ratio recalculation) without affecting the underlying database.
-5. **Leg Swap Rotation**: Surgical optimization that swaps only the Long leg and adjusts the Short quantity (using weighted average entry pricing) when the Sell strike remains consistent, minimizing slippage and fees.
-6. **Expiry**: exit 2 minutes early for stable settlement prices.
-4. **Phase 5: Dynamic Portfolio Rotation**
-The engine compares existing positions against current top scanner results:
-- **Displacement Check**: If a position is no longer in the Top 3 unique strikes AND a superior candidate (closer to ATM) is available, it is marked for rotation.
-- **Atomic Pre-Validation**: The engine validates the replacement candidate against the **0.5% Scaling** and **400pt Diversification** guards *before* executing the exit. If the target would be blocked, the rotation is cancelled to prevent empty portfolio slots.
-- **Conflict-Aware Target Scanning**: It also ensures replacement targets never collide with existing portfolio strikes.
-- **1-for-1 Displacement**: To prevent mass exits, the engine uses a **Target Reservation** system. Each new superior candidate in the scanner is "claimed" by exactly one existing inferior position.
-- **Worst-First Processing**: Active positions are evaluated from farthest-to-ATM first, ensuring the least desirable legs are rotated out first.
-- **Cycle Guards**: Rotation only begins once the portfolio hits a threshold (e.g., 3 active legs) and is capped at 3 rotations per evaluation cycle.
+4. **IV Tracking**:
+   - Entry IVs captured using directional Bid/Ask IVs (`ask_iv` for buy leg, `bid_iv` for sell leg).
+   - Current IVs updated live from the ticker stream using the same directional logic.
+   - Dedicated table columns: **IV In (B/S)**, **IV Cur (B/S)**, **IV Out (B/S)**.
+5. **Visual Simulation Mode**: A "What-If" dashboard layer that allows users to simulate the impact of adding custom premium/credit to their strategy visually (including P&L and ratio recalculation) without affecting the database.
+6. **Leg Swap Rotation**: Surgical optimization that swaps only the Long leg and adjusts the Short quantity (using weighted average entry pricing) when the Sell strike remains consistent, minimizing slippage and fees.
+7. **Expiry**: exit 2 minutes early for stable settlement prices.
+8. **Dynamic Portfolio Rotation**:
+   The engine compares existing positions against current top scanner results:
+   - **Displacement Check**: If a position is no longer in the Top 3 unique strikes AND a superior candidate (closer to ATM) is available, it is marked for rotation.
+   - **Atomic Pre-Validation**: The engine validates the replacement candidate against the **0.5% Scaling** and **400pt Diversification** guards *before* executing the exit. If the target would be blocked, the rotation is cancelled to prevent empty portfolio slots.
+   - **Conflict-Aware Target Scanning**: It also ensures replacement targets never collide with existing portfolio strikes.
+   - **1-for-1 Displacement**: To prevent mass exits, the engine uses a **Target Reservation** system. Each new superior candidate in the scanner is "claimed" by exactly one existing inferior position.
+   - **Worst-First Processing**: Active positions are evaluated from farthest-to-ATM first, ensuring the least desirable legs are rotated out first.
+   - **Cycle Guards**: Rotation only begins once the portfolio hits a threshold (e.g., 3 active legs) and is capped at 3 rotations per evaluation cycle.
+9. Open new positions up to 3 per type from the ranked candidate list. DB count guard prevents exceeding 3 even under race conditions.
+10. Sync all entries, exits, and partial scale-outs to Supabase. Full `positions` array replacement only happens when rows are added/removed, not on routine PnL updates.
 
-### Phase 6: Performance Monitoring & History
-- **Dual KPIs**: Tracks **Today's P&L** (Today's Realized + Current Open) using local timezone logic, and **All-Time P&L** (Total Realized + Total Open).
-- **Local History Sync**: Trade history filtering is synchronized with the user's local timezone (00:00 - 23:59 window).
+### ATM Exit Trading (Simplified Automated Lifecycle)
+
+1. **Self-Contained Scanner**: Runs its own `scanTickers` function internally — does not rely on the external `RatioSpreadScanner` broadcast. Uses identical filtering logic (strike diff, IV diff, premium, ratio deviation, ATM directional filtering).
+2. **Entry Guards**: Same as Paper Trading — 0.5% directional spot scaling, 400-point strike diversification, max 3 positions per type, DB-level count guard.
+3. **Exit Strategy**: Single rule — **100% exit at ATM** (spot crosses buy strike). No partial exits or multi-stage scale-out.
+4. **Rotation**: Lost Top 3 displacement with the same worst-first, conflict-aware, 1-for-1 reservation system. Capped at 3 rotations per cycle.
+5. **Expiry Settlement**: Automatic close 2 minutes before expiry.
+6. **Analytics Aggregation**: On every trade exit, running averages are upserted into bucketed Supabase tables (`atm_exit_qty_0_2_5`, `atm_exit_qty_2_5_5`, `atm_exit_qty_5_7_5`, `atm_exit_qty_7_5_10`) grouped by sell quantity range, strike diff, underlying, and type. Tracks: trade count, average margin, average P&L, average net premium, average fees.
+7. **Always-On**: The algo starts automatically when products and expiry are loaded. The Start/Stop button has been replaced with a static "LIVE ALGO" indicator.
+8. **Separate Persistence**: Uses distinct Supabase tables (`atm_exit_config`, `atm_exit_active_positions`, `atm_exit_trade_history`) to avoid any interference with the Paper Trading engine.
+
+### Performance Monitoring & History (Both Engines)
+- **Dual KPIs**: Tracks **Today's P&L** (Today's Realized + Current Open) using UTC+12h settlement offset, and **All-Time P&L** (Total Realized + Total Open).
+- **Settlement-Aware Date Filtering**: Trade history uses a 12-hour UTC offset to align with Delta Exchange's settlement cycle. Date navigation with prev/next/today/all controls.
 - **Supabase Persistence**: Automated logging of every entry, partial exit, and full closure for historical auditing.
-Product and expiry list refreshed every 5 minutes to capture rollovers. Header UI uses `tabular-nums` and fixed-width containers to maintain layout stability during high-frequency (1s) PnL updates. A 1-second background heartbeat ensures the UI stays perfectly synced even during extremely quiet market periods when the WebSocket is inactive.
-7. Open new positions up to 3 per type from the ranked candidate list. DB count guard prevents exceeding 3 even under race conditions.
-8. Sync all entries, exits, and partial scale-outs to Supabase. Full `positions` array replacement only happens when rows are added/removed, not on routine PnL updates.
+- **Defensive Date Handling**: `Invalid Date` guards (`isNaN(d.getTime())`) protect against UI crashes from legacy or malformed database records.
+- Product and expiry list refreshed every 5 minutes to capture rollovers. Header UI uses `tabular-nums` and fixed-width containers to maintain layout stability during high-frequency (1s) PnL updates. A 1-second background heartbeat ensures the UI stays perfectly synced even during extremely quiet market periods when the WebSocket is inactive.
 
 ---
 
@@ -118,7 +143,7 @@ Product and expiry list refreshed every 5 minutes to capture rollovers. Header U
 |---|---|---|
 | Frontend | React + Vite | Fast iteration, modular stateful UI |
 | Charting | `lightweight-charts` | High-performance OHLC rendering |
-| Streaming | Native WebSocket | Low-latency market updates |
+| Streaming | Native WebSocket | Low-latency market updates with auto-reconnect |
 | Data buffering | `useRef` + batched flush | Controls re-render frequency under bursty data |
 | Persistence | Supabase (PostgreSQL) | Serverless, real-time DB with cross-device sync |
 | Styling | Vanilla CSS | Fine-grained control of trading terminal aesthetics |
