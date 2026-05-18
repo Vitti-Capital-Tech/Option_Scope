@@ -870,6 +870,67 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
   const wins = uniqueTradeHistory.filter(t => (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || 0)) > 0).length;
   const winRate = uniqueTradeHistory.length > 0 ? ((wins / uniqueTradeHistory.length) * 100).toFixed(1) : '—';
   const totalMargin = positions.filter(p => p.underlying === underlying).reduce((s, p) => s + (p.margin || 0), 0);
+  const calculatedAnalyticsData = React.useMemo(() => {
+    const buckets = {
+      'atm_exit_qty_0_2_5': [],
+      'atm_exit_qty_2_5_5': [],
+      'atm_exit_qty_5_7_5': [],
+      'atm_exit_qty_7_5_10': [],
+    };
+
+    const groups = {};
+
+    uniqueTradeHistory.forEach(t => {
+      if (t.underlying !== underlying) return;
+
+      const qty = t.sellQty || 0;
+      let bucketName = 'atm_exit_qty_7_5_10';
+      if (qty <= 2.5) bucketName = 'atm_exit_qty_0_2_5';
+      else if (qty <= 5) bucketName = 'atm_exit_qty_2_5_5';
+      else if (qty <= 7.5) bucketName = 'atm_exit_qty_5_7_5';
+
+      const strikeDiff = Math.round((t.strikeDiff || 0) / 100) * 100;
+      const key = `${bucketName}_${t.type}_${strikeDiff}`;
+
+      if (!groups[key]) {
+        groups[key] = {
+          bucketName,
+          type: t.type,
+          strike_diff: strikeDiff,
+          trades: []
+        };
+      }
+      groups[key].trades.push(t);
+    });
+
+    Object.values(groups).forEach(g => {
+      const n = g.trades.length;
+      const sumMargin = g.trades.reduce((sum, t) => sum + (t.margin || 0), 0);
+      const sumFees = g.trades.reduce((sum, t) => sum + (t.totalFees || 0), 0);
+      const sumPnl = g.trades.reduce((sum, t) => sum + (t.realizedNetPnl || 0), 0);
+      
+      const sumNetPremium = g.trades.reduce((sum, t) => {
+        const netPrem = (t.entryBuyPrice || 0) - (t.sellQty || 0) * (t.entrySellPrice || 0);
+        return sum + netPrem;
+      }, 0);
+
+      buckets[g.bucketName].push({
+        type: g.type,
+        strike_diff: g.strike_diff,
+        trade_count: n,
+        avg_margin: sumMargin / n,
+        avg_fees: sumFees / n,
+        avg_pnl: sumPnl / n,
+        avg_net_premium: sumNetPremium / n
+      });
+    });
+
+    Object.keys(buckets).forEach(b => {
+      buckets[b].sort((a, b) => a.strike_diff - b.strike_diff);
+    });
+
+    return buckets;
+  }, [uniqueTradeHistory, underlying]);
 
   const getAnalyticsValue = (val, isTotal, count) => {
     if (!isTotal) return Number(val || 0).toFixed(2);
@@ -1454,7 +1515,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
                         </tr>
                       </thead>
                       <tbody>
-                        {(analyticsData[tableName] || []).map(row => {
+                        {(calculatedAnalyticsData[tableName] || []).map(row => {
                            const np = row.avg_net_premium || 0;
                            const isCredit = np < 0;
                            const pnlModeValue = getAnalyticsValue(row.avg_pnl, showTotalMode, row.trade_count);
@@ -1471,7 +1532,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
                              </tr>
                            );
                         })}
-                        {!(analyticsData[tableName]?.length) && (
+                        {!(calculatedAnalyticsData[tableName]?.length) && (
                           <tr><td colSpan="6" style={{textAlign: 'center', padding: '20px', color: 'var(--text-dim)'}}>No data available</td></tr>
                         )}
                       </tbody>
