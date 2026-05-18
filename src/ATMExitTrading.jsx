@@ -810,8 +810,32 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
   };
 
   const totalUnrealizedPnl = positions.filter(p => p.underlying === underlying).reduce((s, p) => s + ((includeFees ? p.unrealizedNetPnl : p.unrealizedGrossPnl) || 0), 0);
-  const todaysTrades = tradeHistory.filter(t => t.exitTime && t.exitTime.toISOString().startsWith(historyFilterDate));
-  const todayRealizedPnl = todaysTrades.reduce((s, t) => s + ((includeFees ? t.realizedNetPnl : t.realizedGrossPnl) || 0), 0);
+  const filteredTradeHistory = React.useMemo(() => {
+    if (!historyFilterDate) return tradeHistory;
+    return tradeHistory.filter(t => {
+      if (!t.exitTime) return false;
+      const d = new Date(t.exitTime);
+      d.setUTCHours(d.getUTCHours() + 12);
+      const exitUtcDate = d.toISOString().split('T')[0];
+      return exitUtcDate === historyFilterDate;
+    });
+  }, [tradeHistory, historyFilterDate]);
+
+  const todayRealizedPnl = React.useMemo(() => {
+    const d = new Date();
+    d.setUTCHours(d.getUTCHours() + 12);
+    const todayUtc = d.toISOString().split('T')[0];
+    return tradeHistory.reduce((s, t) => {
+      if (!t.exitTime) return s;
+      const dTrade = new Date(t.exitTime);
+      dTrade.setUTCHours(dTrade.getUTCHours() + 12);
+      if (dTrade.toISOString().split('T')[0] === todayUtc) {
+        return s + ((includeFees ? t.realizedNetPnl : t.realizedGrossPnl) || 0);
+      }
+      return s;
+    }, 0);
+  }, [tradeHistory, includeFees]);
+
   const totalRealizedPnl = tradeHistory.reduce((s, t) => s + ((includeFees ? t.realizedNetPnl : t.realizedGrossPnl) || 0), 0);
   const todayPnl = todayRealizedPnl + totalUnrealizedPnl;
   const totalPnl = totalRealizedPnl + totalUnrealizedPnl;
@@ -1219,7 +1243,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
                     fontWeight: 700,
                     border: '1px solid rgba(240, 185, 11, 0.2)'
                   }}>
-                    {todaysTrades.length}
+                    {filteredTradeHistory.length}
                   </span>
                 </div>
 
@@ -1274,7 +1298,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
                 </div>
               </div>
             </div>
-            {todaysTrades.length === 0 ? (
+            {filteredTradeHistory.length === 0 ? (
               <div className="pt-empty">
                 <div className="pt-empty-icon idle">
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="2"><path d="M12 8v4l3 3" /><circle cx="12" cy="12" r="10" /></svg>
@@ -1299,7 +1323,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
                     <th>Exit Reason</th>
                   </tr></thead>
                   <tbody>
-                    {todaysTrades.map((t, i) => {
+                    {filteredTradeHistory.map((t, i) => {
                       const pnlValue = includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || t.realizedPnl || 0);
                       const durationMs = t.exitTime && t.entryTime ? (t.exitTime - t.entryTime) : 0;
                       return (
