@@ -1597,6 +1597,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       if (!t.exitTime) return false;
       // Apply 12h offset to trade exit time to match settlement cycle
       const d = new Date(t.exitTime);
+      if (isNaN(d.getTime())) return false;
       d.setUTCHours(d.getUTCHours() + 12);
       const exitUtcDate = d.toISOString().split('T')[0];
       return exitUtcDate === historyFilterDate;
@@ -1629,6 +1630,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     return tradeHistory.reduce((s, t) => {
       if (!t.exitTime) return s;
       const dTrade = new Date(t.exitTime);
+      if (isNaN(dTrade.getTime())) return s;
       dTrade.setUTCHours(dTrade.getUTCHours() + 12);
       const exitUtcDate = dTrade.toISOString().split('T')[0];
 

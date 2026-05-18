@@ -843,6 +843,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
     return uniqueTradeHistory.filter(t => {
       if (!t.exitTime) return false;
       const d = new Date(t.exitTime);
+      if (isNaN(d.getTime())) return false; // Prevent Invalid Date crash
       d.setUTCHours(d.getUTCHours() + 12);
       const exitUtcDate = d.toISOString().split('T')[0];
       return exitUtcDate === historyFilterDate;
@@ -856,6 +857,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
     return uniqueTradeHistory.reduce((s, t) => {
       if (!t.exitTime) return s;
       const dTrade = new Date(t.exitTime);
+      if (isNaN(dTrade.getTime())) return s; // Prevent Invalid Date crash
       dTrade.setUTCHours(dTrade.getUTCHours() + 12);
       if (dTrade.toISOString().split('T')[0] === todayUtc) {
         return s + ((includeFees ? t.realizedNetPnl : t.realizedGrossPnl) || 0);

@@ -212,39 +212,64 @@ export function createWS(callSym, putSym, resolution, priceType, onTicker, onDat
 
 // Subscribe to v2/ticker stream for multiple symbols (scanner use-case)
 export function createTickerStream(symbols, onTicker, onStatus) {
-  const ws = new WebSocket(WS_URL);
+  let ws = null;
   let alive = true;
+  let reconnectTimer = null;
 
-  ws.onopen = () => {
-    onStatus?.('live');
-    ws.send(JSON.stringify({
-      type: 'subscribe',
-      payload: {
-        channels: [
-          { name: 'v2/ticker', symbols },
-        ],
-      },
-    }));
-  };
-
-  ws.onmessage = (e) => {
+  const connect = () => {
+    if (!alive) return;
     try {
-      const msg = JSON.parse(e.data);
-      if (!msg || msg.type === 'subscriptions') return;
-      if (msg.type !== 'v2/ticker') return;
-      onTicker?.(msg);
-    } catch { /* ignore */ }
+      ws = new WebSocket(WS_URL);
+      
+      ws.onopen = () => {
+        onStatus?.('live');
+        ws.send(JSON.stringify({
+          type: 'subscribe',
+          payload: {
+            channels: [
+              { name: 'v2/ticker', symbols },
+            ],
+          },
+        }));
+      };
+
+      ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (!msg || msg.type === 'subscriptions') return;
+          if (msg.type !== 'v2/ticker') return;
+          onTicker?.(msg);
+        } catch { /* ignore */ }
+      };
+
+      ws.onerror = () => onStatus?.('error');
+
+      ws.onclose = () => {
+        onStatus?.('disconnected');
+        if (alive) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = setTimeout(connect, 3000); // Auto-reconnect after 3s
+        }
+      };
+    } catch (e) {
+      if (alive) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(connect, 3000);
+      }
+    }
   };
 
-  ws.onerror = () => onStatus?.('error');
-
-  ws.onclose = () => {
-    onStatus?.('disconnected');
-    if (alive) setTimeout(() => { }, 0);
-  };
+  connect();
 
   return {
-    close: () => { alive = false; ws.close(); },
+    close: () => { 
+      alive = false; 
+      clearTimeout(reconnectTimer);
+      if (ws) {
+        ws.onclose = null; // Prevent reconnect loop
+        ws.close(); 
+      }
+    },
   };
 }
 
