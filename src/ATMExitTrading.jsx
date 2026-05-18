@@ -183,6 +183,14 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
     refreshProducts();
   }, [underlying]);
 
+  // ── Periodically refresh products to catch expiries and rollover ────────
+  useEffect(() => {
+    const interval = setInterval(() => {
+      refreshProducts();
+    }, 5 * 60 * 1000); // 5 minutes
+    return () => clearInterval(interval);
+  }, [refreshProducts]);
+
   const saveSupabaseConfig = useCallback(async (newCfg) => {
     try {
       await supabase.from('atm_exit_config').upsert({

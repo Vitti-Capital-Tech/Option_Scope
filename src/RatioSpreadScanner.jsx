@@ -134,6 +134,14 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
     refreshProducts();
   }, [underlying]);
 
+  // ── Periodically refresh products to catch expiries and rollover ────────
+  useEffect(() => {
+    const interval = setInterval(() => {
+      refreshProducts();
+    }, 5 * 60 * 1000); // 5 minutes
+    return () => clearInterval(interval);
+  }, [refreshProducts]);
+
   // ── Fetch spot price ────────────────────────────────────────────────────
   useEffect(() => {
     const fetchSpot = () => {
@@ -380,11 +388,6 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
 
     setLastRefreshed(Date.now());
 
-    // Refresh products every 5 mins to catch expiries
-    const currentMinute = Math.floor(Date.now() / 60000);
-    if (currentMinute % 5 === 0) {
-      refreshProducts();
-    }
   }, [scanning, spotPrice, config, publishTopSpreads]);
 
   // Periodic and conditional scanning

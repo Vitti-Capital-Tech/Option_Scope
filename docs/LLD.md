@@ -153,7 +153,7 @@ Greedy selection algorithm ensuring each buy strike appears at most once in the 
 - **Initial**: Scan runs immediately when ticker data arrives (fast-track: 2 seconds after first data).
 - **Normal**: Aligned to clock-minute boundary via `currentMinute > lastMinute` check.
 - **Manual**: Refresh button triggers `computeSpreads(true)` immediately.
-- **Product Refresh**: Every 5 minutes (`currentMinute % 5 === 0`) to detect new expiries and strike listings.
+- **Product Refresh**: Dedicated background `useEffect` interval runs every 5 minutes in all active modules (`RatioSpreadScanner`, `PaperTrading`, `ATMExitTrading`) independently of trading or scanning status. If the currently selected expiry is no longer present in the active list (e.g., daily rollover occurs), the engine automatically switches to the nearest active expiry, updates the configuration, and syncs/saves the new state to the database.
 
 ### Publishing Results
 
