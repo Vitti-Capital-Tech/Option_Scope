@@ -87,14 +87,13 @@ The workspace uses a single `BroadcastChannel` named `option-scope-sync` to sync
 
 ### Channel Architecture
 
-- **`useTabSync`** (used in `main.jsx`): Creates and owns the persistent channel. Broadcasts `PAGE_CHANGE` and `THEME_CHANGE` automatically on state changes. Accepts a `handlers` map for custom message types.
+- **`useTabSync`** (used in `main.jsx`): Creates and owns the persistent channel. Broadcasts `THEME_CHANGE` automatically on theme changes. Accepts a `handlers` map for custom message types.
 - **`useTabListener`** (used in child components): Opens a short-lived channel per call for listening and one-shot broadcasting. Each instance has a unique `tabId` (random base-36 string) to prevent self-echo.
 
 ### Message Types
 
 | Type | Direction | Payload | Effect |
 |---|---|---|---|
-| `PAGE_CHANGE` | Any tab → All | `{ page }` | Navigates all tabs to the same page |
 | `THEME_CHANGE` | Any tab → All | `{ theme }` | Applies light/dark theme to all tabs |
 | `SCANNER_TOP_SPREADS_SYNC` | Scanner → PaperTrading | `{ underlying, expiry, callTop3, putTop3, timestamp }` | Delivers live scanner results to the Paper Trading engine |
 | `CONFIG_SYNC` | PaperTrading → Scanner | `{ underlying, expiry, config }` | Propagates filter/expiry changes from Paper Trading to Scanner |

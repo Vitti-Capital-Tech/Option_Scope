@@ -52,9 +52,6 @@ export function useTabSync({ page, setPage, theme, setTheme, handlers = {} }) {
       if (senderId === tabId.current) return;
 
       switch (type) {
-        case 'PAGE_CHANGE':
-          setPage(payload.page);
-          break;
         case 'THEME_CHANGE':
           setTheme(payload.theme);
           break;
@@ -68,11 +65,7 @@ export function useTabSync({ page, setPage, theme, setTheme, handlers = {} }) {
     };
 
     return () => channel.close();
-  }, [setPage, setTheme]);
-
-  useEffect(() => {
-    broadcast('PAGE_CHANGE', { page });
-  }, [page, broadcast]);
+  }, [setTheme]);
 
   useEffect(() => {
     broadcast('THEME_CHANGE', { theme });
