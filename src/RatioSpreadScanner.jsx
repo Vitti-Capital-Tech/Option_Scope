@@ -214,8 +214,8 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
         const markPrice = toFiniteNumber(msg.mark_price ?? msg.close ?? msg.last_price);
         const bid = toFiniteNumber(msg.quotes?.best_bid);
         const ask = toFiniteNumber(msg.quotes?.best_ask);
-        const bidIv = normalizeIv(toFiniteNumber(msg.quotes?.best_bid_iv));
-        const askIv = normalizeIv(toFiniteNumber(msg.quotes?.best_ask_iv));
+        const bidIv = normalizeIv(toFiniteNumber(msg.quotes?.bid_iv));
+        const askIv = normalizeIv(toFiniteNumber(msg.quotes?.ask_iv));
         const iv = normalizeIv(toFiniteNumber(msg.mark_vol ?? msg.quotes?.mark_iv ?? msg.greeks?.iv));
         const delta = msg.greeks ? toFiniteNumber(msg.greeks.delta) : null;
         const gamma = msg.greeks ? toFiniteNumber(msg.greeks.gamma) : null;

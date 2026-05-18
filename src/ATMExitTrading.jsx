@@ -379,8 +379,8 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
             const iv = normalizeIv(toFiniteNumber(t.mark_vol ?? t.quotes?.mark_iv ?? t.greeks?.iv));
             const bid = toFiniteNumber(t.quotes?.best_bid);
             const ask = toFiniteNumber(t.quotes?.best_ask);
-            const bidIv = normalizeIv(toFiniteNumber(t.quotes?.best_bid_iv));
-            const askIv = normalizeIv(toFiniteNumber(t.quotes?.best_ask_iv));
+            const bidIv = normalizeIv(toFiniteNumber(t.quotes?.bid_iv));
+            const askIv = normalizeIv(toFiniteNumber(t.quotes?.ask_iv));
             backfill[t.symbol] = {
               symbol: t.symbol, strike: meta.strike, lotSize: meta.lotSize, type: meta.type,
               markPrice: (markPrice && markPrice > 0) ? markPrice : (prev?.markPrice ?? null),
@@ -433,8 +433,8 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
         const markPrice = toFiniteNumber(msg.mark_price ?? msg.last_price ?? msg.close);
         const bid = toFiniteNumber(msg.quotes?.best_bid);
         const ask = toFiniteNumber(msg.quotes?.best_ask);
-        const bidIv = normalizeIv(toFiniteNumber(msg.quotes?.best_bid_iv));
-        const askIv = normalizeIv(toFiniteNumber(msg.quotes?.best_ask_iv));
+        const bidIv = normalizeIv(toFiniteNumber(msg.quotes?.bid_iv));
+        const askIv = normalizeIv(toFiniteNumber(msg.quotes?.ask_iv));
         const iv = normalizeIv(toFiniteNumber(msg.mark_vol ?? msg.quotes?.mark_iv ?? msg.greeks?.iv));
         const delta = msg.greeks ? toFiniteNumber(msg.greeks.delta) : null;
         const prevBuffered = tickerBufferRef.current[sym] ?? latestTickerDataRef.current[sym];

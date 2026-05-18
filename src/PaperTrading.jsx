@@ -257,6 +257,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               // Preserve live data from current state if available
               currentBuyPrice: existing?.currentBuyPrice ?? null,
               currentSellPrice: existing?.currentSellPrice ?? null,
+              currentBuyIv: existing?.currentBuyIv ?? null,
+              currentSellIv: existing?.currentSellIv ?? null,
+              entryBuyIv: buyLeg?.entryIv || null,
+              entrySellIv: sellLeg?.entryIv || null,
               unrealizedGrossPnl: existing?.unrealizedGrossPnl ?? 0,
               unrealizedNetPnl: existing?.unrealizedNetPnl ?? -(p.entry_fee || 0),
               currentExitFee: existing?.currentExitFee ?? 0,
@@ -389,6 +393,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           totalFees: t.total_fees,
           entryFee: (t.total_fees || 0) - (t.exit_fee || 0),
           exitReason: t.exit_reason,
+          entryBuyIv: safeParseLeg(t.buy_leg)?.entryIv || null,
+          entrySellIv: safeParseLeg(t.sell_leg)?.entryIv || null,
+          exitBuyIv: safeParseLeg(t.buy_leg)?.exitIv || null,
+          exitSellIv: safeParseLeg(t.sell_leg)?.exitIv || null,
 
           _isPartial: t.is_partial || false,
           _exitedBuyQty: t.lot_size ?? safeParseLeg(t.buy_leg)?.lotSize ?? 1,
@@ -479,8 +487,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             const iv = normalizeIv(toFiniteNumber(t.mark_vol ?? t.quotes?.mark_iv ?? t.greeks?.iv));
             const bid = toFiniteNumber(t.quotes?.best_bid);
             const ask = toFiniteNumber(t.quotes?.best_ask);
-            const bidIv = normalizeIv(toFiniteNumber(t.quotes?.best_bid_iv));
-            const askIv = normalizeIv(toFiniteNumber(t.quotes?.best_ask_iv));
+            const bidIv = normalizeIv(toFiniteNumber(t.quotes?.bid_iv));
+            const askIv = normalizeIv(toFiniteNumber(t.quotes?.ask_iv));
 
             backfill[t.symbol] = {
               symbol: t.symbol,
@@ -551,8 +559,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         const markPrice = toFiniteNumber(msg.mark_price ?? msg.last_price ?? msg.close);
         const bid = toFiniteNumber(msg.quotes?.best_bid);
         const ask = toFiniteNumber(msg.quotes?.best_ask);
-        const bidIv = normalizeIv(toFiniteNumber(msg.quotes?.best_bid_iv));
-        const askIv = normalizeIv(toFiniteNumber(msg.quotes?.best_ask_iv));
+        const bidIv = normalizeIv(toFiniteNumber(msg.quotes?.bid_iv));
+        const askIv = normalizeIv(toFiniteNumber(msg.quotes?.ask_iv));
         const iv = normalizeIv(toFiniteNumber(msg.mark_vol ?? msg.quotes?.mark_iv ?? msg.greeks?.iv));
         const delta = msg.greeks ? toFiniteNumber(msg.greeks.delta) : null;
 
@@ -724,10 +732,15 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
             const totalFees = (pos.entryFee || 0) + exitFee;
 
+            const latestBuyIv = tickerBuy?.bidIv ?? tickerBuy?.iv ?? pos.currentBuyIv ?? null;
+            const latestSellIv = tickerSell?.askIv ?? tickerSell?.iv ?? pos.currentSellIv ?? null;
+
             return {
               ...pos,
               currentBuyPrice: latestBuy,
               currentSellPrice: latestSell,
+              currentBuyIv: latestBuyIv,
+              currentSellIv: latestSellIv,
               unrealizedGrossPnl: grossPnl,
               unrealizedNetPnl: grossPnl - totalFees,
               currentExitFee: exitFee,
@@ -862,6 +875,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
         const latestBuy = liveExitBuy;
         const latestSell = liveExitSell;
+        const latestBuyIv = tickerBuy?.bidIv ?? tickerBuy?.iv ?? pos.currentBuyIv ?? null;
+        const latestSellIv = tickerSell?.askIv ?? tickerSell?.iv ?? pos.currentSellIv ?? null;
 
         let shouldExit = false;
         let exitReason = '';
@@ -1029,12 +1044,15 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             id: isPartial ? `${pos.id}-P${pos.stagesExited + 1}` : (pos._pendingLegSwap ? `${pos.id}-LS-${Date.now().toString(36).toUpperCase()}` : pos.id),
             // For partial exits: record only the exited fraction's quantity for correct ratio display
             sellQty: isPartial ? pos.sellQty * exitFraction : pos.sellQty,
-            buyLeg: isPartial ? { ...pos.buyLeg, lotSize: pos.buyLeg.lotSize * exitFraction } : pos.buyLeg,
+            buyLeg: isPartial ? { ...pos.buyLeg, lotSize: pos.buyLeg.lotSize * exitFraction, exitIv: latestBuyIv } : { ...pos.buyLeg, exitIv: latestBuyIv },
+            sellLeg: { ...pos.sellLeg, exitIv: latestSellIv },
             _exitedBuyQty: isPartial ? pos.buyLeg.lotSize * exitFraction : pos.buyLeg.lotSize,
 
             exitTime: new Date(),
             exitBuyPrice: latestBuy,
             exitSellPrice: latestSell,
+            exitBuyIv: latestBuyIv,
+            exitSellIv: latestSellIv,
             exitSpotPrice: spotPrice,
             realizedGrossPnl: partGrossPnl,
             realizedNetPnl: partNetPnl,
@@ -1233,6 +1251,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         // Short leg: sell at BID
         const entryBuyPrice = spread.buyPrice;
         const entrySellPrice = spread.sellPrice;
+        
+        const live = latestTickerDataRef.current;
+        const tickerBuy = live[spread.buyLeg.symbol];
+        const tickerSell = live[spread.sellLeg.symbol];
+        const entryBuyIv = tickerBuy?.askIv ?? tickerBuy?.iv ?? null;
+        const entrySellIv = tickerSell?.bidIv ?? tickerSell?.iv ?? null;
+        const buyLegWithIv = { ...spread.buyLeg, entryIv: entryBuyIv };
+        const sellLegWithIv = { ...spread.sellLeg, entryIv: entrySellIv };
 
         const entryBuyFee = calculateFee(entryBuyPrice, spotPrice, 1, spread.buyLeg.lotSize);
         const entrySellFee = calculateFee(entrySellPrice, spotPrice, spread.sellQty, spread.sellLeg.lotSize);
@@ -1240,10 +1266,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         const id = `T${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
         const newPos = {
           id, underlying, expiry: selExpiry, type: spread.buyLeg.type,
-          buyLeg: spread.buyLeg, sellLeg: spread.sellLeg, sellQty: spread.sellQty,
+          buyLeg: buyLegWithIv, sellLeg: sellLegWithIv, sellQty: spread.sellQty,
           strikeDiff: spread.strikeDiff, entryTime: new Date(), entryBuyPrice,
           entrySellPrice, entrySpotPrice: spotPrice, currentBuyPrice: entryBuyPrice,
           currentSellPrice: entrySellPrice, unrealizedGrossPnl: 0, unrealizedNetPnl: -entryFee,
+          entryBuyIv, entrySellIv, currentBuyIv: entryBuyIv, currentSellIv: entrySellIv,
           entryFee, currentExitFee: entryFee, currentTotalFees: entryFee * 2,
           margin: calcMargin(entryBuyPrice, spread.buyLeg.lotSize, spotPrice, spread.sellQty, spread.sellLeg.lotSize)
         };
@@ -1973,7 +2000,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                     <th>Buy / Sell Strike</th>
                     <th>Entry Spot</th>
                     <th>In (Buy / Sell)</th>
-                    <th>Current (Buy / Sell)</th>
+                    <th>IV In (B/S)</th>
+                    <th>Cur (Buy / Sell)</th>
+                    <th>IV Cur (B/S)</th>
                     <th>Unrl P&L</th>
                     <th>Margin</th>
                     <th>Duration</th>
@@ -2014,9 +2043,21 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                             </div>
                           </td>
                           <td>
+                            <div style={{ display: 'flex', flexDirection: 'column', fontSize: '11px', color: 'var(--text-dim)' }}>
+                              <span>{p.entryBuyIv != null ? p.entryBuyIv.toFixed(1) + '%' : '—'}</span>
+                              <span>{p.entrySellIv != null ? p.entrySellIv.toFixed(1) + '%' : '—'}</span>
+                            </div>
+                          </td>
+                          <td>
                             <div style={{ display: 'flex', flexDirection: 'column', fontSize: '12px' }}>
                               <span style={{ color: '#3fb950' }}>{p.currentBuyPrice != null ? p.currentBuyPrice.toFixed(2) : '—'}</span>
                               <span style={{ color: '#f85149' }}>{p.currentSellPrice != null ? p.currentSellPrice.toFixed(2) : '—'}</span>
+                            </div>
+                          </td>
+                          <td>
+                            <div style={{ display: 'flex', flexDirection: 'column', fontSize: '11px', color: 'var(--accent)' }}>
+                              <span>{p.currentBuyIv != null ? p.currentBuyIv.toFixed(1) + '%' : '—'}</span>
+                              <span>{p.currentSellIv != null ? p.currentSellIv.toFixed(1) + '%' : '—'}</span>
                             </div>
                           </td>
                           <td>
@@ -2204,9 +2245,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                     <th>Buy / Sell Strike</th>
                     <th>Spot (In / Out)</th>
                     <th>In (Buy / Sell)</th>
+                    <th>IV In (B/S)</th>
                     <th>Entry Fee</th>
                     <th>Exit Fee</th>
                     <th>Out (Buy / Sell)</th>
+                    <th>IV Out (B/S)</th>
                     <th>Realized P&L</th>
                     <th>Exit Reason</th>
                   </tr></thead>
@@ -2260,6 +2303,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                           </td>
                           <td>
                             <div style={{ display: 'flex', flexDirection: 'column', fontSize: '11px', color: 'var(--text-dim)' }}>
+                              <span>{t.entryBuyIv != null ? t.entryBuyIv.toFixed(1) + '%' : '—'}</span>
+                              <span>{t.entrySellIv != null ? t.entrySellIv.toFixed(1) + '%' : '—'}</span>
+                            </div>
+                          </td>
+                          <td>
+                            <div style={{ display: 'flex', flexDirection: 'column', fontSize: '11px', color: 'var(--text-dim)' }}>
                               <span>${t.entryFee?.toFixed(2) || '0.00'}</span>
                             </div>
                           </td>
@@ -2271,8 +2320,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
                           <td>
                             <div style={{ display: 'flex', flexDirection: 'column', fontSize: '12px' }}>
-                              <span style={{ color: '#3fb950' }}>{t.exitBuyPrice?.toFixed(2)}</span>
-                              <span style={{ color: '#f85149' }}>{t.exitSellPrice?.toFixed(2)}</span>
+                              <span style={{ color: '#3fb950' }}>{t.exitBuyPrice?.toFixed(2) || '—'}</span>
+                              <span style={{ color: '#f85149' }}>{t.exitSellPrice?.toFixed(2) || '—'}</span>
+                            </div>
+                          </td>
+                          <td>
+                            <div style={{ display: 'flex', flexDirection: 'column', fontSize: '11px', color: 'var(--text)' }}>
+                              <span>{t.exitBuyIv != null ? t.exitBuyIv.toFixed(1) + '%' : '—'}</span>
+                              <span>{t.exitSellIv != null ? t.exitSellIv.toFixed(1) + '%' : '—'}</span>
                             </div>
                           </td>
                           <td>
