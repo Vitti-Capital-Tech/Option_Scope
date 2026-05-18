@@ -827,31 +827,33 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
   };
 
   const totalUnrealizedPnl = positions.filter(p => p.underlying === underlying).reduce((s, p) => s + ((includeFees ? p.unrealizedNetPnl : p.unrealizedGrossPnl) || 0), 0);
-  const filteredTradeHistory = React.useMemo(() => {
-    // Prevent UI duplicates from multiple tabs or React Strict Mode
+  const uniqueTradeHistory = React.useMemo(() => {
     const seenIds = new Set();
-    const uniqueHistory = tradeHistory.filter(t => {
+    return tradeHistory.filter(t => {
       const id = t.id || t.trade_id;
+      if (!id) return true;
       if (seenIds.has(id)) return false;
       seenIds.add(id);
       return true;
     });
+  }, [tradeHistory]);
 
-    if (!historyFilterDate) return uniqueHistory;
-    return uniqueHistory.filter(t => {
+  const filteredTradeHistory = React.useMemo(() => {
+    if (!historyFilterDate) return uniqueTradeHistory;
+    return uniqueTradeHistory.filter(t => {
       if (!t.exitTime) return false;
       const d = new Date(t.exitTime);
       d.setUTCHours(d.getUTCHours() + 12);
       const exitUtcDate = d.toISOString().split('T')[0];
       return exitUtcDate === historyFilterDate;
     });
-  }, [tradeHistory, historyFilterDate]);
+  }, [uniqueTradeHistory, historyFilterDate]);
 
   const todayRealizedPnl = React.useMemo(() => {
     const d = new Date();
     d.setUTCHours(d.getUTCHours() + 12);
     const todayUtc = d.toISOString().split('T')[0];
-    return tradeHistory.reduce((s, t) => {
+    return uniqueTradeHistory.reduce((s, t) => {
       if (!t.exitTime) return s;
       const dTrade = new Date(t.exitTime);
       dTrade.setUTCHours(dTrade.getUTCHours() + 12);
@@ -860,13 +862,13 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
       }
       return s;
     }, 0);
-  }, [tradeHistory, includeFees]);
+  }, [uniqueTradeHistory, includeFees]);
 
-  const totalRealizedPnl = tradeHistory.reduce((s, t) => s + ((includeFees ? t.realizedNetPnl : t.realizedGrossPnl) || 0), 0);
+  const totalRealizedPnl = uniqueTradeHistory.reduce((s, t) => s + ((includeFees ? t.realizedNetPnl : t.realizedGrossPnl) || 0), 0);
   const todayPnl = todayRealizedPnl + totalUnrealizedPnl;
   const totalPnl = totalRealizedPnl + totalUnrealizedPnl;
-  const wins = tradeHistory.filter(t => (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || 0)) > 0).length;
-  const winRate = tradeHistory.length > 0 ? ((wins / tradeHistory.length) * 100).toFixed(1) : '—';
+  const wins = uniqueTradeHistory.filter(t => (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || 0)) > 0).length;
+  const winRate = uniqueTradeHistory.length > 0 ? ((wins / uniqueTradeHistory.length) * 100).toFixed(1) : '—';
   const totalMargin = positions.filter(p => p.underlying === underlying).reduce((s, p) => s + (p.margin || 0), 0);
 
   const getAnalyticsValue = (val, isTotal, count) => {
@@ -1060,7 +1062,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
               Win Rate
             </span>
             <span className="pt-kpi-value neutral">{winRate}{winRate !== '—' ? '%' : ''}</span>
-            <span className="pt-kpi-sub">{wins}W / {tradeHistory.length - wins}L of {tradeHistory.length}</span>
+            <span className="pt-kpi-sub">{wins}W / {uniqueTradeHistory.length - wins}L of {uniqueTradeHistory.length}</span>
           </div>
 
           <div className="pt-kpi-card accent-blue">
@@ -1077,7 +1079,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 8v4l3 3" /><circle cx="12" cy="12" r="10" /></svg>
               Trades
             </span>
-            <span className="pt-kpi-value neutral">{tradeHistory.length}</span>
+            <span className="pt-kpi-value neutral">{uniqueTradeHistory.length}</span>
             <span className="pt-kpi-sub">Closed positions</span>
           </div>
 
