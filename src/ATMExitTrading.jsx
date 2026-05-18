@@ -1437,7 +1437,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
                                <td><span className={`pt-type-badge ${row.type}`} style={{ padding: '2px 6px', fontSize: '9px' }}>{row.type.toUpperCase()}</span> {row.strike_diff}</td>
                                <td style={{ fontWeight: 600 }}>{row.trade_count}</td>
                                <td>${Number(row.avg_margin || 0).toFixed(0)}</td>
-                               <td><span className={`pt-pnl ${isCredit ? 'positive' : 'negative'}`}>${npModeValue} {isCredit ? '(Cr)' : '(Db)'}</span></td>
+                               <td><span className={`pt-pnl ${isCredit ? 'positive' : 'negative'}`}>${npModeValue} {isCredit ? 'Credit' : 'Debit'}</span></td>
                                <td style={{ color: '#f85149' }}>${feesModeValue}</td>
                                <td><span className={`pt-pnl ${Number(pnlModeValue) >= 0 ? 'positive' : 'negative'}`}>${pnlModeValue}</span></td>
                              </tr>
