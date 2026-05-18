@@ -673,17 +673,28 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
         const minutesToExpiry = (new Date(spread.expiry).getTime() - Date.now()) / 60000;
         if (minutesToExpiry < 5) continue;
 
-        // Entry Spot Gating
-        const lastEntrySpot = spreadType === 'call' ? callsRef : putsRef;
-        if (lastEntrySpot !== null && count > 0) {
-          if (Math.abs(spotPrice - lastEntrySpot) / lastEntrySpot < 0.005) {
-            continue;
-          }
-        }
 
         const existingOfType = remaining.filter(p => p.underlying === underlying && p.type === spreadType);
         const candidateLongStrike = Number(spread.buyLeg.strike);
         
+        // 1. 0.5% Directional Spot price movement guard relative to entrySpotPrice of existing active positions
+        let validSpotMove = true;
+        for (const p of existingOfType) {
+          const entrySpot = p.entrySpotPrice;
+          if (entrySpot) {
+            const thresh = Math.round((entrySpot * 0.005) / 100) * 100;
+            const spotValid = spreadType === 'call'
+              ? spotPrice <= entrySpot - thresh
+              : spotPrice >= entrySpot + thresh;
+            if (!spotValid) {
+              validSpotMove = false;
+              break;
+            }
+          }
+        }
+        if (!validSpotMove) continue;
+
+        // 2. 400 point strike separation guard
         let validStrikeDiff = true;
         for (const p of existingOfType) {
           if (Math.abs(candidateLongStrike - Number(p.buyLeg.strike)) < 400) { validStrikeDiff = false; break; }
@@ -715,13 +726,16 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
         for (const t of exited) {
           try {
             await upsertAnalytics(t);
-            await supabase.from('atm_exit_trade_history').insert([{
-              trade_id: t.id, underlying, expiry: t.expiry, type: t.type, buy_leg: JSON.stringify(t.buyLeg), sell_leg: JSON.stringify(t.sellLeg),
-              sell_qty: t.sellQty, strike_diff: t.strikeDiff, entry_time: t.entryTime.toISOString(), entry_buy_price: t.entryBuyPrice,
-              entry_sell_price: t.entrySellPrice, entry_spot_price: t.entrySpotPrice, margin: t.margin, exit_time: t.zombieExitTime || new Date().toISOString(),
-              exit_buy_price: t._latestBuy, exit_sell_price: t._latestSell, exit_spot_price: t.exitSpotPrice, realized_gross_pnl: t.realizedGrossPnl,
-              realized_net_pnl: t.realizedNetPnl, exit_fee: t.exitFee, total_fees: t.totalFees, exit_reason: t.exitReason
-            }]);
+            const { data: existingDbTrade } = await supabase.from('atm_exit_trade_history').select('trade_id').eq('trade_id', t.id).maybeSingle();
+            if (!existingDbTrade) {
+              await supabase.from('atm_exit_trade_history').insert([{
+                trade_id: t.id, underlying, expiry: t.expiry, type: t.type, buy_leg: JSON.stringify(t.buyLeg), sell_leg: JSON.stringify(t.sellLeg),
+                sell_qty: t.sellQty, strike_diff: t.strikeDiff, entry_time: t.entryTime.toISOString(), entry_buy_price: t.entryBuyPrice,
+                entry_sell_price: t.entrySellPrice, entry_spot_price: t.entrySpotPrice, margin: t.margin, exit_time: t.zombieExitTime || new Date().toISOString(),
+                exit_buy_price: t._latestBuy, exit_sell_price: t._latestSell, exit_spot_price: t.exitSpotPrice, realized_gross_pnl: t.realizedGrossPnl,
+                realized_net_pnl: t.realizedNetPnl, exit_fee: t.exitFee, total_fees: t.totalFees, exit_reason: t.exitReason
+              }]);
+            }
             await supabase.from('atm_exit_active_positions').delete().eq('id', t.id);
           } catch (e) {}
         }
@@ -789,13 +803,16 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
     try {
       await supabase.from('atm_exit_active_positions').delete().eq('id', pos.id);
       await upsertAnalytics(tradeRecord);
-      await supabase.from('atm_exit_trade_history').insert([{
-        trade_id: pos.id, underlying, expiry: pos.expiry, type: pos.type, buy_leg: JSON.stringify(pos.buyLeg), sell_leg: JSON.stringify(pos.sellLeg),
-        sell_qty: pos.sellQty, strike_diff: pos.strikeDiff, entry_time: pos.entryTime.toISOString(), entry_buy_price: pos.entryBuyPrice,
-        entry_sell_price: pos.entrySellPrice, entry_spot_price: pos.entrySpotPrice, margin: pos.margin, exit_time: tradeRecord.exitTime.toISOString(),
-        exit_buy_price: liveExitBuy, exit_sell_price: liveExitSell, exit_spot_price: spotPrice, realized_gross_pnl: grossPnl, realized_net_pnl: grossPnl - totalFees,
-        exit_fee: exitFee, total_fees: totalFees, exit_reason: 'Manual Exit'
-      }]);
+      const { data: existingDbTrade } = await supabase.from('atm_exit_trade_history').select('trade_id').eq('trade_id', pos.id).maybeSingle();
+      if (!existingDbTrade) {
+        await supabase.from('atm_exit_trade_history').insert([{
+          trade_id: pos.id, underlying, expiry: pos.expiry, type: pos.type, buy_leg: JSON.stringify(pos.buyLeg), sell_leg: JSON.stringify(pos.sellLeg),
+          sell_qty: pos.sellQty, strike_diff: pos.strikeDiff, entry_time: pos.entryTime.toISOString(), entry_buy_price: pos.entryBuyPrice,
+          entry_sell_price: pos.entrySellPrice, entry_spot_price: pos.entrySpotPrice, margin: pos.margin, exit_time: tradeRecord.exitTime.toISOString(),
+          exit_buy_price: liveExitBuy, exit_sell_price: liveExitSell, exit_spot_price: spotPrice, realized_gross_pnl: grossPnl, realized_net_pnl: grossPnl - totalFees,
+          exit_fee: exitFee, total_fees: totalFees, exit_reason: 'Manual Exit'
+        }]);
+      }
       setPositions(prev => prev.filter(p => p.id !== pos.id));
       setTradeHistory(th => [tradeRecord, ...th]);
     } catch (e) {}
@@ -811,8 +828,17 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
 
   const totalUnrealizedPnl = positions.filter(p => p.underlying === underlying).reduce((s, p) => s + ((includeFees ? p.unrealizedNetPnl : p.unrealizedGrossPnl) || 0), 0);
   const filteredTradeHistory = React.useMemo(() => {
-    if (!historyFilterDate) return tradeHistory;
-    return tradeHistory.filter(t => {
+    // Prevent UI duplicates from multiple tabs or React Strict Mode
+    const seenIds = new Set();
+    const uniqueHistory = tradeHistory.filter(t => {
+      const id = t.id || t.trade_id;
+      if (seenIds.has(id)) return false;
+      seenIds.add(id);
+      return true;
+    });
+
+    if (!historyFilterDate) return uniqueHistory;
+    return uniqueHistory.filter(t => {
       if (!t.exitTime) return false;
       const d = new Date(t.exitTime);
       d.setUTCHours(d.getUTCHours() + 12);
