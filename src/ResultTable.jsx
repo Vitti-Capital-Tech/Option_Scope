@@ -116,7 +116,7 @@ export default function ResultTable({
                 <th>Net Δ</th>
                 <th style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.2)', background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>At ATM Ask/Bid</th>
                 <th style={{ background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>At ATM P&L</th>
-                <th style={{ borderRight: '1px solid rgba(0, 217, 163, 0.2)', background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>Margin (ROI %)</th>
+                <th style={{ borderRight: '1px solid rgba(0, 217, 163, 0.2)', background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>Margin</th>
               </tr>
             </thead>
             <tbody>
@@ -239,17 +239,17 @@ export default function ResultTable({
                           </div>
                         </td>
                         <td style={{ background: 'rgba(0, 217, 163, 0.02)', fontWeight: 700 }}>
-                          <span className={bestRow.atAtmPnl >= 0 ? 'scanner-buy' : 'scanner-sell'}>
-                            {bestRow.atAtmPnl >= 0 ? '+' : ''}${bestRow.atAtmPnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                          </span>
+                          <div>
+                            <span className={bestRow.atAtmPnl >= 0 ? 'scanner-buy' : 'scanner-sell'}>
+                              {bestRow.atAtmPnl >= 0 ? '+' : ''}${bestRow.atAtmPnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </span>
+                            <div className={bestRow.roi >= 0 ? 'scanner-buy' : 'scanner-sell'} style={{ fontSize: 10, marginTop: 2, fontWeight: 'normal' }}>
+                              {bestRow.roi >= 0 ? '+' : ''}{bestRow.roi.toFixed(2)}%
+                            </div>
+                          </div>
                         </td>
                         <td style={{ borderRight: '1px solid rgba(0, 217, 163, 0.1)', background: 'rgba(0, 217, 163, 0.02)', fontWeight: 700 }}>
-                          <div>
-                            <div>${bestRow.margin.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-                            <span className={bestRow.roi >= 0 ? 'scanner-buy' : 'scanner-sell'} style={{ fontSize: 11 }}>
-                              {bestRow.roi >= 0 ? '+' : ''}{bestRow.roi.toFixed(2)}%
-                            </span>
-                          </div>
+                          ${bestRow.margin.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </td>
                       </tr>
 
@@ -292,17 +292,17 @@ export default function ResultTable({
                               </div>
                             </td>
                             <td style={{ background: 'rgba(0, 217, 163, 0.01)', fontWeight: 700 }}>
-                              <span className={r.atAtmPnl >= 0 ? 'scanner-buy' : 'scanner-sell'}>
-                                {r.atAtmPnl >= 0 ? '+' : ''}${r.atAtmPnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                              </span>
+                              <div>
+                                <span className={r.atAtmPnl >= 0 ? 'scanner-buy' : 'scanner-sell'}>
+                                  {r.atAtmPnl >= 0 ? '+' : ''}${r.atAtmPnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </span>
+                                <div className={r.roi >= 0 ? 'scanner-buy' : 'scanner-sell'} style={{ fontSize: 10, marginTop: 2, fontWeight: 'normal' }}>
+                                  {r.roi >= 0 ? '+' : ''}{r.roi.toFixed(2)}%
+                                </div>
+                              </div>
                             </td>
                             <td style={{ borderRight: '1px solid rgba(0, 217, 163, 0.1)', background: 'rgba(0, 217, 163, 0.01)', fontWeight: 700 }}>
-                              <div>
-                                <div>${r.margin.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-                                <span className={r.roi >= 0 ? 'scanner-buy' : 'scanner-sell'} style={{ fontSize: 11 }}>
-                                  {r.roi >= 0 ? '+' : ''}{r.roi.toFixed(2)}%
-                                </span>
-                              </div>
+                              ${r.margin.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                             </td>
                           </tr>
                         );

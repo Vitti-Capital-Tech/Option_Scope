@@ -417,16 +417,16 @@ The true market ATM strike is calculated globally in the scanner component (by i
 - **Short Leg (OTM)**: Option valued at the current Ask price of the option at strike `atmStrike + strikeDiff` (for Calls) or `atmStrike - strikeDiff` (for Puts).
 - **At ATM Ratio**: Displayed directly below the Bid/Ask prices inside the same cell as `1 : X`, where `X` is the premium ratio rounded to the nearest 0.25: `Math.max(1, Math.round((ATM_Bid / OTM_Ask) / 0.25) * 0.25)`.
 
-### 3. At ATM P&L
-- Calculates the net liquidation P&L if the underlying moves to the ATM strike:
+### 3. At ATM P&L & ROI %
+- **At ATM P&L**: Calculates the net liquidation P&L if the underlying moves to the ATM strike:
   `P&L = [(ATM_Bid - entryBuyPrice) - (OTM_Ask - entrySellPrice) * sellQty] * lotSize`
+- **ROI %**: Calculated as `(At ATM P&L / Margin) * 100` and displayed directly below the dollar P&L value in the same cell.
 
-### 4. At ATM Margin & ROI %
+### 4. At ATM Margin
 - **Margin Calculation**: Derived using the same leverage-tier model as Paper Trading:
   `shortValue = spot * sellQty * sellLotSize`
   `leverage = shortValue <= 200,000 ? 200 : shortValue <= 450,000 ? 100 : shortValue <= 950,000 ? 50 : 25`
   `margin = (buyPrice * buyLotSize) + (shortValue / leverage)`
-- **ROI %**: Calculated as `(At ATM P&L / Margin) * 100`.
 - **Sorting**: The scanner table groups the spreads by buy strike, sorts the group strikes by their highest candidate ROI descending, and sorts all options/sub-rows within each group by ROI descending. This ensures the most margin-efficient opportunities are ranked at the top.
 
 ### Margin Backfill on Load

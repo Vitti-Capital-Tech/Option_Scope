@@ -90,8 +90,8 @@ Browser (React + Vite)
 3. Evaluate pair candidates using strike/IV/premium/deviation constraints. Uses **execution-realistic pricing**: Long legs are evaluated at the **Ask** and Short legs at the **Bid**. Similarly, **IV Diff** is calculated using directional IVs (Ask IV for long, Bid IV for short).
 4. Project spread values to the ATM boundary using live option chain shifting:
    - **At ATM Ask/Bid**: Pulls the current option chain Bid for the ATM strike (long leg) and the Ask for the OTM strike at `ATM +- strikeDiff` (short leg). Directly shows the ATM premium ratio below the prices, rounded to the nearest 0.25.
-   - **At ATM P&L**: Computes the liquidation payout using the live ATM option chain quotes: `[(ATM_Bid - Entry_Long) - (OTM_Ask - Entry_Short) * Qty] * lotSize`.
-   - **At ATM Margin & ROI**: Computes the trade's margin requirement matching the Paper Trading tier-leverage system, and estimates the Return on Margin (ROI %) if spot moves to ATM.
+   - **At ATM P&L**: Computes the liquidation payout using the live ATM option chain quotes: `[(ATM_Bid - Entry_Long) - (OTM_Ask - Entry_Short) * Qty] * lotSize`. Directly displays the Return on Margin (ROI %) inside the same cell.
+   - **At ATM Margin**: Computes the trade's margin requirement matching the Paper Trading tier-leverage system.
    - **ROI Sorting**: Dynamically groups results and sorts them descending by maximum ROI at ATM.
 5. Publish top-3 call and top-3 put candidates to the scanner table, and broadcast to Paper Trading via `BroadcastChannel`.
 
