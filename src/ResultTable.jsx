@@ -115,26 +115,64 @@ export default function ResultTable({
                 <th>Buy Δ / Sell Δ</th>
                 <th>Net Δ</th>
                 <th style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.2)', background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>At ATM Ask/Bid</th>
-                <th style={{ borderRight: '1px solid rgba(0, 217, 163, 0.2)', background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>At ATM P&L</th>
+                <th style={{ background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>At ATM P&L</th>
+                <th style={{ borderRight: '1px solid rgba(0, 217, 163, 0.2)', background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>Margin (ROI %)</th>
               </tr>
             </thead>
             <tbody>
               {(() => {
+                // Pre-calculate ATM metrics & margins for each result row
+                const processedResults = results.map(r => {
+                  const buyIntrinsic = getTickerPrice(atmStrike, type, 'bid');
+                  const targetSellStrike = type === 'CALL' ? atmStrike + r.strikeDiff : atmStrike - r.strikeDiff;
+                  const sellIntrinsic = getTickerPrice(targetSellStrike, type, 'ask');
+                  const lotSize = r.buyLeg.lotSize || 1;
+                  const atAtmPnl = ((buyIntrinsic - r.buyPrice) - (sellIntrinsic - r.sellPrice) * r.sellQty) * lotSize;
+
+                  // Margin calculation matching paper trading leverage tiers
+                  const sellLotSize = r.sellLeg.lotSize || lotSize;
+                  const shortValue = currentSpot * r.sellQty * sellLotSize;
+                  let leverage = 200;
+                  if (shortValue <= 200000) leverage = 200;
+                  else if (shortValue <= 450000) leverage = 100;
+                  else if (shortValue <= 950000) leverage = 50;
+                  else if (shortValue <= 1950000) leverage = 25;
+                  else leverage = 25;
+
+                  const margin = (r.buyPrice * lotSize) + (shortValue / leverage);
+                  const roi = margin > 0 ? (atAtmPnl / margin) * 100 : 0;
+                  const atmRatio = sellIntrinsic > 0 ? (buyIntrinsic / sellIntrinsic) : 0;
+                  const roundedAtmRatio = atmRatio > 0 ? (Math.round(atmRatio / 0.25) * 0.25).toFixed(2) : '—';
+
+                  return {
+                    ...r,
+                    buyIntrinsic,
+                    sellIntrinsic,
+                    atAtmPnl,
+                    margin,
+                    roi,
+                    roundedAtmRatio
+                  };
+                });
+
                 // Group results by buy strike
-                const groups = results.reduce((acc, r) => {
+                const groups = processedResults.reduce((acc, r) => {
                   const s = r.buyLeg.strike;
                   if (!acc[s]) acc[s] = [];
                   acc[s].push(r);
                   return acc;
                 }, {});
 
-                // Sort unique buy strikes: ascending for CALL, descending for PUT
+                // Sort unique buy strikes descending by their group's highest ROI
                 const sortedBuyStrikes = Object.keys(groups).sort((a, b) => {
-                  if (type === 'CALL') {
-                    return parseFloat(a) - parseFloat(b);
-                  } else {
-                    return parseFloat(b) - parseFloat(a);
-                  }
+                  const maxRoiA = Math.max(...groups[a].map(r => r.roi));
+                  const maxRoiB = Math.max(...groups[b].map(r => r.roi));
+                  return maxRoiB - maxRoiA;
+                });
+
+                // Sort sub-rows within each group by ROI descending
+                Object.keys(groups).forEach(strike => {
+                  groups[strike].sort((a, b) => b.roi - a.roi);
                 });
 
                 let globalRank = 1;
@@ -146,20 +184,13 @@ export default function ResultTable({
                   const isExpanded = !!expandedStrikes[strike];
                   const hasOthers = others.length > 0;
 
-                  // ATM Prices from Ticker Data
-                  const buyIntrinsic = getTickerPrice(atmStrike, type, 'bid');
-                  const targetSellStrike = type === 'CALL' ? atmStrike + bestRow.strikeDiff : atmStrike - bestRow.strikeDiff;
-                  const sellIntrinsic = getTickerPrice(targetSellStrike, type, 'ask');
-                  const lotSize = bestRow.buyLeg.lotSize || 1;
-                  const atAtmPnl = ((buyIntrinsic - bestRow.buyPrice) - (sellIntrinsic - bestRow.sellPrice) * bestRow.sellQty) * lotSize;
-                  const atmRatio = sellIntrinsic > 0 ? (buyIntrinsic / sellIntrinsic) : 0;
-                  const roundedAtmRatio = atmRatio > 0 ? (Math.round(atmRatio / 0.25) * 0.25).toFixed(2) : '—';
+                  const currentRank = globalRank;
+                  globalRank++;
 
                   return (
                     <React.Fragment key={strike}>
-                      {/* Best row for this strike */}
                       <tr
-                        className={`${globalRank === 1 ? 'scanner-row-best' : ''} ${hasOthers ? 'scanner-row-group' : ''}`}
+                        className={`${currentRank === 1 ? 'scanner-row-best' : ''} ${hasOthers ? 'scanner-row-group' : ''}`}
                         onClick={() => hasOthers && setExpandedStrikes(prev => ({ ...prev, [strike]: !prev[strike] }))}
                         style={{ cursor: hasOthers ? 'pointer' : 'default' }}
                       >
@@ -200,31 +231,29 @@ export default function ResultTable({
                         </td>
                         <td>{bestRow.deltaDiff.toFixed(4)}</td>
 
-                        {/* ATM Columns */}
                         <td style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.1)', background: 'rgba(0, 217, 163, 0.02)' }}>
                           <div>
-                            <div className="scanner-buy">${buyIntrinsic.toFixed(2)}</div>
-                            <div className="scanner-sell">${sellIntrinsic.toFixed(2)}</div>
-                            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>1 : {roundedAtmRatio}</div>
+                            <div className="scanner-buy">${bestRow.buyIntrinsic.toFixed(2)}</div>
+                            <div className="scanner-sell">${bestRow.sellIntrinsic.toFixed(2)}</div>
+                            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>1 : {bestRow.roundedAtmRatio}</div>
                           </div>
                         </td>
-                        <td style={{ borderRight: '1px solid rgba(0, 217, 163, 0.1)', background: 'rgba(0, 217, 163, 0.02)', fontWeight: 700 }}>
-                          <span className={atAtmPnl >= 0 ? 'scanner-buy' : 'scanner-sell'}>
-                            {atAtmPnl >= 0 ? '+' : ''}${atAtmPnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        <td style={{ background: 'rgba(0, 217, 163, 0.02)', fontWeight: 700 }}>
+                          <span className={bestRow.atAtmPnl >= 0 ? 'scanner-buy' : 'scanner-sell'}>
+                            {bestRow.atAtmPnl >= 0 ? '+' : ''}${bestRow.atAtmPnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </span>
+                        </td>
+                        <td style={{ borderRight: '1px solid rgba(0, 217, 163, 0.1)', background: 'rgba(0, 217, 163, 0.02)', fontWeight: 700 }}>
+                          <div>
+                            <div>${bestRow.margin.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                            <span className={bestRow.roi >= 0 ? 'scanner-buy' : 'scanner-sell'} style={{ fontSize: 11 }}>
+                              {bestRow.roi >= 0 ? '+' : ''}{bestRow.roi.toFixed(2)}%
+                            </span>
+                          </div>
                         </td>
                       </tr>
 
-                      {/* Other rows for this strike */}
                       {isExpanded && others.map((r) => {
-                        const otherBuyIntrinsic = getTickerPrice(atmStrike, type, 'bid');
-                        const otherTargetSellStrike = type === 'CALL' ? atmStrike + r.strikeDiff : atmStrike - r.strikeDiff;
-                        const otherSellIntrinsic = getTickerPrice(otherTargetSellStrike, type, 'ask');
-                        const otherLotSize = r.buyLeg.lotSize || 1;
-                        const otherAtAtmPnl = ((otherBuyIntrinsic - r.buyPrice) - (otherSellIntrinsic - r.sellPrice) * r.sellQty) * otherLotSize;
-                        const otherAtmRatio = otherSellIntrinsic > 0 ? (otherBuyIntrinsic / otherSellIntrinsic) : 0;
-                        const otherRoundedAtmRatio = otherAtmRatio > 0 ? (Math.round(otherAtmRatio / 0.25) * 0.25).toFixed(2) : '—';
-
                         return (
                           <tr key={`${r.buyLeg.strike}-${r.sellLeg.strike}`} className="scanner-row-sub">
                             <td>
@@ -255,18 +284,25 @@ export default function ResultTable({
                             </td>
                             <td>{r.deltaDiff.toFixed(4)}</td>
 
-                            {/* ATM Columns */}
                             <td style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.1)', background: 'rgba(0, 217, 163, 0.01)' }}>
                               <div>
-                                <div className="scanner-buy">${otherBuyIntrinsic.toFixed(2)}</div>
-                                <div className="scanner-sell">${otherSellIntrinsic.toFixed(2)}</div>
-                                <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>1 : {otherRoundedAtmRatio}</div>
+                                <div className="scanner-buy">${r.buyIntrinsic.toFixed(2)}</div>
+                                <div className="scanner-sell">${r.sellIntrinsic.toFixed(2)}</div>
+                                <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>1 : {r.roundedAtmRatio}</div>
                               </div>
                             </td>
-                            <td style={{ borderRight: '1px solid rgba(0, 217, 163, 0.1)', background: 'rgba(0, 217, 163, 0.01)', fontWeight: 700 }}>
-                              <span className={otherAtAtmPnl >= 0 ? 'scanner-buy' : 'scanner-sell'}>
-                                {otherAtAtmPnl >= 0 ? '+' : ''}${otherAtAtmPnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            <td style={{ background: 'rgba(0, 217, 163, 0.01)', fontWeight: 700 }}>
+                              <span className={r.atAtmPnl >= 0 ? 'scanner-buy' : 'scanner-sell'}>
+                                {r.atAtmPnl >= 0 ? '+' : ''}${r.atAtmPnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                               </span>
+                            </td>
+                            <td style={{ borderRight: '1px solid rgba(0, 217, 163, 0.1)', background: 'rgba(0, 217, 163, 0.01)', fontWeight: 700 }}>
+                              <div>
+                                <div>${r.margin.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                                <span className={r.roi >= 0 ? 'scanner-buy' : 'scanner-sell'} style={{ fontSize: 11 }}>
+                                  {r.roi >= 0 ? '+' : ''}{r.roi.toFixed(2)}%
+                                </span>
+                              </div>
                             </td>
                           </tr>
                         );

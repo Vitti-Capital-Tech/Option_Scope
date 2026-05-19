@@ -421,6 +421,14 @@ The true market ATM strike is calculated globally in the scanner component (by i
 - Calculates the net liquidation P&L if the underlying moves to the ATM strike:
   `P&L = [(ATM_Bid - entryBuyPrice) - (OTM_Ask - entrySellPrice) * sellQty] * lotSize`
 
+### 4. At ATM Margin & ROI %
+- **Margin Calculation**: Derived using the same leverage-tier model as Paper Trading:
+  `shortValue = spot * sellQty * sellLotSize`
+  `leverage = shortValue <= 200,000 ? 200 : shortValue <= 450,000 ? 100 : shortValue <= 950,000 ? 50 : 25`
+  `margin = (buyPrice * buyLotSize) + (shortValue / leverage)`
+- **ROI %**: Calculated as `(At ATM P&L / Margin) * 100`.
+- **Sorting**: The scanner table groups the spreads by buy strike, sorts the group strikes by their highest candidate ROI descending, and sorts all options/sub-rows within each group by ROI descending. This ensures the most margin-efficient opportunities are ranked at the top.
+
 ### Margin Backfill on Load
 
 On first spot price arrival, `backfillMargins` queries all `active_positions` from Supabase and recalculates each position's margin using the latest spot price and the current leverage tier. This corrects any stale margin values persisted from a prior session.

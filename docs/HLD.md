@@ -91,6 +91,8 @@ Browser (React + Vite)
 4. Project spread values to the ATM boundary using live option chain shifting:
    - **At ATM Ask/Bid**: Pulls the current option chain Bid for the ATM strike (long leg) and the Ask for the OTM strike at `ATM +- strikeDiff` (short leg). Directly shows the ATM premium ratio below the prices, rounded to the nearest 0.25.
    - **At ATM P&L**: Computes the liquidation payout using the live ATM option chain quotes: `[(ATM_Bid - Entry_Long) - (OTM_Ask - Entry_Short) * Qty] * lotSize`.
+   - **At ATM Margin & ROI**: Computes the trade's margin requirement matching the Paper Trading tier-leverage system, and estimates the Return on Margin (ROI %) if spot moves to ATM.
+   - **ROI Sorting**: Dynamically groups results and sorts them descending by maximum ROI at ATM.
 5. Publish top-3 call and top-3 put candidates to the scanner table, and broadcast to Paper Trading via `BroadcastChannel`.
 
 ### Paper Trading (Multi-Stage Automated Lifecycle)
