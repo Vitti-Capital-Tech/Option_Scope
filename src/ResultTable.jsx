@@ -105,17 +105,13 @@ export default function ResultTable({
           <table className="scanner-table">
             <thead>
               <tr>
-                <th>Buy/Sell Strikes</th>
-                <th>Strike Δ</th>
-                <th>Buy Prem</th>
-                <th>Sell Prem</th>
-                <th>Buy/Sell Qty</th>
-                <th>Net Prem</th>
-                <th>IV Diff</th>
-                <th>Buy Δ / Sell Δ</th>
-                <th>Net Δ</th>
-                <th style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.2)', background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>At ATM Ask/Bid</th>
-                <th style={{ background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>At ATM P&L</th>
+                <th>Strikes</th>
+                <th>Prem (B/S)</th>
+                <th>Qty (B/S)</th>
+                <th>Net/IV</th>
+                <th>Δ (B/S)</th>
+                <th style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.2)', background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>ATM Ask/Bid</th>
+                <th style={{ background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>ATM P&L</th>
                 <th style={{ borderRight: '1px solid rgba(0, 217, 163, 0.2)', background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>Margin</th>
               </tr>
             </thead>
@@ -204,38 +200,55 @@ export default function ResultTable({
                               </span>
                             )}
                             <div>
-                              <span className={`scanner-buy`}>
-                                {bestRow.buyLeg.strike.toLocaleString()}
-                              </span>
-                              /
-                              <span className={`scanner-sell`}>
-                                {bestRow.sellLeg.strike.toLocaleString()}
-                              </span>
+                              <div>
+                                <span className={`scanner-buy`}>
+                                  {bestRow.buyLeg.strike.toLocaleString()}
+                                </span>
+                                /
+                                <span className={`scanner-sell`}>
+                                  {bestRow.sellLeg.strike.toLocaleString()}
+                                </span>
+                              </div>
+                              <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Δ: {bestRow.strikeDiff.toLocaleString()}</div>
                             </div>
                           </div>
                         </td>
-                        <td>{bestRow.strikeDiff.toLocaleString()}</td>
-                        <td><div><div className="scanner-buy">${bestRow.buyPrice?.toFixed(2)}</div><div>{bestRow.buyIv?.toFixed(1)}%</div></div></td>
-                        <td><div><div className="scanner-sell">${bestRow.sellPrice?.toFixed(2)}</div><div>{bestRow.sellIv?.toFixed(1)}%</div></div></td>
+                        <td>
+                          <div>
+                            <span className="scanner-buy">${bestRow.buyPrice?.toFixed(2)}</span> <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>({bestRow.buyIv?.toFixed(1)}%)</span>
+                            <br />
+                            <span className="scanner-sell">${bestRow.sellPrice?.toFixed(2)}</span> <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>({bestRow.sellIv?.toFixed(1)}%)</span>
+                          </div>
+                        </td>
                         <td style={{ fontWeight: 700 }}>
-                          <div><span className='scanner-buy'>{bestRow.buyLeg.lotSize}</span>/
-                            <span className='scanner-sell'>{bestRow.sellQty}</span></div>
+                          <div>
+                            <span className='scanner-buy'>{bestRow.buyLeg.lotSize}</span>/
+                            <span className='scanner-sell'>{bestRow.sellQty}</span>
+                          </div>
                         </td>
-                        <td className={parseFloat(bestRow.netPremium) < 0 ? 'scanner-buy' : 'scanner-sell'}>
-                          ${Math.abs(parseFloat(bestRow.netPremium))}
+                        <td>
+                          <div className={parseFloat(bestRow.netPremium) < 0 ? 'scanner-buy' : 'scanner-sell'} style={{ fontWeight: 700 }}>
+                            ${Math.abs(parseFloat(bestRow.netPremium))}
+                          </div>
+                          <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                            {bestRow.ivDiff.toFixed(1)}% IV
+                          </div>
                         </td>
-                        <td className="scanner-highlight">{bestRow.ivDiff.toFixed(1)}%</td>
-                        <td style={{ fontWeight: 700 }}>
-                          <div><span className='scanner-buy'>{bestRow.buyLeg.lotSize}</span>/
-                            <span className='scanner-sell'>{bestRow.sellLeg.delta?.toFixed(4)}</span></div>
+                        <td>
+                          <div>
+                            <span className='scanner-buy'>{bestRow.buyLeg.lotSize}</span>/
+                            <span className='scanner-sell'>{bestRow.sellLeg.delta?.toFixed(4)}</span>
+                          </div>
+                          <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                            N: {bestRow.deltaDiff.toFixed(4)}
+                          </div>
                         </td>
-                        <td>{bestRow.deltaDiff.toFixed(4)}</td>
 
                         <td style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.1)', background: 'rgba(0, 217, 163, 0.02)' }}>
                           <div>
                             <div className="scanner-buy">${bestRow.buyIntrinsic.toFixed(2)}</div>
                             <div className="scanner-sell">${bestRow.sellIntrinsic.toFixed(2)}</div>
-                            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>1 : {bestRow.roundedAtmRatio}</div>
+                            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>1:{bestRow.roundedAtmRatio}</div>
                           </div>
                         </td>
                         <td style={{ background: 'rgba(0, 217, 163, 0.02)', fontWeight: 700 }}>
@@ -258,37 +271,54 @@ export default function ResultTable({
                           <tr key={`${r.buyLeg.strike}-${r.sellLeg.strike}`} className="scanner-row-sub">
                             <td>
                               <div>
-                                <span className={`scanner-buy`}>
-                                  {r.buyLeg.strike.toLocaleString()}
-                                </span>
-                                /
-                                <span className={`scanner-sell`}>
-                                  {r.sellLeg.strike.toLocaleString()}
-                                </span>
+                                <div>
+                                  <span className={`scanner-buy`}>
+                                    {r.buyLeg.strike.toLocaleString()}
+                                  </span>
+                                  /
+                                  <span className={`scanner-sell`}>
+                                    {r.sellLeg.strike.toLocaleString()}
+                                  </span>
+                                </div>
+                                <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Δ: {r.strikeDiff.toLocaleString()}</div>
                               </div>
                             </td>
-                            <td>{r.strikeDiff.toLocaleString()}</td>
-                            <td><div><div className="scanner-buy">${r.buyPrice?.toFixed(2)}</div><div>{r.buyIv?.toFixed(1)}%</div></div></td>
-                            <td><div><div className="scanner-sell">${r.sellPrice?.toFixed(2)}</div><div>{r.sellIv?.toFixed(1)}%</div></div></td>
+                            <td>
+                              <div>
+                                <span className="scanner-buy">${r.buyPrice?.toFixed(2)}</span> <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>({r.buyIv?.toFixed(1)}%)</span>
+                                <br />
+                                <span className="scanner-sell">${r.sellPrice?.toFixed(2)}</span> <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>({r.sellIv?.toFixed(1)}%)</span>
+                              </div>
+                            </td>
                             <td style={{ fontWeight: 700 }}>
-                              <div><span className='scanner-buy'>{r.buyLeg.lotSize}</span>/
-                                <span className='scanner-sell'>{r.sellQty}</span></div>
+                              <div>
+                                <span className='scanner-buy'>{r.buyLeg.lotSize}</span>/
+                                <span className='scanner-sell'>{r.sellQty}</span>
+                              </div>
                             </td>
-                            <td className={parseFloat(r.netPremium) < 0 ? 'scanner-buy' : 'scanner-sell'}>
-                              ${Math.abs(parseFloat(r.netPremium))}
+                            <td>
+                              <div className={parseFloat(r.netPremium) < 0 ? 'scanner-buy' : 'scanner-sell'} style={{ fontWeight: 700 }}>
+                                ${Math.abs(parseFloat(r.netPremium))}
+                              </div>
+                              <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                                {r.ivDiff.toFixed(1)}% IV
+                              </div>
                             </td>
-                            <td className="scanner-highlight">{r.ivDiff.toFixed(1)}%</td>
-                            <td style={{ fontWeight: 700 }}>
-                              <div><span className='scanner-buy'>{r.buyLeg.lotSize}</span>/
-                                <span className='scanner-sell'>{r.sellLeg.delta?.toFixed(4)}</span></div>
+                            <td>
+                              <div>
+                                <span className='scanner-buy'>{r.buyLeg.lotSize}</span>/
+                                <span className='scanner-sell'>{r.sellLeg.delta?.toFixed(4)}</span>
+                              </div>
+                              <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                                N: {r.deltaDiff.toFixed(4)}
+                              </div>
                             </td>
-                            <td>{r.deltaDiff.toFixed(4)}</td>
 
                             <td style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.1)', background: 'rgba(0, 217, 163, 0.01)' }}>
                               <div>
                                 <div className="scanner-buy">${r.buyIntrinsic.toFixed(2)}</div>
                                 <div className="scanner-sell">${r.sellIntrinsic.toFixed(2)}</div>
-                                <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>1 : {r.roundedAtmRatio}</div>
+                                <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>1:{r.roundedAtmRatio}</div>
                               </div>
                             </td>
                             <td style={{ background: 'rgba(0, 217, 163, 0.01)', fontWeight: 700 }}>
