@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 
 export default function ResultTable({
   title,
@@ -15,6 +15,25 @@ export default function ResultTable({
   lastRefreshed
 }) {
   const [expandedStrikes, setExpandedStrikes] = useState({});
+
+  const currentSpot = spotPrice || 0;
+
+  // Find live ATM strike (closest to current spot price)
+  const atmStrike = useMemo(() => {
+    if (!results || results.length === 0) return null;
+    let closest = null;
+    let minD = Infinity;
+    for (const r of results) {
+      const bD = Math.abs(r.buyLeg.strike - currentSpot);
+      const sD = Math.abs(r.sellLeg.strike - currentSpot);
+      if (bD < minD) { minD = bD; closest = r.buyLeg.strike; }
+      if (sD < minD) { minD = sD; closest = r.sellLeg.strike; }
+    }
+    return closest;
+  }, [results, currentSpot]);
+
+  // Projected delta offset if spot price moves to ATM strike
+  const deltaS = atmStrike ? (atmStrike - currentSpot) : 0;
 
   return (
     <div className="scanner-table-wrap" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -100,6 +119,8 @@ export default function ResultTable({
                 <th>IV Diff</th>
                 <th>Buy Δ / Sell Δ</th>
                 <th>Net Δ</th>
+                <th style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.2)', background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>At ATM Ask/Bid</th>
+                <th style={{ borderRight: '1px solid rgba(0, 217, 163, 0.2)', background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>At ATM P&L</th>
               </tr>
             </thead>
             <tbody>
@@ -130,6 +151,12 @@ export default function ResultTable({
                   const isExpanded = !!expandedStrikes[strike];
                   const hasOthers = others.length > 0;
 
+                  // Simple ATM Intrinsic Math for bestRow
+                  const buyIntrinsic = Math.max(0, type === 'CALL' ? atmStrike - bestRow.buyLeg.strike : bestRow.buyLeg.strike - atmStrike);
+                  const sellIntrinsic = Math.max(0, type === 'CALL' ? atmStrike - bestRow.sellLeg.strike : bestRow.sellLeg.strike - atmStrike);
+                  const lotSize = bestRow.buyLeg.lotSize || 1;
+                  const atAtmPnl = ((buyIntrinsic - bestRow.buyPrice) - (sellIntrinsic - bestRow.sellPrice) * bestRow.sellQty) * lotSize;
+
                   return (
                     <React.Fragment key={strike}>
                       {/* Best row for this strike */}
@@ -147,7 +174,15 @@ export default function ResultTable({
                                 </svg>
                               </span>
                             )}
-                            <div><span className="scanner-buy">{bestRow.buyLeg.strike.toLocaleString()}</span>/<span className="scanner-sell">{bestRow.sellLeg.strike.toLocaleString()}</span></div>
+                            <div>
+                              <span className={`scanner-buy`}>
+                                {bestRow.buyLeg.strike.toLocaleString()}
+                              </span>
+                              /
+                              <span className={`scanner-sell`}>
+                                {bestRow.sellLeg.strike.toLocaleString()}
+                              </span>
+                            </div>
                           </div>
                         </td>
                         <td>{bestRow.strikeDiff.toLocaleString()}</td>
@@ -162,34 +197,77 @@ export default function ResultTable({
                         </td>
                         <td className="scanner-highlight">{bestRow.ivDiff.toFixed(1)}%</td>
                         <td style={{ fontWeight: 700 }}>
-                          <div><span className='scanner-buy'>{bestRow.buyLeg.delta?.toFixed(4)}</span>/
+                          <div><span className='scanner-buy'>{bestRow.buyLeg.lotSize}</span>/
                             <span className='scanner-sell'>{bestRow.sellLeg.delta?.toFixed(4)}</span></div>
                         </td>
                         <td>{bestRow.deltaDiff.toFixed(4)}</td>
+
+                        {/* ATM Columns */}
+                        <td style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.1)', background: 'rgba(0, 217, 163, 0.02)' }}>
+                          <div>
+                            <div className="scanner-buy">${buyIntrinsic.toFixed(2)}</div>
+                            <div className="scanner-sell">${sellIntrinsic.toFixed(2)}</div>
+                          </div>
+                        </td>
+                        <td style={{ borderRight: '1px solid rgba(0, 217, 163, 0.1)', background: 'rgba(0, 217, 163, 0.02)', fontWeight: 700 }}>
+                          <span className={atAtmPnl >= 0 ? 'scanner-buy' : 'scanner-sell'}>
+                            {atAtmPnl >= 0 ? '+' : ''}${atAtmPnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </span>
+                        </td>
                       </tr>
 
                       {/* Other rows for this strike */}
-                      {isExpanded && others.map((r) => (
-                        <tr key={`${r.buyLeg.strike}-${r.sellLeg.strike}`} className="scanner-row-sub">
-                          <td><div><span className="scanner-buy">{r.buyLeg.strike.toLocaleString()}</span>/<span className="scanner-sell">{r.sellLeg.strike.toLocaleString()}</span></div></td>
-                          <td>{r.strikeDiff.toLocaleString()}</td>
-                          <td><div><div className="scanner-buy">${r.buyPrice?.toFixed(2)}</div><div>{r.buyIv?.toFixed(1)}%</div></div></td>
-                          <td><div><div className="scanner-sell">${r.sellPrice?.toFixed(2)}</div><div>{r.sellIv?.toFixed(1)}%</div></div></td>
-                          <td style={{ fontWeight: 700 }}>
-                            <div><span className='scanner-buy'>{r.buyLeg.lotSize}</span>/
-                              <span className='scanner-sell'>{r.sellQty}</span></div>
-                          </td>
-                          <td className={parseFloat(r.netPremium) < 0 ? 'scanner-buy' : 'scanner-sell'}>
-                            ${Math.abs(parseFloat(r.netPremium))}
-                          </td>
-                          <td className="scanner-highlight">{r.ivDiff.toFixed(1)}%</td>
-                          <td style={{ fontWeight: 700 }}>
-                            <div><span className='scanner-buy'>{r.buyLeg.delta?.toFixed(4)}</span>/
-                              <span className='scanner-sell'>{r.sellLeg.delta?.toFixed(4)}</span></div>
-                          </td>
-                          <td>{r.deltaDiff.toFixed(4)}</td>
-                        </tr>
-                      ))}
+                      {isExpanded && others.map((r) => {
+                        const otherBuyIntrinsic = Math.max(0, type === 'CALL' ? atmStrike - r.buyLeg.strike : r.buyLeg.strike - atmStrike);
+                        const otherSellIntrinsic = Math.max(0, type === 'CALL' ? atmStrike - r.sellLeg.strike : r.sellLeg.strike - atmStrike);
+                        const otherLotSize = r.buyLeg.lotSize || 1;
+                        const otherAtAtmPnl = ((otherBuyIntrinsic - r.buyPrice) - (otherSellIntrinsic - r.sellPrice) * r.sellQty) * otherLotSize;
+
+                        return (
+                          <tr key={`${r.buyLeg.strike}-${r.sellLeg.strike}`} className="scanner-row-sub">
+                            <td>
+                              <div>
+                                <span className={`scanner-buy`}>
+                                  {r.buyLeg.strike.toLocaleString()}
+                                </span>
+                                /
+                                <span className={`scanner-sell`}>
+                                  {r.sellLeg.strike.toLocaleString()}
+                                </span>
+                              </div>
+                            </td>
+                            <td>{r.strikeDiff.toLocaleString()}</td>
+                            <td><div><div className="scanner-buy">${r.buyPrice?.toFixed(2)}</div><div>{r.buyIv?.toFixed(1)}%</div></div></td>
+                            <td><div><div className="scanner-sell">${r.sellPrice?.toFixed(2)}</div><div>{r.sellIv?.toFixed(1)}%</div></div></td>
+                            <td style={{ fontWeight: 700 }}>
+                              <div><span className='scanner-buy'>{r.buyLeg.lotSize}</span>/
+                                <span className='scanner-sell'>{r.sellQty}</span></div>
+                            </td>
+                            <td className={parseFloat(r.netPremium) < 0 ? 'scanner-buy' : 'scanner-sell'}>
+                              ${Math.abs(parseFloat(r.netPremium))}
+                            </td>
+                            <td className="scanner-highlight">{r.ivDiff.toFixed(1)}%</td>
+                            <td style={{ fontWeight: 700 }}>
+                              <div><span className='scanner-buy'>{r.buyLeg.lotSize}</span>/
+                                <span className='scanner-sell'>{r.sellLeg.delta?.toFixed(4)}</span></div>
+                            </td>
+                            <td>{r.deltaDiff.toFixed(4)}</td>
+
+                            {/* ATM Columns */}
+                            <td style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.1)', background: 'rgba(0, 217, 163, 0.01)' }}>
+                              <div>
+                                <div className="scanner-buy">${otherBuyIntrinsic.toFixed(2)}</div>
+                                <div className="scanner-sell">${otherSellIntrinsic.toFixed(2)}</div>
+                              </div>
+                            </td>
+                            <td style={{ borderRight: '1px solid rgba(0, 217, 163, 0.1)', background: 'rgba(0, 217, 163, 0.01)', fontWeight: 700 }}>
+                              <span className={otherAtAtmPnl >= 0 ? 'scanner-buy' : 'scanner-sell'}>
+                                {otherAtAtmPnl >= 0 ? '+' : ''}${otherAtAtmPnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </React.Fragment>
                   );
                 });
