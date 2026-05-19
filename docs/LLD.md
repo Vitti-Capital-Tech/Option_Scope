@@ -416,7 +416,11 @@ The true market ATM strike is calculated globally in the scanner component (by i
 - **Long Leg (ATM)**: Option valued at the current Bid price of the option at `atmStrike`.
 - **Short Leg (OTM)**: Option valued at the current Ask price of the option at strike `atmStrike + strikeDiff` (for Calls) or `atmStrike - strikeDiff` (for Puts).
 
-### 3. At ATM P&L
+### 3. At ATM Ratio
+- Shows the premium ratio of the legs at the ATM boundary:
+  `Ratio = 1 : (ATM_Bid / OTM_Ask)`
+
+### 4. At ATM P&L
 - Calculates the net liquidation P&L if the underlying moves to the ATM strike:
   `P&L = [(ATM_Bid - entryBuyPrice) - (OTM_Ask - entrySellPrice) * sellQty] * lotSize`
 

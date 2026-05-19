@@ -115,7 +115,8 @@ export default function ResultTable({
                 <th>Buy Δ / Sell Δ</th>
                 <th>Net Δ</th>
                 <th style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.2)', background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>At ATM Ask/Bid</th>
-                <th style={{ borderRight: '1px solid rgba(0, 217, 163, 0.2)', background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>At ATM P&L</th>
+                <th style={{ background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>At ATM P&L</th>
+                <th style={{ borderRight: '1px solid rgba(0, 217, 163, 0.2)', background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>At ATM Ratio</th>
               </tr>
             </thead>
             <tbody>
@@ -152,6 +153,7 @@ export default function ResultTable({
                   const sellIntrinsic = getTickerPrice(targetSellStrike, type, 'ask');
                   const lotSize = bestRow.buyLeg.lotSize || 1;
                   const atAtmPnl = ((buyIntrinsic - bestRow.buyPrice) - (sellIntrinsic - bestRow.sellPrice) * bestRow.sellQty) * lotSize;
+                  const atmRatio = sellIntrinsic > 0 ? (buyIntrinsic / sellIntrinsic) : 0;
 
                   return (
                     <React.Fragment key={strike}>
@@ -205,10 +207,13 @@ export default function ResultTable({
                             <div className="scanner-sell">${sellIntrinsic.toFixed(2)}</div>
                           </div>
                         </td>
-                        <td style={{ borderRight: '1px solid rgba(0, 217, 163, 0.1)', background: 'rgba(0, 217, 163, 0.02)', fontWeight: 700 }}>
+                        <td style={{ background: 'rgba(0, 217, 163, 0.02)', fontWeight: 700 }}>
                           <span className={atAtmPnl >= 0 ? 'scanner-buy' : 'scanner-sell'}>
                             {atAtmPnl >= 0 ? '+' : ''}${atAtmPnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </span>
+                        </td>
+                        <td style={{ borderRight: '1px solid rgba(0, 217, 163, 0.1)', background: 'rgba(0, 217, 163, 0.02)', fontWeight: 700 }}>
+                          1 : {atmRatio > 0 ? atmRatio.toFixed(2) : '—'}
                         </td>
                       </tr>
 
@@ -219,6 +224,7 @@ export default function ResultTable({
                         const otherSellIntrinsic = getTickerPrice(otherTargetSellStrike, type, 'ask');
                         const otherLotSize = r.buyLeg.lotSize || 1;
                         const otherAtAtmPnl = ((otherBuyIntrinsic - r.buyPrice) - (otherSellIntrinsic - r.sellPrice) * r.sellQty) * otherLotSize;
+                        const otherAtmRatio = otherSellIntrinsic > 0 ? (otherBuyIntrinsic / otherSellIntrinsic) : 0;
 
                         return (
                           <tr key={`${r.buyLeg.strike}-${r.sellLeg.strike}`} className="scanner-row-sub">
@@ -257,10 +263,13 @@ export default function ResultTable({
                                 <div className="scanner-sell">${otherSellIntrinsic.toFixed(2)}</div>
                               </div>
                             </td>
-                            <td style={{ borderRight: '1px solid rgba(0, 217, 163, 0.1)', background: 'rgba(0, 217, 163, 0.01)', fontWeight: 700 }}>
+                            <td style={{ background: 'rgba(0, 217, 163, 0.01)', fontWeight: 700 }}>
                               <span className={otherAtAtmPnl >= 0 ? 'scanner-buy' : 'scanner-sell'}>
                                 {otherAtAtmPnl >= 0 ? '+' : ''}${otherAtAtmPnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                               </span>
+                            </td>
+                            <td style={{ borderRight: '1px solid rgba(0, 217, 163, 0.1)', background: 'rgba(0, 217, 163, 0.01)', fontWeight: 700 }}>
+                              1 : {otherAtmRatio > 0 ? otherAtmRatio.toFixed(2) : '—'}
                             </td>
                           </tr>
                         );
