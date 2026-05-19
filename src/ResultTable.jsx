@@ -12,28 +12,13 @@ export default function ResultTable({
   onRefresh,
   timeRemaining,
   spotPrice,
-  lastRefreshed
+  lastRefreshed,
+  trueAtmStrike
 }) {
   const [expandedStrikes, setExpandedStrikes] = useState({});
 
   const currentSpot = spotPrice || 0;
-
-  // Find live ATM strike (closest to current spot price)
-  const atmStrike = useMemo(() => {
-    if (!results || results.length === 0) return null;
-    let closest = null;
-    let minD = Infinity;
-    for (const r of results) {
-      const bD = Math.abs(r.buyLeg.strike - currentSpot);
-      const sD = Math.abs(r.sellLeg.strike - currentSpot);
-      if (bD < minD) { minD = bD; closest = r.buyLeg.strike; }
-      if (sD < minD) { minD = sD; closest = r.sellLeg.strike; }
-    }
-    return closest;
-  }, [results, currentSpot]);
-
-  // Projected delta offset if spot price moves to ATM strike
-  const deltaS = atmStrike ? (atmStrike - currentSpot) : 0;
+  const atmStrike = trueAtmStrike || currentSpot;
 
   return (
     <div className="scanner-table-wrap" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>

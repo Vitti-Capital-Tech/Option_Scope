@@ -21,6 +21,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
   const [scanning, setScanning] = useState(false);
   const [resultsCall, setResultsCall] = useState([]);
   const [resultsPut, setResultsPut] = useState([]);
+  const [globalAtmStrike, setGlobalAtmStrike] = useState(null);
   const [tickerData, setTickerData] = useState({});
   const latestTickerDataRef = useRef({});
   const [expectedTickerCount, setExpectedTickerCount] = useState(0);
@@ -384,6 +385,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
     const nextPuts = scanTickers(putTickers);
     setResultsCall(nextCalls);
     setResultsPut(nextPuts);
+    setGlobalAtmStrike(atmStrike);
     publishTopSpreads(nextCalls, nextPuts);
 
     setLastRefreshed(Date.now());
@@ -778,6 +780,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             timeRemaining={timeRemaining}
             spotPrice={spotPrice}
             lastRefreshed={lastRefreshed}
+            trueAtmStrike={globalAtmStrike}
           />
           <ResultTable
             title="PUT SPREAD"
@@ -792,6 +795,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             timeRemaining={timeRemaining}
             spotPrice={spotPrice}
             lastRefreshed={lastRefreshed}
+            trueAtmStrike={globalAtmStrike}
           />
         </main>
       </div>
