@@ -401,6 +401,24 @@ Both `PaperTrading.jsx` and `ATMExitTrading.jsx` guard all date filtering logic:
 - The 1-second `setInterval` heartbeat drives `evaluateStrategy` continuously, ensuring live calculations are maintained even if WebSocket is quiet.
 - `createTickerStream` auto-reconnects every 3 seconds on unexpected close.
 - `lastWsSymbolsRef` prevents needless WebSocket churn during product refreshes.
+- Margin backfill on load.
+
+---
+
+## 10) ATM Projections in ResultTable (`ResultTable.jsx`)
+
+To visualize potential outcomes, the Result Table projects the value of each scanned spread to the At-The-Money (ATM) boundary. This uses direct, live option chain lookups via `tickerData` instead of Greeks (Delta/Gamma) or theoretical calculations:
+
+### 1. True ATM Strike Sourcing
+The true market ATM strike is calculated globally in the scanner component (by inspecting the entire unfiltered options chain) and passed as `trueAtmStrike` to `ResultTable.jsx`. This ensures that aggressive filtering in the scanner does not lead to a wrong ATM strike calculation.
+
+### 2. At ATM Ask/Bid Option Chain Shifting
+- **Long Leg (ATM)**: Option valued at the current Bid price of the option at `atmStrike`.
+- **Short Leg (OTM)**: Option valued at the current Ask price of the option at strike `atmStrike + strikeDiff` (for Calls) or `atmStrike - strikeDiff` (for Puts).
+
+### 3. At ATM P&L
+- Calculates the net liquidation P&L if the underlying moves to the ATM strike:
+  `P&L = [(ATM_Bid - entryBuyPrice) - (OTM_Ask - entrySellPrice) * sellQty] * lotSize`
 
 ### Margin Backfill on Load
 

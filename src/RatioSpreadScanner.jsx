@@ -781,6 +781,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             spotPrice={spotPrice}
             lastRefreshed={lastRefreshed}
             trueAtmStrike={globalAtmStrike}
+            tickerData={tickerData}
           />
           <ResultTable
             title="PUT SPREAD"
@@ -796,6 +797,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             spotPrice={spotPrice}
             lastRefreshed={lastRefreshed}
             trueAtmStrike={globalAtmStrike}
+            tickerData={tickerData}
           />
         </main>
       </div>

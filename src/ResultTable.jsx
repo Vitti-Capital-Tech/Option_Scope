@@ -13,12 +13,22 @@ export default function ResultTable({
   timeRemaining,
   spotPrice,
   lastRefreshed,
-  trueAtmStrike
+  trueAtmStrike,
+  tickerData
 }) {
   const [expandedStrikes, setExpandedStrikes] = useState({});
 
   const currentSpot = spotPrice || 0;
   const atmStrike = trueAtmStrike || currentSpot;
+
+  const getTickerPrice = (strike, optType, priceField) => {
+    const lowerType = optType.toLowerCase();
+    const ticker = Object.values(tickerData || {}).find(
+      t => t.strike === strike && t.type === lowerType
+    );
+    if (!ticker) return 0;
+    return ticker[priceField] ?? ticker.markPrice ?? 0;
+  };
 
   return (
     <div className="scanner-table-wrap" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -136,9 +146,10 @@ export default function ResultTable({
                   const isExpanded = !!expandedStrikes[strike];
                   const hasOthers = others.length > 0;
 
-                  // Simple ATM Intrinsic Math for bestRow
-                  const buyIntrinsic = Math.max(0, type === 'CALL' ? atmStrike - bestRow.buyLeg.strike : bestRow.buyLeg.strike - atmStrike);
-                  const sellIntrinsic = Math.max(0, type === 'CALL' ? atmStrike - bestRow.sellLeg.strike : bestRow.sellLeg.strike - atmStrike);
+                  // ATM Prices from Ticker Data
+                  const buyIntrinsic = getTickerPrice(atmStrike, type, 'bid');
+                  const targetSellStrike = type === 'CALL' ? atmStrike + bestRow.strikeDiff : atmStrike - bestRow.strikeDiff;
+                  const sellIntrinsic = getTickerPrice(targetSellStrike, type, 'ask');
                   const lotSize = bestRow.buyLeg.lotSize || 1;
                   const atAtmPnl = ((buyIntrinsic - bestRow.buyPrice) - (sellIntrinsic - bestRow.sellPrice) * bestRow.sellQty) * lotSize;
 
@@ -203,8 +214,9 @@ export default function ResultTable({
 
                       {/* Other rows for this strike */}
                       {isExpanded && others.map((r) => {
-                        const otherBuyIntrinsic = Math.max(0, type === 'CALL' ? atmStrike - r.buyLeg.strike : r.buyLeg.strike - atmStrike);
-                        const otherSellIntrinsic = Math.max(0, type === 'CALL' ? atmStrike - r.sellLeg.strike : r.sellLeg.strike - atmStrike);
+                        const otherBuyIntrinsic = getTickerPrice(atmStrike, type, 'bid');
+                        const otherTargetSellStrike = type === 'CALL' ? atmStrike + r.strikeDiff : atmStrike - r.strikeDiff;
+                        const otherSellIntrinsic = getTickerPrice(otherTargetSellStrike, type, 'ask');
                         const otherLotSize = r.buyLeg.lotSize || 1;
                         const otherAtAtmPnl = ((otherBuyIntrinsic - r.buyPrice) - (otherSellIntrinsic - r.sellPrice) * r.sellQty) * otherLotSize;
 

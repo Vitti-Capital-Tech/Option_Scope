@@ -88,7 +88,10 @@ Browser (React + Vite)
 1. Subscribe to all option symbols in the selected expiry.
 2. Buffer and batch ticker updates (50ms flush) to limit render pressure.
 3. Evaluate pair candidates using strike/IV/premium/deviation constraints. Uses **execution-realistic pricing**: Long legs are evaluated at the **Ask** and Short legs at the **Bid**. Similarly, **IV Diff** is calculated using directional IVs (Ask IV for long, Bid IV for short).
-4. Publish top-3 call and top-3 put candidates to the scanner table, and broadcast to Paper Trading via `BroadcastChannel`.
+4. Project spread values to the ATM boundary using live option chain shifting:
+   - **At ATM Ask/Bid**: Pulls the current option chain Bid for the ATM strike (long leg) and the Ask for the OTM strike at `ATM +- strikeDiff` (short leg).
+   - **At ATM P&L**: Computes the liquidation payout using the live ATM option chain quotes: `[(ATM_Bid - Entry_Long) - (OTM_Ask - Entry_Short) * Qty] * lotSize`.
+5. Publish top-3 call and top-3 put candidates to the scanner table, and broadcast to Paper Trading via `BroadcastChannel`.
 
 ### Paper Trading (Multi-Stage Automated Lifecycle)
 

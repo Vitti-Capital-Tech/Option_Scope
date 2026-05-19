@@ -7,7 +7,7 @@ OptionScope is a real-time options intelligence workspace for Delta Exchange. It
 The app is built around four workflows:
 
 - **Charts**: Monitor call, put, or combined premium structures with live candles, Greeks, and alerting.
-- **Ratio Spread Scanner**: Discover call/put ratio spread opportunities using lot-size-aware delta notional alignment and execution-realistic pricing (Long @ Ask, Short @ Bid).
+- **Ratio Spread Scanner**: Discover call/put ratio spread opportunities using lot-size-aware delta notional alignment and execution-realistic pricing (Long @ Ask, Short @ Bid). Features real-time ATM projections displaying the **At ATM Ask/Bid** (actual ATM Bid for long leg, and OTM Ask at `ATM +- strikeDiff` for short leg) and the projected **At ATM P&L** directly from the live options chain, mapped to the true market ATM strike.
 - **Paper Trading (Multi-Stage)**: Fully automated strategy lifecycle simulation — entry at Ask/Bid, 1s-cadence live PnL based on liquidation value, multi-stage scale-out exits (33%/50% partials based on strike diff), rotation with leg swaps, expiry settlement, IV tracking, and trade history export.
 - **ATM Exit Trading**: A simplified, always-on trading variant with a single exit rule (100% at ATM). Features bucketed performance analytics, configurable algo parameters persisted to Supabase, and automatic trade-level statistics aggregation by strike diff and sell quantity.
 
