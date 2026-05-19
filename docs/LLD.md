@@ -412,15 +412,12 @@ To visualize potential outcomes, the Result Table projects the value of each sca
 ### 1. True ATM Strike Sourcing
 The true market ATM strike is calculated globally in the scanner component (by inspecting the entire unfiltered options chain) and passed as `trueAtmStrike` to `ResultTable.jsx`. This ensures that aggressive filtering in the scanner does not lead to a wrong ATM strike calculation.
 
-### 2. At ATM Ask/Bid Option Chain Shifting
+### 2. At ATM Ask/Bid Option Chain Shifting & Ratio
 - **Long Leg (ATM)**: Option valued at the current Bid price of the option at `atmStrike`.
 - **Short Leg (OTM)**: Option valued at the current Ask price of the option at strike `atmStrike + strikeDiff` (for Calls) or `atmStrike - strikeDiff` (for Puts).
+- **At ATM Ratio**: Displayed directly below the Bid/Ask prices inside the same cell as `1 : X`, where `X` is the premium ratio rounded to the nearest 0.25: `Math.max(1, Math.round((ATM_Bid / OTM_Ask) / 0.25) * 0.25)`.
 
-### 3. At ATM Ratio
-- Shows the premium ratio of the legs at the ATM boundary:
-  `Ratio = 1 : (ATM_Bid / OTM_Ask)`
-
-### 4. At ATM P&L
+### 3. At ATM P&L
 - Calculates the net liquidation P&L if the underlying moves to the ATM strike:
   `P&L = [(ATM_Bid - entryBuyPrice) - (OTM_Ask - entrySellPrice) * sellQty] * lotSize`
 
