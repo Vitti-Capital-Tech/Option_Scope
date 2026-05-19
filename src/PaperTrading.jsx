@@ -1228,30 +1228,22 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         }
 
         // NEW: Directional Spot Movement Scaling Guard (0.5% gap rounded to near 100)
-        const existingOfType = remaining.filter(p => p.underlying === underlying && p.type === spreadType);
+        const existingOfType = remaining.filter(p => 
+          p.underlying?.toUpperCase() === underlying?.toUpperCase() && 
+          p.type?.toLowerCase() === spreadType?.toLowerCase()
+        );
 
         if (existingOfType.length > 0) {
           const candidateLongStrike = Number(spread.buyLeg.strike);
 
-          if (spreadType === 'call') {
-            // For Calls: 
-            // 1. All existing must be at least 0.5% HIGHER than current spot (scaling in on drops)
-            // 2. Long strike must be at least 400 points away from existing long strikes
-            const valid = existingOfType.every(p => {
-              const strikeValid = Math.abs(candidateLongStrike - Number(p.buyLeg.strike)) >= 400;
-              return strikeValid;
-            });
-            if (!valid) continue;
-          } else {
-            // For Puts: 
-            // 1. All existing must be at least 0.5% LOWER than current spot (scaling in on rises)
-            // 2. Long strike must be at least 400 points away from existing long strikes
-            const valid = existingOfType.every(p => {
-              const strikeValid = Math.abs(candidateLongStrike - Number(p.buyLeg.strike)) >= 400;
-              return strikeValid;
-            });
-            if (!valid) continue;
-          }
+          const valid = existingOfType.every(p => {
+            const existingLongStrike = Number(p.buyStrike ?? p.buyLeg?.strike ?? p.buy_strike);
+            if (isNaN(existingLongStrike)) return true; // Safety fallback
+            const strikeValid = Math.abs(candidateLongStrike - existingLongStrike) >= 400;
+            return strikeValid;
+          });
+
+          if (!valid) continue;
         }
 
         // ENTRY EVALUATION:
