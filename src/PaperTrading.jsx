@@ -1533,7 +1533,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     },
     CONFIG_SYNC: (payload) => {
       if (payload.config) {
-        setConfig(prev => ({ ...prev, ...payload.config }));
+        // Only extract underlying and expiry to avoid overwriting paper trading filters
+        const updates = {};
+        if (payload.config.underlying !== undefined) updates.underlying = payload.config.underlying;
+        if (payload.config.expiry !== undefined) updates.expiry = payload.config.expiry;
+        if (Object.keys(updates).length > 0) {
+          setConfig(prev => ({ ...prev, ...updates }));
+        }
       }
     }
   });

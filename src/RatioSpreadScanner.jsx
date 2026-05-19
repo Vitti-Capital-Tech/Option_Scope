@@ -468,7 +468,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
     },
     CONFIG_SYNC: (payload) => {
       if (payload.config) {
-        setConfig(payload.config);
+        // Only extract underlying and expiry from sync to avoid overwriting scanner filters
         if (payload.config.underlying) setUnderlying(payload.config.underlying);
         if (payload.config.expiry) setSelExpiry(payload.config.expiry);
       }
@@ -477,11 +477,9 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
 
   const fetchSupabaseConfig = useCallback(async () => {
     try {
-      const { data, error } = await supabase.from('paper_trading_config').select('*').eq('id', 'global').single();
+      const { data, error } = await supabase.from('paper_trading_config').select('*').eq('id', 'scanner').single();
       if (data && !error) {
         const newCfg = {
-          underlying: data.underlying || 'BTC',
-          expiry: data.expiry || '',
           minStrikeDiff: data.min_strike_diff ?? config.minStrikeDiff,
           minIvDiff: data.min_iv_diff ?? config.minIvDiff,
           maxRatioDeviation: data.max_ratio_deviation ?? config.maxRatioDeviation,
@@ -491,8 +489,8 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
           maxSellQty: data.max_sell_qty ?? config.maxSellQty
         };
         setConfig(newCfg);
-        if (newCfg.underlying !== underlying) setUnderlying(newCfg.underlying);
-        if (newCfg.expiry && newCfg.expiry !== selExpiry) setSelExpiry(newCfg.expiry);
+        if (data.underlying && data.underlying !== underlying) setUnderlying(data.underlying);
+        if (data.expiry && data.expiry !== selExpiry) setSelExpiry(data.expiry);
       }
     } catch (e) { }
   }, [underlying, selExpiry, config]);
@@ -500,7 +498,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
   const saveSupabaseConfig = useCallback(async (newCfg) => {
     try {
       await supabase.from('paper_trading_config').upsert({
-        id: 'global',
+        id: 'scanner',
         underlying: newCfg.underlying,
         expiry: newCfg.expiry,
         min_strike_diff: newCfg.minStrikeDiff,
