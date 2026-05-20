@@ -642,7 +642,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
         if (buyIv == null || sellIv == null) continue;
         const ivDiff = Math.abs(buyIv - sellIv);
-        if (ivDiff <= config.minIvDiff) continue;
+        if (ivDiff < config.minIvDiff) continue;
 
         const spotDist = Math.abs(buyLeg.strike - spotPrice);
         if (spotDist < (config.minLongDist || 0)) continue;
