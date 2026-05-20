@@ -111,7 +111,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
   const [includeFees, setIncludeFees] = useState(true);
   const [positions, setPositions] = useState([]);
   const [tradeHistory, setTradeHistory] = useState([]);
-  
+
   // Analytics State
   const [analyticsData, setAnalyticsData] = useState({}); // { '0_2_5': [], ... }
   const [showTotalMode, setShowTotalMode] = useState(false); // Toggle for avg vs total
@@ -150,7 +150,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
   const lastDbWriteRef = useRef(0);
   const [lastEvaluated, setLastEvaluated] = useState(0);
   const [timeRemaining, setTimeRemaining] = useState(null);
-  
+
   const positionsRef = useRef([]);
   const isEvaluatingRef = useRef(false);
   const lastWsSymbolsRef = useRef('');
@@ -404,7 +404,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
         setTickerData(prev => ({ ...prev, ...backfill }));
         return true;
       }
-    } catch (e) {}
+    } catch (e) { }
     return false;
   }, [underlying, getSymbolMeta]);
 
@@ -413,7 +413,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
     const configSymbols = [...new Set(products.map(p => p.symbol))];
     const symHash = configSymbols.sort().join(',');
     if (wsRef.current && lastWsSymbolsRef.current === symHash) return;
-    if (wsRef.current) { try { wsRef.current.close(); } catch (e) {} wsRef.current = null; }
+    if (wsRef.current) { try { wsRef.current.close(); } catch (e) { } wsRef.current = null; }
     lastWsSymbolsRef.current = symHash;
     if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
     tickerBufferRef.current = {};
@@ -456,7 +456,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
         };
         if (!flushTimerRef.current) flushTimerRef.current = setTimeout(flushTickerBuffer, 50);
       },
-      () => {}
+      () => { }
     );
   }, [selExpiry, products, flushTickerBuffer, getSymbolMeta, refreshAllTickers]);
 
@@ -476,35 +476,35 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
       for (let j = i + 1; j < sorted.length; j++) {
         const buy = sorted[i], sell = sorted[j];
         let buyLeg, sellLeg;
-        if (buy.type === 'call') { buyLeg = buy; sellLeg = sell; } 
+        if (buy.type === 'call') { buyLeg = buy; sellLeg = sell; }
         else { buyLeg = sell; sellLeg = buy; }
 
         const strikeDiff = Math.abs(sellLeg.strike - buyLeg.strike);
         if (strikeDiff < config.minStrikeDiff) continue;
-        
+
         const buyPrice = buyLeg.ask ?? buyLeg.markPrice;
         const sellPrice = sellLeg.bid ?? sellLeg.markPrice;
         const buyIv = buyLeg.askIv ?? buyLeg.iv;
         const sellIv = sellLeg.bidIv ?? sellLeg.iv;
         if (buyIv == null || sellIv == null) continue;
-        
+
         const ivDiff = Math.abs(buyIv - sellIv);
-        if (ivDiff <= config.minIvDiff) continue;
+        if (ivDiff < config.minIvDiff) continue;
         const spotDist = Math.abs(buyLeg.strike - spotPrice);
         if (spotDist < (config.minLongDist || 0)) continue;
         if (!sellPrice || sellPrice < config.minSellPremium) continue;
 
         const buyDN = buyLeg.deltaNotional, sellDN = sellLeg.deltaNotional;
         if (!buyDN || !sellDN || !buyPrice || !sellPrice) continue;
-        
+
         const premiumRatio = buyPrice / sellPrice, deltaNotionalRatio = buyDN / sellDN;
         const ratioDeviation = Math.abs(premiumRatio - deltaNotionalRatio) / deltaNotionalRatio;
         if (ratioDeviation > config.maxRatioDeviation) continue;
-        
+
         const rawQty = buyDN / sellDN;
         const sellQty = Math.max(1, Math.round(rawQty / 0.25) * 0.25);
         if (sellQty > (config.maxSellQty || 10)) continue;
-        
+
         const netPrem = buyPrice - sellQty * sellPrice;
         const maxNet = Math.abs(config.maxNetPremium);
         if (netPrem < -maxNet || netPrem > maxNet) continue;
@@ -599,7 +599,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
 
       const remaining = [], exited = [];
       const sortedPositions = [...prevPositions].sort((a, b) => Math.abs(b.buyLeg.strike - spotPrice) - Math.abs(a.buyLeg.strike - spotPrice));
-      
+
       for (const pos of sortedPositions) {
         if (pos.underlying !== underlying) { remaining.push(pos); continue; }
 
@@ -684,7 +684,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
 
         const existingOfType = remaining.filter(p => p.underlying === underlying && p.type === spreadType);
         const candidateLongStrike = Number(spread.buyLeg.strike);
-        
+
         // 1. 0.5% Directional Spot price movement guard relative to entrySpotPrice of existing active positions
         let validSpotMove = true;
         for (const p of existingOfType) {
@@ -708,7 +708,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
           if (Math.abs(candidateLongStrike - Number(p.buyLeg.strike)) < 400) { validStrikeDiff = false; break; }
         }
         if (!validStrikeDiff) continue;
-        
+
         const buyConflict = remaining.some(p => p.underlying === underlying && p.type === spreadType && Number(p.buyLeg.strike) === candidateLongStrike) || newEntries.some(p => p.underlying === underlying && p.type === spreadType && Number(p.buyLeg.strike) === candidateLongStrike);
         const sellConflict = remaining.some(p => p.underlying === underlying && p.type === spreadType && Number(p.sellLeg.strike) === Number(spread.sellLeg.strike)) || newEntries.some(p => p.underlying === underlying && p.type === spreadType && Number(p.sellLeg.strike) === Number(spread.sellLeg.strike));
         if (buyConflict || sellConflict) continue;
@@ -745,10 +745,10 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
               }]);
             }
             await supabase.from('atm_exit_active_positions').delete().eq('id', t.id);
-          } catch (e) {}
+          } catch (e) { }
         }
       }
-      
+
       if (newEntries.length > 0) {
         for (const t of newEntries) {
           try {
@@ -760,10 +760,10 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
               entry_sell_price: t.entrySellPrice, entry_spot_price: t.entrySpotPrice, margin: t.margin, entry_fee: t.entryFee, accumulated_sell_pnl: 0,
               buy_strike: t.buyLeg.strike, sell_strike: t.sellLeg.strike,
             }]);
-          } catch (e) {}
+          } catch (e) { }
         }
       }
-      
+
       const finalPositions = [...remaining, ...newEntries].sort((a, b) => {
         if (a.type !== b.type) return a.type === 'call' ? -1 : 1;
         return a.type === 'call' ? (a.buyLeg?.strike ?? 0) - (b.buyLeg?.strike ?? 0) : (b.buyLeg?.strike ?? 0) - (a.buyLeg?.strike ?? 0);
@@ -823,7 +823,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
       }
       setPositions(prev => prev.filter(p => p.id !== pos.id));
       setTradeHistory(th => [tradeRecord, ...th]);
-    } catch (e) {}
+    } catch (e) { }
   };
 
   const fmtDuration = (ms) => {
@@ -918,7 +918,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
       const sumMargin = g.trades.reduce((sum, t) => sum + (t.margin || 0), 0);
       const sumFees = g.trades.reduce((sum, t) => sum + (t.totalFees || 0), 0);
       const sumPnl = g.trades.reduce((sum, t) => sum + (t.realizedNetPnl || 0), 0);
-      
+
       const sumNetPremium = g.trades.reduce((sum, t) => {
         const netPrem = (t.entryBuyPrice || 0) - (t.sellQty || 0) * (t.entrySellPrice || 0);
         return sum + netPrem;
@@ -1500,7 +1500,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
                 <span className={`pt-fee-toggle-label ${showTotalMode ? 'active' : ''}`} onClick={() => setShowTotalMode(true)}>Total</span>
               </div>
             </div>
-            
+
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', gap: '20px', padding: '20px' }}>
               {Object.entries({
                 'atm_exit_qty_0_2_5': '<= 2.5',
@@ -1526,24 +1526,24 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
                       </thead>
                       <tbody>
                         {(calculatedAnalyticsData[tableName] || []).map(row => {
-                           const np = row.avg_net_premium || 0;
-                           const isCredit = np < 0;
-                           const pnlModeValue = getAnalyticsValue(row.avg_pnl, showTotalMode, row.trade_count);
-                           const feesModeValue = getAnalyticsValue(row.avg_fees, showTotalMode, row.trade_count);
-                           const npModeValue = getAnalyticsValue(Math.abs(np), showTotalMode, row.trade_count);
-                           return (
-                             <tr key={`${row.type}-${row.strike_diff}`}>
-                               <td><span className={`pt-type-badge ${row.type}`} style={{ padding: '2px 6px', fontSize: '9px' }}>{row.type.toUpperCase()}</span> {row.strike_diff}</td>
-                               <td style={{ fontWeight: 600 }}>{row.trade_count}</td>
-                               <td>${Number(row.avg_margin || 0).toFixed(0)}</td>
-                               <td><span className={`pt-pnl ${isCredit ? 'positive' : 'negative'}`}>${npModeValue} {isCredit ? 'Credit' : 'Debit'}</span></td>
-                               <td style={{ color: '#f85149' }}>${feesModeValue}</td>
-                               <td><span className={`pt-pnl ${Number(pnlModeValue) >= 0 ? 'positive' : 'negative'}`}>${pnlModeValue}</span></td>
-                             </tr>
-                           );
+                          const np = row.avg_net_premium || 0;
+                          const isCredit = np < 0;
+                          const pnlModeValue = getAnalyticsValue(row.avg_pnl, showTotalMode, row.trade_count);
+                          const feesModeValue = getAnalyticsValue(row.avg_fees, showTotalMode, row.trade_count);
+                          const npModeValue = getAnalyticsValue(Math.abs(np), showTotalMode, row.trade_count);
+                          return (
+                            <tr key={`${row.type}-${row.strike_diff}`}>
+                              <td><span className={`pt-type-badge ${row.type}`} style={{ padding: '2px 6px', fontSize: '9px' }}>{row.type.toUpperCase()}</span> {row.strike_diff}</td>
+                              <td style={{ fontWeight: 600 }}>{row.trade_count}</td>
+                              <td>${Number(row.avg_margin || 0).toFixed(0)}</td>
+                              <td><span className={`pt-pnl ${isCredit ? 'positive' : 'negative'}`}>${npModeValue} {isCredit ? 'Credit' : 'Debit'}</span></td>
+                              <td style={{ color: '#f85149' }}>${feesModeValue}</td>
+                              <td><span className={`pt-pnl ${Number(pnlModeValue) >= 0 ? 'positive' : 'negative'}`}>${pnlModeValue}</span></td>
+                            </tr>
+                          );
                         })}
                         {!(calculatedAnalyticsData[tableName]?.length) && (
-                          <tr><td colSpan="6" style={{textAlign: 'center', padding: '20px', color: 'var(--text-dim)'}}>No data available</td></tr>
+                          <tr><td colSpan="6" style={{ textAlign: 'center', padding: '20px', color: 'var(--text-dim)' }}>No data available</td></tr>
                         )}
                       </tbody>
                     </table>
