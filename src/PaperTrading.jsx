@@ -921,7 +921,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           const bestTarget = uniqueTopSpreads.filter(s => s.buyLeg.type === pos.type).find(s => {
             const bS = Number(s.buyLeg.strike);
             const sS = Number(s.sellLeg.strike);
-            
+
             // 1. Strike collision check (exact match)
             const buyConflict = otherActiveBuyStrikes.includes(bS);
             const sellConflict = otherActiveSellStrikes.includes(sS);
@@ -930,7 +930,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             // 2. Strict Diversification & Scaling Guards
             // It must be 400 points away from the position being replaced
             const stepValid = Math.abs(bS - Number(pos.buyLeg.strike)) >= 400;
-            
+
             // It must also reflect a 0.5% market move from the old position's entry spot
             const oldSpotBase = pos.entrySpotPrice || pos.entryBuyPrice || spotPrice;
             const oldThresh = Math.round((oldSpotBase * 0.005) / 100) * 100;
@@ -944,8 +944,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             const otherPositionsOfType = sortedPositions.filter(p => p.id !== pos.id && p.underlying === underlying && p.type === pos.type);
             const passesGuards = otherPositionsOfType.every(p => {
               const thresh = Math.round((p.entrySpotPrice * 0.005) / 100) * 100;
-              const spotValid = pos.type === 'call' 
-                ? spotPrice <= p.entrySpotPrice - thresh 
+              const spotValid = pos.type === 'call'
+                ? spotPrice <= p.entrySpotPrice - thresh
                 : spotPrice >= p.entrySpotPrice + thresh;
               const strikeValid = Math.abs(bS - Number(p.buyLeg.strike)) >= 400;
               return spotValid && strikeValid;
@@ -961,7 +961,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             // Only rotate if the target is directionally better (closer to ATM)
             if (isPut ? (targetStrike > currentStrike) : (targetStrike < currentStrike)) {
               const isSellStrikeMatch = Number(bestTarget.sellLeg.strike) === Number(pos.sellLeg.strike);
-              
+
               if (isSellStrikeMatch) {
                 pos._pendingLegSwap = bestTarget;
                 shouldExit = true;
@@ -970,7 +970,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                 shouldExit = true;
                 exitReason = `Lost Top 3 and Rank 1 better target available (${targetStrike})`;
               }
-              reservedTargets.add(targetStrike); 
+              reservedTargets.add(targetStrike);
             }
           }
         }
@@ -1147,7 +1147,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               sellQty: target.sellQty,
               entryBuyPrice: target.buyPrice,
               entrySellPrice: adjustedSellEntryPrice,
-              entryFee: newActiveEntryFee, 
+              entryFee: newActiveEntryFee,
               accumulatedSellPnl: (pos.accumulatedSellPnl || 0) + (longPnl - longExitFee) + shortAdjustmentPnl,
               entryTime: new Date(), // Reset time for rotation tracking
               currentBuyPrice: target.buyPrice,
@@ -1228,8 +1228,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         }
 
         // NEW: Directional Spot Movement Scaling Guard (0.5% gap rounded to near 100)
-        const existingOfType = remaining.filter(p => 
-          p.underlying?.toUpperCase() === underlying?.toUpperCase() && 
+        const existingOfType = remaining.filter(p =>
+          p.underlying?.toUpperCase() === underlying?.toUpperCase() &&
           p.type?.toLowerCase() === spreadType?.toLowerCase()
         );
 
@@ -1251,7 +1251,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         // Short leg: sell at BID
         const entryBuyPrice = spread.buyPrice;
         const entrySellPrice = spread.sellPrice;
-        
+
         const live = latestTickerDataRef.current;
         const tickerBuy = live[spread.buyLeg.symbol];
         const tickerSell = live[spread.sellLeg.symbol];
@@ -2018,7 +2018,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                   <tbody>
                     {positions.filter(p => p.underlying === underlying).map(p => {
                       const pnlValue = includeFees ? p.unrealizedNetPnl : p.unrealizedGrossPnl || p.unrealizedPnl;
-                      const pnlClass = (pnlValue || 0) > 0 ? 'positive' : (pnlValue || 0) < 0 ? 'negative' : 'zero';
+                      const pnlClass = ((extraCreditMode && p.entrySellPrice > 0 ? (
+                        pnlValue + (Math.round((extraCreditAmount / p.entrySellPrice) / 0.25) * 0.25) * (p.entrySellPrice - (p.currentSellPrice || p.entrySellPrice))
+                      ) : pnlValue) || 0) > 0 ? 'positive' : ((extraCreditMode && p.entrySellPrice > 0 ? (
+                        pnlValue + (Math.round((extraCreditAmount / p.entrySellPrice) / 0.25) * 0.25) * (p.entrySellPrice - (p.currentSellPrice || p.entrySellPrice))
+                      ) : pnlValue) || 0) < 0 ? 'negative' : 'zero';
                       const displaySellQty = extraCreditMode && p.entrySellPrice > 0
                         ? p.sellQty + (Math.round((extraCreditAmount / p.entrySellPrice) / 0.25) * 0.25)
                         : p.sellQty;
@@ -2070,7 +2074,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                           </td>
                           <td>
                             <span className={`pt-pnl ${pnlClass}`}>
-                              {pnlValue > 0 ? '+' : ''}
+                              {(extraCreditMode && p.entrySellPrice > 0 ? (
+                                pnlValue + (Math.round((extraCreditAmount / p.entrySellPrice) / 0.25) * 0.25) * (p.entrySellPrice - (p.currentSellPrice || p.entrySellPrice))
+                              ) : pnlValue) > 0 ? '+' : ''}
                               {(extraCreditMode && p.entrySellPrice > 0 ? (
                                 pnlValue + (Math.round((extraCreditAmount / p.entrySellPrice) / 0.25) * 0.25) * (p.entrySellPrice - (p.currentSellPrice || p.entrySellPrice))
                               ) : pnlValue).toFixed(2)}
@@ -2340,8 +2346,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                           </td>
                           <td>
                             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
-                              <span className={`pt-pnl ${pnlValue > 0 ? 'positive' : pnlValue < 0 ? 'negative' : 'zero'}`}>
-                                {pnlValue > 0 ? '+' : ''}
+                              <span className={`pt-pnl ${(extraCreditMode && t.entrySellPrice > 0 ? (
+                                pnlValue + (Math.round((extraCreditAmount / t.entrySellPrice) / 0.25) * 0.25) * (t.entrySellPrice - (t.exitSellPrice || t.entrySellPrice))
+                              ) : pnlValue) > 0 ? 'positive' : (extraCreditMode && t.entrySellPrice > 0 ? (
+                                pnlValue + (Math.round((extraCreditAmount / t.entrySellPrice) / 0.25) * 0.25) * (t.entrySellPrice - (t.exitSellPrice || t.entrySellPrice))
+                              ) : pnlValue) < 0 ? 'negative' : 'zero'}`}>
+                                {(extraCreditMode && t.entrySellPrice > 0 ? (
+                                  pnlValue + (Math.round((extraCreditAmount / t.entrySellPrice) / 0.25) * 0.25) * (t.entrySellPrice - (t.exitSellPrice || t.entrySellPrice))
+                                ) : pnlValue) > 0 ? '+' : ''}
                                 {(extraCreditMode && t.entrySellPrice > 0 ? (
                                   pnlValue + (Math.round((extraCreditAmount / t.entrySellPrice) / 0.25) * 0.25) * (t.entrySellPrice - (t.exitSellPrice || t.entrySellPrice))
                                 ) : pnlValue).toFixed(2)}
