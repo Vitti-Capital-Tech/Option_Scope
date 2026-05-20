@@ -377,9 +377,9 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
     }
 
     // For Call: ATM or OTM means strike >= atmStrike
-    const callTickers = allTickers.filter(t => t.type === 'call' && (atmStrike === null || t.strike >= atmStrike));
+    const callTickers = allTickers.filter(t => t.type === 'call' && (atmStrike === null || t.strike >= atmStrike)).sort((a, b) => a.strike - b.strike);
     // For Put: ATM or OTM means strike <= atmStrike
-    const putTickers = allTickers.filter(t => t.type === 'put' && (atmStrike === null || t.strike <= atmStrike));
+    const putTickers = allTickers.filter(t => t.type === 'put' && (atmStrike === null || t.strike <= atmStrike)).sort((a, b) => b.strike - a.strike);
 
     const nextCalls = scanTickers(callTickers);
     const nextPuts = scanTickers(putTickers);

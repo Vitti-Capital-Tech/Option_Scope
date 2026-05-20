@@ -159,12 +159,16 @@ export default function ResultTable({
                   return acc;
                 }, {});
 
-                // Sort unique buy strikes descending by their group's highest ROI
-                const sortedBuyStrikes = Object.keys(groups).sort((a, b) => {
-                  const maxRoiA = Math.max(...groups[a].map(r => r.roi));
-                  const maxRoiB = Math.max(...groups[b].map(r => r.roi));
-                  return maxRoiB - maxRoiA;
-                });
+                // Sort unique buy strikes by distance to ATM within each option type
+                // Calls should be listed ascending from ATM, puts descending from ATM.
+                const sortedBuyStrikes = Object.keys(groups)
+                  .map(Number)
+                  .sort((a, b) => {
+                    if (type === 'CALL') return a - b;
+                    if (type === 'PUT') return b - a;
+                    return a - b;
+                  })
+                  .map(String);
 
                 // Sort sub-rows within each group by ROI descending
                 Object.keys(groups).forEach(strike => {
