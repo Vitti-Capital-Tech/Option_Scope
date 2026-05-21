@@ -238,7 +238,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
   const fetchSupabaseActivePositions = useCallback(async () => {
     try {
-      if (Date.now() - lastDbWriteRef.current < 10000) return;
+      if (Date.now() - lastDbWriteRef.current < 3000) return;
       const { data, error } = await supabase
         .from('active_positions')
         .select('*')
@@ -416,7 +416,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   }, []);
 
 
-  // Periodic sync every 10s to stay aligned across devices
+  // Realtime + periodic sync to stay aligned across devices
   useEffect(() => {
     if (!trading) return;
 
@@ -425,11 +425,31 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     fetchSupabaseTradeHistory();
     fetchSupabaseConfig();
 
+    // Supabase Realtime: push-based instant updates for active_positions.
+    // When the engine tab (VPS) writes an entry or exit, every other connected
+    // browser immediately receives the change — no more 10s polling lag.
+    const realtimeChannel = supabase
+      .channel('active_positions_changes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'active_positions' },
+        () => {
+          // A row was inserted, updated, or deleted — re-sync state from DB
+          fetchSupabaseActivePositions();
+        }
+      )
+      .subscribe();
+
+    // Fallback polling every 30s (catches any missed Realtime events)
     const interval = setInterval(() => {
       fetchSupabaseActivePositions();
       fetchSupabaseTradeHistory();
-    }, 10000);
-    return () => clearInterval(interval);
+    }, 30000);
+
+    return () => {
+      supabase.removeChannel(realtimeChannel);
+      clearInterval(interval);
+    };
 
   }, [trading, fetchSupabaseActivePositions, fetchSupabaseTradeHistory, fetchSupabaseConfig]);
 
