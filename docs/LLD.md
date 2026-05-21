@@ -412,21 +412,34 @@ To visualize potential outcomes, the Result Table projects the value of each sca
 ### 1. True ATM Strike Sourcing
 The true market ATM strike is calculated globally in the scanner component (by inspecting the entire unfiltered options chain) and passed as `trueAtmStrike` to `ResultTable.jsx`. This ensures that aggressive filtering in the scanner does not lead to a wrong ATM strike calculation.
 
-### 2. At ATM Ask/Bid Option Chain Shifting & Ratio
-- **Long Leg (ATM)**: Option valued at the current Bid price of the option at `atmStrike`.
-- **Short Leg (OTM)**: Option valued at the current Ask price of the option at strike `atmStrike + strikeDiff` (for Calls) or `atmStrike - strikeDiff` (for Puts).
-- **At ATM Ratio**: Displayed directly below the Bid/Ask prices inside the same cell as `1 : X`, where `X` is the premium ratio rounded to the nearest 0.25: `Math.max(1, Math.round((ATM_Bid / OTM_Ask) / 0.25) * 0.25)`.
+### 2. `getTickerPrice` — Nearest-Strike Fallback
 
-### 3. At ATM P&L & ROI %
-- **At ATM P&L**: Calculates the net liquidation P&L if the underlying moves to the ATM strike:
-  `P&L = [(ATM_Bid - entryBuyPrice) - (OTM_Ask - entrySellPrice) * sellQty] * lotSize`
-- **ROI %**: Calculated as `(At ATM P&L / Margin) * 100` and displayed directly below the dollar P&L value in the same cell.
+All ATM price lookups go through `getTickerPrice(strike, optType, priceField)`:
 
-### 4. At ATM Margin
-- **Margin Calculation**: Derived using the same leverage-tier model as Paper Trading:
-  `shortValue = spot * sellQty * sellLotSize`
+1. **Filter by type**: Collects all tickers from `tickerData` matching `optType` (case-insensitive). Returns `null` immediately if no tickers of that type exist.
+2. **Exact match**: If a ticker at the requested `strike` is found, its `priceField` (or `markPrice` as fallback) is returned — or `null` if the value is missing/zero.
+3. **Nearest-strike fallback**: If no exact match exists, scans all same-type tickers and picks the one whose strike is closest to the target, subject to a **tolerance** of `Math.max(currentSpot × 0.10, 5000)`. This is wide enough to reliably cover the ATM neighbourhood but tight enough to exclude far-OTM strikes.
+4. **Returns `null`** (never `0`) when no ticker satisfies the tolerance, so callers can cleanly distinguish "no data" from "priced at zero".
+
+### 3. At ATM Ask/Bid Option Chain Shifting & Ratio
+- **Long Leg (ATM)**: Option valued at the current Bid price of the option at `atmStrike` (via `getTickerPrice(atmStrike, type, 'bid')`).
+- **Short Leg (OTM)**: Option valued at the current Ask price of the option at strike `atmStrike + strikeDiff` (for Calls) or `atmStrike - strikeDiff` (for Puts), with the same nearest-strike fallback.
+- **At ATM Ratio**: Displayed as `1 : X`, where `X = Math.round((ATM_Bid / OTM_Ask) / 0.25) * 0.25`. If either price is `null`, ratio displays as `—`.
+- **Rendering**: Each price cell shows `$XX.XX` when available, or `—` (muted colour) when the ticker returned `null`.
+
+### 4. At ATM P&L & ROI %
+- **`hasAtmData` guard**: Both `buyIntrinsic` and `sellIntrinsic` must be non-null for P&L to be computed.
+- **At ATM P&L** (when `hasAtmData = true`):
+  `P&L = [(ATM_Bid - entryBuyPrice) - (OTM_Ask - entrySellPrice) × sellQty] × lotSize`
+- **ROI %**: `(At ATM P&L / Margin) × 100` — only computed when `atAtmPnl != null && margin > 0`.
+- **Rendering**: When `hasAtmData` is `true`, renders the signed dollar P&L and the `±ROI%` line. When `false`, renders a muted `—` to clearly signal missing data rather than showing `$0.00 / 0.00%`.
+
+### 5. At ATM Margin
+- **Margin Calculation**: Derived from **spread entry prices** (not ATM chain data), so it is always available:
+  `shortValue = spot × sellQty × sellLotSize`
   `leverage = shortValue <= 200,000 ? 200 : shortValue <= 450,000 ? 100 : shortValue <= 950,000 ? 50 : 25`
-  `margin = (buyPrice * buyLotSize) + (shortValue / leverage)`
+  `margin = (buyPrice × buyLotSize) + (shortValue / leverage)`
+- **Always rendered**: Because margin does not depend on ATM quote availability, it is never suppressed.
 - **Sorting**: The scanner table groups the spreads by buy strike, sorts the group strikes by their highest candidate ROI descending, and sorts all options/sub-rows within each group by ROI descending. This ensures the most margin-efficient opportunities are ranked at the top.
 
 ### Margin Backfill on Load
