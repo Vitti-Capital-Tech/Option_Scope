@@ -1227,11 +1227,20 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           continue;
         }
 
-        // NEW: Directional Spot Movement Scaling Guard (0.5% gap rounded to near 100)
-        const existingOfType = remaining.filter(p =>
-          p.underlying?.toUpperCase() === underlying?.toUpperCase() &&
-          p.type?.toLowerCase() === spreadType?.toLowerCase()
-        );
+        // Strike Diversification Guard: new buy strike must be >= 400 pts from all existing
+        // buy strikes of the same type. We check BOTH remaining (surviving old positions) AND
+        // newEntries (positions already opened in this same eval cycle) to prevent two same-cycle
+        // entries from slipping through with <400 pt distance between them.
+        const existingOfType = [
+          ...remaining.filter(p =>
+            p.underlying?.toUpperCase() === underlying?.toUpperCase() &&
+            p.type?.toLowerCase() === spreadType?.toLowerCase()
+          ),
+          ...newEntries.filter(p =>
+            p.underlying?.toUpperCase() === underlying?.toUpperCase() &&
+            p.type?.toLowerCase() === spreadType?.toLowerCase()
+          )
+        ];
 
         if (existingOfType.length > 0) {
           const candidateLongStrike = Number(spread.buyLeg.strike);
@@ -1239,8 +1248,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           const valid = existingOfType.every(p => {
             const existingLongStrike = Number(p.buyStrike ?? p.buyLeg?.strike ?? p.buy_strike);
             if (isNaN(existingLongStrike)) return true; // Safety fallback
-            const strikeValid = Math.abs(candidateLongStrike - existingLongStrike) >= 400;
-            return strikeValid;
+            return Math.abs(candidateLongStrike - existingLongStrike) >= 400;
           });
 
           if (!valid) continue;
@@ -1333,14 +1341,16 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             }
 
 
-            // Individual Strike Guard: Check buy strike uniqueness within same type
-            const { data: buyConflict, error: buyCheckError } = await supabase.from('active_positions').select('id')
+            // DB-level Diversification Guard: Fetch all active buy strikes for this type and
+            // block entry if any existing position is within 400 pts of the new buy strike.
+            const { data: activeStrikes400, error: strikeCheckError } = await supabase
+              .from('active_positions')
+              .select('buy_strike')
               .eq('underlying', underlying)
-              .eq('type', t.type)
-              .eq('buy_strike', t.buyLeg.strike)
-              .limit(1);
-            if (buyCheckError) continue;
-            if (buyConflict && buyConflict.length > 0) {
+              .eq('type', t.type);
+            if (strikeCheckError) continue;
+            if (activeStrikes400 && activeStrikes400.some(r => Math.abs(Number(r.buy_strike) - Number(t.buyLeg.strike)) < 400)) {
+              console.warn(`DB Guard: Blocked entry — buy strike ${t.buyLeg.strike} too close to an existing position (<400 pts).`);
               continue;
             }
 
