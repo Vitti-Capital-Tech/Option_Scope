@@ -49,7 +49,7 @@ Browser (React + Vite)
   - `createTickerStream` uses an **auto-reconnect loop**: if the WebSocket closes unexpectedly, it re-establishes the connection after a 3-second delay. This is critical for unattended VPS operation.
   - `createWS` (used by the Charts module) delegates reconnect decisions to the caller.
 - **Supabase** (PostgreSQL) stores algorithm configuration, active trading positions, realized trade history, and bucketed analytics.
-- **Supabase Realtime**: A `postgres_changes` subscription on `active_positions` delivers INSERT/UPDATE/DELETE events to all connected browser sessions instantly (< 1s). This replaces the previous 10-second polling loop, eliminating the delay between when the VPS engine writes a trade and when other browser views reflect it. A 30-second fallback poll is retained for resilience.
+- **Supabase Realtime**: A `postgres_changes` subscription on `active_positions` delivers INSERT/UPDATE/DELETE events to all connected browser sessions instantly (< 1s). This replaces the previous 10-second polling loop, eliminating the delay between when the VPS engine writes a trade and when other browser views reflect it. A 10-second fallback poll is retained for resilience.
 - Proxy rewrites keep the architecture serverless while handling CORS.
 
 ### 3) Runtime Engines
@@ -122,7 +122,7 @@ Browser (React + Vite)
    - **Cycle Guards**: Rotation only begins once the portfolio hits a threshold (e.g., 3 active legs) and is capped at 3 rotations per evaluation cycle.
 9. Open new positions up to 3 per type from the ranked candidate list. DB count guard prevents exceeding 3 even under race conditions.
 10. Sync all entries, exits, and partial scale-outs to Supabase. Full `positions` array replacement only happens when rows are added/removed, not on routine PnL updates.
-11. **Instant Cross-Device Sync**: Supabase Realtime pushes `active_positions` change events to all connected sessions within < 1s of a write. The `lastDbWriteRef` post-write blackout is reduced from 10s to 3s to minimize the window where a just-written position could be overwritten by a stale Supabase re-fetch.
+11. **Instant Cross-Device Sync**: Supabase Realtime pushes `active_positions` change events to all connected sessions within < 1s of a write. The `lastDbWriteRef` post-write blackout is reduced from 10s to 3s to minimize the window where a just-written position could be overwritten by a stale Supabase re-fetch. A 10-second fallback poll ensures any missed Realtime events are caught.
 
 ### ATM Exit Trading (Simplified Automated Lifecycle)
 

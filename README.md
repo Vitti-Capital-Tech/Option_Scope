@@ -37,7 +37,7 @@ The project is built with a modern, serverless stack:
 
 1. **Frontend**: React (Vite) with imperative chart updates for high-frequency data.
 2. **Connectivity**: Delta Exchange WebSocket (`v2/ticker`, `trades`, `l2_updates`, `mark_price`) with auto-reconnect + REST backfill.
-3. **Persistence & Sync**: Supabase (PostgreSQL) for persistent configuration, active positions, trade history, and analytics. **Supabase Realtime** subscriptions on `active_positions` deliver instant push-based updates to all connected browser instances (< 1s), replacing the previous 10-second polling loop. A 30-second fallback poll is retained as a safety net. Cross-tab synchronization via `BroadcastChannel`.
+3. **Persistence & Sync**: Supabase (PostgreSQL) for persistent configuration, active positions, trade history, and analytics. **Supabase Realtime** subscriptions on `active_positions` deliver instant push-based updates to all connected browser instances (< 1s), replacing the previous 10-second polling loop. A 10-second fallback poll is retained as a safety net. Cross-tab synchronization via `BroadcastChannel`.
 4. **Chart Engine**: `lightweight-charts` with always-mounted panels to avoid remount jitter.
 5. **Proxying**: Vite local proxy and Vercel rewrites for CORS-safe API access without a custom backend.
 

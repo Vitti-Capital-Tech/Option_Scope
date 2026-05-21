@@ -184,7 +184,7 @@ After every scan, `publishTopSpreads` packages the top-3 calls and puts into a p
 
 **Supabase Realtime Subscription**: On mount (when `trading = true`), the engine subscribes to `postgres_changes` events on `active_positions` (`event: '*'`). Any INSERT, UPDATE, or DELETE by any client (engine tab, browser tab) triggers an immediate `fetchSupabaseActivePositions()` call, delivering the update to all connected sessions in < 1 second. The channel is unsubscribed (`supabase.removeChannel`) on component unmount or when `trading` becomes `false`.
 
-**Fallback Polling**: A 30-second `setInterval` polls `fetchSupabaseActivePositions` and `fetchSupabaseTradeHistory` as a safety net for any missed Realtime events.
+**Fallback Polling**: A 10-second `setInterval` polls `fetchSupabaseActivePositions` and `fetchSupabaseTradeHistory` as a safety net for any missed Realtime events.
 
 **DB-Level Count Guard (pre-insert)**: Before inserting any new position, the engine queries `active_positions` for the current `(underlying, type)` pair. If the live count is `>= 3`, the insert is aborted. Uses plain `.select('id')` (not `{ head: true }`) to ensure non-null response data.
 

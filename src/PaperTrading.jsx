@@ -440,11 +440,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       )
       .subscribe();
 
-    // Fallback polling every 30s (catches any missed Realtime events)
+    // Fallback polling every 10s (catches any missed Realtime events)
     const interval = setInterval(() => {
       fetchSupabaseActivePositions();
       fetchSupabaseTradeHistory();
-    }, 30000);
+    }, 10000);
 
     return () => {
       supabase.removeChannel(realtimeChannel);
