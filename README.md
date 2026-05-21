@@ -21,7 +21,7 @@ The app is built around four workflows:
 - **Execution-Realistic Paper Trading**: High-fidelity simulation using Ask prices for long legs and Bid prices for short legs.
 - **IV Tracking (Bid/Ask-Specific)**: All IV metrics throughout the platform use directional IVs — `ask_iv` for long (buy) legs and `bid_iv` for short (sell) legs — sourced from the Delta Exchange `v2/ticker` WebSocket stream. Dedicated IV In/Current/Out columns in Active Positions and Trade History tables.
 - **Dynamic Portfolio Rotation**: Surgical 1-for-1 replacement using **Conflict-Aware Scanning**. Includes **Atomic Pre-Validation** ensuring replacement candidates pass all safety guards (400pt diversification / 0.5% scaling) before an exit is authorized.
-- **Scaling & Uniqueness Guards**: Advanced entry filtering including a **0.5% Directional Spot Scaling Guard** (mean-reversion) and a **400-point Strike Diversification** rule to prevent portfolio concentration.
+- **Scaling & Uniqueness Guards**: Advanced entry filtering including a **0.5% Directional Spot Scaling Guard** (mean-reversion) and a **400-point Strike Diversification** rule to prevent portfolio concentration. The 400-pt guard is enforced across **both pre-existing positions (`remaining`) and positions entered earlier in the same evaluation cycle (`newEntries`)**, preventing two same-cycle entries from slipping in with <400 pts distance between them. A DB-level proximity check (fetching all active `buy_strike` values) provides a second safety net for multi-tab race conditions.
 - **Visual Simulation Mode (What-If)**: Instant dashboard simulation for strategy research. Toggle between **Base** and **Extra** credit modes to see recalculated P&L and ratios across active positions, history, and KPIs without affecting the database.
 - **Hard Portfolio Cap**: Maximum 3 active positions per option type (calls/puts) enforced at both the local evaluation level and via a DB-level count guard before every Supabase insert. Partially-exited positions hold their slot until fully closed.
 - **Auto-Reconnecting WebSocket**: The `createTickerStream` function automatically re-establishes dropped connections after 3 seconds, ensuring unattended VPS operation remains stable without manual intervention.
@@ -37,7 +37,7 @@ The project is built with a modern, serverless stack:
 
 1. **Frontend**: React (Vite) with imperative chart updates for high-frequency data.
 2. **Connectivity**: Delta Exchange WebSocket (`v2/ticker`, `trades`, `l2_updates`, `mark_price`) with auto-reconnect + REST backfill.
-3. **Persistence & Sync**: Supabase (PostgreSQL) for persistent configuration, active positions, trade history, and analytics. Cross-tab synchronization via `BroadcastChannel`.
+3. **Persistence & Sync**: Supabase (PostgreSQL) for persistent configuration, active positions, trade history, and analytics. **Supabase Realtime** subscriptions on `active_positions` deliver instant push-based updates to all connected browser instances (< 1s), replacing the previous 10-second polling loop. A 30-second fallback poll is retained as a safety net. Cross-tab synchronization via `BroadcastChannel`.
 4. **Chart Engine**: `lightweight-charts` with always-mounted panels to avoid remount jitter.
 5. **Proxying**: Vite local proxy and Vercel rewrites for CORS-safe API access without a custom backend.
 

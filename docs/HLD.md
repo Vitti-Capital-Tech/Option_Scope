@@ -49,6 +49,7 @@ Browser (React + Vite)
   - `createTickerStream` uses an **auto-reconnect loop**: if the WebSocket closes unexpectedly, it re-establishes the connection after a 3-second delay. This is critical for unattended VPS operation.
   - `createWS` (used by the Charts module) delegates reconnect decisions to the caller.
 - **Supabase** (PostgreSQL) stores algorithm configuration, active trading positions, realized trade history, and bucketed analytics.
+- **Supabase Realtime**: A `postgres_changes` subscription on `active_positions` delivers INSERT/UPDATE/DELETE events to all connected browser sessions instantly (< 1s). This replaces the previous 10-second polling loop, eliminating the delay between when the VPS engine writes a trade and when other browser views reflect it. A 30-second fallback poll is retained for resilience.
 - Proxy rewrites keep the architecture serverless while handling CORS.
 
 ### 3) Runtime Engines
@@ -103,7 +104,7 @@ Browser (React + Vite)
     - **Liquidation-Based PnL**: Unrealized PnL is calculated based on immediate exit prices: long positions are valued at the current Bid (selling back) and short positions at the current Ask (buying back).
 3. **Scaling & Uniqueness Guards**: 
    - **Directional Spot Scaling**: Enforces a 0.5% price gap (rounded to 100) between entries for mean-reversion scaling.
-   - **Strike Diversification**: Ensures new long strikes are at least 400 points away from existing long strikes.
+   - **Strike Diversification**: Ensures new long strikes are at least 400 points away from all existing long strikes. The guard checks against **both** `remaining` (positions surviving the exit pass) **and** `newEntries` (positions opened earlier in the same evaluation cycle), preventing two same-cycle entries from both passing the guard relative to old positions but being within 400 pts of each other. The DB-level guard is also upgraded from an exact-strike match to a **400-pt proximity query** (`|existing_buy_strike - new_buy_strike| < 400`), providing a second safety net for multi-tab race conditions.
 4. **IV Tracking**:
    - Entry IVs captured using directional Bid/Ask IVs (`ask_iv` for buy leg, `bid_iv` for sell leg).
    - Current IVs updated live from the ticker stream using the same directional logic.
@@ -121,6 +122,7 @@ Browser (React + Vite)
    - **Cycle Guards**: Rotation only begins once the portfolio hits a threshold (e.g., 3 active legs) and is capped at 3 rotations per evaluation cycle.
 9. Open new positions up to 3 per type from the ranked candidate list. DB count guard prevents exceeding 3 even under race conditions.
 10. Sync all entries, exits, and partial scale-outs to Supabase. Full `positions` array replacement only happens when rows are added/removed, not on routine PnL updates.
+11. **Instant Cross-Device Sync**: Supabase Realtime pushes `active_positions` change events to all connected sessions within < 1s of a write. The `lastDbWriteRef` post-write blackout is reduced from 10s to 3s to minimize the window where a just-written position could be overwritten by a stale Supabase re-fetch.
 
 ### ATM Exit Trading (Simplified Automated Lifecycle)
 

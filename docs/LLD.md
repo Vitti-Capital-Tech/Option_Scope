@@ -182,13 +182,17 @@ After every scan, `publishTopSpreads` packages the top-3 calls and puts into a p
 
 ### Concurrency Safety Guards
 
+**Supabase Realtime Subscription**: On mount (when `trading = true`), the engine subscribes to `postgres_changes` events on `active_positions` (`event: '*'`). Any INSERT, UPDATE, or DELETE by any client (engine tab, browser tab) triggers an immediate `fetchSupabaseActivePositions()` call, delivering the update to all connected sessions in < 1 second. The channel is unsubscribed (`supabase.removeChannel`) on component unmount or when `trading` becomes `false`.
+
+**Fallback Polling**: A 30-second `setInterval` polls `fetchSupabaseActivePositions` and `fetchSupabaseTradeHistory` as a safety net for any missed Realtime events.
+
 **DB-Level Count Guard (pre-insert)**: Before inserting any new position, the engine queries `active_positions` for the current `(underlying, type)` pair. If the live count is `>= 3`, the insert is aborted. Uses plain `.select('id')` (not `{ head: true }`) to ensure non-null response data.
 
-**DB-Level Strike Uniqueness (pre-insert)**: After the count check, the engine also queries for any existing position with the same `buy_strike` or `sell_strike` within the same `(underlying, type)`. Duplicate strikes are blocked.
+**DB-Level Strike Uniqueness (pre-insert)**: After the count check, the engine queries all active `buy_strike` values for the same `(underlying, type)`. If any existing `buy_strike` is **within 400 points** of the candidate's buy strike (`|existing - new| < 400`), the insert is aborted with a console warning. This is a **proximity check**, not an exact-match — it enforces the same 400-pt diversification rule at the DB level as a second safety net for multi-tab race conditions. A separate exact-match check on `sell_strike` is also applied.
 
 **DB Unique Constraint Fallback**: A PostgreSQL unique constraint on `(buy_strike, sell_strike)` is the final safety net. Error code `23505` is caught and logged but does not crash the engine.
 
-**Write Throttle (`lastDbWriteRef`)**: Tracks Unix timestamp of the last local database write. The periodic background sync (`fetchSupabaseActivePositions`, runs every 10 seconds) is skipped if a local write occurred within the last 10 seconds to prevent stale remote data overwriting in-flight local changes.
+**Write Throttle (`lastDbWriteRef`)**: Tracks Unix timestamp of the last local database write. The Supabase Realtime subscription (and the 30-second fallback poll) skip the fetch if a local write occurred within the last **3 seconds** to prevent a just-written position from being overwritten by a stale re-fetch before the DB has finished committing. (Previously 10 seconds — reduced to minimize the staleness window.)
 
 ### Margin Calculation (`calcMargin`)
 
@@ -314,11 +318,11 @@ New entries are opened from `topSpreads` (full candidate pool, not uniqueTopSpre
 1. **Expiry Buffer Guard**: Skip if `minutesToExpiry < 5`.
 2. **Strike Uniqueness**: Block if buy or sell strike already active in `remaining` or `newEntries` (same type/underlying).
 3. **Portfolio Cap**: Block if `remaining + newEntries count >= 3` for this type.
-4. **Strike Diversification Guard**: New buy strike must be `>= 400 pts` from all existing buy strikes of the same type.
+4. **Strike Diversification Guard**: New buy strike must be `>= 400 pts` from **all** existing buy strikes of the same type. The check is applied against the merged set of `[...remaining, ...newEntries]` — not just `remaining` alone. This is critical: without `newEntries` in scope, two candidates in the same evaluation cycle could both pass the guard relative to pre-existing positions yet end up within 400 pts of each other. Example: if `remaining` is empty (e.g., right after expiry), the first candidate passes trivially, gets pushed to `newEntries`, and the second candidate is then checked against it.
 5. **Execution**: `entryBuyPrice = spread.ask`, `entrySellPrice = spread.bid`. Entry IVs captured: `entryBuyIv = ticker.askIv`, `entrySellIv = ticker.bidIv`.
 6. **Supabase Insert (with three DB-level guards)**:
    - Count guard: `SELECT id WHERE underlying AND type` — abort if count `>= 3`.
-   - Buy strike uniqueness: `SELECT id WHERE buy_strike = X` — abort if exists.
+   - Buy strike proximity guard: `SELECT buy_strike WHERE underlying AND type` — abort if any existing `buy_strike` is within 400 pts of the new strike (`|existing - new| < 400`). This upgrades the previous exact-match check to a full diversification guard, blocking near-duplicate entries even under multi-tab race conditions.
    - Sell strike uniqueness: `SELECT id WHERE sell_strike = Y` — abort if exists.
    - Unique constraint `23505` is the final net.
 
@@ -402,6 +406,7 @@ Both `PaperTrading.jsx` and `ATMExitTrading.jsx` guard all date filtering logic:
 - `createTickerStream` auto-reconnects every 3 seconds on unexpected close.
 - `lastWsSymbolsRef` prevents needless WebSocket churn during product refreshes.
 - Margin backfill on load.
+- **Supabase Realtime** keeps all open browser sessions in sync with the VPS engine tab within < 1 second of any position change, eliminating the previous 10-15 second cross-device lag.
 
 ---
 
