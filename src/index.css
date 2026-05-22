@@ -97,9 +97,20 @@ body,
   transition: background 0.3s;
 }
 
-.ws-dot.live {
-  background: var(--accent);
-  box-shadow: 0 0 6px var(--accent);
+.ws-dot.live,
+.ws-dot.online {
+  background: #0ecb81;
+  box-shadow: 0 0 6px #0ecb81;
+}
+
+.ws-dot.stale {
+  background: #e3b341;
+  box-shadow: 0 0 6px #e3b341;
+}
+
+.ws-dot.offline {
+  background: #f6465d;
+  box-shadow: 0 0 6px #f6465d;
 }
 
 .body {
@@ -1964,14 +1975,30 @@ select:disabled {
   align-items: center;
   gap: 8px;
   padding: 6px 12px;
-  background: rgba(14, 203, 129, 0.1);
-  border: 1px solid rgba(14, 203, 129, 0.2);
   border-radius: 20px;
-  color: #0ecb81;
   font-size: 11px;
   font-weight: 800;
   letter-spacing: 1px;
   text-transform: uppercase;
+}
+
+.pt-status-badge.live,
+.pt-status-badge.online {
+  background: rgba(14, 203, 129, 0.1);
+  border: 1px solid rgba(14, 203, 129, 0.2);
+  color: #0ecb81;
+}
+
+.pt-status-badge.stale {
+  background: rgba(227, 179, 65, 0.1);
+  border: 1px solid rgba(227, 179, 65, 0.2);
+  color: #e3b341;
+}
+
+.pt-status-badge.offline {
+  background: rgba(246, 70, 93, 0.1);
+  border: 1px solid rgba(246, 70, 93, 0.2);
+  color: #f6465d;
 }
 
 .pt-pulse {

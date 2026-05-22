@@ -148,6 +148,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
   const flushTimerRef = useRef(null);
   const lastEvaluatedRef = useRef(0);
   const lastDbWriteRef = useRef(0);
+  const lastSpotUpdateRef = useRef(0); // Timestamp of last successful spot price fetch
   const [lastEvaluated, setLastEvaluated] = useState(0);
   const [timeRemaining, setTimeRemaining] = useState(null);
 
@@ -338,7 +339,12 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
   useEffect(() => {
     const fetchSpot = () => {
       getSpotPrice(underlying)
-        .then(sp => { if (sp) setSpotPrice(sp); })
+        .then(sp => {
+          if (sp) {
+            setSpotPrice(sp);
+            lastSpotUpdateRef.current = Date.now();
+          }
+        })
         .catch(() => { });
     };
     fetchSpot();
@@ -537,6 +543,13 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
 
   const evaluateStrategy = useCallback(async (force = false) => {
     if (!trading || !spotPrice || isEvaluatingRef.current) return;
+
+    // Spot Staleness Guard: If spot price hasn't been successfully updated in >30 seconds,
+    // skip algo evaluation entirely. This prevents false exits triggered by stale spot data
+    // when the REST poll fails silently on VPS.
+    const spotAge = Date.now() - lastSpotUpdateRef.current;
+    const spotIsStale = lastSpotUpdateRef.current > 0 && spotAge > 30000;
+
     isEvaluatingRef.current = true;
     try {
       const allTickers = Object.values(latestTickerDataRef.current);
@@ -568,6 +581,13 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
             return { ...pos, currentBuyPrice: latestBuy, currentSellPrice: latestSell, unrealizedGrossPnl: grossPnl, unrealizedNetPnl: grossPnl - totalFees, currentExitFee: exitFee, currentTotalFees: totalFees };
           });
         });
+        lastEvaluatedRef.current = nowTime;
+        return;
+      }
+
+      // Blocked when spot is stale — prevents false exits from outdated spot data.
+      if (spotIsStale) {
+        console.warn(`Spot price stale (${Math.round(spotAge / 1000)}s since last update). Skipping algo evaluation to prevent false exits.`);
         lastEvaluatedRef.current = nowTime;
         return;
       }

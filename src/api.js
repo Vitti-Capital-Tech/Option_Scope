@@ -206,7 +206,13 @@ export function createWS(callSym, putSym, resolution, priceType, onTicker, onDat
   };
 
   return {
-    close: () => { alive = false; ws.close(); },
+    close: () => {
+      alive = false;
+      if (ws) {
+        ws.onclose = null;
+        ws.close();
+      }
+    },
   };
 }
 
@@ -220,7 +226,7 @@ export function createTickerStream(symbols, onTicker, onStatus) {
     if (!alive) return;
     try {
       ws = new WebSocket(WS_URL);
-      
+
       ws.onopen = () => {
         onStatus?.('live');
         ws.send(JSON.stringify({
@@ -262,12 +268,12 @@ export function createTickerStream(symbols, onTicker, onStatus) {
   connect();
 
   return {
-    close: () => { 
-      alive = false; 
+    close: () => {
+      alive = false;
       clearTimeout(reconnectTimer);
       if (ws) {
         ws.onclose = null; // Prevent reconnect loop
-        ws.close(); 
+        ws.close();
       }
     },
   };
