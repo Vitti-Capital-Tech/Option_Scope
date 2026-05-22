@@ -59,6 +59,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const [extraCreditMode, setExtraCreditMode] = useState(false);
   const [extraCreditAmount, setExtraCreditAmount] = useState(15);
   const [lastEvaluated, setLastEvaluated] = useState(0);
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   const adjustFilterDay = (offset) => {
     if (!historyFilterDate) return;
@@ -318,15 +324,15 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           return;
         }
 
-        const age = Date.now() - new Date(data.updated_at).getTime();
+        const age = Date.now() - new Date(data.last_heartbeat).getTime();
         const status = age < HEARTBEAT_ONLINE_THRESHOLD ? 'online'
           : age < HEARTBEAT_STALE_THRESHOLD ? 'stale' : 'offline';
 
-        setEngineStatus({ status, lastHeartbeat: new Date(data.updated_at), data: data.payload });
+        setEngineStatus({ status, lastHeartbeat: new Date(data.last_heartbeat), data: data.payload });
 
         // Use server's last evaluation time for the UI timestamp
-        if (data.payload?.last_evaluated) {
-          setLastEvaluated(new Date(data.payload.last_evaluated).getTime());
+        if (data.last_heartbeat) {
+          setLastEvaluated(new Date(data.last_heartbeat).getTime());
         }
       } catch (e) { }
     };
@@ -880,10 +886,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-                <div style={{ fontSize: 12, color: 'var(--text)', borderLeft: '1px solid var(--border)', paddingLeft: 8, fontVariantNumeric: 'tabular-nums', minWidth: '160px' }}>
-                  Updated: {lastEvaluated > 0
-                    ? new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }).format(new Date(lastEvaluated))
-                    : '---'}
+                <div style={{ fontSize: 12, color: 'var(--text)', borderLeft: '1px solid var(--border)', paddingLeft: 8, fontVariantNumeric: 'tabular-nums', minWidth: '250px' }}>
+                  {lastEvaluated > 0
+                    ? `Updated: ${new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }).format(new Date(lastEvaluated))} (${Math.round((now - lastEvaluated) / 1000)}s ago, next ~${Math.max(0, 30 - Math.round((now - lastEvaluated) / 1000))}s)`
+                    : 'Updated: ---'}
                 </div>
 
                 {/* Extra Credit Toggle */}
