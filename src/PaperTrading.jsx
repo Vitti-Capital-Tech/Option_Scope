@@ -132,6 +132,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const flushTimerRef = useRef(null);
   const lastEvaluatedRef = useRef(0);
   const lastDbWriteRef = useRef(0); // Timestamp of last local Supabase write
+  const lastSpotUpdateRef = useRef(0); // Timestamp of last successful spot price fetch
 
   const [lastEvaluated, setLastEvaluated] = useState(0);
   const [timeRemaining, setTimeRemaining] = useState(null);
@@ -460,7 +461,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   useEffect(() => {
     const fetchSpot = () => {
       getSpotPrice(underlying)
-        .then(sp => { if (sp) setSpotPrice(sp); })
+        .then(sp => {
+          if (sp) {
+            setSpotPrice(sp);
+            lastSpotUpdateRef.current = Date.now();
+          }
+        })
         .catch(() => { });
     };
     fetchSpot();
@@ -715,6 +721,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
   const evaluateStrategy = useCallback(async (force = false) => {
     if (!trading || !spotPrice || isEvaluatingRef.current) return;
+
+    // Spot Staleness Guard: If spot price hasn't been successfully updated in >30 seconds,
+    // skip algo evaluation entirely. This prevents false exits triggered by stale spot data
+    // when the REST poll fails silently on VPS (e.g. network hiccup leaving spotPrice at its
+    // last successful value while the real price has moved hundreds of dollars).
+    const spotAge = Date.now() - lastSpotUpdateRef.current;
+    const spotIsStale = lastSpotUpdateRef.current > 0 && spotAge > 30000;
+
     isEvaluatingRef.current = true;
     try {
 
@@ -784,7 +798,15 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       /**
        * PHASE 2: Algorithm Strategy Evaluation (Minute Cycle)
        * This handles scanning, rotation, rolls, and trade execution.
+       *
+       * BLOCKED when spot is stale — prevents false exits from outdated spot data.
+       * Phase 1 (PnL display) still runs above since it doesn't trigger exits.
        */
+      if (spotIsStale) {
+        console.warn(`Spot price stale (${Math.round(spotAge / 1000)}s since last update). Skipping algo evaluation to prevent false exits.`);
+        lastEvaluatedRef.current = Date.now();
+        return;
+      }
       const nowAtEval = Date.now();
       lastEvaluatedRef.current = nowAtEval;
       setLastEvaluated(nowAtEval);
