@@ -355,6 +355,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   }, [underlying]);
 
   // ── WebSocket (read-only: feeds Phase 1 PnL display only) ────────────
+  const positionsSymbolsKey = React.useMemo(() => {
+    return positions
+      .filter(p => p.underlying === underlying)
+      .map(p => `${p.buyLeg?.symbol}_${p.sellLeg?.symbol}`)
+      .sort()
+      .join(',');
+  }, [positions, underlying]);
+
   const getSymbolMeta = useCallback(() => {
     if (!selExpiry || !products.length) return {};
     const strikes = getStrikes(products, selExpiry);
@@ -391,7 +399,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       }
     });
     return meta;
-  }, [selExpiry, products, underlying, positions]);
+  }, [selExpiry, products, underlying, positionsSymbolsKey]);
 
   useEffect(() => {
     if (!selExpiry || !products.length) return;
@@ -463,14 +471,19 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           const latestBuy = tickerBuy?.bid ?? tickerBuy?.markPrice ?? pos.currentBuyPrice;
           const latestSell = tickerSell?.ask ?? tickerSell?.markPrice ?? pos.currentSellPrice;
 
-          if (latestBuy == null || latestSell == null) return pos;
+          // If we don't have any price at all for both legs, skip this position's updates
+          if (latestBuy == null && latestSell == null) return pos;
 
-          const buyPnl = (latestBuy - pos.entryBuyPrice) || 0;
-          const sellPnl = ((latestSell - pos.entrySellPrice) * pos.sellQty) || 0;
-          const grossPnl = (buyPnl * pos.buyLeg.lotSize) - (sellPnl * pos.sellLeg.lotSize) + (pos.accumulatedSellPnl || 0);
-          const exitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize) +
-            calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
-          const totalFees = (pos.entryFee || 0) + exitFee;
+          const hasBothPrices = latestBuy != null && latestSell != null;
+          const buyPnl = hasBothPrices ? ((latestBuy - pos.entryBuyPrice) || 0) : 0;
+          const sellPnl = hasBothPrices ? (((latestSell - pos.entrySellPrice) * pos.sellQty) || 0) : 0;
+          const grossPnl = hasBothPrices
+            ? (buyPnl * pos.buyLeg.lotSize) - (sellPnl * pos.sellLeg.lotSize) + (pos.accumulatedSellPnl || 0)
+            : pos.unrealizedGrossPnl;
+          const exitFee = hasBothPrices
+            ? calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize) + calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize)
+            : pos.currentExitFee;
+          const totalFees = hasBothPrices ? ((pos.entryFee || 0) + exitFee) : pos.currentTotalFees;
 
           return {
             ...pos,
@@ -488,7 +501,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [spotPrice, positions.length]);
+  }, [spotPrice, positions.length, underlying, positionsSymbolsKey]);
 
   // Cleanup on unmount
   useEffect(() => () => {
