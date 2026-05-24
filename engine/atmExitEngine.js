@@ -191,7 +191,8 @@ export async function startAtmExitEngine() {
         if (processed) tickerData[processed.symbol] = processed;
       },
       (status) => {
-        heartbeat.update({ ws_status: status });
+        const mappedWsStatus = status === 'live' ? 'live' : 'reconnecting';
+        heartbeat.update({ ws_status: mappedWsStatus });
         if (status === 'live') log('[ATM] WebSocket connected');
         else if (status === 'disconnected') logWarn('[ATM] WebSocket disconnected — reconnecting...');
       }

@@ -166,7 +166,8 @@ export async function startPaperTradingEngine() {
         }
       },
       (status) => {
-        heartbeat.update({ ws_status: status });
+        const mappedWsStatus = status === 'live' ? 'live' : 'reconnecting';
+        heartbeat.update({ ws_status: mappedWsStatus });
         if (status === 'live') {
           log('WebSocket connected');
         } else if (status === 'disconnected') {

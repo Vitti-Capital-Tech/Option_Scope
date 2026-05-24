@@ -16,7 +16,7 @@ export function createHeartbeat(engineId) {
     underlying: '',
     expiry: '',
     active_positions: 0,
-    ws_status: 'starting',
+    ws_status: 'reconnecting',
     spot_price: null,
     status: 'starting',
   };
@@ -61,7 +61,7 @@ export function createHeartbeat(engineId) {
         clearInterval(intervalTimer);
         intervalTimer = null;
       }
-      state.status = 'stopped';
+      state.status = 'error';
       await write();
       log(`Heartbeat stopped for ${engineId}`);
     },
