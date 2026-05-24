@@ -15,31 +15,26 @@ The user selects underlying and expiry, then the system streams option telemetry
 
 ## System Components
 
-```
-Browser (React + Vite)
+```text
+Headless Backend Engine (Node.js VPS)
+  |
+  |-- paperTradingEngine.js (Continuous execution, IV tracking, Supabase syncing)
+  |-- atmExitEngine.js (Always-on ATM single-exit, Bucketed analytics)
+  |-- WebSocket adapter ---> Delta WS (Auto-reconnect + heartbeats)
+
+Browser (React + Vite Dashboard)
   |
   |-- Navigation Shell (Charts / Scanner / Paper Trading / ATM Exit)
-  |
-  |-- REST adapter (products, candles, spot) ---> /api proxy ---> Delta REST
-  |
-  |-- WebSocket adapter (ticker, greeks, trades, l2, mark_price) ---> Delta WS
-  |       |
-  |       `-- Auto-reconnect (3s backoff on unexpected close)
-  |
-  |-- Persistence & Sync Hub (localStorage + BroadcastChannel + Supabase)
-         |
-         |-- Chart Data Hub + Correction Engine
-         |-- Scanner Engine (directional pair search with ATM constraints)
-         |-- Paper Trading Engine (rotation + multi-stage exit + leg swap + IV tracking)
-         |-- ATM Exit Engine (rotation + ATM-only exit + bucketed analytics)
+  |-- WebSocket adapter (UI local tickers, greeks) ---> Delta WS
+  |-- Persistence & Sync Hub (Supabase Realtime + BroadcastChannel)
 ```
 
-### 1) UI Layer
+### 1) UI Layer (Dashboard)
 
 - React components are route-like modules switched inside the app shell via `main.jsx`.
+- `PaperTrading.jsx` and `ATMExitTrading.jsx` no longer run automated logic; they are read-only views showing live database state and a ticking server `engine_heartbeat` countdown.
 - All four modules are always mounted (via `display: none/block`) to preserve state during navigation.
 - Theme toggle is shared across modules.
-- Strategy watchlist and configuration state drive the active chart context.
 - **Synchronization**: State (underlying, expiry, filters) is synchronized across tabs via `BroadcastChannel` and persisted to Supabase for cross-device consistency.
 
 ### 2) Market Data & Connectivity Layer
@@ -52,12 +47,12 @@ Browser (React + Vite)
 - **Supabase Realtime**: A `postgres_changes` subscription on `active_positions` delivers INSERT/UPDATE/DELETE events to all connected browser sessions instantly (< 1s). This replaces the previous 10-second polling loop, eliminating the delay between when the VPS engine writes a trade and when other browser views reflect it. A 10-second fallback poll is retained for resilience.
 - Proxy rewrites keep the architecture serverless while handling CORS.
 
-### 3) Runtime Engines
+### 3) Runtime Engines (Node.js VPS)
 
-- **Charting Engine** uses imperative refs and always-mounted chart components for smooth updates.
-- **Scanner Engine** processes option chains for valid ratio candidates using configurable thresholds. Enforces directional filtering (Calls ≥ ATM, Puts ≤ ATM) and global uniqueness of buy/sell strikes per type.
-- **Paper Trading Engine** reuses scanner-style candidate selection to simulate positions with a full exit lifecycle: rotation toward better strikes, multi-stage ATM/ITM scale-out, leg swap optimization, and automated expiry settlement. Enforces a hard cap of 3 positions per option type. Tracks Bid/Ask-specific IVs at entry and in real-time. Synchronizes with Supabase for multi-instance stability.
-- **ATM Exit Engine** runs an independent, self-contained scanner and evaluation loop. Uses the same entry guards (0.5% spot scaling, 400pt diversification) but a simpler exit strategy: 100% close at ATM. Persists to separate Supabase tables (`atm_exit_*`) and aggregates running trade analytics by strike diff and sell quantity buckets.
+- **Charting Engine (UI)** uses imperative refs and always-mounted chart components for smooth updates.
+- **Scanner Engine (UI)** processes option chains for valid ratio candidates using configurable thresholds. Enforces directional filtering (Calls ≥ ATM, Puts ≤ ATM).
+- **Paper Trading Engine (Node.js)** A headless script (`paperTradingEngine.js`) that runs 24/7 on a VPS. Reuses scanner-style candidate selection to simulate positions with a full exit lifecycle: rotation toward better strikes, multi-stage ATM/ITM scale-out, leg swap optimization, and automated expiry settlement. Enforces a hard cap of 3 positions per option type. Tracks Bid/Ask-specific IVs. Synchronizes with Supabase.
+- **ATM Exit Engine (Node.js)** A headless script (`atmExitEngine.js`). Runs an independent, self-contained scanner and evaluation loop. Uses the same entry guards (0.5% spot scaling, 400pt diversification) but a simpler exit strategy: 100% close at ATM. Persists to separate Supabase tables (`atm_exit_*`) and aggregates bucketed running trade analytics.
 
 ---
 

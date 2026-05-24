@@ -33,13 +33,13 @@ The app is built around four workflows:
 
 ## Architecture
 
-The project is built with a modern, serverless stack:
+The project uses a decoupled headless architecture to ensure 24/7 strategy execution without relying on an open browser:
 
-1. **Frontend**: React (Vite) with imperative chart updates for high-frequency data.
-2. **Connectivity**: Delta Exchange WebSocket (`v2/ticker`, `trades`, `l2_updates`, `mark_price`) with auto-reconnect + REST backfill.
-3. **Persistence & Sync**: Supabase (PostgreSQL) for persistent configuration, active positions, trade history, and analytics. **Supabase Realtime** subscriptions on `active_positions` deliver instant push-based updates to all connected browser instances (< 1s), replacing the previous 10-second polling loop. A 10-second fallback poll is retained as a safety net. Cross-tab synchronization via `BroadcastChannel`.
+1. **Headless Backend Engines (Node.js)**: Dedicated background workers (`paperTradingEngine.js` and `atmExitEngine.js`) run continuously on a VPS. They handle the Delta Exchange WebSocket connections, evaluate trading strategies every second, and persist positions/analytics directly to Supabase.
+2. **Frontend UI Dashboard**: React (Vite) app that serves as a read-only monitoring dashboard and configuration control panel. It watches the Supabase database via Realtime subscriptions to display live PnL and uses an `engine_heartbeat` table with a ticking UI countdown to guarantee the background engines are healthy.
+3. **Persistence & Sync**: Supabase (PostgreSQL) is the source of truth for configuration, active positions, trade history, and analytics. **Supabase Realtime** subscriptions on `active_positions` deliver instant push-based updates to all connected browser instances (< 1s).
 4. **Chart Engine**: `lightweight-charts` with always-mounted panels to avoid remount jitter.
-5. **Proxying**: Vite local proxy and Vercel rewrites for CORS-safe API access without a custom backend.
+5. **Proxying**: Vite local proxy and Vercel rewrites for CORS-safe API access.
 
 ## Documentation
 

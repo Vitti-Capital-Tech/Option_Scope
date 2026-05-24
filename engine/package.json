@@ -1,0 +1,18 @@
+{
+  "name": "option-scope-engine",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Server-side trading engine for OptionScope — runs 24/7 without a browser",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "start:paper": "node index.js paper",
+    "start:atm": "node index.js atm",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.105.3",
+    "dotenv": "^16.4.0",
+    "ws": "^8.20.0"
+  }
+}

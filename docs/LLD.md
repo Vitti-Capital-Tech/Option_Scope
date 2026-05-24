@@ -11,8 +11,10 @@ This document is the authoritative implementation reference for every module, en
 | `main.jsx` | Root bootstrap and routing shell. Mounts all 4 modules simultaneously using `display: none/block` to preserve state across navigation. Owns the shared `page` and `theme` state and the `BroadcastChannel` sync instance. |
 | `App.jsx` | Interactive charts, greeks tracking, alert manager, SMA overlay, and support/resistance drawing tools. |
 | `RatioSpreadScanner.jsx` | Standalone option-chain scanner. Computes premium-to-delta-notional ratio deviation pairs, publishes top-3 results via `BroadcastChannel` and `localStorage`. |
-| `PaperTrading.jsx` | Full automated simulation engine. Handles entries, multi-stage exits, leg-swaps, rotation, IV tracking, fee calculations, Supabase persistence, and UI. |
-| `ATMExitTrading.jsx` | Simplified always-on trading engine. Self-contained scanner, single ATM exit rule, bucketed analytics aggregation, and separate Supabase tables. |
+| `PaperTrading.jsx` | React UI Dashboard for Paper Trading. Reads `active_positions`, `trade_history`, and heartbeat from Supabase. |
+| `ATMExitTrading.jsx` | React UI Dashboard for ATM Exit Trading. Reads bucketed analytics and heartbeat from Supabase. |
+| `engine/paperTradingEngine.js` | Headless Node.js engine. Handles entries, multi-stage exits, leg-swaps, rotation, IV tracking, fee calculations, and Supabase persistence. |
+| `engine/atmExitEngine.js` | Headless Node.js engine. Self-contained scanner, single ATM exit rule, bucketed analytics aggregation, and separate Supabase tables. |
 | `ResultTable.jsx` | Reusable grouped table renderer for ratio spread candidates. |
 | `api.js` | Network abstraction: Delta REST calls, `createTickerStream` (WS with auto-reconnect), `createWS` (raw WS), `getTickers` (REST backfill). |
 | `scannerUtils.js` | Shared helpers: `normalizeIv`, `toFiniteNumber`, `matchesOptionType`, `formatTime`, `formatDateTime`. |
@@ -209,7 +211,7 @@ Applied to both engines using a tiered leverage model based on short notional va
 
 ---
 
-## 7) Paper Trading Engine (`PaperTrading.jsx`)
+## 7) Paper Trading Engine (`engine/paperTradingEngine.js`)
 
 ### Dual-Phase Evaluation Loop (`evaluateStrategy`)
 
@@ -351,7 +353,7 @@ A UI-layer only feature — the Supabase database always stores original base va
 
 ---
 
-## 8) ATM Exit Trading Engine (`ATMExitTrading.jsx`)
+## 8) ATM Exit Trading Engine (`engine/atmExitEngine.js`)
 
 ### Key Differences from PaperTrading
 

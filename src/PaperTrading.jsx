@@ -8,7 +8,8 @@ import { useTabListener } from './useTabSync';
 import { supabase } from './supabase';
 
 const UNDERLYINGS = ['BTC', 'ETH'];
-const SCANNER_TOP_KEY = 'vitti_scanner_top_spreads_v1';
+const HEARTBEAT_ONLINE_THRESHOLD = 60000;
+const HEARTBEAT_STALE_THRESHOLD = 120000;
 
 const calculateFee = (price, spot, qty, lotSize) => {
   if (!price || !spot) return 0;
@@ -26,48 +27,49 @@ const safeParseLeg = (value) => {
 };
 
 export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
-  // config state unified with underlying and expiry
-  const [config, setConfig] = useState(() => {
-    let base = {
-      underlying: 'BTC',
-      expiry: '',
-      minStrikeDiff: 800,
-      minIvDiff: 5,
-      maxRatioDeviation: 0.25,
-      minSellPremium: 10,
-      maxNetPremium: 20,
-      minLongDist: 500,
-      maxSellQty: 10,
-    };
-    return base;
-  });
+  const [config, setConfig] = useState(() => ({
+    underlying: 'BTC',
+    expiry: '',
+    minStrikeDiff: 800,
+    minIvDiff: 5,
+    maxRatioDeviation: 0.25,
+    minSellPremium: 10,
+    maxNetPremium: 20,
+    minLongDist: 500,
+    maxSellQty: 10,
+  }));
 
-  // Use getters for convenience
   const underlying = config.underlying;
   const selExpiry = config.expiry;
 
   const [products, setProducts] = useState([]);
   const [expiries, setExpiries] = useState([]);
   const [spotPrice, setSpotPrice] = useState(null);
-  const [trading, setTrading] = useState(true);
+  const [engineStatus, setEngineStatus] = useState({ status: 'offline', lastHeartbeat: null, data: null });
 
   const [includeFees, setIncludeFees] = useState(true);
-  const [positions, setPositions] = useState([]); // Active positions
-  const [tradeHistory, setTradeHistory] = useState([]); // Closed trades
+  const [positions, setPositions] = useState([]);
+  const [tradeHistory, setTradeHistory] = useState([]);
 
   const [historyFilterDate, setHistoryFilterDate] = useState(() => {
-    // Offset by 12 hours to align with Delta 12:00 UTC settlement
     const d = new Date();
     d.setUTCHours(d.getUTCHours() + 12);
     return d.toISOString().split('T')[0];
   });
   const [extraCreditMode, setExtraCreditMode] = useState(false);
   const [extraCreditAmount, setExtraCreditAmount] = useState(15);
+  const [lastEvaluated, setLastEvaluated] = useState(0);
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   const adjustFilterDay = (offset) => {
     if (!historyFilterDate) return;
     const [y, m, d] = historyFilterDate.split('-').map(Number);
-    const current = new Date(Date.UTC(y, m - 1, d)); // Create as UTC
+    const current = new Date(Date.UTC(y, m - 1, d));
     current.setUTCDate(current.getUTCDate() + offset);
     setHistoryFilterDate(current.toISOString().split('T')[0]);
   };
@@ -77,8 +79,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     d.setUTCHours(d.getUTCHours() + 12);
     setHistoryFilterDate(d.toISOString().split('T')[0]);
   };
-
-  const [isBackfilling, setIsBackfilling] = useState(false);
 
   const calcMargin = (buyPrice, buyLot, spot, sellQty, sellLot = 1) => {
     const longMargin = (buyPrice || 0) * (buyLot || 1);
@@ -92,84 +92,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     return longMargin + (shortValue / leverage);
   };
 
-  const backfillMargins = async () => {
-    if (!spotPrice || isBackfilling) return;
-    setIsBackfilling(true);
-    try {
-      const { data, error } = await supabase.from('active_positions').select('*');
-      if (error || !data) return;
-
-      for (const p of data) {
-        const buyLeg = safeParseLeg(p.buy_leg);
-        if (!buyLeg) continue;
-        const sellLeg = safeParseLeg(p.sell_leg);
-        const newMargin = calcMargin(p.entry_buy_price, buyLeg.lotSize, Math.max(p.entry_spot_price || spotPrice, spotPrice), p.sell_qty, sellLeg?.lotSize || buyLeg.lotSize);
-        await supabase.from('active_positions').update({ margin: newMargin }).eq('id', p.id);
-      }
-      fetchSupabaseActivePositions();
-    } catch (e) {
-      console.error('Backfill Error:', e);
-    } finally {
-      setIsBackfilling(false);
-    }
-  };
-
-  const hasBackfilledRef = useRef(false);
-  useEffect(() => {
-    if (spotPrice && !hasBackfilledRef.current && !isBackfilling) {
-      hasBackfilledRef.current = true;
-      backfillMargins();
-    }
-  }, [spotPrice, isBackfilling]);
-
-  const [aiReviews, setAiReviews] = useState({}); // { tradeId: { claude: string, groq: string } }
+  // ── Ticker data (read-only, for live PnL display) ─────────────────────
   const [tickerData, setTickerData] = useState({});
   const latestTickerDataRef = useRef({});
-
   const wsRef = useRef(null);
   const spotIntervalRef = useRef(null);
   const tickerBufferRef = useRef({});
   const flushTimerRef = useRef(null);
-  const lastEvaluatedRef = useRef(0);
-  const lastDbWriteRef = useRef(0); // Timestamp of last local Supabase write
-  const lastSpotUpdateRef = useRef(0); // Timestamp of last successful spot price fetch
-
-  const [lastEvaluated, setLastEvaluated] = useState(0);
-  const [timeRemaining, setTimeRemaining] = useState(null);
-  const scannerTopRef = useRef(null);
-  const [scannerSyncVersion, setScannerSyncVersion] = useState(0);
-  const lastProcessedScannerVersionRef = useRef(0);
-
-
-
-  const pickTopUniqueStrikes = useCallback((spreads, limit = 3) => {
-    const out = [];
-    const seenBuy = new Set();
-    for (const s of spreads) {
-      const bStrike = s?.buyLeg?.strike != null ? Number(s.buyLeg.strike) : null;
-      if (bStrike == null) continue;
-      if (seenBuy.has(bStrike)) continue;
-      seenBuy.add(bStrike);
-      out.push(s);
-      if (out.length >= limit) break;
-    }
-    return out;
-  }, []);
-
-
-  const positionsRef = useRef([]);
-  const isEvaluatingRef = useRef(false);
-  const lastWsSymbolsRef = useRef('');
-  useEffect(() => { positionsRef.current = positions; }, [positions]);
-
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(SCANNER_TOP_KEY);
-      scannerTopRef.current = raw ? JSON.parse(raw) : null;
-    } catch (e) {
-      scannerTopRef.current = null;
-    }
-  }, []);
+  const lastDbWriteRef = useRef(0);
 
   const flushTickerBuffer = useCallback(() => {
     flushTimerRef.current = null;
@@ -180,34 +110,31 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     setTickerData({ ...latestTickerDataRef.current });
   }, []);
 
+  // ── Product + expiry (UI display only, server manages its own copy) ───
   const refreshProducts = useCallback(async () => {
     try {
       const prods = await loadProducts(underlying);
       setProducts(prods);
       const exps = getExpiries(prods);
       setExpiries(exps);
-      // If current expiry is gone or empty, pick first one
       if (exps.length && (!selExpiry || !exps.includes(selExpiry))) {
         updateConfig('expiry', exps[0]);
       }
     } catch (e) { console.error('Failed to load products:', e); }
   }, [underlying, selExpiry]);
 
-  // ── Load products on underlying change ──────────────────────────────────
   useEffect(() => {
     setExpiries([]);
     setTickerData({});
     refreshProducts();
   }, [underlying]);
 
-  // ── Periodically refresh products to catch expiries and rollover ────────
   useEffect(() => {
-    const interval = setInterval(() => {
-      refreshProducts();
-    }, 5 * 60 * 1000); // 5 minutes
+    const interval = setInterval(refreshProducts, 5 * 60 * 1000);
     return () => clearInterval(interval);
   }, [refreshProducts]);
 
+  // ── Config ────────────────────────────────────────────────────────────
   const saveSupabaseConfig = useCallback(async (newCfg) => {
     try {
       await supabase.from('paper_trading_config').upsert({
@@ -223,7 +150,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         max_sell_qty: newCfg.maxSellQty,
         updated_at: new Date().toISOString()
       });
-
     } catch (e) { }
   }, []);
 
@@ -237,6 +163,27 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     });
   };
 
+  const fetchSupabaseConfig = useCallback(async () => {
+    try {
+      const { data, error } = await supabase
+        .from('paper_trading_config').select('*').eq('id', 'global').single();
+      if (data && !error) {
+        setConfig({
+          underlying: data.underlying || 'BTC',
+          expiry: data.expiry || '',
+          minStrikeDiff: data.min_strike_diff,
+          minIvDiff: data.min_iv_diff,
+          maxRatioDeviation: data.max_ratio_deviation,
+          minSellPremium: data.min_sell_premium,
+          maxNetPremium: data.max_net_premium,
+          minLongDist: data.min_long_dist || 500,
+          maxSellQty: data.max_sell_qty || 10,
+        });
+      }
+    } catch (e) { }
+  }, []);
+
+  // ── Supabase reads ────────────────────────────────────────────────────
   const fetchSupabaseActivePositions = useCallback(async () => {
     try {
       if (Date.now() - lastDbWriteRef.current < 3000) return;
@@ -254,16 +201,17 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             const existing = prevMap.get(p.id);
             const buyLeg = safeParseLeg(p.buy_leg);
             const sellLeg = safeParseLeg(p.sell_leg);
-
             return {
               id: p.id, underlying: p.underlying, expiry: p.expiry, type: p.type,
               buyLeg, sellLeg,
-              sellQty: p.sell_qty, strikeDiff: p.strike_diff, entryTime: new Date(p.entry_time),
+              sellQty: p.sell_qty, strikeDiff: p.strike_diff,
+              entryTime: new Date(p.entry_time),
               entryBuyPrice: p.entry_buy_price, entrySellPrice: p.entry_sell_price,
               entrySpotPrice: p.entry_spot_price,
               stagesExited: p.stages_exited || 0,
-              margin: p.margin || 0, entryFee: p.entry_fee || 0, accumulatedSellPnl: p.accumulated_sell_pnl || 0,
-              // Preserve live data from current state if available
+              margin: p.margin || 0, entryFee: p.entry_fee || 0,
+              accumulatedSellPnl: p.accumulated_sell_pnl || 0,
+              // Preserve live display data from current state
               currentBuyPrice: existing?.currentBuyPrice ?? null,
               currentSellPrice: existing?.currentSellPrice ?? null,
               currentBuyIv: existing?.currentBuyIv ?? null,
@@ -276,7 +224,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               currentTotalFees: existing?.currentTotalFees ?? (p.entry_fee || 0),
             };
           });
-
           return mapped.filter(p => p.buyLeg && p.sellLeg).sort((a, b) => {
             if (a.type !== b.type) return a.type === 'call' ? -1 : 1;
             if (a.type === 'call') return a.buyLeg.strike - b.buyLeg.strike;
@@ -287,86 +234,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         setPositions([]);
       }
     } catch (e) { console.error('Fetch Active Error:', e); }
-  }, [underlying, selExpiry]);
-
-  const fetchSupabaseConfig = useCallback(async () => {
-    try {
-      const { data, error } = await supabase.from('paper_trading_config').select('*').eq('id', 'global').single();
-      if (data && !error) {
-        setConfig({
-          underlying: data.underlying || 'BTC',
-          expiry: data.expiry || '',
-          minStrikeDiff: data.min_strike_diff,
-          minIvDiff: data.min_iv_diff,
-          maxRatioDeviation: data.max_ratio_deviation,
-          minSellPremium: data.min_sell_premium,
-          maxNetPremium: data.max_net_premium,
-          minLongDist: data.min_long_dist || 500,
-          maxSellQty: data.max_sell_qty || 10
-        });
-      }
-
-    } catch (e) { }
   }, []);
-
-  const backfillActiveSpotPrices = useCallback(async () => {
-    const missing = positions.filter(p => !p.entrySpotPrice);
-    if (missing.length === 0) return;
-
-    const updatedPositions = [...positions];
-    let changed = false;
-
-    for (const pos of missing) {
-      try {
-        const symbol = pos.underlying === 'BTC' ? 'BTCUSD' : 'ETHUSD';
-        const ts = Math.floor(pos.entryTime.getTime() / 1000);
-
-        // Try fetching MARK price for the perp
-        const candles = await apiGet('/v2/history/candles', {
-          symbol: `MARK:${symbol}`,
-          resolution: '1m',
-          start: ts - 300,
-          end: ts + 300
-        });
-
-        if (candles && candles.length > 0) {
-          // Find closest candle to entry time
-          const closest = candles.reduce((prev, curr) => {
-            return Math.abs(curr.time - ts) < Math.abs(prev.time - ts) ? curr : prev;
-          });
-          const spot = parseFloat(closest.close);
-
-          if (spot) {
-            const idx = updatedPositions.findIndex(p => p.id === pos.id);
-            if (idx !== -1) {
-              updatedPositions[idx] = { ...updatedPositions[idx], entrySpotPrice: spot };
-              changed = true;
-              // Update Supabase in background
-              supabase.from('active_positions').update({ entry_spot_price: spot }).eq('id', pos.id).then(({ error }) => {
-                if (error) console.error('Backfill update error:', error);
-              });
-            }
-          }
-        }
-      } catch (e) {
-        console.error(`Failed to backfill spot for ${pos.id}:`, e);
-      }
-    }
-
-    if (changed) {
-      setPositions(updatedPositions);
-    }
-  }, [positions]);
-
-  useEffect(() => {
-    if (positions.length > 0) {
-      const hasMissing = positions.some(p => !p.entrySpotPrice);
-      if (hasMissing) {
-        const timer = setTimeout(backfillActiveSpotPrices, 2000); // Delay to not interfere with initial load
-        return () => clearTimeout(timer);
-      }
-    }
-  }, [positions.length, backfillActiveSpotPrices]);
 
   const fetchSupabaseTradeHistory = useCallback(async () => {
     try {
@@ -380,68 +248,55 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       if (data) {
         const mapped = data.map(t => ({
           id: t.trade_id || t.id,
-          underlying: t.underlying,
-          expiry: t.expiry,
-          type: t.type,
-          buyLeg: safeParseLeg(t.buy_leg),
-          sellLeg: safeParseLeg(t.sell_leg),
-          sellQty: t.sell_qty,
-          strikeDiff: t.strike_diff,
-          entryTime: new Date(t.entry_time),
-          exitTime: new Date(t.exit_time),
-          entryBuyPrice: t.entry_buy_price,
-          entrySellPrice: t.entry_sell_price,
-          exitBuyPrice: t.exit_buy_price,
-          exitSellPrice: t.exit_sell_price,
-          entrySpotPrice: t.entry_spot_price,
-          exitSpotPrice: t.exit_spot_price,
+          underlying: t.underlying, expiry: t.expiry, type: t.type,
+          buyLeg: safeParseLeg(t.buy_leg), sellLeg: safeParseLeg(t.sell_leg),
+          sellQty: t.sell_qty, strikeDiff: t.strike_diff,
+          entryTime: new Date(t.entry_time), exitTime: new Date(t.exit_time),
+          entryBuyPrice: t.entry_buy_price, entrySellPrice: t.entry_sell_price,
+          exitBuyPrice: t.exit_buy_price, exitSellPrice: t.exit_sell_price,
+          entrySpotPrice: t.entry_spot_price, exitSpotPrice: t.exit_spot_price,
           margin: t.margin,
-          realizedGrossPnl: t.realized_gross_pnl,
-          realizedNetPnl: t.realized_net_pnl,
-          exitFee: t.exit_fee,
-          totalFees: t.total_fees,
+          realizedGrossPnl: t.realized_gross_pnl, realizedNetPnl: t.realized_net_pnl,
+          exitFee: t.exit_fee, totalFees: t.total_fees,
           entryFee: (t.total_fees || 0) - (t.exit_fee || 0),
           exitReason: t.exit_reason,
           entryBuyIv: safeParseLeg(t.buy_leg)?.entryIv || null,
           entrySellIv: safeParseLeg(t.sell_leg)?.entryIv || null,
           exitBuyIv: safeParseLeg(t.buy_leg)?.exitIv || null,
           exitSellIv: safeParseLeg(t.sell_leg)?.exitIv || null,
-
           _isPartial: t.is_partial || false,
           _exitedBuyQty: t.lot_size ?? safeParseLeg(t.buy_leg)?.lotSize ?? 1,
         }));
-
         setTradeHistory(mapped);
       }
     } catch (e) { }
-  }, []);
+  }, [underlying]);
 
-
-  // Realtime + periodic sync to stay aligned across devices
+  // ── Initial data load + Realtime subscription ─────────────────────────
   useEffect(() => {
-    if (!trading) return;
-
-    // Initial fetch
     fetchSupabaseActivePositions();
     fetchSupabaseTradeHistory();
     fetchSupabaseConfig();
 
-    // Supabase Realtime: push-based instant updates for active_positions.
-    // When the engine tab (VPS) writes an entry or exit, every other connected
-    // browser immediately receives the change — no more 10s polling lag.
     const realtimeChannel = supabase
       .channel('active_positions_changes')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'active_positions' },
-        () => {
-          // A row was inserted, updated, or deleted — re-sync state from DB
-          fetchSupabaseActivePositions();
-        }
+        () => { fetchSupabaseActivePositions(); }
       )
       .subscribe();
 
-    // Fallback polling every 10s (catches any missed Realtime events)
+    const historyChannel = supabase
+      .channel('trade_history_changes')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'trade_history' },
+        () => { fetchSupabaseTradeHistory(); }
+      )
+      .subscribe();
+
+    // Fallback polling
     const interval = setInterval(() => {
       fetchSupabaseActivePositions();
       fetchSupabaseTradeHistory();
@@ -449,24 +304,49 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
     return () => {
       supabase.removeChannel(realtimeChannel);
+      supabase.removeChannel(historyChannel);
       clearInterval(interval);
     };
+  }, [fetchSupabaseActivePositions, fetchSupabaseTradeHistory, fetchSupabaseConfig]);
 
-  }, [trading, fetchSupabaseActivePositions, fetchSupabaseTradeHistory, fetchSupabaseConfig]);
+  // ── Engine heartbeat ──────────────────────────────────────────────────
+  useEffect(() => {
+    const fetchHeartbeat = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('engine_heartbeat')
+          .select('*')
+          .eq('id', 'paper_trading')
+          .single();
 
-  // Sync to Supabase handled within updateConfig or manual trigger if needed
-  // No longer need global useEffect for underlying/expiry sync as it's handled in updateConfig
+        if (error || !data) {
+          setEngineStatus({ status: 'offline', lastHeartbeat: null, data: null });
+          return;
+        }
 
-  // ── Fetch spot price ────────────────────────────────────────────────────
+        const age = Date.now() - new Date(data.last_heartbeat).getTime();
+        const status = age < HEARTBEAT_ONLINE_THRESHOLD ? 'online'
+          : age < HEARTBEAT_STALE_THRESHOLD ? 'stale' : 'offline';
+
+        setEngineStatus({ status, lastHeartbeat: new Date(data.last_heartbeat), data: data.payload });
+
+        // Use server's last evaluation time for the UI timestamp
+        if (data.last_heartbeat) {
+          setLastEvaluated(new Date(data.last_heartbeat).getTime());
+        }
+      } catch (e) { }
+    };
+
+    fetchHeartbeat();
+    const interval = setInterval(fetchHeartbeat, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // ── Spot price (for PnL display math) ────────────────────────────────
   useEffect(() => {
     const fetchSpot = () => {
       getSpotPrice(underlying)
-        .then(sp => {
-          if (sp) {
-            setSpotPrice(sp);
-            lastSpotUpdateRef.current = Date.now();
-          }
-        })
+        .then(sp => { if (sp) setSpotPrice(sp); })
         .catch(() => { });
     };
     fetchSpot();
@@ -474,122 +354,75 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     return () => clearInterval(spotIntervalRef.current);
   }, [underlying]);
 
+  // ── WebSocket (read-only: feeds Phase 1 PnL display only) ────────────
+  const positionsSymbolsKey = React.useMemo(() => {
+    return positions
+      .filter(p => p.underlying === underlying)
+      .map(p => `${p.buyLeg?.symbol}_${p.sellLeg?.symbol}`)
+      .sort()
+      .join(',');
+  }, [positions, underlying]);
+
   const getSymbolMeta = useCallback(() => {
     if (!selExpiry || !products.length) return {};
     const strikes = getStrikes(products, selExpiry);
-    const symbolMeta = {};
+    const meta = {};
     for (const strike of strikes) {
-      const callProd = products.find(p => p.settlement_time === selExpiry && parseFloat(p.strike_price) === parseFloat(strike) && matchesOptionType(p, 'call'));
+      const callProd = products.find(p =>
+        p.settlement_time === selExpiry &&
+        parseFloat(p.strike_price) === parseFloat(strike) &&
+        matchesOptionType(p, 'call')
+      );
       if (callProd) {
         const lotSize = parseFloat(callProd.contract_size ?? callProd.quoting_precision ?? 1);
-        symbolMeta[callProd.symbol] = { strike: parseFloat(strike), lotSize, type: 'call', symbol: callProd.symbol };
+        meta[callProd.symbol] = { strike: parseFloat(strike), lotSize, type: 'call', symbol: callProd.symbol };
       }
-      const putProd = products.find(p => p.settlement_time === selExpiry && parseFloat(p.strike_price) === parseFloat(strike) && matchesOptionType(p, 'put'));
+      const putProd = products.find(p =>
+        p.settlement_time === selExpiry &&
+        parseFloat(p.strike_price) === parseFloat(strike) &&
+        matchesOptionType(p, 'put')
+      );
       if (putProd) {
         const lotSize = parseFloat(putProd.contract_size ?? putProd.quoting_precision ?? 1);
-        symbolMeta[putProd.symbol] = { strike: parseFloat(strike), lotSize, type: 'put', symbol: putProd.symbol };
+        meta[putProd.symbol] = { strike: parseFloat(strike), lotSize, type: 'put', symbol: putProd.symbol };
       }
     }
-    // Also monitor symbols from existing positions of this underlying (to track P&L across expiries)
-    positionsRef.current.forEach(pos => {
+    // Also subscribe to symbols from open positions (tracks P&L across expiries)
+    positions.forEach(pos => {
       if (pos.underlying === underlying) {
-        if (pos.buyLeg && !symbolMeta[pos.buyLeg.symbol]) {
-          symbolMeta[pos.buyLeg.symbol] = { strike: pos.buyLeg.strike, lotSize: pos.buyLeg.lotSize, type: pos.type, symbol: pos.buyLeg.symbol };
+        if (pos.buyLeg && !meta[pos.buyLeg.symbol]) {
+          meta[pos.buyLeg.symbol] = { strike: pos.buyLeg.strike, lotSize: pos.buyLeg.lotSize, type: pos.type, symbol: pos.buyLeg.symbol };
         }
-        if (pos.sellLeg && !symbolMeta[pos.sellLeg.symbol]) {
-          symbolMeta[pos.sellLeg.symbol] = { strike: pos.sellLeg.strike, lotSize: pos.sellLeg.lotSize, type: pos.type, symbol: pos.sellLeg.symbol };
+        if (pos.sellLeg && !meta[pos.sellLeg.symbol]) {
+          meta[pos.sellLeg.symbol] = { strike: pos.sellLeg.strike, lotSize: pos.sellLeg.lotSize, type: pos.type, symbol: pos.sellLeg.symbol };
         }
       }
     });
-    return symbolMeta;
-  }, [selExpiry, products, underlying]);
+    return meta;
+  }, [selExpiry, products, underlying, positionsSymbolsKey]);
 
-  const refreshAllTickers = useCallback(async () => {
-    const symbolMeta = getSymbolMeta();
-    const allSymbols = Object.keys(symbolMeta);
-    if (!allSymbols.length) return false;
-
-    try {
-      const res = await getTickers(underlying, allSymbols);
-      if (res) {
-        const backfill = {};
-        res.forEach(t => {
-          const meta = symbolMeta[t.symbol];
-          if (meta) {
-            const prev = latestTickerDataRef.current[t.symbol];
-            const markPrice = toFiniteNumber(t.mark_price ?? t.last_price ?? t.close);
-            const iv = normalizeIv(toFiniteNumber(t.mark_vol ?? t.quotes?.mark_iv ?? t.greeks?.iv));
-            const bid = toFiniteNumber(t.quotes?.best_bid);
-            const ask = toFiniteNumber(t.quotes?.best_ask);
-            const bidIv = normalizeIv(toFiniteNumber(t.quotes?.bid_iv));
-            const askIv = normalizeIv(toFiniteNumber(t.quotes?.ask_iv));
-
-            backfill[t.symbol] = {
-              symbol: t.symbol,
-              strike: meta.strike,
-              lotSize: meta.lotSize,
-              type: meta.type,
-              markPrice: (markPrice && markPrice > 0) ? markPrice : (prev?.markPrice ?? null),
-              bid: bid ?? (prev?.bid ?? null),
-              ask: ask ?? (prev?.ask ?? null),
-              bidIv: bidIv ?? (prev?.bidIv ?? null),
-              askIv: askIv ?? (prev?.askIv ?? null),
-              iv: iv ?? (prev?.iv ?? null),
-              delta: t.greeks ? toFiniteNumber(t.greeks.delta) : (prev?.delta ?? null),
-              deltaNotional: t.greeks ? Math.abs(t.greeks.delta) * meta.lotSize : (prev?.deltaNotional ?? null),
-            };
-          }
-        });
-        latestTickerDataRef.current = { ...latestTickerDataRef.current, ...backfill };
-        setTickerData(prev => ({ ...prev, ...backfill }));
-        return true;
-      }
-    } catch (e) { console.error('Manual Refresh Error:', e); }
-    return false;
-  }, [underlying, getSymbolMeta]);
-
-  const startTrading = useCallback(() => {
+  useEffect(() => {
     if (!selExpiry || !products.length) return;
 
-    const configSymbols = [...new Set(products.map(p => p.symbol))];
-    const symHash = configSymbols.sort().join(',');
-    if (wsRef.current && lastWsSymbolsRef.current === symHash) return;
+    const symbolMeta = getSymbolMeta();
+    const allSymbols = Object.keys(symbolMeta);
+    if (allSymbols.length < 2) return;
 
     if (wsRef.current) {
       try { wsRef.current.close(); } catch (e) { }
       wsRef.current = null;
     }
-    lastWsSymbolsRef.current = symHash;
-
-    if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
     tickerBufferRef.current = {};
-
-    setTrading(true);
-    setTickerData({});
     latestTickerDataRef.current = {};
-    lastEvaluatedRef.current = 0;
-    setLastEvaluated(0);
-    setTimeRemaining(null);
-
-    const symbolMeta = getSymbolMeta();
-    const allSymbols = Object.keys(symbolMeta);
-    if (allSymbols.length < 2) {
-      setTrading(false);
-      return;
-    }
-
-    // Backfill current prices via REST to avoid "PnL = 0" glitches before first WS message
-    refreshAllTickers().then(success => {
-      if (success) {
-        // Force evaluation now that we have prices
-        setTimeout(() => evaluateStrategy(true), 100);
-      }
-    });
+    setTickerData({});
 
     wsRef.current = createTickerStream(
       allSymbols,
       (msg) => {
         const sym = msg.symbol;
+        const meta = symbolMeta[sym];
+        if (!meta) return;
+
         const markPrice = toFiniteNumber(msg.mark_price ?? msg.last_price ?? msg.close);
         const bid = toFiniteNumber(msg.quotes?.best_bid);
         const ask = toFiniteNumber(msg.quotes?.best_ask);
@@ -598,994 +431,89 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         const iv = normalizeIv(toFiniteNumber(msg.mark_vol ?? msg.quotes?.mark_iv ?? msg.greeks?.iv));
         const delta = msg.greeks ? toFiniteNumber(msg.greeks.delta) : null;
 
-        const meta = symbolMeta[sym];
-        if (!meta) return;
-
-        const prevBuffered = tickerBufferRef.current[sym] ?? latestTickerDataRef.current[sym];
+        const prev = tickerBufferRef.current[sym] ?? latestTickerDataRef.current[sym];
         tickerBufferRef.current[sym] = {
-          symbol: sym,
-          strike: meta.strike,
-          lotSize: meta.lotSize,
-          type: meta.type,
-          markPrice: markPrice ?? prevBuffered?.markPrice ?? null,
-          bid: bid ?? prevBuffered?.bid ?? null,
-          ask: ask ?? prevBuffered?.ask ?? null,
-          bidIv: bidIv ?? prevBuffered?.bidIv ?? null,
-          askIv: askIv ?? prevBuffered?.askIv ?? null,
-          iv: iv ?? prevBuffered?.iv ?? null,
-          delta: delta !== null ? delta : prevBuffered?.delta,
-          deltaNotional: delta !== null ? Math.abs(delta) * meta.lotSize : prevBuffered?.deltaNotional,
+          symbol: sym, strike: meta.strike, lotSize: meta.lotSize, type: meta.type,
+          markPrice: markPrice ?? prev?.markPrice ?? null,
+          bid: bid ?? prev?.bid ?? null,
+          ask: ask ?? prev?.ask ?? null,
+          bidIv: bidIv ?? prev?.bidIv ?? null,
+          askIv: askIv ?? prev?.askIv ?? null,
+          iv: iv ?? prev?.iv ?? null,
+          delta: delta !== null ? delta : prev?.delta,
+          deltaNotional: delta !== null ? Math.abs(delta) * meta.lotSize : prev?.deltaNotional,
         };
 
-        if (!flushTimerRef.current) flushTimerRef.current = setTimeout(flushTickerBuffer, 50);
+        if (!flushTimerRef.current) {
+          flushTimerRef.current = setTimeout(flushTickerBuffer, 50);
+        }
       },
       () => { }
     );
-  }, [selExpiry, products, flushTickerBuffer, getSymbolMeta, refreshAllTickers]);
 
-  // ── Auto-start/restart stream when parameters change ──────────────────
+    return () => {
+      if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
+      if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
+    };
+  }, [selExpiry, products, underlying, getSymbolMeta, flushTickerBuffer]);
+
+  // ── Phase 1: Real-time PnL display (read-only, no writes) ────────────
   useEffect(() => {
-    if (products.length && selExpiry) {
-      startTrading();
-    }
-  }, [products, selExpiry, startTrading]);
-
-  const stopTrading = useCallback(() => {
-    if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
-    if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
-    tickerBufferRef.current = {};
-    setTrading(false);
-  }, []);
-
-  /**
-   * Scans available tickers to find valid Ratio Spread pairs based on config.
-   * Returns top-3 unique buy strikes per type.
-   */
-  const scanTickers = useCallback((tickers) => {
-    const sorted = [...tickers].sort((a, b) => a.strike - b.strike);
-    const validPairs = [];
-
-    for (let i = 0; i < sorted.length; i++) {
-      for (let j = i + 1; j < sorted.length; j++) {
-        const buy = sorted[i];
-        const sell = sorted[j];
-        let buyLeg, sellLeg;
-
-        if (buy.type === 'call') {
-          buyLeg = buy; sellLeg = sell; // Call: buy lower, sell higher
-        } else {
-          buyLeg = sell; sellLeg = buy; // Put: buy higher, sell lower
-        }
-
-        const strikeDiff = Math.abs(sellLeg.strike - buyLeg.strike);
-        if (strikeDiff < config.minStrikeDiff) continue;
-        // For Buy Leg (Long): use Ask price and Ask IV
-        // For Sell Leg (Short): use Bid price and Bid IV
-        const buyPrice = buyLeg.ask ?? buyLeg.markPrice;
-        const sellPrice = sellLeg.bid ?? sellLeg.markPrice;
-        const buyIv = buyLeg.askIv ?? buyLeg.iv;
-        const sellIv = sellLeg.bidIv ?? sellLeg.iv;
-
-        if (buyIv == null || sellIv == null) continue;
-        const ivDiff = Math.abs(buyIv - sellIv);
-        if (ivDiff < config.minIvDiff) continue;
-
-        const spotDist = Math.abs(buyLeg.strike - spotPrice);
-        if (spotDist < (config.minLongDist || 0)) continue;
-
-        if (!sellPrice || sellPrice < config.minSellPremium) continue;
-
-        const buyDN = buyLeg.deltaNotional;
-        const sellDN = sellLeg.deltaNotional;
-        if (!buyDN || !sellDN || !buyPrice || !sellPrice) continue;
-
-        const premiumRatio = buyPrice / sellPrice;
-        const deltaNotionalRatio = buyDN / sellDN;
-        const ratioDeviation = Math.abs(premiumRatio - deltaNotionalRatio) / deltaNotionalRatio;
-        if (ratioDeviation > config.maxRatioDeviation) continue;
-
-        const rawQty = buyDN / sellDN;
-        const sellQty = Math.max(1, Math.round(rawQty / 0.25) * 0.25);
-        if (sellQty > (config.maxSellQty || 10)) continue;
-
-        const netPrem = buyPrice - sellQty * sellPrice;
-
-        const maxNet = Math.abs(config.maxNetPremium);
-        if (netPrem < -maxNet || netPrem > maxNet) continue;
-
-        validPairs.push({
-          buyLeg,
-          sellLeg,
-          strikeDiff,
-          sellQty,
-          netPremium: netPrem,
-          buyPrice,
-          sellPrice,
-          buyIv,
-          sellIv
-        });
-      }
-    }
-
-    validPairs.sort((a, b) => {
-      const distA = Math.abs(a.buyLeg.strike - spotPrice);
-      const distB = Math.abs(b.buyLeg.strike - spotPrice);
-      if (distA !== distB) return distA - distB;
-      return a.netPremium - b.netPremium;
-    });
-
-    return validPairs.slice(0, 50);
-  }, [config, spotPrice]);
-
-
-
-  const evaluateStrategy = useCallback(async (force = false) => {
-    if (!trading || !spotPrice || isEvaluatingRef.current) return;
-
-    // Spot Staleness Guard: If spot price hasn't been successfully updated in >30 seconds,
-    // skip algo evaluation entirely. This prevents false exits triggered by stale spot data
-    // when the REST poll fails silently on VPS (e.g. network hiccup leaving spotPrice at its
-    // last successful value while the real price has moved hundreds of dollars).
-    const spotAge = Date.now() - lastSpotUpdateRef.current;
-    const spotIsStale = lastSpotUpdateRef.current > 0 && spotAge > 30000;
-
-    isEvaluatingRef.current = true;
-    try {
-
-      const allTickers = Object.values(latestTickerDataRef.current);
-      if (allTickers.length === 0) return;
-
-      const nowTime = Date.now();
-
-      const currentMinute = Math.floor(nowTime / 60000);
-      const lastMinute = Math.floor(lastEvaluatedRef.current / 60000);
-
-      // Only run the complex strategy evaluation once per minute OR when a fresh scanner update arrives OR if forced
-      const scannerUpdated = scannerSyncVersion > lastProcessedScannerVersionRef.current;
-      const shouldEvaluateAlgo = force || currentMinute > lastMinute || lastEvaluatedRef.current === 0 || scannerUpdated;
-
-      if (scannerUpdated) {
-        lastProcessedScannerVersionRef.current = scannerSyncVersion;
-      }
-
-
-      /**
-       * PHASE 1: Real-time PnL & Fee Monitoring
-       * This section updates current prices and PnL values every 1 second.
-       */
-      if (!shouldEvaluateAlgo) {
-        // Throttle PnL updates to every 1 second for stability
-        if (nowTime - lastEvaluatedRef.current < 1000) return;
-
-        setPositions(prev => {
-          if (prev.length === 0) return prev;
-          const live = latestTickerDataRef.current;
-          const updated = prev.map(pos => {
-            const tickerBuy = live[pos.buyLeg.symbol];
-            const latestBuy = tickerBuy?.bid ?? tickerBuy?.markPrice ?? pos.currentBuyPrice ?? pos.buyLeg.markPrice;
-            const tickerSell = live[pos.sellLeg.symbol];
-            const latestSell = tickerSell?.ask ?? tickerSell?.markPrice ?? pos.currentSellPrice ?? pos.sellLeg.markPrice;
-
-            const buyPnl = (latestBuy != null && pos.entryBuyPrice != null) ? (latestBuy - pos.entryBuyPrice) : 0;
-            const sellPnl = (latestSell != null && pos.entrySellPrice != null) ? (latestSell - pos.entrySellPrice) * pos.sellQty : 0;
-            const grossPnl = (buyPnl * pos.buyLeg.lotSize) - (sellPnl * pos.sellLeg.lotSize) + (pos.accumulatedSellPnl || 0);
-
-            const exitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize) +
-              calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
-            const totalFees = (pos.entryFee || 0) + exitFee;
-
-            const latestBuyIv = tickerBuy?.bidIv ?? tickerBuy?.iv ?? pos.currentBuyIv ?? null;
-            const latestSellIv = tickerSell?.askIv ?? tickerSell?.iv ?? pos.currentSellIv ?? null;
-
-            return {
-              ...pos,
-              currentBuyPrice: latestBuy,
-              currentSellPrice: latestSell,
-              currentBuyIv: latestBuyIv,
-              currentSellIv: latestSellIv,
-              unrealizedGrossPnl: grossPnl,
-              unrealizedNetPnl: grossPnl - totalFees,
-              currentExitFee: exitFee,
-              currentTotalFees: totalFees
-            };
-          });
-          return updated;
-        });
-        lastEvaluatedRef.current = nowTime;
-        return;
-      }
-
-      /**
-       * PHASE 2: Algorithm Strategy Evaluation (Minute Cycle)
-       * This handles scanning, rotation, rolls, and trade execution.
-       *
-       * BLOCKED when spot is stale — prevents false exits from outdated spot data.
-       * Phase 1 (PnL display) still runs above since it doesn't trigger exits.
-       */
-      if (spotIsStale) {
-        console.warn(`Spot price stale (${Math.round(spotAge / 1000)}s since last update). Skipping algo evaluation to prevent false exits.`);
-        lastEvaluatedRef.current = Date.now();
-        return;
-      }
-      const nowAtEval = Date.now();
-      lastEvaluatedRef.current = nowAtEval;
-      setLastEvaluated(nowAtEval);
-
-      // Refresh product list every 5 minutes to capture expiries/new strikes
-      if (currentMinute % 5 === 0) {
-        refreshProducts();
-      }
-
-      // Identify current ATM strike for directional filtering
-      let atmStrike = null;
-      let minDiff = Infinity;
-      for (const t of allTickers) {
-        const diff = Math.abs(t.strike - spotPrice);
-        if (diff < minDiff) {
-          minDiff = diff;
-          atmStrike = t.strike;
-        }
-      }
-
-      // A. Local Scan: Find current Top 3 unique buy strikes per type
-      const callTickers = allTickers.filter(t => t.type === 'call' && (atmStrike === null || t.strike >= atmStrike));
-      const putTickers = allTickers.filter(t => t.type === 'put' && (atmStrike === null || t.strike <= atmStrike));
-
-      const localTopCalls = scanTickers(callTickers);
-      const localTopPuts = scanTickers(putTickers);
-      const localTopSpreads = [...localTopCalls, ...localTopPuts];
-
-      // B. Scanner Sync: Merge with external RatioSpreadScanner data if available
-      let topSpreads = localTopSpreads;
-      const snapshot = scannerTopRef.current;
-      if (snapshot && snapshot.underlying === underlying && snapshot.expiry === selExpiry) {
-        const localById = new Map(localTopSpreads.map(s => [`${s.buyLeg.symbol}_${s.sellLeg.symbol}`, s]));
-        const synced = [];
-        const scannerIds = [...(snapshot.callTop3 || []), ...(snapshot.putTop3 || [])];
-
-        for (const item of scannerIds) {
-          const spread = localById.get(item.id);
-          if (spread) {
-            if (item.sellQty !== undefined) spread.sellQty = item.sellQty;
-            synced.push(spread);
-          }
-        }
-
-        if (scannerIds.length > 0) {
-          const seen = new Set(synced.map(s => `${s.buyLeg.symbol}_${s.sellLeg.symbol}`));
-          const backfilled = [...synced];
-          for (const spread of localTopSpreads) {
-            const id = `${spread.buyLeg.symbol}_${spread.sellLeg.symbol}`;
-            if (seen.has(id)) continue;
-            backfilled.push(spread);
-            if (backfilled.length >= 6) break;
-          }
-          const byTypeCall = backfilled.filter(s => s.buyLeg.type === 'call');
-          const byTypePut = backfilled.filter(s => s.buyLeg.type === 'put');
-          topSpreads = [...byTypeCall, ...byTypePut];
-        }
-      }
-
-      // C. Create a unique-by-buy-strike version for ranking purposes (prevents mass-exits)
-      // but keep the original topSpreads for the entry loop (allows falling back to other sell strikes)
-      const uniqueTopSpreads = [
-        ...pickTopUniqueStrikes(topSpreads.filter(s => s.buyLeg.type === 'call'), 10),
-        ...pickTopUniqueStrikes(topSpreads.filter(s => s.buyLeg.type === 'put'), 10)
-      ];
-
-      // Guard: Prevent accidental exits during data gaps
-      // Use Ref to avoid stale closures and unnecessary dependencies
-      const prevPositions = positionsRef.current;
-
-      // Count active positions to check threshold for exits (3 Calls + 3 Puts)
-      const activeCallsCount = prevPositions.filter(p => p.type === 'call' && p.underlying === underlying).length;
-      const activePutsCount = prevPositions.filter(p => p.type === 'put' && p.underlying === underlying).length;
-
-      let callRotationsApproved = 0;
-      let putRotationsApproved = 0;
-      const MAX_ROTATIONS_PER_CYCLE = 3;
-
-      const remaining = [];
-      const exited = [];
-      const activeStrikes = new Set();
-      const reservedTargets = new Set();
-
-      // Sort positions worst-to-best (farthest from ATM first) so inferior ones are displaced first
-      const sortedPositions = [...positionsRef.current].sort((a, b) => {
-        const distA = Math.abs(a.buyLeg.strike - spotPrice);
-        const distB = Math.abs(b.buyLeg.strike - spotPrice);
-        return distB - distA; // Descending distance (farthest first)
-      });
-
-      // 1. Maintain existing positions & detect exits
-      for (const pos of sortedPositions) {
-        // Skip positions from other underlyings - just keep them as-is
-        if (pos.underlying !== underlying) {
-          remaining.push(pos);
-          continue;
-        }
-
-        // 1. DATA GAP GUARD: Check if we have live data
-        // If the website just refreshed, websocket data takes 5-10s to load. 
-        // We MUST skip evaluating exits during this gap to avoid using stale entry prices.
-        const live = latestTickerDataRef.current;
-        const tickerBuy = live[pos.buyLeg.symbol];
-        const tickerSell = live[pos.sellLeg.symbol];
-
-        // EXIT EVALUATION:
-        // Long position (buyLeg) is exited by SELLING -> use BID
-        // Short position (sellLeg) is exited by BUYING BACK -> use ASK
-        const liveExitBuy = tickerBuy?.bid ?? tickerBuy?.markPrice ?? pos.currentBuyPrice;
-        const liveExitSell = tickerSell?.ask ?? tickerSell?.markPrice ?? pos.currentSellPrice;
-
-        if (liveExitBuy == null || liveExitSell == null) {
-          remaining.push(pos);
-          continue;
-        }
-
-        const latestBuy = liveExitBuy;
-        const latestSell = liveExitSell;
-        const latestBuyIv = tickerBuy?.bidIv ?? tickerBuy?.iv ?? pos.currentBuyIv ?? null;
-        const latestSellIv = tickerSell?.askIv ?? tickerSell?.iv ?? pos.currentSellIv ?? null;
-
-        let shouldExit = false;
-        let exitReason = '';
-        let zombieExitTime = null;
-
-        // 2. Check Expiry (Hard exit — triggers 2 minutes early for stable settlement price)
-        const expiryTs = new Date(pos.expiry).getTime();
-        if (Date.now() >= expiryTs - 120000) {
-          shouldExit = true;
-          exitReason = 'Expiry Reached (2min Early)';
-          if (Date.now() > expiryTs + 600000) {
-            zombieExitTime = new Date(expiryTs).toISOString();
-          }
-        }
-
-        // Gross PnL: per-unit price diff scaled by lotSize
-        const buyPriceDiff = (latestBuy != null && pos.entryBuyPrice != null) ? (latestBuy - pos.entryBuyPrice) : 0;
-        const sellPriceDiff = (latestSell != null && pos.entrySellPrice != null) ? (latestSell - pos.entrySellPrice) : 0;
-        const grossPnl = (buyPriceDiff * pos.buyLeg.lotSize) - (sellPriceDiff * pos.sellQty * pos.sellLeg.lotSize) + (pos.accumulatedSellPnl || 0);
-        const exitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize) +
-          calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
-        const totalFees = (pos.entryFee || 0) + exitFee;
-
-        // Check if our current buy strike is still among the Top 3 unique buy strikes
-        const inTop3 = uniqueTopSpreads.some(s => s.buyLeg.type === pos.type && Number(s.buyLeg.strike) === Number(pos.buyLeg.strike));
-
-        // Rotation logic: Only apply to positions of the current expiry
-        if (!shouldExit && pos.expiry === selExpiry && uniqueTopSpreads.length > 0 && !inTop3) {
-          // Calculate strikes active in OTHER positions (excluding the one we are evaluating for rotation)
-          const otherActiveBuyStrikes = sortedPositions.filter(p => p.id !== pos.id && p.underlying === underlying && p.type === pos.type).map(p => Number(p.buyLeg.strike));
-          const otherActiveSellStrikes = sortedPositions.filter(p => p.id !== pos.id && p.underlying === underlying && p.type === pos.type).map(p => Number(p.sellLeg.strike));
-
-          // Find the best available candidate that passes ALL safety guards
-          const bestTarget = uniqueTopSpreads.filter(s => s.buyLeg.type === pos.type).find(s => {
-            const bS = Number(s.buyLeg.strike);
-            const sS = Number(s.sellLeg.strike);
-
-            // 1. Strike collision check (exact match)
-            const buyConflict = otherActiveBuyStrikes.includes(bS);
-            const sellConflict = otherActiveSellStrikes.includes(sS);
-            if (buyConflict || sellConflict || reservedTargets.has(bS)) return false;
-
-            // 2. Strict Diversification & Scaling Guards
-            // It must be 400 points away from the position being replaced
-            const stepValid = Math.abs(bS - Number(pos.buyLeg.strike)) >= 400;
-
-            // It must also reflect a 0.5% market move from the old position's entry spot
-            const oldSpotBase = pos.entrySpotPrice || pos.entryBuyPrice || spotPrice;
-            const oldThresh = Math.round((oldSpotBase * 0.005) / 100) * 100;
-            const spotStepValid = pos.type === 'call'
-              ? spotPrice <= oldSpotBase - oldThresh
-              : spotPrice >= oldSpotBase + oldThresh;
-
-            if (!stepValid || !spotStepValid) return false;
-
-            // It must also be 400 points away from OTHER positions, and pass the 0.5% scaling guard
-            const otherPositionsOfType = sortedPositions.filter(p => p.id !== pos.id && p.underlying === underlying && p.type === pos.type);
-            const passesGuards = otherPositionsOfType.every(p => {
-              const thresh = Math.round((p.entrySpotPrice * 0.005) / 100) * 100;
-              const spotValid = pos.type === 'call'
-                ? spotPrice <= p.entrySpotPrice - thresh
-                : spotPrice >= p.entrySpotPrice + thresh;
-              const strikeValid = Math.abs(bS - Number(p.buyLeg.strike)) >= 400;
-              return spotValid && strikeValid;
-            });
-
-            return passesGuards;
-          });
-
-          if (bestTarget) {
-            const targetStrike = Number(bestTarget.buyLeg.strike);
-            const currentStrike = Number(pos.buyLeg.strike);
-            const isPut = pos.type === 'put';
-            // Only rotate if the target is directionally better (closer to ATM)
-            if (isPut ? (targetStrike > currentStrike) : (targetStrike < currentStrike)) {
-              const isSellStrikeMatch = Number(bestTarget.sellLeg.strike) === Number(pos.sellLeg.strike);
-
-              if (isSellStrikeMatch) {
-                pos._pendingLegSwap = bestTarget;
-                shouldExit = true;
-                exitReason = `Leg Swap: Buy ${currentStrike} -> ${targetStrike}`;
-              } else {
-                shouldExit = true;
-                exitReason = `Lost Top 3 and Rank 1 better target available (${targetStrike})`;
-              }
-              reservedTargets.add(targetStrike);
-            }
-          }
-        }
-
-        let isPartial = false;
-        let exitFraction = 1.0;
-
-        if (!shouldExit) {
-          const isCall = pos.type === 'call';
-          const buyStrike = pos.buyLeg.strike;
-          const itmDist = isCall ? spotPrice - buyStrike : buyStrike - spotPrice;
-          const isAtmMET = isCall ? spotPrice >= buyStrike : spotPrice <= buyStrike;
-          const sExited = pos.stagesExited || 0;
-
-          if (pos.strikeDiff <= 1000) {
-            if (isAtmMET) {
-              shouldExit = true; exitReason = 'Full Exit @ ATM (<= 1000 diff)';
-            }
-          } else if (pos.strikeDiff <= 1200) {
-            if (sExited === 0 && isAtmMET) {
-              isPartial = true; exitFraction = 0.5; exitReason = 'Partial Exit 50% @ ATM (<= 1200 diff)';
-            } else if (sExited === 1 && itmDist >= 200) {
-              shouldExit = true; exitReason = 'Final Exit 50% @ 200 ITM (<= 1200 diff)';
-            }
-          } else {
-            if (sExited === 0 && isAtmMET) {
-              isPartial = true; exitFraction = 0.33; exitReason = 'Partial Exit 33% @ ATM';
-            } else if (sExited === 1 && itmDist >= 150) {
-              isPartial = true; exitFraction = 0.5;
-              exitReason = 'Partial Exit 33% @ 150 ITM';
-            } else if (sExited === 2 && itmDist >= 300) {
-              shouldExit = true; exitReason = 'Final Exit 34% @ 300 ITM';
-            }
-          }
-        }
-
-        // Apply threshold guard: Disable exits until 3 Calls AND 3 Puts are active
-        const canRotateThisType = pos.type === 'call'
-          ? (activeCallsCount >= 3 && callRotationsApproved < MAX_ROTATIONS_PER_CYCLE)
-          : (activePutsCount >= 3 && putRotationsApproved < MAX_ROTATIONS_PER_CYCLE);
-
-        let rotationApproved = false;
-        if (!canRotateThisType && exitReason.includes('Lost Top 3')) {
-          if (shouldExit || isPartial) {
-            shouldExit = false;
-            isPartial = false;
-          }
-        } else if (canRotateThisType && exitReason.includes('Lost Top 3')) {
-          if (shouldExit) {
-            rotationApproved = true;
-            if (pos.type === 'call') callRotationsApproved++;
-            else putRotationsApproved++;
-          }
-        }
-
-
-        if (shouldExit || isPartial) {
-          // Absolute Final Guard - only block rotation exits that were NOT explicitly approved above
-          // (handles edge cases where shouldExit was set by non-rotation logic but exitReason contains 'Lost Top 3')
-          if (exitReason.includes('Lost Top 3') && !rotationApproved) {
-            shouldExit = false; isPartial = false;
-            remaining.push({
-              ...pos, currentBuyPrice: latestBuy, currentSellPrice: latestSell,
-              unrealizedGrossPnl: grossPnl, unrealizedNetPnl: grossPnl - totalFees,
-              currentExitFee: exitFee, currentTotalFees: totalFees
-            });
-            activeStrikes.add(Number(pos.buyLeg.strike));
-            activeStrikes.add(Number(pos.sellLeg.strike));
-            continue;
-          }
-          const partGrossPnl = grossPnl * exitFraction;
-          const partEntryFee = (pos.entryFee || 0) * exitFraction;
-          const partExitFee = exitFee * exitFraction;
-          const partTotalFees = partEntryFee + partExitFee;
-          const partNetPnl = partGrossPnl - partTotalFees;
-
-          const tradeRecord = {
-            ...pos,
-            id: isPartial ? `${pos.id}-P${pos.stagesExited + 1}` : (pos._pendingLegSwap ? `${pos.id}-LS-${Date.now().toString(36).toUpperCase()}` : pos.id),
-            // For partial exits: record only the exited fraction's quantity for correct ratio display
-            sellQty: isPartial ? pos.sellQty * exitFraction : pos.sellQty,
-            buyLeg: isPartial ? { ...pos.buyLeg, lotSize: pos.buyLeg.lotSize * exitFraction, exitIv: latestBuyIv } : { ...pos.buyLeg, exitIv: latestBuyIv },
-            sellLeg: { ...pos.sellLeg, exitIv: latestSellIv },
-            _exitedBuyQty: isPartial ? pos.buyLeg.lotSize * exitFraction : pos.buyLeg.lotSize,
-
-            exitTime: new Date(),
-            exitBuyPrice: latestBuy,
-            exitSellPrice: latestSell,
-            exitBuyIv: latestBuyIv,
-            exitSellIv: latestSellIv,
-            exitSpotPrice: spotPrice,
-            realizedGrossPnl: partGrossPnl,
-            realizedNetPnl: partNetPnl,
-            entryFee: partEntryFee,
-            exitFee: partExitFee,
-            totalFees: partTotalFees,
-            exitReason,
-
-            _latestBuy: latestBuy,
-            _latestSell: latestSell,
-            _isPartial: isPartial,
-            zombieExitTime
-          };
-
-          exited.push(tradeRecord);
-
-          if (isPartial) {
-            // Update the remaining position
-            remaining.push({
-              ...pos,
-              sellQty: pos.sellQty * (1 - exitFraction),
-              buyLeg: { ...pos.buyLeg, lotSize: pos.buyLeg.lotSize * (1 - exitFraction) },
-              margin: calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, Math.max(pos.entrySpotPrice || spotPrice, spotPrice), pos.sellQty, pos.sellLeg.lotSize) * (1 - exitFraction),
-
-              entryFee: (pos.entryFee || 0) * (1 - exitFraction),
-              accumulatedSellPnl: (pos.accumulatedSellPnl || 0) * (1 - exitFraction),
-
-              stagesExited: (pos.stagesExited || 0) + 1,
-              currentBuyPrice: latestBuy,
-              currentSellPrice: latestSell,
-              unrealizedGrossPnl: grossPnl * (1 - exitFraction),
-              unrealizedNetPnl: (grossPnl - totalFees) * (1 - exitFraction),
-              currentExitFee: exitFee * (1 - exitFraction),
-              currentTotalFees: totalFees * (1 - exitFraction)
-            });
-
-            // Sync partial update to Supabase
-            const { sellQty, buyLeg, margin, entryFee, stagesExited, accumulatedSellPnl } = remaining[remaining.length - 1];
-            try {
-              const { error } = await supabase.from('active_positions').update({
-                sell_qty: sellQty,
-                buy_leg: JSON.stringify(buyLeg),
-                margin,
-                entry_fee: entryFee,
-                stages_exited: stagesExited,
-                accumulated_sell_pnl: accumulatedSellPnl
-              }).eq('id', pos.id);
-
-              if (error) console.error('Partial Sync Error:', error);
-            } catch (e) { console.error('Partial Sync Exception:', e); }
-
-          } else if (pos._pendingLegSwap) {
-            // LEG SWAP EXECUTION:
-            // 1. Calculate P&L for the exited Long Leg
-            const longPnl = (latestBuy - pos.entryBuyPrice) * pos.buyLeg.lotSize;
-            const longExitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize);
-            const longEntryFee = (pos.entryFee || 0) * (pos.buyLeg.lotSize / (pos.buyLeg.lotSize + (pos.sellQty * pos.sellLeg.lotSize))); // Approximation
-
-            // 2. Adjust Short Leg quantity and average price
-            const target = pos._pendingLegSwap;
-            const deltaQty = target.sellQty - pos.sellQty;
-            let adjustedSellEntryPrice = pos.entrySellPrice;
-            let shortAdjustmentFee = 0;
-            let shortAdjustmentPnl = 0;
-
-            if (deltaQty > 0) {
-              // Selling more (scale up)
-              adjustedSellEntryPrice = ((pos.sellQty * pos.entrySellPrice) + (deltaQty * latestSell)) / target.sellQty;
-              shortAdjustmentFee = calculateFee(latestSell, spotPrice, Math.abs(deltaQty), pos.sellLeg.lotSize);
-            } else if (deltaQty < 0) {
-              // Buying back (scale down)
-              shortAdjustmentFee = calculateFee(latestSell, spotPrice, Math.abs(deltaQty), pos.sellLeg.lotSize);
-              shortAdjustmentPnl = (pos.entrySellPrice - latestSell) * Math.abs(deltaQty) * pos.sellLeg.lotSize;
-            }
-
-            const newLongEntryFee = calculateFee(target.buyPrice, spotPrice, 1, target.buyLeg.lotSize);
-
-            // 3. Create mutated position
-            const newActiveEntryFee = (pos.entryFee || 0) - longEntryFee + newLongEntryFee + shortAdjustmentFee;
-
-            const swappedPos = {
-              ...pos,
-              buyLeg: target.buyLeg,
-              sellQty: target.sellQty,
-              entryBuyPrice: target.buyPrice,
-              entrySellPrice: adjustedSellEntryPrice,
-              entryFee: newActiveEntryFee,
-              accumulatedSellPnl: (pos.accumulatedSellPnl || 0) + (longPnl - longExitFee) + shortAdjustmentPnl,
-              entryTime: new Date(), // Reset time for rotation tracking
-              currentBuyPrice: target.buyPrice,
-              currentSellPrice: target.sellPrice,
-              margin: calcMargin(target.buyPrice, target.buyLeg.lotSize, spotPrice, target.sellQty, target.sellLeg.lotSize)
-            };
-            remaining.push(swappedPos);
-
-            // 4. Sync mutated position to Supabase
-            try {
-              await supabase.from('active_positions').update({
-                buy_leg: JSON.stringify(target.buyLeg),
-                sell_qty: target.sellQty,
-                entry_buy_price: target.buyPrice,
-                entry_sell_price: adjustedSellEntryPrice,
-                entry_fee: newActiveEntryFee,
-                accumulated_sell_pnl: swappedPos.accumulatedSellPnl,
-                entry_time: swappedPos.entryTime.toISOString(),
-                margin: swappedPos.margin
-              }).eq('id', pos.id);
-            } catch (e) { console.error('Leg Swap Sync Error:', e); }
-          }
-        } else {
-          remaining.push({
-            ...pos, currentBuyPrice: latestBuy, currentSellPrice: latestSell,
-            unrealizedGrossPnl: grossPnl, unrealizedNetPnl: grossPnl - totalFees,
-            currentExitFee: exitFee, currentTotalFees: totalFees,
-            margin: calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, Math.max(pos.entrySpotPrice || spotPrice, spotPrice), pos.sellQty, pos.sellLeg.lotSize)
-          });
-
-
-          activeStrikes.add(Number(pos.buyLeg.strike));
-          activeStrikes.add(Number(pos.sellLeg.strike));
-        }
-      }
-
-      // 2. Open New Positions (Entries)
-      const newEntries = [];
-      for (const spread of topSpreads) {
-        const bStrike = Number(spread.buyLeg.strike);
-        const sStrike = Number(spread.sellLeg.strike);
-        const spreadType = spread.buyLeg.type;
-
-        // NEW: Safety Buffer - don't enter if expiry is less than 5 minutes away
-        const minutesToExpiry = (new Date(spread.expiry).getTime() - Date.now()) / 60000;
-        if (minutesToExpiry < 5) {
-          continue;
-        }
-
-        // Only block if buy strike is already active for same type and underlying
-        const buyStrikeConflict = remaining.some(
-          p => p.underlying === underlying && p.type === spreadType && Number(p.buyLeg.strike) === bStrike
-        ) || newEntries.some(
-          p => p.underlying === underlying && p.type === spreadType && Number(p.buyLeg.strike) === bStrike
-        );
-
-        // Only block sell strike collision within same type and underlying
-        const sellStrikeConflict = remaining.some(
-          p => p.underlying === underlying && p.type === spreadType && Number(p.sellLeg.strike) === sStrike
-        ) || newEntries.some(
-          p => p.underlying === underlying && p.type === spreadType && Number(p.sellLeg.strike) === sStrike
-        );
-
-        if (buyStrikeConflict) {
-          continue;
-        }
-        if (sellStrikeConflict) {
-          continue;
-        }
-
-        // Count all remaining positions for this type (including partially-exited ones — they still hold a slot)
-        const count = remaining.filter(p => p.underlying === underlying && p.type === spreadType).length +
-          newEntries.filter(p => p.underlying === underlying && p.type === spreadType).length;
-
-        // Hard cap: never exceed 3 per type. A partial exit does NOT free up a slot.
-        if (count >= 3) {
-          continue;
-        }
-
-        // Strike Diversification Guard: new buy strike must be >= 400 pts from all existing
-        // buy strikes of the same type. We check BOTH remaining (surviving old positions) AND
-        // newEntries (positions already opened in this same eval cycle) to prevent two same-cycle
-        // entries from slipping through with <400 pt distance between them.
-        const existingOfType = [
-          ...remaining.filter(p =>
-            p.underlying?.toUpperCase() === underlying?.toUpperCase() &&
-            p.type?.toLowerCase() === spreadType?.toLowerCase()
-          ),
-          ...newEntries.filter(p =>
-            p.underlying?.toUpperCase() === underlying?.toUpperCase() &&
-            p.type?.toLowerCase() === spreadType?.toLowerCase()
-          )
-        ];
-
-        if (existingOfType.length > 0) {
-          const candidateLongStrike = Number(spread.buyLeg.strike);
-
-          const valid = existingOfType.every(p => {
-            const existingLongStrike = Number(p.buyStrike ?? p.buyLeg?.strike ?? p.buy_strike);
-            if (isNaN(existingLongStrike)) return true; // Safety fallback
-            return Math.abs(candidateLongStrike - existingLongStrike) >= 400;
-          });
-
-          if (!valid) continue;
-        }
-
-        // ENTRY EVALUATION:
-        // Long leg: buy at ASK
-        // Short leg: sell at BID
-        const entryBuyPrice = spread.buyPrice;
-        const entrySellPrice = spread.sellPrice;
-
-        const live = latestTickerDataRef.current;
-        const tickerBuy = live[spread.buyLeg.symbol];
-        const tickerSell = live[spread.sellLeg.symbol];
-        const entryBuyIv = tickerBuy?.askIv ?? tickerBuy?.iv ?? null;
-        const entrySellIv = tickerSell?.bidIv ?? tickerSell?.iv ?? null;
-        const buyLegWithIv = { ...spread.buyLeg, entryIv: entryBuyIv };
-        const sellLegWithIv = { ...spread.sellLeg, entryIv: entrySellIv };
-
-        const entryBuyFee = calculateFee(entryBuyPrice, spotPrice, 1, spread.buyLeg.lotSize);
-        const entrySellFee = calculateFee(entrySellPrice, spotPrice, spread.sellQty, spread.sellLeg.lotSize);
-        const entryFee = entryBuyFee + entrySellFee;
-        const id = `T${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-        const newPos = {
-          id, underlying, expiry: selExpiry, type: spread.buyLeg.type,
-          buyLeg: buyLegWithIv, sellLeg: sellLegWithIv, sellQty: spread.sellQty,
-          strikeDiff: spread.strikeDiff, entryTime: new Date(), entryBuyPrice,
-          entrySellPrice, entrySpotPrice: spotPrice, currentBuyPrice: entryBuyPrice,
-          currentSellPrice: entrySellPrice, unrealizedGrossPnl: 0, unrealizedNetPnl: -entryFee,
-          entryBuyIv, entrySellIv, currentBuyIv: entryBuyIv, currentSellIv: entrySellIv,
-          entryFee, currentExitFee: entryFee, currentTotalFees: entryFee * 2,
-          margin: calcMargin(entryBuyPrice, spread.buyLeg.lotSize, spotPrice, spread.sellQty, spread.sellLeg.lotSize)
-        };
-
-
-        newEntries.push(newPos);
-        activeStrikes.add(Number(spread.buyLeg.strike));
-        activeStrikes.add(Number(spread.sellLeg.strike));
-      }
-
-      // 3. side effects (Supabase)
-      if (exited.length > 0 || newEntries.length > 0) {
-        lastDbWriteRef.current = Date.now();
-      }
-
-      if (exited.length > 0) {
-        setTradeHistory(th => [...exited, ...th]);
-        for (const t of exited) {
-          try {
-            // Guard: Check if this trade was already moved to history by another instance
-            const { data: alreadyExited } = await supabase.from('trade_history').select('trade_id').eq('trade_id', t.id).limit(1);
-            if (alreadyExited && alreadyExited.length > 0) {
-            } else {
-              // Record to permanent trade_history
-              const { error: histError } = await supabase.from('trade_history').insert([{
-                trade_id: t.id, underlying, expiry: t.expiry, type: t.type,
-                buy_leg: JSON.stringify(t.buyLeg), sell_leg: JSON.stringify(t.sellLeg),
-                sell_qty: t.sellQty,
-                strike_diff: t.strikeDiff, entry_time: t.entryTime.toISOString(),
-                entry_buy_price: t.entryBuyPrice, entry_sell_price: t.entrySellPrice,
-                entry_spot_price: t.entrySpotPrice, margin: t.margin,
-                exit_time: t.zombieExitTime || new Date().toISOString(),
-                exit_buy_price: t._latestBuy, exit_sell_price: t._latestSell,
-                exit_spot_price: t.exitSpotPrice,
-                realized_gross_pnl: t.realizedGrossPnl, realized_net_pnl: t.realizedNetPnl,
-                exit_fee: t.exitFee, total_fees: t.totalFees, exit_reason: t.exitReason,
-                is_partial: t._isPartial || false
-              }]);
-              if (histError) console.error('History Persist Error:', histError);
-            }
-
-            // Delete from active_positions
-            await supabase.from('active_positions').delete().eq('id', t.id);
-          } catch (err) { console.error('Supabase Exit Exception:', err); }
-        }
-      }
-
-      if (newEntries.length > 0) {
-        for (const t of newEntries) {
-          try {
-            // DB-level count guard: verify the live DB doesn't already have 3 active positions of this type.
-            // NOTE: Do NOT use { head: true } — it returns null data. Use a plain select for actual row count.
-            const { data: activeOfType, error: countError } = await supabase
-              .from('active_positions')
-              .select('id')
-              .eq('underlying', underlying)
-              .eq('type', t.type);
-            if (!countError && (activeOfType?.length ?? 0) >= 3) {
-              continue;
-            }
-
-
-            // DB-level Diversification Guard: Fetch all active buy strikes for this type and
-            // block entry if any existing position is within 400 pts of the new buy strike.
-            const { data: activeStrikes400, error: strikeCheckError } = await supabase
-              .from('active_positions')
-              .select('buy_strike')
-              .eq('underlying', underlying)
-              .eq('type', t.type);
-            if (strikeCheckError) continue;
-            if (activeStrikes400 && activeStrikes400.some(r => Math.abs(Number(r.buy_strike) - Number(t.buyLeg.strike)) < 400)) {
-              console.warn(`DB Guard: Blocked entry — buy strike ${t.buyLeg.strike} too close to an existing position (<400 pts).`);
-              continue;
-            }
-
-            // Check sell strike uniqueness within same type
-            const { data: sellConflict, error: sellCheckError } = await supabase.from('active_positions').select('id')
-              .eq('underlying', underlying)
-              .eq('type', t.type)
-              .eq('sell_strike', t.sellLeg.strike)
-              .limit(1);
-            if (sellCheckError) continue;
-            if (sellConflict && sellConflict.length > 0) {
-              continue;
-            }
-
-            const { error: insertError } = await supabase.from('active_positions').insert([{
-              id: t.id, underlying, expiry: selExpiry, type: t.type,
-              buy_leg: JSON.stringify(t.buyLeg), sell_leg: JSON.stringify(t.sellLeg),
-              sell_qty: t.sellQty, strike_diff: t.strikeDiff, entry_time: t.entryTime.toISOString(),
-              entry_buy_price: t.entryBuyPrice, entry_sell_price: t.entrySellPrice,
-              entry_spot_price: t.entrySpotPrice,
-              margin: t.margin, entry_fee: t.entryFee, accumulated_sell_pnl: 0,
-              buy_strike: t.buyLeg.strike,
-              sell_strike: t.sellLeg.strike,
-            }]);
-
-            if (insertError) {
-              if (insertError.code === '23505') {
-                console.error(`Database Guard: Blocked duplicate strike entry for ${t.buyLeg.strike}/${t.sellLeg.strike}.`);
-              } else {
-                console.error('Supabase Insert Error:', insertError);
-              }
-            }
-          } catch (err) { console.error('Supabase Insert Exception:', err); }
-        }
-      }
-
-      const finalPositions = [...remaining, ...newEntries].sort((a, b) => {
-        if (a.type !== b.type) return a.type === 'call' ? -1 : 1;
-        const aStrike = a.buyLeg?.strike ?? 0;
-        const bStrike = b.buyLeg?.strike ?? 0;
-        if (a.type === 'call') return aStrike - bStrike;
-        return bStrike - aStrike;
-      });
-
-      positionsRef.current = finalPositions;
-
-      if (exited.length > 0 || newEntries.length > 0) {
-        // Structural change (exits or entries) — replace the full array
-        setPositions(finalPositions);
-      } else {
-        // No structural change — update PnL in-place to prevent table flash at minute boundary
-        setPositions(prev => {
-          if (prev.length === 0) return prev;
-          const byId = new Map(finalPositions.map(p => [p.id, p]));
-          return prev.map(p => byId.get(p.id) ?? p);
-        });
-      }
-    } finally {
-      isEvaluatingRef.current = false;
-    }
-  }, [trading, underlying, selExpiry, spotPrice, scannerSyncVersion, pickTopUniqueStrikes, scanTickers]);
-
-  const renderRatio = (t, showOriginal = true) => {
-    const r = t.exitReason || '';
-    let mult = 1;
-    let displayFracBuy = t._exitedBuyQty || 1;
-
-    if (r.includes('50%')) {
-      mult = 2;
-      displayFracBuy = 0.5;
-    } else if (r.includes('33%')) {
-      mult = 3;
-      displayFracBuy = 0.33;
-    } else if (r.includes('34%')) {
-      mult = 3;
-      displayFracBuy = 0.34;
-    }
-
-    const sellQty = t.sellQty || 0;
-
-    // Reconstruct original sell ratio (e.g. 4.75) using the multiplier
-    const originalSell = Math.round((sellQty * mult) * 4) / 4;
-
-    // NEW: Simulated Ratio logic
-    let simSell = originalSell;
-    if (extraCreditMode && t.entrySellPrice > 0) {
-      const extraLots = extraCreditAmount / t.entrySellPrice;
-      simSell += (Math.round(extraLots / 0.25) * 0.25) * mult;
-    }
-
-    if (showOriginal) {
-      return `1:${simSell.toFixed(2)}`;
-    } else {
-      const fracBuy = displayFracBuy.toFixed(2).replace(/\.?0+$/, '');
-      const fracSell = (simSell / mult).toFixed(2).replace(/\.?0+$/, '');
-      return `${fracBuy}:${fracSell}`;
-    }
-  };
-
-  useEffect(() => {
-    if (!trading || !spotPrice) return;
-
-    const nowTime = Date.now();
-    const currentMinute = Math.floor(nowTime / 60000);
-    const lastMinute = Math.floor(lastEvaluated / 60000);
-
-    // Initial evaluation or new minute
-    if (lastEvaluated === 0 || currentMinute > lastMinute) {
-      evaluateStrategy();
-      return;
-    }
-
-    // Check for scanner updates
-    if (scannerSyncVersion > lastProcessedScannerVersionRef.current) {
-      evaluateStrategy();
-      return;
-    }
-
-    // Frequent PnL updates (every 1s)
-    if (nowTime - lastEvaluatedRef.current >= 1000) {
-      evaluateStrategy();
-    }
-  }, [tickerData, trading, spotPrice, lastEvaluated, evaluateStrategy, scannerSyncVersion]);
-
-  const evaluateStrategyRef = useRef(evaluateStrategy);
-  useEffect(() => {
-    evaluateStrategyRef.current = evaluateStrategy;
-  }, [evaluateStrategy]);
-
-  // Separate heartbeat for PnL/Expiry/Background tasks
-  useEffect(() => {
-    if (!trading) return;
     const interval = setInterval(() => {
-      if (evaluateStrategyRef.current) evaluateStrategyRef.current();
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [trading]);
+      if (!spotPrice || positions.length === 0) return;
+      const live = latestTickerDataRef.current;
 
+      setPositions(prev => {
+        if (prev.length === 0) return prev;
+        return prev.map(pos => {
+          const tickerBuy = live[pos.buyLeg?.symbol];
+          const tickerSell = live[pos.sellLeg?.symbol];
+          const latestBuy = tickerBuy?.bid ?? tickerBuy?.markPrice ?? pos.currentBuyPrice;
+          const latestSell = tickerSell?.ask ?? tickerSell?.markPrice ?? pos.currentSellPrice;
+
+          // If we don't have any price at all for both legs, skip this position's updates
+          if (latestBuy == null && latestSell == null) return pos;
+
+          const hasBothPrices = latestBuy != null && latestSell != null;
+          const buyPnl = hasBothPrices ? ((latestBuy - pos.entryBuyPrice) || 0) : 0;
+          const sellPnl = hasBothPrices ? (((latestSell - pos.entrySellPrice) * pos.sellQty) || 0) : 0;
+          const grossPnl = hasBothPrices
+            ? (buyPnl * pos.buyLeg.lotSize) - (sellPnl * pos.sellLeg.lotSize) + (pos.accumulatedSellPnl || 0)
+            : pos.unrealizedGrossPnl;
+          const exitFee = hasBothPrices
+            ? calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize) + calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize)
+            : pos.currentExitFee;
+          const totalFees = hasBothPrices ? ((pos.entryFee || 0) + exitFee) : pos.currentTotalFees;
+
+          return {
+            ...pos,
+            currentBuyPrice: latestBuy,
+            currentSellPrice: latestSell,
+            currentBuyIv: tickerBuy?.bidIv ?? tickerBuy?.iv ?? pos.currentBuyIv ?? null,
+            currentSellIv: tickerSell?.askIv ?? tickerSell?.iv ?? pos.currentSellIv ?? null,
+            unrealizedGrossPnl: grossPnl,
+            unrealizedNetPnl: grossPnl - totalFees,
+            currentExitFee: exitFee,
+            currentTotalFees: totalFees,
+          };
+        });
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [spotPrice, positions.length, underlying, positionsSymbolsKey]);
+
+  // Cleanup on unmount
   useEffect(() => () => {
     if (wsRef.current) wsRef.current.close();
     if (spotIntervalRef.current) clearInterval(spotIntervalRef.current);
     if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
   }, []);
 
-  // Countdown timer for next scan
-  useEffect(() => {
-    if (!trading || lastEvaluated === 0) {
-      setTimeRemaining(null);
-      return;
-    }
-
-    const timer = setInterval(() => {
-      const now = Date.now();
-      const nextMinute = (Math.floor(now / 60000) + 1) * 60000;
-      const left = Math.ceil((nextMinute - now) / 1000);
-      setTimeRemaining(left > 0 ? (left > 60 ? 60 : left) : 0);
-    }, 1000);
-
-    const now = Date.now();
-    const nextMinute = (Math.floor(now / 60000) + 1) * 60000;
-    const left = Math.ceil((nextMinute - now) / 1000);
-    setTimeRemaining(left > 0 ? (left > 60 ? 60 : left) : 0);
-
-    return () => clearInterval(timer);
-  }, [lastEvaluated, trading]);
-
-  // ── Cross-tab sync ──────────────────────────────────
-  const startTradingRef = useRef(startTrading);
-  startTradingRef.current = startTrading;
-  const stopTradingRef = useRef(stopTrading);
-  stopTradingRef.current = stopTrading;
-
+  // ── Cross-tab sync (config only) ──────────────────────────────────────
   const { broadcast: tabBroadcast } = useTabListener({
-    TRADING_START: (payload) => {
-      const updates = {};
-      if (payload.underlying) updates.underlying = payload.underlying;
-      if (payload.expiry) updates.expiry = payload.expiry;
-      if (Object.keys(updates).length > 0) updateConfig(updates);
-      setTimeout(() => startTradingRef.current(), 100);
-    },
-    TRADING_STOP: () => {
-      stopTradingRef.current();
-    },
-    SCANNER_TOP_SPREADS_SYNC: (payload) => {
-      scannerTopRef.current = payload;
-      setScannerSyncVersion(v => v + 1);
-      try {
-        localStorage.setItem(SCANNER_TOP_KEY, JSON.stringify(payload));
-      } catch (e) { }
-    },
     CONFIG_SYNC: (payload) => {
       if (payload.config) {
-        // Only extract underlying and expiry to avoid overwriting paper trading filters
         const updates = {};
         if (payload.config.underlying !== undefined) updates.underlying = payload.config.underlying;
         if (payload.config.expiry !== undefined) updates.expiry = payload.config.expiry;
@@ -1596,18 +524,22 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     }
   });
 
-
+  // ── Export CSV ────────────────────────────────────────────────────────
   const exportCSV = () => {
     if (!filteredTradeHistory.length) {
       alert('No closed trades found for the selected filter.');
       return;
     }
-    const headers = ['Entry Time', 'Exit Time', 'Expiry', 'Type', 'Ratio', 'Buy Strike', 'Sell Strike', 'Entry Buy Price', 'Entry Sell Price', 'Exit Buy Price', 'Exit Sell Price', 'Entry Spot', 'Exit Spot', 'Gross PnL', 'Total Fees', 'Net PnL', 'Margin', 'Exit Reason'];
+    const headers = [
+      'Entry Time', 'Exit Time', 'Expiry', 'Type', 'Ratio',
+      'Buy Strike', 'Sell Strike', 'Entry Buy Price', 'Entry Sell Price',
+      'Exit Buy Price', 'Exit Sell Price', 'Entry Spot', 'Exit Spot',
+      'Gross PnL', 'Total Fees', 'Net PnL', 'Margin', 'Exit Reason'
+    ];
     const rows = filteredTradeHistory.map(t => {
       let sellQty = t.sellQty;
       let grossPnl = t.realizedGrossPnl || 0;
       let netPnl = t.realizedNetPnl || 0;
-
       if (extraCreditMode && t.entrySellPrice > 0) {
         const extraQty = Math.round((extraCreditAmount / t.entrySellPrice) / 0.25) * 0.25;
         const extraPnl = extraQty * (t.entrySellPrice - (t.exitSellPrice || t.entrySellPrice));
@@ -1615,26 +547,15 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         grossPnl += extraPnl;
         netPnl += extraPnl;
       }
-
       return [
-        formatDateTime(t.entryTime),
-        formatDateTime(t.exitTime),
-        fmtExpiry(t.expiry),
-        t.type.toUpperCase(),
-        `${t.buyLeg.lotSize.toFixed(2)}:${sellQty.toFixed(2)}`,
-        t.buyLeg.strike,
-        t.sellLeg.strike,
-        t.entryBuyPrice || '',
-        t.entrySellPrice || '',
-        t.exitBuyPrice || '',
-        t.exitSellPrice || '',
-        t.entrySpotPrice || '',
-        t.exitSpotPrice || '',
-        grossPnl.toFixed(2),
-        (t.totalFees || 0).toFixed(2),
-        netPnl.toFixed(2),
-        (t.margin || 0).toFixed(2),
-        t.exitReason
+        formatDateTime(t.entryTime), formatDateTime(t.exitTime), fmtExpiry(t.expiry),
+        t.type.toUpperCase(), `${t.buyLeg.lotSize.toFixed(2)}:${sellQty.toFixed(2)}`,
+        t.buyLeg.strike, t.sellLeg.strike,
+        t.entryBuyPrice || '', t.entrySellPrice || '',
+        t.exitBuyPrice || '', t.exitSellPrice || '',
+        t.entrySpotPrice || '', t.exitSpotPrice || '',
+        grossPnl.toFixed(2), (t.totalFees || 0).toFixed(2), netPnl.toFixed(2),
+        (t.margin || 0).toFixed(2), t.exitReason
       ].join(',');
     });
     const csv = [headers.join(','), ...rows].join('\n');
@@ -1642,43 +563,42 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    const dateLabel = historyFilterDate || 'all_time';
-    a.download = `paper_trades_${dateLabel}_${new Date().getTime()}.csv`;
+    a.download = `paper_trades_${historyFilterDate || 'all_time'}_${Date.now()}.csv`;
     a.click();
   };
 
-  // ── KPI Computations ──────────────────────────────────
+  // ── KPI / display helpers ─────────────────────────────────────────────
   const filteredTradeHistory = React.useMemo(() => {
     if (!historyFilterDate) return tradeHistory;
-
     return tradeHistory.filter(t => {
       if (!t.exitTime) return false;
-      // Apply 12h offset to trade exit time to match settlement cycle
       const d = new Date(t.exitTime);
       if (isNaN(d.getTime())) return false;
       d.setUTCHours(d.getUTCHours() + 12);
-      const exitUtcDate = d.toISOString().split('T')[0];
-      return exitUtcDate === historyFilterDate;
+      return d.toISOString().split('T')[0] === historyFilterDate;
     });
   }, [tradeHistory, historyFilterDate]);
 
-  const totalUnrealizedPnl = positions.filter(p => p.underlying === underlying).reduce((s, p) => {
-    let val = includeFees ? (p.unrealizedNetPnl || 0) : (p.unrealizedGrossPnl || p.unrealizedPnl || 0);
-    if (extraCreditMode && p.entrySellPrice > 0) {
-      const extraQty = Math.round((extraCreditAmount / p.entrySellPrice) / 0.25) * 0.25;
-      val += extraQty * (p.entrySellPrice - (p.currentSellPrice || p.entrySellPrice));
-    }
-    return s + val;
-  }, 0);
+  const totalUnrealizedPnl = positions
+    .filter(p => p.underlying === underlying)
+    .reduce((s, p) => {
+      let val = includeFees ? (p.unrealizedNetPnl || 0) : (p.unrealizedGrossPnl || 0);
+      if (extraCreditMode && p.entrySellPrice > 0) {
+        const extraQty = Math.round((extraCreditAmount / p.entrySellPrice) / 0.25) * 0.25;
+        val += extraQty * (p.entrySellPrice - (p.currentSellPrice || p.entrySellPrice));
+      }
+      return s + val;
+    }, 0);
 
   const totalRealizedPnl = tradeHistory.reduce((s, t) => {
-    let val = includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || t.realizedPnl || 0);
+    let val = includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || 0);
     if (extraCreditMode && t.entrySellPrice > 0) {
       const extraQty = Math.round((extraCreditAmount / t.entrySellPrice) / 0.25) * 0.25;
       val += extraQty * (t.entrySellPrice - (t.exitSellPrice || t.entrySellPrice));
     }
     return s + val;
   }, 0);
+
   const totalPnl = totalRealizedPnl + totalUnrealizedPnl;
 
   const todayRealizedPnl = React.useMemo(() => {
@@ -1690,27 +610,30 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       const dTrade = new Date(t.exitTime);
       if (isNaN(dTrade.getTime())) return s;
       dTrade.setUTCHours(dTrade.getUTCHours() + 12);
-      const exitUtcDate = dTrade.toISOString().split('T')[0];
-
-      if (exitUtcDate === todayUtc) {
-        let val = includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || t.realizedPnl || 0);
-        if (extraCreditMode && t.entrySellPrice > 0) {
-          const extraQty = Math.round((extraCreditAmount / t.entrySellPrice) / 0.25) * 0.25;
-          val += extraQty * (t.entrySellPrice - (t.exitSellPrice || t.entrySellPrice));
-        }
-        return s + val;
+      if (dTrade.toISOString().split('T')[0] !== todayUtc) return s;
+      let val = includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || 0);
+      if (extraCreditMode && t.entrySellPrice > 0) {
+        const extraQty = Math.round((extraCreditAmount / t.entrySellPrice) / 0.25) * 0.25;
+        val += extraQty * (t.entrySellPrice - (t.exitSellPrice || t.entrySellPrice));
       }
-      return s;
+      return s + val;
     }, 0);
   }, [tradeHistory, includeFees, extraCreditMode, extraCreditAmount]);
 
   const todayPnl = todayRealizedPnl + totalUnrealizedPnl;
-  const wins = tradeHistory.filter(t => (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || t.realizedPnl || 0)) > 0).length;
-  const winRate = tradeHistory.length > 0 ? ((wins / tradeHistory.length) * 100).toFixed(1) : '—';
-  const totalMargin = positions.filter(p => p.underlying === underlying).reduce((s, p) => s + (p.margin || 0), 0);
-
-  const filteredRealizedPnl = filteredTradeHistory.reduce((s, t) => s + (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || t.realizedPnl || 0)), 0);
-  const filteredWins = filteredTradeHistory.filter(t => (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || t.realizedPnl || 0)) > 0).length;
+  const wins = tradeHistory.filter(t =>
+    (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || 0)) > 0
+  ).length;
+  const winRate = tradeHistory.length > 0
+    ? ((wins / tradeHistory.length) * 100).toFixed(1) : '—';
+  const totalMargin = positions
+    .filter(p => p.underlying === underlying)
+    .reduce((s, p) => s + (p.margin || 0), 0);
+  const filteredRealizedPnl = filteredTradeHistory.reduce((s, t) =>
+    s + (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || 0)), 0);
+  const filteredWins = filteredTradeHistory.filter(t =>
+    (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || 0)) > 0
+  ).length;
 
   const fmtDuration = (ms) => {
     const s = Math.floor(ms / 1000);
@@ -1721,14 +644,39 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   };
 
   const exitBadgeClass = (reason) => {
-    if (reason.includes('Manual')) return 'manual';
-    if (reason.includes('Top 3')) return 'position';
-    if (reason.includes('ITM')) return 'itm';
-    if (reason.includes('ATM')) return 'atm';
-    if (reason.includes('Expiry')) return 'expiry';
+    if (reason?.includes('Manual')) return 'manual';
+    if (reason?.includes('Top 3')) return 'position';
+    if (reason?.includes('ITM')) return 'itm';
+    if (reason?.includes('ATM')) return 'atm';
+    if (reason?.includes('Expiry')) return 'expiry';
     return 'position';
   };
 
+  const renderRatio = (t) => {
+    const r = t.exitReason || '';
+    let mult = 1;
+    if (r.includes('50%')) mult = 2;
+    else if (r.includes('33%') || r.includes('34%')) mult = 3;
+
+    const sellQty = t.sellQty || 0;
+    const originalSell = Math.round((sellQty * mult) * 4) / 4;
+    let simSell = originalSell;
+    if (extraCreditMode && t.entrySellPrice > 0) {
+      const extraLots = extraCreditAmount / t.entrySellPrice;
+      simSell += (Math.round(extraLots / 0.25) * 0.25) * mult;
+    }
+    return `1:${simSell.toFixed(2)}`;
+  };
+
+  // ── Engine status badge helper ────────────────────────────────────────
+  const engineStatusLabel = engineStatus.status === 'online' ? 'Engine Live'
+    : engineStatus.status === 'stale' ? 'Engine Stale'
+      : 'Engine Offline';
+  const engineStatusColor = engineStatus.status === 'online' ? '#0ecb81'
+    : engineStatus.status === 'stale' ? '#f0b90b'
+      : '#f85149';
+
+  // ── Render ────────────────────────────────────────────────────────────
   return (
     <div className="app">
       <nav className="navbar">
@@ -1750,10 +698,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         </div>
 
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <button
-            className="nav-tab"
-            onClick={() => onNavigate('charts')}
-          >
+          <button className="nav-tab" onClick={() => onNavigate('charts')}>
             <span className="nav-tab-icon" aria-hidden="true">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <path d="M4 20V4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
@@ -1764,10 +709,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               </svg>
             </span> Charts
           </button>
-          <button
-            className="nav-tab"
-            onClick={() => onNavigate('scanner')}
-          >
+          <button className="nav-tab" onClick={() => onNavigate('scanner')}>
             <span className="nav-tab-icon" aria-hidden="true">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="1.8" />
@@ -1776,9 +718,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               </svg>
             </span> Ratio Spread
           </button>
-          <button
-            className="nav-tab active"
-          >
+          <button className="nav-tab active">
             <span className="nav-tab-icon" aria-hidden="true">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
@@ -1787,10 +727,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               </svg>
             </span> Paper Trading
           </button>
-          <button
-            className="nav-tab"
-            onClick={() => onNavigate('atm-exit')}
-          >
+          <button className="nav-tab" onClick={() => onNavigate('atm-exit')}>
             <span className="nav-tab-icon" aria-hidden="true">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="12" cy="12" r="10"></circle>
@@ -1806,14 +743,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             {theme === 'dark' ? (
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="12" cy="12" r="5"></circle>
-                <line x1="12" y1="1" x2="12" y2="3"></line>
-                <line x1="12" y1="21" x2="12" y2="23"></line>
-                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
-                <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
-                <line x1="1" y1="12" x2="3" y2="12"></line>
-                <line x1="21" y1="12" x2="23" y2="12"></line>
-                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
-                <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+                <line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line>
+                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+                <line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line>
+                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
               </svg>
             ) : (
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1821,9 +754,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               </svg>
             )}
           </button>
+          {/* Engine status — replaces the old Start/Stop trading button */}
           <div className="ws-badge">
-            <div className={`ws-dot ${trading ? 'live' : ''}`} />
-            <span>{trading ? 'Trading Live' : 'Idle'}</span>
+            <div className="ws-dot" style={{ background: engineStatusColor }} />
+            <span>{engineStatusLabel}</span>
           </div>
         </div>
       </nav>
@@ -1835,51 +769,41 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             <span className="pt-control-label">Algo</span>
             <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
               <label style={{ marginBottom: 0 }}>Underlying:</label>
-              <select value={underlying} onChange={e => { updateConfig('underlying', e.target.value); stopTrading(); }} style={{ padding: '6px 12px', width: '100px', fontSize: '13px' }}>
+              <select value={underlying} onChange={e => updateConfig('underlying', e.target.value)}
+                style={{ padding: '6px 12px', width: '100px', fontSize: '13px' }}>
                 {UNDERLYINGS.map(u => <option key={u}>{u}</option>)}
               </select>
             </div>
             <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
               <label style={{ marginBottom: 0 }}>Expiry:</label>
-              <select value={selExpiry} onChange={e => { updateConfig('expiry', e.target.value); stopTrading(); }} disabled={!expiries.length} style={{ padding: '6px 12px', width: '160px', fontSize: '13px' }}>
-                {!expiries.length ? <option>Loading...</option> : expiries.map(e => <option key={e} value={e}>{fmtExpiry(e)}</option>)}
+              <select value={selExpiry} onChange={e => updateConfig('expiry', e.target.value)}
+                disabled={!expiries.length}
+                style={{ padding: '6px 12px', width: '160px', fontSize: '13px' }}>
+                {!expiries.length
+                  ? <option>Loading...</option>
+                  : expiries.map(e => <option key={e} value={e}>{fmtExpiry(e)}</option>)}
               </select>
             </div>
 
             <div style={{ width: 1, height: 24, backgroundColor: 'var(--border)' }}></div>
 
             <span className="pt-control-label">Filters</span>
-            <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-              <label style={{ marginBottom: 0 }}>Min Strike Diff ($):</label>
-              <input type="number" value={config.minStrikeDiff ?? ''} onChange={e => updateConfig('minStrikeDiff', Number(e.target.value))} style={{ width: 60, padding: '4px 8px', fontSize: '13px' }} />
-            </div>
-            <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-              <label style={{ marginBottom: 0 }}>Min IV Diff (%):</label>
-              <input type="number" value={config.minIvDiff ?? ''} onChange={e => updateConfig('minIvDiff', Number(e.target.value))} style={{ width: 50, padding: '4px 8px', fontSize: '13px' }} />
-            </div>
-            <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-              <label style={{ marginBottom: 0 }}>Max Ratio Dev:</label>
-              <input type="number" step="0.01" value={config.maxRatioDeviation ?? ''} onChange={e => updateConfig('maxRatioDeviation', Number(e.target.value))} style={{ width: 60, padding: '4px 8px', fontSize: '13px' }} />
-            </div>
-            <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-              <label style={{ marginBottom: 0 }}>Min Sell Prem ($):</label>
-              <input type="number" value={config.minSellPremium ?? ''} onChange={e => updateConfig('minSellPremium', Number(e.target.value))} style={{ width: 60, padding: '4px 8px', fontSize: '13px' }} />
-            </div>
-
-            <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-              <label style={{ marginBottom: 0 }}>Max Debit ($):</label>
-              <input type="number" value={config.maxNetPremium ?? ''} onChange={e => updateConfig('maxNetPremium', Number(e.target.value))} style={{ width: 60, padding: '4px 8px', fontSize: '13px' }} />
-            </div>
-            <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-              <label style={{ marginBottom: 0 }}>Min Long Dist:</label>
-              <input type="number" value={config.minLongDist ?? ''} onChange={e => updateConfig('minLongDist', Number(e.target.value))} style={{ width: 60, padding: '4px 8px', fontSize: '13px' }} />
-            </div>
-            <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-              <label style={{ marginBottom: 0 }}>Max Ratio (1:X):</label>
-              <input type="number" step="0.25" value={config.maxSellQty ?? ''} onChange={e => updateConfig('maxSellQty', Number(e.target.value))} style={{ width: 65, padding: '4px 8px', fontSize: '13px' }} />
-            </div>
-
-
+            {[
+              { label: 'Min Strike Diff ($):', key: 'minStrikeDiff', width: 60 },
+              { label: 'Min IV Diff (%):', key: 'minIvDiff', width: 50 },
+              { label: 'Max Ratio Dev:', key: 'maxRatioDeviation', width: 60, step: '0.01' },
+              { label: 'Min Sell Prem ($):', key: 'minSellPremium', width: 60 },
+              { label: 'Max Debit ($):', key: 'maxNetPremium', width: 60 },
+              { label: 'Min Long Dist:', key: 'minLongDist', width: 60 },
+              { label: 'Max Ratio (1:X):', key: 'maxSellQty', width: 65, step: '0.25' },
+            ].map(({ label, key, width, step }) => (
+              <div key={key} className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <label style={{ marginBottom: 0 }}>{label}</label>
+                <input type="number" step={step} value={config[key] ?? ''}
+                  onChange={e => updateConfig(key, Number(e.target.value))}
+                  style={{ width, padding: '4px 8px', fontSize: '13px' }} />
+              </div>
+            ))}
           </div>
 
           {spotPrice && (
@@ -1936,7 +860,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               Active
             </span>
             <span className="pt-kpi-value neutral">{positions.filter(p => p.underlying === underlying).length}</span>
-            <span className="pt-kpi-sub">{positions.filter(p => p.type === 'call' && p.underlying === underlying).length} calls / {positions.filter(p => p.type === 'put' && p.underlying === underlying).length} puts</span>
+            <span className="pt-kpi-sub">
+              {positions.filter(p => p.type === 'call' && p.underlying === underlying).length} calls /&nbsp;
+              {positions.filter(p => p.type === 'put' && p.underlying === underlying).length} puts
+            </span>
           </div>
 
           <div className="pt-kpi-card accent-purple">
@@ -1953,14 +880,17 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /></svg>
               Margin Used
             </span>
-            <span className="pt-kpi-value neutral">${positions.filter(p => p.underlying === underlying).reduce((s, p) => s + (p.margin || 0), 0).toFixed(0)}</span>
-            <span className="pt-kpi-sub">Across {positions.filter(p => p.underlying === underlying).length} position{positions.filter(p => p.underlying === underlying).length !== 1 ? 's' : ''}</span>
+            <span className="pt-kpi-value neutral">${totalMargin.toFixed(0)}</span>
+            <span className="pt-kpi-sub">
+              Across {positions.filter(p => p.underlying === underlying).length} position
+              {positions.filter(p => p.underlying === underlying).length !== 1 ? 's' : ''}
+            </span>
           </div>
         </div>
 
         <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 20 }}>
           {/* ── Active Positions ─────────────────────── */}
-          <div className={`pt-section ${trading ? 'live' : ''}`}>
+          <div className="pt-section live">
             <div className="pt-section-header">
               <div className="pt-section-title">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></svg>
@@ -1969,87 +899,64 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-                  <div style={{ fontSize: 12, color: 'var(--text)', borderLeft: '1px solid var(--border)', paddingLeft: 8, fontVariantNumeric: 'tabular-nums', minWidth: '160px' }}>
-                    Updated: {lastEvaluated > 0 ? new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }).format(new Date(lastEvaluated)) : '---'}
-                  </div>
-
-                  {/* Extra Credit Toggle & Input */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', borderLeft: '1px solid var(--border)', paddingLeft: '12px' }}>
-                    <div className="pt-fee-toggle-container">
-                      <span className={`pt-fee-toggle-label ${!extraCreditMode ? 'active' : ''}`} onClick={() => setExtraCreditMode(false)}>Base</span>
-                      <label className="pt-switch">
-                        <input type="checkbox" checked={extraCreditMode} onChange={(e) => setExtraCreditMode(e.target.checked)} />
-                        <span className="pt-slider round"></span>
-                      </label>
-                      <span className={`pt-fee-toggle-label ${extraCreditMode ? 'active' : ''}`} onClick={() => setExtraCreditMode(true)}>Extra</span>
-                    </div>
-                    {extraCreditMode && (
-                      <div style={{ display: 'flex', alignItems: 'center', background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: '4px', padding: '2px 6px' }}>
-                        <span style={{ fontSize: '11px', color: 'var(--text-dim)', marginRight: '4px' }}>$</span>
-                        <input
-                          type="number"
-                          value={extraCreditAmount}
-                          onChange={(e) => setExtraCreditAmount(Number(e.target.value))}
-                          style={{ width: '40px', background: 'transparent', border: 'none', color: 'var(--accent)', fontSize: '12px', fontWeight: 'bold', outline: 'none', padding: 0 }}
-                        />
-                      </div>
-                    )}
-                  </div>
-                  <div className="pt-fee-toggle-container">
-                    <span className={`pt-fee-toggle-label ${!includeFees ? 'active' : ''}`} onClick={() => setIncludeFees(false)}>Gross</span>
-                    <label className="pt-switch">
-                      <input type="checkbox" checked={includeFees} onChange={e => setIncludeFees(e.target.checked)} />
-                      <span className="pt-slider"></span>
-                    </label>
-                    <span className={`pt-fee-toggle-label ${includeFees ? 'active' : ''}`} onClick={() => setIncludeFees(true)}>Net</span>
-                  </div>
+                <div style={{ fontSize: 12, color: 'var(--text)', borderLeft: '1px solid var(--border)', paddingLeft: 8, fontVariantNumeric: 'tabular-nums', minWidth: '250px' }}>
+                  {lastEvaluated > 0
+                    ? `Updated: ${new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }).format(new Date(lastEvaluated))} (${Math.round((now - lastEvaluated) / 1000)}s ago, next ~${Math.max(0, 30 - Math.round((now - lastEvaluated) / 1000))}s)`
+                    : 'Updated: ---'}
                 </div>
 
-                {trading && (
-                  <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-                    <div style={{ fontSize: 14, color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums', minWidth: '140px' }}>
-                      Spot Price: {spotPrice || '---'}
-                    </div>
-                    <button
-                      onClick={async () => {
-                        await refreshAllTickers();
-                        evaluateStrategy(true);
-                      }}
-                      disabled={!trading}
-                      title="Refresh now"
-                      style={{
-                        padding: '4px 8px', fontSize: 12, background: 'var(--bg-card)',
-                        border: '1px solid var(--border)', color: 'var(--text)',
-                        borderRadius: 4, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
-                        minWidth: '60px', justifyContent: 'center', fontVariantNumeric: 'tabular-nums'
-                      }}
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <path d="M21 12C21 16.9706 16.9706 21 12 21C7.02944 21 3 16.9706 3 12C3 7.02944 7.02944 3 12 3C15.5398 3 18.5997 5.04419 20.0886 8M20.0886 8H16.0886M20.0886 8V4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                      {trading && timeRemaining !== null && timeRemaining <= 60 ? `${timeRemaining}s` : ''}
-                    </button>
-
-                    <div className="pt-live-badge">
-                      <div className="pt-live-dot" />
-                      Monitoring
-                    </div>
+                {/* Extra Credit Toggle */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', borderLeft: '1px solid var(--border)', paddingLeft: '12px' }}>
+                  <div className="pt-fee-toggle-container">
+                    <span className={`pt-fee-toggle-label ${!extraCreditMode ? 'active' : ''}`} onClick={() => setExtraCreditMode(false)}>Base</span>
+                    <label className="pt-switch">
+                      <input type="checkbox" checked={extraCreditMode} onChange={(e) => setExtraCreditMode(e.target.checked)} />
+                      <span className="pt-slider round"></span>
+                    </label>
+                    <span className={`pt-fee-toggle-label ${extraCreditMode ? 'active' : ''}`} onClick={() => setExtraCreditMode(true)}>Extra</span>
                   </div>
-                )}
-              </div>
-            </div>
-            {positions.length === 0 ? (
-              <div className="pt-empty">
-                <div className={`pt-empty-icon ${trading ? 'scanning' : 'idle'}`}>
-                  {trading ? (
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#0ecb81" strokeWidth="2"><circle cx="12" cy="12" r="10" /><path d="M12 2a10 10 0 0 1 0 20" strokeDasharray="4 4"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="3s" repeatCount="indefinite" /></path></svg>
-                  ) : (
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18" /><path d="M9 21V9" /></svg>
+                  {extraCreditMode && (
+                    <div style={{ display: 'flex', alignItems: 'center', background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: '4px', padding: '2px 6px' }}>
+                      <span style={{ fontSize: '11px', color: 'var(--text-dim)', marginRight: '4px' }}>$</span>
+                      <input type="number" value={extraCreditAmount}
+                        onChange={(e) => setExtraCreditAmount(Number(e.target.value))}
+                        style={{ width: '40px', background: 'transparent', border: 'none', color: 'var(--accent)', fontSize: '12px', fontWeight: 'bold', outline: 'none', padding: 0 }} />
+                    </div>
                   )}
                 </div>
-                <span className="pt-empty-title">{trading ? 'Scanning for Opportunities...' : 'Algo Idle'}</span>
-                <span className="pt-empty-desc">{trading ? 'The engine is analyzing live option chains for ratio spread entries. Positions will appear here automatically.' : 'Select expiry and click Start Trading to begin automated ratio spread scanning.'}</span>
+
+                <div className="pt-fee-toggle-container">
+                  <span className={`pt-fee-toggle-label ${!includeFees ? 'active' : ''}`} onClick={() => setIncludeFees(false)}>Gross</span>
+                  <label className="pt-switch">
+                    <input type="checkbox" checked={includeFees} onChange={e => setIncludeFees(e.target.checked)} />
+                    <span className="pt-slider"></span>
+                  </label>
+                  <span className={`pt-fee-toggle-label ${includeFees ? 'active' : ''}`} onClick={() => setIncludeFees(true)}>Net</span>
+                </div>
+
+                <div style={{ fontSize: 14, color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums' }}>
+                  Spot: {spotPrice ? spotPrice.toLocaleString() : '---'}
+                </div>
+
+                <div className="pt-live-badge">
+                  <div className="pt-live-dot" style={{ background: engineStatusColor }} />
+                  {engineStatusLabel}
+                </div>
+              </div>
+            </div>
+
+            {positions.filter(p => p.underlying === underlying).length === 0 ? (
+              <div className="pt-empty">
+                <div className="pt-empty-icon scanning">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke={engineStatusColor} strokeWidth="2">
+                    <circle cx="12" cy="12" r="10" />
+                    <path d="M12 2a10 10 0 0 1 0 20" strokeDasharray="4 4">
+                      <animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="3s" repeatCount="indefinite" />
+                    </path>
+                  </svg>
+                </div>
+                <span className="pt-empty-title">No Active Positions</span>
+                <span className="pt-empty-desc">The server engine is scanning for entries. Positions appear here automatically when entered.</span>
               </div>
             ) : (
               <div className="pt-table-scroll">
@@ -2069,12 +976,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                   </tr></thead>
                   <tbody>
                     {positions.filter(p => p.underlying === underlying).map(p => {
-                      const pnlValue = includeFees ? p.unrealizedNetPnl : p.unrealizedGrossPnl || p.unrealizedPnl;
-                      const pnlClass = ((extraCreditMode && p.entrySellPrice > 0 ? (
-                        pnlValue + (Math.round((extraCreditAmount / p.entrySellPrice) / 0.25) * 0.25) * (p.entrySellPrice - (p.currentSellPrice || p.entrySellPrice))
-                      ) : pnlValue) || 0) > 0 ? 'positive' : ((extraCreditMode && p.entrySellPrice > 0 ? (
-                        pnlValue + (Math.round((extraCreditAmount / p.entrySellPrice) / 0.25) * 0.25) * (p.entrySellPrice - (p.currentSellPrice || p.entrySellPrice))
-                      ) : pnlValue) || 0) < 0 ? 'negative' : 'zero';
+                      const pnlBase = includeFees ? p.unrealizedNetPnl : p.unrealizedGrossPnl;
+                      const extraAdj = extraCreditMode && p.entrySellPrice > 0
+                        ? (Math.round((extraCreditAmount / p.entrySellPrice) / 0.25) * 0.25) * (p.entrySellPrice - (p.currentSellPrice || p.entrySellPrice))
+                        : 0;
+                      const pnlValue = (pnlBase || 0) + extraAdj;
+                      const pnlClass = pnlValue > 0 ? 'positive' : pnlValue < 0 ? 'negative' : 'zero';
                       const displaySellQty = extraCreditMode && p.entrySellPrice > 0
                         ? p.sellQty + (Math.round((extraCreditAmount / p.entrySellPrice) / 0.25) * 0.25)
                         : p.sellQty;
@@ -2095,11 +1002,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                               <span className="pt-strike-sell" style={{ fontSize: '11px', opacity: 0.8 }}>{p.sellLeg.strike.toLocaleString()}</span>
                             </div>
                           </td>
-                          <td>
-                            <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-dim)' }}>
-                              {p.entrySpotPrice ? p.entrySpotPrice.toLocaleString() : '—'}
-                            </span>
-                          </td>
+                          <td><span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-dim)' }}>{p.entrySpotPrice ? p.entrySpotPrice.toLocaleString() : '—'}</span></td>
                           <td>
                             <div style={{ display: 'flex', flexDirection: 'column', fontSize: '12px' }}>
                               <span style={{ color: '#3fb950' }}>{p.entryBuyPrice?.toFixed(2)}</span>
@@ -2124,20 +1027,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                               <span>{p.currentSellIv != null ? p.currentSellIv.toFixed(1) + '%' : '—'}</span>
                             </div>
                           </td>
-                          <td>
-                            <span className={`pt-pnl ${pnlClass}`}>
-                              {(extraCreditMode && p.entrySellPrice > 0 ? (
-                                pnlValue + (Math.round((extraCreditAmount / p.entrySellPrice) / 0.25) * 0.25) * (p.entrySellPrice - (p.currentSellPrice || p.entrySellPrice))
-                              ) : pnlValue) > 0 ? '+' : ''}
-                              {(extraCreditMode && p.entrySellPrice > 0 ? (
-                                pnlValue + (Math.round((extraCreditAmount / p.entrySellPrice) / 0.25) * 0.25) * (p.entrySellPrice - (p.currentSellPrice || p.entrySellPrice))
-                              ) : pnlValue).toFixed(2)}
-                            </span>
-                          </td>
+                          <td><span className={`pt-pnl ${pnlClass}`}>{pnlValue > 0 ? '+' : ''}{pnlValue.toFixed(2)}</span></td>
                           <td>
                             <div className="pt-margin-cell">
                               <span>${(p.margin || 0).toFixed(0)}</span>
-                              <div className="pt-margin-bar"><div className="pt-margin-fill" style={{ width: `${Math.min(100, (p.margin / (totalMargin || 1)) * 100)}%` }} /></div>
+                              <div className="pt-margin-bar">
+                                <div className="pt-margin-fill" style={{ width: `${Math.min(100, (p.margin / (totalMargin || 1)) * 100)}%` }} />
+                              </div>
                             </div>
                           </td>
                           <td><span className="pt-duration">{fmtDuration(new Date() - p.entryTime)}</span></td>
@@ -2153,108 +1049,51 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           {/* ── Trade History ────────────────────────── */}
           <div className="pt-section">
             <div className="pt-section-header" style={{
-              flexDirection: 'column',
-              alignItems: 'stretch',
-              gap: '16px',
-              padding: '16px 20px',
-              borderBottom: '1px solid var(--border)',
+              flexDirection: 'column', alignItems: 'stretch', gap: '16px',
+              padding: '16px 20px', borderBottom: '1px solid var(--border)',
               background: 'linear-gradient(180deg, var(--bg2) 0%, var(--bg) 100%)'
             }}>
               {/* Row 1: Title and Centered Filter */}
               <div style={{ display: 'flex', alignItems: 'center', width: '100%', position: 'relative', minHeight: '36px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                  <div style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    width: '32px', height: '32px', borderRadius: '8px',
-                    background: 'rgba(240, 185, 11, 0.1)', color: 'var(--accent)'
-                  }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '32px', height: '32px', borderRadius: '8px', background: 'rgba(240, 185, 11, 0.1)', color: 'var(--accent)' }}>
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 8v4l3 3" /><circle cx="12" cy="12" r="10" /></svg>
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column' }}>
                     <span style={{ fontWeight: 700, fontSize: '14px', letterSpacing: '0.5px', color: 'var(--text)' }}>Trade History</span>
                     <span style={{ fontSize: '10px', color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '1px' }}>Closed Positions</span>
                   </div>
-                  <span style={{
-                    background: 'var(--bg3)',
-                    color: 'var(--accent)',
-                    padding: '2px 10px',
-                    borderRadius: '20px',
-                    fontSize: '11px',
-                    fontWeight: 700,
-                    border: '1px solid rgba(240, 185, 11, 0.2)'
-                  }}>
+                  <span style={{ background: 'var(--bg3)', color: 'var(--accent)', padding: '2px 10px', borderRadius: '20px', fontSize: '11px', fontWeight: 700, border: '1px solid rgba(240, 185, 11, 0.2)' }}>
                     {filteredTradeHistory.length}
                   </span>
                 </div>
 
-                {/* Centered Filter Bar */}
-                <div style={{
-                  position: 'absolute', left: '50%', transform: 'translateX(-50%)',
-                  display: 'flex', alignItems: 'center', gap: '4px',
-                  background: 'var(--bg3)', padding: '4px 8px', borderRadius: '12px',
-                  border: '1px solid var(--border)',
-                  boxShadow: '0 4px 12px rgba(0,0,0,0.15)'
-                }}>
-                  <button
-                    onClick={() => adjustFilterDay(-1)}
-                    title="Previous Day"
-                    style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', display: 'flex', padding: '6px', borderRadius: '6px', transition: 'all 0.2s' }}
-                    className="nav-btn-hover"
-                  >
+                {/* Centered Date Filter */}
+                <div style={{ position: 'absolute', left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: '4px', background: 'var(--bg3)', padding: '4px 8px', borderRadius: '12px', border: '1px solid var(--border)', boxShadow: '0 4px 12px rgba(0,0,0,0.15)' }}>
+                  <button onClick={() => adjustFilterDay(-1)} title="Previous Day" style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', display: 'flex', padding: '6px', borderRadius: '6px' }}>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
                   </button>
-
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 8px', borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)', margin: '0 4px' }}>
-                    <input
-                      type="date"
-                      value={historyFilterDate}
-                      onChange={(e) => setHistoryFilterDate(e.target.value)}
-                      style={{
-                        background: 'none', border: 'none', color: 'var(--text)', fontSize: '13px', fontWeight: 600, padding: 0, width: '125px', outline: 'none', cursor: 'pointer'
-                      }}
-                    />
+                    <input type="date" value={historyFilterDate} onChange={(e) => setHistoryFilterDate(e.target.value)}
+                      style={{ background: 'none', border: 'none', color: 'var(--text)', fontSize: '13px', fontWeight: 600, padding: 0, width: '125px', outline: 'none', cursor: 'pointer' }} />
                     <span style={{ fontSize: '10px', color: 'var(--accent)', fontWeight: 700, background: 'rgba(240, 185, 11, 0.1)', padding: '2px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
                       12:00 UTC SESSION
                     </span>
                   </div>
-
-                  <button
-                    onClick={() => adjustFilterDay(1)}
-                    title="Next Day"
-                    style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', display: 'flex', padding: '6px', borderRadius: '6px', transition: 'all 0.2s' }}
-                    className="nav-btn-hover"
-                  >
+                  <button onClick={() => adjustFilterDay(1)} title="Next Day" style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', display: 'flex', padding: '6px', borderRadius: '6px' }}>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
                   </button>
-
-                  <button
-                    onClick={resetToToday}
-                    style={{
-                      background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: '8px',
-                      padding: '4px 12px', fontSize: '11px', color: 'var(--text)', fontWeight: 700,
-                      cursor: 'pointer', transition: 'all 0.2s', marginLeft: '4px'
-                    }}
-                    className="today-btn-hover"
-                  >
+                  <button onClick={resetToToday} style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: '8px', padding: '4px 12px', fontSize: '11px', color: 'var(--text)', fontWeight: 700, cursor: 'pointer', marginLeft: '4px' }}>
                     TODAY
                   </button>
-
-                  <button
-                    onClick={() => setHistoryFilterDate('')}
-                    title="Show All History"
-                    style={{
-                      background: historyFilterDate ? 'none' : 'rgba(240, 185, 11, 0.1)',
-                      border: 'none',
-                      color: historyFilterDate ? 'var(--text-dim)' : 'var(--accent)',
-                      cursor: 'pointer', display: 'flex', padding: '6px', borderRadius: '6px', marginLeft: '4px'
-                    }}
-                  >
+                  <button onClick={() => setHistoryFilterDate('')} title="Show All History"
+                    style={{ background: historyFilterDate ? 'none' : 'rgba(240, 185, 11, 0.1)', border: 'none', color: historyFilterDate ? 'var(--text-dim)' : 'var(--accent)', cursor: 'pointer', display: 'flex', padding: '6px', borderRadius: '6px', marginLeft: '4px' }}>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12h18M3 6h18M3 18h18" /></svg>
                   </button>
                 </div>
               </div>
 
-              {/* Row 2: Stats and Export Aligned Right */}
+              {/* Row 2: Stats and Export */}
               {filteredTradeHistory.length > 0 && (
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '24px', padding: '0 4px' }}>
                   <div className="pt-history-stats" style={{ gap: '20px' }}>
@@ -2274,23 +1113,15 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                       </span>
                     </div>
                   </div>
-
-                  <button
-                    className="pt-export-btn"
-                    onClick={exportCSV}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: '8px',
-                      padding: '6px 14px', borderRadius: '8px',
-                      background: 'var(--bg3)', border: '1px solid var(--border)',
-                      color: 'var(--text)', fontSize: '12px', fontWeight: 600, cursor: 'pointer'
-                    }}
-                  >
+                  <button className="pt-export-btn" onClick={exportCSV}
+                    style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 14px', borderRadius: '8px', background: 'var(--bg3)', border: '1px solid var(--border)', color: 'var(--text)', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
                     Export CSV
                   </button>
                 </div>
               )}
             </div>
+
             {filteredTradeHistory.length === 0 ? (
               <div className="pt-empty">
                 <div className="pt-empty-icon idle">
@@ -2321,8 +1152,17 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                   </tr></thead>
                   <tbody>
                     {filteredTradeHistory.map((t, i) => {
-                      const pnlValue = includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || t.realizedPnl || 0);
+                      const pnlBase = includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || 0);
+                      const extraAdj = extraCreditMode && t.entrySellPrice > 0
+                        ? (Math.round((extraCreditAmount / t.entrySellPrice) / 0.25) * 0.25) * (t.entrySellPrice - (t.exitSellPrice || t.entrySellPrice))
+                        : 0;
+                      const pnlValue = pnlBase + extraAdj;
+                      const pnlClass = pnlValue > 0 ? 'positive' : pnlValue < 0 ? 'negative' : 'zero';
                       const durationMs = t.exitTime && t.entryTime ? (t.exitTime - t.entryTime) : 0;
+                      const displaySellQty = extraCreditMode && t.entrySellPrice > 0
+                        ? t.sellQty + (Math.round((extraCreditAmount / t.entrySellPrice) / 0.25) * 0.25)
+                        : t.sellQty;
+
                       return (
                         <tr key={i}>
                           <td style={{ color: 'var(--text-dim)', fontSize: '11px', whiteSpace: 'nowrap' }}>{formatDateTime(t.entryTime)}</td>
@@ -2333,16 +1173,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                               <span className={`pt-type-badge ${t.type}`}>
                                 {t.type.toUpperCase()}
-                                {(t._isPartial || t.exitReason?.includes('%')) && (
+                                {t._isPartial && (
                                   <span style={{ fontSize: '9px', marginLeft: 4, opacity: 0.8 }}>
                                     ({t.exitReason?.match(/\d+%/)?.[0] || 'P'})
                                   </span>
                                 )}
                               </span>
                               <span style={{ fontSize: '10px', color: extraCreditMode ? 'var(--accent)' : 'var(--text-dim)', fontWeight: 600 }}>
-                                {t.buyLeg.lotSize.toFixed(2)}:{(extraCreditMode && t.entrySellPrice > 0
-                                  ? t.sellQty + (Math.round((extraCreditAmount / t.entrySellPrice) / 0.25) * 0.25)
-                                  : t.sellQty).toFixed(2)}
+                                {t.buyLeg.lotSize.toFixed(2)}:{displaySellQty.toFixed(2)}
                               </span>
                             </div>
                           </td>
@@ -2362,7 +1200,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                             <div style={{ display: 'flex', flexDirection: 'column', fontSize: '12px' }}>
                               <span style={{ color: '#3fb950' }}>{t.entryBuyPrice?.toFixed(2)}</span>
                               <span style={{ color: '#f85149' }}>{t.entrySellPrice?.toFixed(2)}</span>
-                              <span style={{ fontSize: '10px', color: extraCreditAmount && extraCreditMode ? 'var(--accent)' : 'var(--text-dim)', fontWeight: 600, marginTop: 2 }}>
+                              <span style={{ fontSize: '10px', color: extraCreditMode ? 'var(--accent)' : 'var(--text-dim)', fontWeight: 600, marginTop: 2 }}>
                                 {renderRatio(t)}
                               </span>
                             </div>
@@ -2374,16 +1212,15 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                             </div>
                           </td>
                           <td>
-                            <div style={{ display: 'flex', flexDirection: 'column', fontSize: '11px', color: 'var(--text-dim)' }}>
-                              <span>${t.entryFee?.toFixed(2) || '0.00'}</span>
+                            <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+                              ${t.entryFee?.toFixed(2) || '0.00'}
                             </div>
                           </td>
                           <td>
-                            <div style={{ display: 'flex', flexDirection: 'column', fontSize: '11px', color: 'var(--text-dim)' }}>
-                              <span>${t.exitFee?.toFixed(2) || '0.00'}</span>
+                            <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+                              ${t.exitFee?.toFixed(2) || '0.00'}
                             </div>
                           </td>
-
                           <td>
                             <div style={{ display: 'flex', flexDirection: 'column', fontSize: '12px' }}>
                               <span style={{ color: '#3fb950' }}>{t.exitBuyPrice?.toFixed(2) || '—'}</span>
@@ -2398,24 +1235,15 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                           </td>
                           <td>
                             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
-                              <span className={`pt-pnl ${(extraCreditMode && t.entrySellPrice > 0 ? (
-                                pnlValue + (Math.round((extraCreditAmount / t.entrySellPrice) / 0.25) * 0.25) * (t.entrySellPrice - (t.exitSellPrice || t.entrySellPrice))
-                              ) : pnlValue) > 0 ? 'positive' : (extraCreditMode && t.entrySellPrice > 0 ? (
-                                pnlValue + (Math.round((extraCreditAmount / t.entrySellPrice) / 0.25) * 0.25) * (t.entrySellPrice - (t.exitSellPrice || t.entrySellPrice))
-                              ) : pnlValue) < 0 ? 'negative' : 'zero'}`}>
-                                {(extraCreditMode && t.entrySellPrice > 0 ? (
-                                  pnlValue + (Math.round((extraCreditAmount / t.entrySellPrice) / 0.25) * 0.25) * (t.entrySellPrice - (t.exitSellPrice || t.entrySellPrice))
-                                ) : pnlValue) > 0 ? '+' : ''}
-                                {(extraCreditMode && t.entrySellPrice > 0 ? (
-                                  pnlValue + (Math.round((extraCreditAmount / t.entrySellPrice) / 0.25) * 0.25) * (t.entrySellPrice - (t.exitSellPrice || t.entrySellPrice))
-                                ) : pnlValue).toFixed(2)}
+                              <span className={`pt-pnl ${pnlClass}`}>
+                                {pnlValue > 0 ? '+' : ''}{pnlValue.toFixed(2)}
                               </span>
                               <span style={{ fontSize: '10px', color: 'var(--text-dim)' }}>Margin: ${t.margin?.toFixed(0)}</span>
                             </div>
                           </td>
                           <td><span className={`pt-exit-badge ${exitBadgeClass(t.exitReason)}`}>{t.exitReason}</span></td>
                         </tr>
-                      )
+                      );
                     })}
                   </tbody>
                 </table>

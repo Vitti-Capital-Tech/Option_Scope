@@ -76,7 +76,7 @@ const ChartPanel = forwardRef(function ChartPanel({
   const smaSeriesRef = useRef(null);
   const candlesCacheRef = useRef([]);
   const [showSma, setShowSma] = useState(false);
-  
+
   const drawnLinesRef = useRef([]);
   const [drawMode, setDrawMode] = useState(false);
   const drawModeRef = useRef(false);
@@ -94,7 +94,7 @@ const ChartPanel = forwardRef(function ChartPanel({
 
   useEffect(() => {
     if (!seriesRef.current) return;
-    
+
     // Remove all old lines
     Object.values(alertLinesRef.current).forEach(line => {
       seriesRef.current.removePriceLine(line);
@@ -253,7 +253,7 @@ const ChartPanel = forwardRef(function ChartPanel({
 
   useEffect(() => {
     if (!chartRef.current) return;
-    
+
     if (showSma) {
       if (!smaSeriesRef.current) {
         smaSeriesRef.current = chartRef.current.addSeries(LineSeries, {
@@ -263,7 +263,7 @@ const ChartPanel = forwardRef(function ChartPanel({
           crosshairMarkerRadius: 4,
           priceScaleId: 'right'
         });
-        
+
         const candles = candlesCacheRef.current;
         if (candles.length >= 20) {
           const smaData = [];
@@ -286,11 +286,11 @@ const ChartPanel = forwardRef(function ChartPanel({
   // Handle Chart Clicks for Drawing
   useEffect(() => {
     if (!chartRef.current || !seriesRef.current) return;
-    
+
     const clickHandler = (param) => {
       console.log('Chart clicked:', param);
       if (!drawModeRef.current) return;
-      
+
       let price = null;
       if (param.point) {
         price = seriesRef.current.coordinateToPrice(param.point.y);
@@ -311,14 +311,14 @@ const ChartPanel = forwardRef(function ChartPanel({
         });
         drawnLinesRef.current.push(line);
         setDrawnCount(prev => prev + 1);
-        
+
         // Auto-off
         setDrawMode(false);
         drawModeRef.current = false;
         if (containerRef.current) containerRef.current.style.cursor = 'default';
       }
     };
-    
+
     chartRef.current.subscribeClick(clickHandler);
 
     return () => {
@@ -335,7 +335,7 @@ const ChartPanel = forwardRef(function ChartPanel({
       let range;
       if (!fit) range = chartRef.current?.timeScale().getVisibleLogicalRange();
       seriesRef.current.setData(candles);
-      
+
       if (smaSeriesRef.current && candles.length >= 20) {
         const smaData = [];
         for (let i = 19; i < candles.length; i++) {
@@ -359,7 +359,7 @@ const ChartPanel = forwardRef(function ChartPanel({
         // For older candles, we should ideally use setData, but for small corrections
         // to the "live" tip, this works.
         seriesRef.current.update(candle);
-        
+
         const cache = candlesCacheRef.current;
         if (cache.length === 0) {
           cache.push(candle);
@@ -375,7 +375,7 @@ const ChartPanel = forwardRef(function ChartPanel({
             if (idx !== -1) cache[idx] = candle;
           }
         }
-        
+
         // Always maintain max history for SMA
         if (cache.length > 500) cache.shift();
 
@@ -476,10 +476,10 @@ const ChartPanel = forwardRef(function ChartPanel({
               <select
                 value={newAlert.dir}
                 onChange={e => setNewAlert(prev => ({ ...prev, dir: e.target.value }))}
-                style={{ 
-                  background: 'transparent', border: 'none', 
-                  color: newAlert.dir === '>=' ? '#3fb950' : '#f85149', 
-                  fontSize: 11, fontWeight: 700, outline: 'none', cursor: 'pointer' 
+                style={{
+                  background: 'transparent', border: 'none',
+                  color: newAlert.dir === '>=' ? '#3fb950' : '#f85149',
+                  fontSize: 11, fontWeight: 700, outline: 'none', cursor: 'pointer'
                 }}
               >
                 <option value=">=" style={{ color: '#3fb950' }}>&ge;</option>
@@ -521,8 +521,8 @@ const ChartPanel = forwardRef(function ChartPanel({
                   padding: '3px 8px', borderRadius: 4, fontSize: 10, color: a.dir === '>=' ? '#3fb950' : '#f85149', fontWeight: 700, flexShrink: 0
                 }}>
                   {a.dir} {parseFloat(a.price).toFixed(2)}
-                  <div 
-                    onClick={() => onRemoveAlert(a.id)} 
+                  <div
+                    onClick={() => onRemoveAlert(a.id)}
                     style={{ cursor: 'pointer', marginLeft: 6, display: 'flex', alignItems: 'center', opacity: 0.7 }}
                     className="alert-delete-icon"
                   >
@@ -554,7 +554,7 @@ const ChartPanel = forwardRef(function ChartPanel({
             pointerEvents: 'none'
           }} />
         )}
-        
+
         {/* TradingView-style Tools */}
         <div style={{
           position: 'absolute', bottom: 12, right: 12, zIndex: 10,
@@ -562,69 +562,69 @@ const ChartPanel = forwardRef(function ChartPanel({
           borderRadius: 8, border: '1px solid var(--border)', backdropFilter: 'blur(4px)'
         }}>
           <button title="Scroll Left" className="tv-btn" onClick={() => {
-             const ts = chartRef.current?.timeScale();
-             if(!ts) return;
-             const range = ts.getVisibleLogicalRange();
-             if(!range) return;
-             const shift = (range.to - range.from) * 0.2;
-             ts.setVisibleLogicalRange({ from: range.from - shift, to: range.to - shift });
+            const ts = chartRef.current?.timeScale();
+            if (!ts) return;
+            const range = ts.getVisibleLogicalRange();
+            if (!range) return;
+            const shift = (range.to - range.from) * 0.2;
+            ts.setVisibleLogicalRange({ from: range.from - shift, to: range.to - shift });
           }}>
-             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
           </button>
-          
+
           <button title="Scroll Right" className="tv-btn" onClick={() => {
-             const ts = chartRef.current?.timeScale();
-             if(!ts) return;
-             const range = ts.getVisibleLogicalRange();
-             if(!range) return;
-             const shift = (range.to - range.from) * 0.2;
-             ts.setVisibleLogicalRange({ from: range.from + shift, to: range.to + shift });
+            const ts = chartRef.current?.timeScale();
+            if (!ts) return;
+            const range = ts.getVisibleLogicalRange();
+            if (!range) return;
+            const shift = (range.to - range.from) * 0.2;
+            ts.setVisibleLogicalRange({ from: range.from + shift, to: range.to + shift });
           }}>
-             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
           </button>
 
           <button title="Go to Current Time" className="tv-btn" onClick={() => {
-             const ts = chartRef.current?.timeScale();
-             if(!ts || !candlesCacheRef.current.length) return;
-             
-             const lastIndex = candlesCacheRef.current.length - 1;
-             const width = ts.width();
-             const barSpacing = ts.options().barSpacing || 6;
-             const barsVisible = width / barSpacing;
-             
-             ts.setVisibleLogicalRange({
-               from: lastIndex - barsVisible / 2,
-               to: lastIndex + barsVisible / 2
-             });
+            const ts = chartRef.current?.timeScale();
+            if (!ts || !candlesCacheRef.current.length) return;
+
+            const lastIndex = candlesCacheRef.current.length - 1;
+            const width = ts.width();
+            const barSpacing = ts.options().barSpacing || 6;
+            const barsVisible = width / barSpacing;
+
+            ts.setVisibleLogicalRange({
+              from: lastIndex - barsVisible / 2,
+              to: lastIndex + barsVisible / 2
+            });
           }}>
-             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="13 17 18 12 13 7"></polyline><polyline points="6 17 11 12 6 7"></polyline></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="13 17 18 12 13 7"></polyline><polyline points="6 17 11 12 6 7"></polyline></svg>
           </button>
 
           <div style={{ width: 1, background: 'var(--border)', margin: '4px 4px' }} />
 
           <button title="Draw S/R Line" className="tv-btn" onClick={toggleDrawMode} style={{ color: drawMode ? '#e3b341' : 'var(--text-dim)', background: drawMode ? 'rgba(227, 179, 65, 0.15)' : 'transparent' }}>
-             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2v20"></path><path d="M8 8l4-4 4 4"></path><path d="M8 16l4 4 4-4"></path></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2v20"></path><path d="M8 8l4-4 4 4"></path><path d="M8 16l4 4 4-4"></path></svg>
           </button>
-          
+
           {drawnCount > 0 && (
             <>
               <button title="Undo Last Line" className="tv-btn" onClick={() => {
                 const last = drawnLinesRef.current.pop();
                 if (last) {
-                  try { seriesRef.current.removePriceLine(last); } catch(e){}
+                  try { seriesRef.current.removePriceLine(last); } catch (e) { }
                   setDrawnCount(drawnLinesRef.current.length);
                 }
               }}>
-                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7v6h6"></path><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"></path></svg>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7v6h6"></path><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"></path></svg>
               </button>
               <button title="Clear All S/R Lines" className="tv-btn" onClick={() => {
                 drawnLinesRef.current.forEach(line => {
-                  try { seriesRef.current.removePriceLine(line); } catch(e){}
+                  try { seriesRef.current.removePriceLine(line); } catch (e) { }
                 });
                 drawnLinesRef.current = [];
                 setDrawnCount(0);
               }} style={{ color: '#f85149' }}>
-                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
               </button>
             </>
           )}
@@ -632,33 +632,33 @@ const ChartPanel = forwardRef(function ChartPanel({
           <div style={{ width: 1, background: 'var(--border)', margin: '4px 4px' }} />
 
           <button title="Zoom Out" className="tv-btn" onClick={() => {
-             const ts = chartRef.current?.timeScale();
-             if(!ts) return;
-             const range = ts.getVisibleLogicalRange();
-             if(!range) return;
-             const diff = (range.to - range.from) * 0.2;
-             ts.setVisibleLogicalRange({ from: range.from - diff, to: range.to + diff });
+            const ts = chartRef.current?.timeScale();
+            if (!ts) return;
+            const range = ts.getVisibleLogicalRange();
+            if (!range) return;
+            const diff = (range.to - range.from) * 0.2;
+            ts.setVisibleLogicalRange({ from: range.from - diff, to: range.to + diff });
           }}>
-             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line><line x1="8" y1="11" x2="14" y2="11"></line></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line><line x1="8" y1="11" x2="14" y2="11"></line></svg>
           </button>
-          
+
           <button title="Zoom In" className="tv-btn" onClick={() => {
-             const ts = chartRef.current?.timeScale();
-             if(!ts) return;
-             const range = ts.getVisibleLogicalRange();
-             if(!range) return;
-             const diff = (range.to - range.from) * 0.2;
-             ts.setVisibleLogicalRange({ from: range.from + diff, to: range.to - diff });
+            const ts = chartRef.current?.timeScale();
+            if (!ts) return;
+            const range = ts.getVisibleLogicalRange();
+            if (!range) return;
+            const diff = (range.to - range.from) * 0.2;
+            ts.setVisibleLogicalRange({ from: range.from + diff, to: range.to - diff });
           }}>
-             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line><line x1="11" y1="8" x2="11" y2="14"></line><line x1="8" y1="11" x2="14" y2="11"></line></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line><line x1="11" y1="8" x2="11" y2="14"></line><line x1="8" y1="11" x2="14" y2="11"></line></svg>
           </button>
 
           <div style={{ width: 1, background: 'var(--border)', margin: '4px 4px' }} />
 
           <button title="Auto Fit" className="tv-btn" onClick={() => {
-             chartRef.current?.timeScale().fitContent();
+            chartRef.current?.timeScale().fitContent();
           }}>
-             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>
           </button>
         </div>
       </div>
@@ -827,7 +827,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
   const addToast = useCallback((msg, type = 'alert') => {
     const id = Date.now() + Math.random();
     setToasts(t => [...t, { id, msg, type }]);
-    
+
     if (type === 'alert') {
       setAlertLogs(prev => [{
         id: Date.now(),
@@ -835,7 +835,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
         msg
       }, ...prev].slice(0, 50));
     }
-    
+
     setTimeout(() => {
       setToasts(t => t.filter(x => x.id !== id));
     }, 8000);
@@ -877,8 +877,8 @@ export default function App({ onNavigate, theme, toggleTheme }) {
         if (!mark && !ltp) return;
         const prevCache = tickerCacheRef.current[sym] || { mark: 0, ltp: 0 };
         tickerCacheRef.current[sym] = {
-           mark: mark || prevCache.mark,
-           ltp: ltp || prevCache.ltp
+          mark: mark || prevCache.mark,
+          ltp: ltp || prevCache.ltp
         };
 
         if (msg.greeks) {
@@ -900,7 +900,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
             const ppCache = tickerCacheRef.current[w.putSym] || { mark: 0, ltp: 0 };
             const pC = w.priceType === 'ltp' ? (pcCache.ltp || pcCache.mark) : (pcCache.mark || pcCache.ltp);
             const pP = w.priceType === 'ltp' ? (ppCache.ltp || ppCache.mark) : (ppCache.mark || ppCache.ltp);
-            
+
             const gC = greekCacheRef.current[w.callSym];
             const gP = greekCacheRef.current[w.putSym];
 
@@ -949,7 +949,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                   const target = parseFloat(alertObj.price);
                   const alertId = `${w.id}-${alertObj.id}`;
                   const triggered = alertObj.dir === '>=' ? newPrice >= target : newPrice <= target;
-                  
+
                   if (triggered && !triggeredAlerts.current.has(alertId)) {
                     triggeredAlerts.current.add(alertId);
                     playAlertSound();
@@ -957,9 +957,9 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                       : w.type === 'call' ? `CALL ${w.callStrike}C`
                         : `PUT ${w.putStrike}P`;
                     addToast(`Watchlist Alert: ${name} ${alertObj.dir} ${target} (Hit: ${newPrice.toFixed(2)})`);
-                    
+
                     // Auto-remove triggered alert
-                    setWatchList(prevW => prevW.map(item => 
+                    setWatchList(prevW => prevW.map(item =>
                       item.id === w.id ? { ...item, alerts: (item.alerts || []).filter(a => a.id !== alertObj.id) } : item
                     ));
                   } else if (!triggered) {
@@ -971,11 +971,11 @@ export default function App({ onNavigate, theme, toggleTheme }) {
           });
           return changed ? next : prev;
         });
-        }
-      };
-      listWsRef.current = ws;
-      return () => ws.close();
-    }, [watchList, addToast]);
+      }
+    };
+    listWsRef.current = ws;
+    return () => ws.close();
+  }, [watchList, addToast]);
 
 
   // ── Notification Permissions ──────────────────────────────────────────────
@@ -1057,12 +1057,12 @@ export default function App({ onNavigate, theme, toggleTheme }) {
   // ── Imperative combine update ─────────────────────────────────────────────
   const updateComb = useCallback((c, p) => {
     if (!c || !p) return;
-    
+
     // At candle boundaries, call and put may temporarily have different timestamps.
     // Use the OLDER timestamp to keep the combined chart stable until both legs
     // have transitioned to the new bucket.
     const time = Math.min(c.time, p.time);
-    
+
     // If the two legs are in different buckets, use the old bucket's close
     // from whichever leg has already rolled over, to avoid a spike.
     let cClose = c.close, pClose = p.close;
@@ -1074,11 +1074,11 @@ export default function App({ onNavigate, theme, toggleTheme }) {
       cClose = c.time === time ? c.close : c.open;  // if c jumped ahead, use its open (≈ previous close)
       pClose = p.time === time ? p.close : p.open;
     }
-    
+
     const combinedPrice = cClose + pClose;
-    
+
     let current = lastComb.current;
-    
+
     if (!current || time > current.time) {
       // New bucket started or first data
       current = {
@@ -1101,7 +1101,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
       if (combinedPrice > current.high) current.high = combinedPrice;
       if (combinedPrice < current.low) current.low = combinedPrice;
     }
-    
+
     lastComb.current = current;
     combRef.current?.update(current);
   }, []);
@@ -1268,7 +1268,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                   addToast(msg);
 
                   // Auto-remove triggered alert
-                  setWatchList(prev => prev.map(w => 
+                  setWatchList(prev => prev.map(w =>
                     w.id === selectedWatchId ? { ...w, alerts: w.alerts.filter(a => a.id !== alertObj.id) } : w
                   ));
                 } else if (!isTriggered) {
@@ -1369,7 +1369,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
         // ── Data Hub: extract and store ALL WebSocket streams ──────────────
         (msg) => {
           const sym = msg.symbol;
-          
+
           // ── Master Sync: Update global caches from the active stream ────────
           if (msg.type === 'v2/ticker') {
             const mark = parseFloat(msg.mark_price || 0);
@@ -1490,11 +1490,11 @@ export default function App({ onNavigate, theme, toggleTheme }) {
       <div style={{ position: 'fixed', top: 20, right: 20, zIndex: 9999, display: 'flex', flexDirection: 'column', gap: 10, pointerEvents: 'none' }}>
         {toasts.map(t => (
           <div key={t.id} style={{
-            background: theme === 'dark' ? 'rgba(10, 13, 18, 0.98)' : 'rgba(255, 255, 255, 0.98)', 
-            border: `1px solid ${theme === 'dark' ? 'rgba(227, 179, 65, 0.3)' : 'rgba(227, 179, 65, 0.6)'}`, 
+            background: theme === 'dark' ? 'rgba(10, 13, 18, 0.98)' : 'rgba(255, 255, 255, 0.98)',
+            border: `1px solid ${theme === 'dark' ? 'rgba(227, 179, 65, 0.3)' : 'rgba(227, 179, 65, 0.6)'}`,
             borderLeft: '4px solid #e3b341',
-            padding: '12px 16px', borderRadius: 8, 
-            color: theme === 'dark' ? '#fff' : '#1e2329', 
+            padding: '12px 16px', borderRadius: 8,
+            color: theme === 'dark' ? '#fff' : '#1e2329',
             fontSize: 12, fontFamily: 'JetBrains Mono, monospace',
             boxShadow: theme === 'dark' ? '0 12px 32px rgba(0,0,0,0.7)' : '0 12px 32px rgba(0,0,0,0.15)',
             animation: 'slideIn 0.3s ease-out'
@@ -1785,15 +1785,15 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                     }
                     chartGreeks = putGreeks;
                   }
-                  
+
                   if (chartPrice > 0) {
-                     data = {
-                        ...data,
-                        price: chartPrice,
-                        high: chartHigh > 0 ? chartHigh : data.high,
-                        low: chartLow < Infinity ? chartLow : data.low,
-                        greeks: chartGreeks || data.greeks
-                     };
+                    data = {
+                      ...data,
+                      price: chartPrice,
+                      high: chartHigh > 0 ? chartHigh : data.high,
+                      low: chartLow < Infinity ? chartLow : data.low,
+                      greeks: chartGreeks || data.greeks
+                    };
                   }
                 }
 
@@ -1911,7 +1911,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                             <circle cx="12" cy="3" r="1" fill="#e3b341" />
                           </svg>
                         </div>
-                        
+
                         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
                           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                             {(item.alerts || []).map(a => (
@@ -1920,10 +1920,10 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                                 padding: '2px 8px', borderRadius: 4, fontSize: 10, color: a.dir === '>=' ? '#3fb950' : '#f85149', fontWeight: 700
                               }}>
                                 {a.dir} {parseFloat(a.price).toFixed(2)}
-                                <div 
+                                <div
                                   onClick={() => {
                                     setWatchList(prev => prev.map(w => w.id === item.id ? { ...w, alerts: w.alerts.filter(x => x.id !== a.id) } : w));
-                                  }} 
+                                  }}
                                   style={{ cursor: 'pointer', opacity: 0.6, marginLeft: 4, display: 'flex', alignItems: 'center' }}
                                   className="alert-delete-icon"
                                 >
@@ -1937,12 +1937,12 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                           </div>
 
                           <div className="watch-alert-inputs" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                            <select 
+                            <select
                               id={`dir-${item.id}`}
-                              style={{ 
-                                background: 'transparent', border: 'none', 
+                              style={{
+                                background: 'transparent', border: 'none',
                                 color: document.getElementById(`dir-${item.id}`)?.value === '<=' ? '#f85149' : '#3fb950',
-                                fontSize: 10, fontWeight: 700, outline: 'none', cursor: 'pointer' 
+                                fontSize: 10, fontWeight: 700, outline: 'none', cursor: 'pointer'
                               }}
                               onChange={(e) => e.target.style.color = e.target.value === '>=' ? '#3fb950' : '#f85149'}
                             >
