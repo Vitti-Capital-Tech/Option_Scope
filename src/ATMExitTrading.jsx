@@ -653,10 +653,32 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
                 {/* Heartbeat last-updated stamp */}
-                <div style={{ fontSize: 12, color: 'var(--text)', borderLeft: '1px solid var(--border)', paddingLeft: 8, fontVariantNumeric: 'tabular-nums', minWidth: '200px' }}>
-                  {heartbeat
-                    ? `Engine updated: ${new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }).format(new Date(heartbeat.last_heartbeat))} (${heartbeatAge}s ago, next ~${Math.max(0, 30 - heartbeatAge)}s)`
-                    : 'Awaiting heartbeat...'}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  {heartbeat && (
+                    <div style={{ fontSize: 12, color: 'var(--text)', borderLeft: '1px solid var(--border)', paddingLeft: 8 }}>
+                      Engine updated: {new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }).format(new Date(heartbeat.last_heartbeat))}
+                    </div>
+                  )}
+                  <button
+                    onClick={async () => {
+                      fetchActivePositions();
+                      fetchTradeHistory();
+                      fetchAnalytics();
+                      fetchHeartbeat();
+                    }}
+                    title="Refresh now"
+                    style={{
+                      padding: '4px 8px', fontSize: 12, background: 'var(--bg-card)',
+                      border: '1px solid var(--border)', color: 'var(--text)',
+                      borderRadius: 4, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
+                      minWidth: '50px', justifyContent: 'center'
+                    }}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 12C21 16.9706 16.9706 21 12 21C7.02944 21 3 16.9706 3 12C3 7.02944 7.02944 3 12 3C15.5398 3 18.5997 5.04419 20.0886 8M20.0886 8H16.0886M20.0886 8V4" />
+                    </svg>
+                    {heartbeat ? `${Math.max(0, 30 - heartbeatAge)}s` : ''}
+                  </button>
                 </div>
 
                 <div className="pt-fee-toggle-container">

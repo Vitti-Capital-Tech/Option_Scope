@@ -80,17 +80,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     setHistoryFilterDate(d.toISOString().split('T')[0]);
   };
 
-  const calcMargin = (buyPrice, buyLot, spot, sellQty, sellLot = 1) => {
-    const longMargin = (buyPrice || 0) * (buyLot || 1);
-    const shortValue = (spot || 0) * (sellQty || 0) * sellLot;
-    let leverage = 200;
-    if (shortValue <= 200000) leverage = 200;
-    else if (shortValue <= 450000) leverage = 100;
-    else if (shortValue <= 950000) leverage = 50;
-    else if (shortValue <= 1950000) leverage = 25;
-    else leverage = 25;
-    return longMargin + (shortValue / leverage);
-  };
 
   // ── Ticker data (read-only, for live PnL display) ─────────────────────
   const [tickerData, setTickerData] = useState({});
@@ -310,37 +299,37 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   }, [fetchSupabaseActivePositions, fetchSupabaseTradeHistory, fetchSupabaseConfig]);
 
   // ── Engine heartbeat ──────────────────────────────────────────────────
+  const fetchHeartbeat = useCallback(async () => {
+    try {
+      const { data, error } = await supabase
+        .from('engine_heartbeat')
+        .select('*')
+        .eq('id', 'paper_trading')
+        .single();
+
+      if (error || !data) {
+        setEngineStatus({ status: 'offline', lastHeartbeat: null, data: null });
+        return;
+      }
+
+      const age = Date.now() - new Date(data.last_heartbeat).getTime();
+      const status = age < HEARTBEAT_ONLINE_THRESHOLD ? 'online'
+        : age < HEARTBEAT_STALE_THRESHOLD ? 'stale' : 'offline';
+
+      setEngineStatus({ status, lastHeartbeat: new Date(data.last_heartbeat), data: data.payload });
+
+      // Use server's last evaluation time for the UI timestamp
+      if (data.last_heartbeat) {
+        setLastEvaluated(new Date(data.last_heartbeat).getTime());
+      }
+    } catch (e) { }
+  }, []);
+
   useEffect(() => {
-    const fetchHeartbeat = async () => {
-      try {
-        const { data, error } = await supabase
-          .from('engine_heartbeat')
-          .select('*')
-          .eq('id', 'paper_trading')
-          .single();
-
-        if (error || !data) {
-          setEngineStatus({ status: 'offline', lastHeartbeat: null, data: null });
-          return;
-        }
-
-        const age = Date.now() - new Date(data.last_heartbeat).getTime();
-        const status = age < HEARTBEAT_ONLINE_THRESHOLD ? 'online'
-          : age < HEARTBEAT_STALE_THRESHOLD ? 'stale' : 'offline';
-
-        setEngineStatus({ status, lastHeartbeat: new Date(data.last_heartbeat), data: data.payload });
-
-        // Use server's last evaluation time for the UI timestamp
-        if (data.last_heartbeat) {
-          setLastEvaluated(new Date(data.last_heartbeat).getTime());
-        }
-      } catch (e) { }
-    };
-
     fetchHeartbeat();
     const interval = setInterval(fetchHeartbeat, 5000);
     return () => clearInterval(interval);
-  }, []);
+  }, [fetchHeartbeat]);
 
   // ── Spot price (for PnL display math) ────────────────────────────────
   useEffect(() => {
@@ -899,10 +888,31 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-                <div style={{ fontSize: 12, color: 'var(--text)', borderLeft: '1px solid var(--border)', paddingLeft: 8, fontVariantNumeric: 'tabular-nums', minWidth: '250px' }}>
-                  {lastEvaluated > 0
-                    ? `Updated: ${new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }).format(new Date(lastEvaluated))} (${Math.round((now - lastEvaluated) / 1000)}s ago, next ~${Math.max(0, 30 - Math.round((now - lastEvaluated) / 1000))}s)`
-                    : 'Updated: ---'}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  {lastEvaluated > 0 && (
+                    <div style={{ fontSize: 12, color: 'var(--text)', borderLeft: '1px solid var(--border)', paddingLeft: 8 }}>
+                      Updated: {new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }).format(new Date(lastEvaluated))}
+                    </div>
+                  )}
+                  <button
+                    onClick={async () => {
+                      fetchSupabaseActivePositions();
+                      fetchSupabaseTradeHistory();
+                      fetchHeartbeat();
+                    }}
+                    title="Refresh now"
+                    style={{
+                      padding: '4px 8px', fontSize: 12, background: 'var(--bg-card)',
+                      border: '1px solid var(--border)', color: 'var(--text)',
+                      borderRadius: 4, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
+                      minWidth: '50px', justifyContent: 'center'
+                    }}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 12C21 16.9706 16.9706 21 12 21C7.02944 21 3 16.9706 3 12C3 7.02944 7.02944 3 12 3C15.5398 3 18.5997 5.04419 20.0886 8M20.0886 8H16.0886M20.0886 8V4" />
+                    </svg>
+                    {lastEvaluated > 0 ? `${Math.max(0, 30 - Math.round((now - lastEvaluated) / 1000))}s` : ''}
+                  </button>
                 </div>
 
                 {/* Extra Credit Toggle */}
