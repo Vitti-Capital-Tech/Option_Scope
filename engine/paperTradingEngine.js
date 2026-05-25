@@ -386,7 +386,11 @@ export async function startPaperTradingEngine() {
                 const steps = Math.floor(diff / 0.5);
                 reductionFactor = Math.min(0.5, steps * 0.15);
               }
-              const targetLotSize = pos.buyLeg.originalLotSize * (1 - reductionFactor);
+              let targetLotSize = pos.buyLeg.originalLotSize * (1 - reductionFactor);
+              const minAllowed = Math.min(0.5, pos.buyLeg.originalLotSize);
+              if (targetLotSize < minAllowed) {
+                targetLotSize = minAllowed;
+              }
 
               if (targetLotSize < pos.buyLeg.lotSize) {
                 log(`⚖️ SCALING: Position ${pos.id} (${pos.type.toUpperCase()}) ATM Ratio increased from ${pos.buyLeg.entryAtmRatio} to ${liveAtmRatio} (diff: ${diff.toFixed(2)}). Reducing buy lot size from ${pos.buyLeg.lotSize} to ${targetLotSize} (original: ${pos.buyLeg.originalLotSize})`);

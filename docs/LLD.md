@@ -253,7 +253,8 @@ Before checking exit triggers for each sorted position, the engine evaluates the
    - If `diff >= 0.5`, `steps = Math.floor(diff / 0.5)`, `reductionFactor = Math.min(0.5, steps * 0.15)`.
    - Otherwise, `reductionFactor = 0`.
    - `targetLotSize = pos.buyLeg.originalLotSize * (1 - reductionFactor)`.
-4. **State Persistence**: If `targetLotSize` is strictly less than `pos.buyLeg.lotSize`, the engine updates the memory reference, recalculates `margin` with `calcMargin`, and persists the updated `buy_leg` JSON and `margin` to the Supabase `active_positions` table. This ensures the buy quantity is only allowed to decrease and never scale back up.
+   - Enforce floor: `minAllowed = Math.min(0.5, pos.buyLeg.originalLotSize)`. If `targetLotSize < minAllowed`, set `targetLotSize = minAllowed`.
+4. **State Persistence**: If `targetLotSize` is strictly less than `pos.buyLeg.lotSize`, the engine updates the memory reference, recalculates `margin` with `calcMargin`, and persists the updated `buy_leg` JSON and `margin` to the Supabase `active_positions` table. This ensures the buy quantity is only allowed to decrease (with an absolute floor at 0.5) and never scale back up.
 
 ### C. Exit Priority Tree
 
