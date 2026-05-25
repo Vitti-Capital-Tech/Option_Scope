@@ -13,7 +13,7 @@ This document is the authoritative implementation reference for every module, en
 | `RatioSpreadScanner.jsx` | Standalone option-chain scanner. Computes premium-to-delta-notional ratio deviation pairs, publishes top-3 results via `BroadcastChannel` and `localStorage`. |
 | `PaperTrading.jsx` | React UI Dashboard for Paper Trading. Reads `active_positions`, `trade_history`, and heartbeat from Supabase. |
 | `ATMExitTrading.jsx` | React UI Dashboard for ATM Exit Trading. Reads bucketed analytics and heartbeat from Supabase. |
-| `engine/paperTradingEngine.js` | Headless Node.js engine. Handles entries, multi-stage exits, leg-swaps, rotation, IV tracking, fee calculations, and Supabase persistence. |
+| `engine/paperTradingEngine.js` | Headless Node.js engine. Handles entries, full ATM exits, leg-swaps, rotation, IV tracking, fee calculations, and Supabase persistence. |
 | `engine/atmExitEngine.js` | Headless Node.js engine. Self-contained scanner, single ATM exit rule, bucketed analytics aggregation, and separate Supabase tables. |
 | `ResultTable.jsx` | Reusable grouped table renderer for ratio spread candidates. |
 | `api.js` | Network abstraction: Delta REST calls, `createTickerStream` (WS with auto-reconnect), `createWS` (raw WS), `getTickers` (REST backfill). |
@@ -172,8 +172,8 @@ After every scan, `publishTopSpreads` packages the top-3 calls and puts into a p
 | Table | Engine | Key Fields | Notes |
 |---|---|---|---|
 | `paper_trading_config` | PaperTrading | `underlying`, `expiry`, all filter thresholds | Single `global` row, upserted on config change |
-| `active_positions` | PaperTrading | `id`, `buy_strike`, `sell_strike`, `buy_leg` (JSON), `sell_leg` (JSON), `stages_exited`, `accumulated_sell_pnl`, `margin` | Unique DB constraint on `(buy_strike, sell_strike)` prevents duplicate inserts |
-| `trade_history` | PaperTrading | `trade_id`, `realized_net_pnl`, `exit_reason`, `is_partial`, `exit_time`, `total_fees` | `trade_id` pre-checked before insert to prevent duplicates on partial exits |
+| `active_positions` | PaperTrading | `id`, `buy_strike`, `sell_strike`, `buy_leg` (JSON), `sell_leg` (JSON), `accumulated_sell_pnl`, `margin` | Unique DB constraint on `(buy_strike, sell_strike)` prevents duplicate inserts |
+| `trade_history` | PaperTrading | `trade_id`, `realized_net_pnl`, `exit_reason`, `is_partial`, `exit_time`, `total_fees` | `trade_id` pre-checked before insert to prevent duplicates |
 | `atm_exit_config` | ATMExitTrading | `underlying`, `expiry`, `min_long_dist`, `min_sell_premium`, `max_ratio_deviation` | Isolated from PaperTrading config |
 | `atm_exit_active_positions` | ATMExitTrading | `id`, `buy_strike`, `sell_strike`, `sell_qty`, `accumulated_sell_pnl`, `margin` | Separate runtime state for ATM Exit engine |
 | `atm_exit_trade_history` | ATMExitTrading | `trade_id`, `realized_net_pnl`, `exit_reason`, `exit_time`, `exit_spot_price` | Permanent historical record |
@@ -190,7 +190,7 @@ After every scan, `publishTopSpreads` packages the top-3 calls and puts into a p
 
 **DB-Level Count Guard (pre-insert)**: Before inserting any new position, the engine queries `active_positions` for the current `(underlying, type)` pair. If the live count is `>= 3`, the insert is aborted. Uses plain `.select('id')` (not `{ head: true }`) to ensure non-null response data.
 
-**DB-Level Strike Uniqueness (pre-insert)**: After the count check, the engine queries all active `buy_strike` values for the same `(underlying, type)`. If any existing `buy_strike` is **within 400 points** of the candidate's buy strike (`|existing - new| < 400`), the insert is aborted with a console warning. This is a **proximity check**, not an exact-match — it enforces the same 400-pt diversification rule at the DB level as a second safety net for multi-tab race conditions. A separate exact-match check on `sell_strike` is also applied.
+**DB-Level Strike Uniqueness (pre-insert)**: After the count check, the engine queries active positions for duplicate `buy_strike` (`buyConflict`) and `sell_strike` (`sellConflict`) values for the same `(underlying, type)`. If any conflict is found, the insert is aborted with a console warning.
 
 **DB Unique Constraint Fallback**: A PostgreSQL unique constraint on `(buy_strike, sell_strike)` is the final safety net. Error code `23505` is caught and logged but does not crash the engine.
 
@@ -219,8 +219,8 @@ Called every second by `setInterval`. Uses the `isEvaluating` mutex to prevent r
 
 **Decoupled Scans (`onlyExits` flag):**
 
-* **Exit Evaluation (every 1 second)**: The engine runs `evaluateStrategy(true)` (Exit-Only) on intermediate seconds. It iterates over active positions, calculates real-time liquidation value P&L and fees, and checks exit triggers (ATM, ITM, expiry, leg swaps, rotations) against streaming WebSocket ticker quotes and polled spot prices. If no exits occur, it does not query or write to Supabase.
-* **Full Evaluation (every minute boundary)**: The engine runs `evaluateStrategy(false)` (Full Run) when a new clock-minute crosses (`currentMinute > lastMinute` or on startup). In addition to checking exits, it scans for new spread candidates, applies entry guards, checks DB-level count/strike restrictions, and inserts new positions into Supabase.
+* **Exit Evaluation (every 1 second)**: The engine runs `evaluateStrategy(true)` (Exit-Only) on intermediate seconds. It iterates over active positions, calculates real-time liquidation value P&L and fees, and checks exit triggers (ATM, expiry, leg swaps, rotations) against streaming WebSocket ticker quotes and polled spot prices. If no exits occur, it does not query or write to Supabase.
+* **Full Evaluation (every minute boundary)**: The engine runs `evaluateStrategy(false)` (Full Run) when a new clock-minute crosses (`currentMinute > lastMinute` or on startup). In addition to checking exits, it scans for new spread candidates, filters them by ATM P&L >= $70, sorts them to pick the best ROI candidate per buy strike, checks DB-level count/strike restrictions, and inserts new positions into Supabase.
 
 * **Spot Price Staleness Guard**: If the polled spot price hasn't updated in 120 seconds (`120000` ms), the evaluation is skipped as a safety measure against dead pricing feeds.
 
@@ -230,7 +230,7 @@ Steps: A → B → C → D → E → F (detailed in sections below).
 
 1. **Local Scan**: Filters `latestTickerDataRef` by option type and ATM direction. Runs `scanTickers` (same algorithm as `RatioSpreadScanner`) on calls and puts separately.
 2. **Scanner Merge**: If the Scanner's `BroadcastChannel` snapshot (`scannerTopRef.current`) matches the current `underlying` and `expiry`, the engine merges its IDs with the local results. Scanner results take priority; local results backfill any gaps up to 6 total.
-3. **Unique Ranking List (`uniqueTopSpreads`)**: A deduplicated view (one entry per buy strike, max 10 per type) used exclusively for ranking and rotation decisions.
+3. **Unique Ranking List (`uniqueTopSpreads`)**: A deduplicated and filtered view (one entry per buy strike, max 10 per type) where candidate spreads are filtered by `ATM P&L >= $70` and sorted by ROI descending to choose the best candidate per buy strike. Used for ranking, rotation, and entry decisions.
 
 ### B. Sorted Position Processing (Worst-First)
 
@@ -249,20 +249,11 @@ Each position is evaluated in strict priority order:
 - **Zombie guard**: If the position is more than 10 minutes past expiry, its `exit_time` is back-dated to the exact expiry timestamp for accurate reporting.
 - **Bypasses all other guards.**
 
-**Priority 3 — ATM/ITM Scale-Out:**
+**Priority 3 — ATM Exit:**
 
 Evaluated only if no expiry exit was triggered.
-
-| `strikeDiff` | Stage | Trigger | Action | exitFraction |
-|---|---|---|---|---|
-| `<= 1000` | Full | Spot crosses buy strike | 100% exit | 1.0 |
-| `<= 1200` | Stage 1 | Spot crosses buy strike (`stagesExited == 0`) | 50% partial | 0.5 |
-| `<= 1200` | Stage 2 | 200 pts ITM (`stagesExited == 1`) | 100% final | 1.0 |
-| `> 1200` | Stage 1 | Spot crosses buy strike (`stagesExited == 0`) | 33% partial | 0.33 |
-| `> 1200` | Stage 2 | 150 pts ITM (`stagesExited == 1`) | 50% of remainder | 0.5 |
-| `> 1200` | Stage 3 | 300 pts ITM (`stagesExited == 2`) | 100% final | 1.0 |
-
-For calls: `itmDist = spot - buyStrike`. For puts: `itmDist = buyStrike - spot`.
+- Condition: Spot price crosses the buy strike (`spotPrice >= buyStrike` for calls, or `spotPrice <= buyStrike` for puts).
+- Action: 100% exit, `exitReason = 'Full Exit @ ATM'`.
 
 **Priority 4 — Rotation (Displacement):**
 
@@ -272,9 +263,8 @@ Evaluated only if no exit was triggered, the position's expiry matches `selExpir
 - The engine finds a `bestTarget` in `uniqueTopSpreads` matching the same option type that:
   1. Has no buy/sell strike collision with other active positions.
   2. Has not been reserved by a prior displacement this cycle (`reservedTargets` Set).
-  3. Is **>= 400 points** away from the current position's buy strike.
-  4. The current spot has moved **>= 0.5%** from the current position's `entrySpotPrice` (directionally: lower for calls, higher for puts).
-  5. Passes both guards (step 3 & 4) against **all other** remaining positions too.
+  3. The current spot has moved **>= 0.5%** from the current position's `entrySpotPrice` (directionally: lower for calls, higher for puts).
+  4. Passes the scaling guard against **all other** remaining positions too.
 - If target is directionally closer to ATM, the exit is approved and the target strike is added to `reservedTargets` (1-for-1 reservation).
 
 **Threshold Guard (Rotation Only):**
@@ -295,15 +285,14 @@ If a rotation target shares the exact same **sell strike** as the current positi
 4. Fees from the long exit and short adjustment are consolidated into `accumulatedSellPnl` and `entryFee` of the surviving position.
 5. The mutated position is written back to Supabase via an `UPDATE` (not a delete/insert cycle).
 
-### E. Partial Exit Mechanics
+### E. ATM P&L & ROI Candidate Filtering
 
-When `isPartial = true`:
-
-- **Trade record**: `id = ${pos.id}-P${stagesExited+1}`, `sellQty = originalSellQty × exitFraction`, `buyLeg.lotSize = originalLotSize × exitFraction`.
-- **Remaining position**: `sellQty`, `buyLeg.lotSize`, `margin`, `entryFee`, `accumulatedSellPnl` all scaled by `(1 - exitFraction)`. `stagesExited` incremented.
-- The partial record is written to `trade_history` with `is_partial = true`.
-- The remaining position is updated in-place in `active_positions` via Supabase `UPDATE`.
-- A partial exit does **not** free a portfolio slot.
+Spreads scanned from the options chain are evaluated for their potential At-The-Money payout:
+1. **getTickerPrice**: Sourced using live quotes (bid for long leg, ask for short leg) with nearest-strike fallbacks.
+2. **ATM P&L Calculation**: `[(ATM_Bid - entryBuyPrice) - (OTM_Ask - entrySellPrice) × sellQty] × lotSize`.
+3. **ROI Calculation**: `(ATM_PnL / Margin) × 100`.
+4. **Gauntlet Filter**: Candidates with `ATM P&L < $70` are discarded.
+5. **Selection**: For each unique buy strike, candidates are sorted by ROI descending, and the one with the highest ROI is chosen.
 
 ### F. Entry Logic
 
@@ -312,11 +301,11 @@ New entries are opened from `topSpreads` (full candidate pool, not uniqueTopSpre
 1. **Expiry Buffer Guard**: Skip if `minutesToExpiry < 5`.
 2. **Strike Uniqueness**: Block if buy or sell strike already active in `remaining` or `newEntries` (same type/underlying).
 3. **Portfolio Cap**: Block if `remaining + newEntries count >= 3` for this type.
-4. **Strike Diversification Guard**: New buy strike must be `>= 400 pts` from **all** existing buy strikes of the same type. The check is applied against the merged set of `[...remaining, ...newEntries]` — not just `remaining` alone. This is critical: without `newEntries` in scope, two candidates in the same evaluation cycle could both pass the guard relative to pre-existing positions yet end up within 400 pts of each other. Example: if `remaining` is empty (e.g., right after expiry), the first candidate passes trivially, gets pushed to `newEntries`, and the second candidate is then checked against it.
+4. **Strike Diversification Guard (ATM Exit Trading)**: In the ATM Exit Trading engine, new buy strikes must be `>= 400 pts` from all existing buy strikes of the same type. (This guard has been removed from Paper Trading).
 5. **Execution**: `entryBuyPrice = spread.ask`, `entrySellPrice = spread.bid`. Entry IVs captured: `entryBuyIv = ticker.askIv`, `entrySellIv = ticker.bidIv`.
 6. **Supabase Insert (with three DB-level guards)**:
    - Count guard: `SELECT id WHERE underlying AND type` — abort if count `>= 3`.
-   - Buy strike proximity guard: `SELECT buy_strike WHERE underlying AND type` — abort if any existing `buy_strike` is within 400 pts of the new strike (`|existing - new| < 400`). This upgrades the previous exact-match check to a full diversification guard, blocking near-duplicate entries even under multi-tab race conditions.
+   - Buy strike uniqueness: `SELECT id WHERE buy_strike = X` — abort if exists (`buyConflict`).
    - Sell strike uniqueness: `SELECT id WHERE sell_strike = Y` — abort if exists.
    - Unique constraint `23505` is the final net.
 

@@ -6,7 +6,7 @@ OptionScope is a client-side trading workstation for Delta Exchange options. It 
 
 - **Charts**: Real-time call/put/combined premium monitoring with Greeks and alerts.
 - **Ratio Spread Scanner**: Live discovery of ratio spreads based on premium-to-delta-notional alignment.
-- **Paper Trading (Multi-Stage)**: Fully automated simulation of spread entry, live PnL, multi-stage scale-out exits (33%/50% partials), rotation with leg swaps, IV tracking, and expiry settlement.
+- **Paper Trading**: Fully automated simulation of spread entry, live PnL, full ATM exits, rotation with leg swaps, IV tracking, and expiry settlement.
 - **ATM Exit Trading**: A simplified, always-on trading variant with a single exit rule (100% at ATM), built-in scanner, bucketed analytics, and no partial exits.
 
 The user selects underlying and expiry, then the system streams option telemetry and updates UI decisions in near real-time.
@@ -51,7 +51,7 @@ Browser (React + Vite Dashboard)
 
 - **Charting Engine (UI)** uses imperative refs and always-mounted chart components for smooth updates.
 - **Scanner Engine (UI)** processes option chains for valid ratio candidates using configurable thresholds. Enforces directional filtering (Calls ≥ ATM, Puts ≤ ATM).
-- **Paper Trading Engine (Node.js)** A headless script (`paperTradingEngine.js`) that runs 24/7 on a VPS. Reuses scanner-style candidate selection to simulate positions. Evaluates exit rules (ATM, ITM, expiry, leg swaps, rotations) every second to minimize slippage, while running full scans for entries on 1-minute boundaries to optimize DB load. Enforces a hard cap of 3 positions per option type. Tracks Bid/Ask-specific IVs. Tolerates up to 120s spot price staleness. Synchronizes with Supabase.
+- **Paper Trading Engine (Node.js)** A headless script (`paperTradingEngine.js`) that runs 24/7 on a VPS. Reuses scanner-style candidate selection to simulate positions. Filters candidates by projected ATM P&L >= $70 and sorts them by ROI descending to select the best candidate per buy strike. Enforces a hard cap of 3 positions per option type. Evaluates exit rules (ATM, expiry, leg swaps, rotations) every second to minimize slippage, while running full scans for entries on 1-minute boundaries to optimize DB load. Tracks Bid/Ask-specific IVs. Tolerates up to 120s spot price staleness. Synchronizes with Supabase.
 - **ATM Exit Engine (Node.js)** A headless script (`atmExitEngine.js`). Runs an independent, self-contained scanner and evaluation loop. Evaluates exit rules every second, while running full scans for entries on 1-minute boundaries. Uses the same entry guards (0.5% spot scaling, 400pt diversification) but a simpler exit strategy: 100% close at ATM. Persists to separate Supabase tables (`atm_exit_*`) and aggregates bucketed running trade analytics. Tolerates up to 120s spot price staleness.
 
 ---
@@ -91,15 +91,15 @@ Browser (React + Vite Dashboard)
    - **ROI Sorting**: Dynamically groups results and sorts them descending by maximum ROI at ATM.
 5. Publish top-3 call and top-3 put candidates to the scanner table, and broadcast to Paper Trading via `BroadcastChannel`.
 
-### Paper Trading (Multi-Stage Automated Lifecycle)
+### Paper Trading (Automated Lifecycle)
 
 1. Merge local scan candidates with real-time scanner broadcasts.
    - **Execution-Realistic Entries**: New positions are entered at the Ask for long legs and Bid for short legs, capturing the true cost of crossing the spread.
-2. Evaluate active positions for rotation or ATM/ITM/expiry exit triggers every second to prevent slippage, while scanning and entering new positions on the 1-minute boundary.
+2. Evaluate active positions for rotation or ATM/expiry exit triggers every second to prevent slippage, while scanning and entering new positions on the 1-minute boundary.
     - **Liquidation-Based PnL**: Unrealized PnL is calculated based on immediate exit prices: long positions are valued at the current Bid (selling back) and short positions at the current Ask (buying back).
 3. **Scaling & Uniqueness Guards**: 
    - **Directional Spot Scaling**: Enforces a 0.5% price gap (rounded to 100) between entries for mean-reversion scaling.
-   - **Strike Diversification**: Ensures new long strikes are at least 400 points away from all existing long strikes. The guard checks against **both** `remaining` (positions surviving the exit pass) **and** `newEntries` (positions opened earlier in the same evaluation cycle), preventing two same-cycle entries from both passing the guard relative to old positions but being within 400 pts of each other. The DB-level guard is also upgraded from an exact-strike match to a **400-pt proximity query** (`|existing_buy_strike - new_buy_strike| < 400`), providing a second safety net for multi-tab race conditions.
+   - **Buy Strike Uniqueness**: Ensures new buy strikes are unique in the database for the same underlying and type via a DB-level exact-match check (`buyConflict`), preventing duplicate entries under race conditions.
 4. **IV Tracking**:
    - Entry IVs captured using directional Bid/Ask IVs (`ask_iv` for buy leg, `bid_iv` for sell leg).
    - Current IVs updated live from the ticker stream using the same directional logic.
@@ -110,13 +110,13 @@ Browser (React + Vite Dashboard)
 8. **Dynamic Portfolio Rotation**:
    The engine compares existing positions against current top scanner results:
    - **Displacement Check**: If a position is no longer in the Top 3 unique strikes AND a superior candidate (closer to ATM) is available, it is marked for rotation.
-   - **Atomic Pre-Validation**: The engine validates the replacement candidate against the **0.5% Scaling** and **400pt Diversification** guards *before* executing the exit. If the target would be blocked, the rotation is cancelled to prevent empty portfolio slots.
+   - **Atomic Pre-Validation**: The engine validates the replacement candidate against the **0.5% Scaling** guard *before* executing the exit. If the target would be blocked, the rotation is cancelled to prevent empty portfolio slots.
    - **Conflict-Aware Target Scanning**: It also ensures replacement targets never collide with existing portfolio strikes.
    - **1-for-1 Displacement**: To prevent mass exits, the engine uses a **Target Reservation** system. Each new superior candidate in the scanner is "claimed" by exactly one existing inferior position.
    - **Worst-First Processing**: Active positions are evaluated from farthest-to-ATM first, ensuring the least desirable legs are rotated out first.
    - **Cycle Guards**: Rotation only begins once the portfolio hits a threshold (e.g., 3 active legs) and is capped at 3 rotations per evaluation cycle.
 9. Open new positions up to 3 per type from the ranked candidate list. DB count guard prevents exceeding 3 even under race conditions.
-10. Sync all entries, exits, and partial scale-outs to Supabase. Full `positions` array replacement only happens when rows are added/removed, not on routine PnL updates.
+10. Sync all entries and exits to Supabase. Full `positions` array replacement only happens when rows are added/removed, not on routine PnL updates.
 11. **Instant Cross-Device Sync**: Supabase Realtime pushes `active_positions` change events to all connected sessions within < 1s of a write. The `lastDbWriteRef` post-write blackout is reduced from 10s to 3s to minimize the window where a just-written position could be overwritten by a stale Supabase re-fetch. A 10-second fallback poll ensures any missed Realtime events are caught.
 
 ### ATM Exit Trading (Simplified Automated Lifecycle)

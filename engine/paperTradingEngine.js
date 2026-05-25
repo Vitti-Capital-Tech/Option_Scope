@@ -6,10 +6,9 @@
  * strategy every minute, and writes all state to Supabase.
  *
  * Features preserved from browser version:
- * - Multi-stage partial exits (33%/50%/100%)
  * - Leg swap optimization
  * - Rotation with worst-first, 1-for-1 reservation
- * - 0.5% spot scaling + 400pt diversification guards
+ * - 0.5% spot scaling guard
  * - DB-level count/strike guards
  * - Spot staleness guard
  * - Expiry settlement (2 min early)
@@ -214,10 +213,91 @@ export async function startPaperTradingEngine() {
       const localTopPuts = scanTickers(putTickers, config, spotPrice);
       const topSpreads = [...localTopCalls, ...localTopPuts];
 
-      // C. Unique-by-buy-strike version for ranking
+      function getTickerPrice(strike, optType, priceField) {
+        const lowerType = optType.toLowerCase();
+        const allTickersOfType = allTickers.filter(t => t.type === lowerType);
+        if (!allTickersOfType.length) return null;
+
+        // Exact match first
+        const exact = allTickersOfType.find(t => t.strike === strike);
+        if (exact) {
+          const val = exact[priceField] ?? exact.markPrice;
+          return (val != null && val > 0) ? val : null;
+        }
+
+        // Nearest strike fallback
+        const tolerance = Math.max(spotPrice * 0.10, 5000);
+        let nearest = null;
+        let minDist = Infinity;
+        for (const t of allTickersOfType) {
+          const dist = Math.abs(t.strike - strike);
+          if (dist < minDist && dist <= tolerance) {
+            minDist = dist;
+            nearest = t;
+          }
+        }
+        if (!nearest) return null;
+        const val = nearest[priceField] ?? nearest.markPrice;
+        return (val != null && val > 0) ? val : null;
+      }
+
+      function calculateAtmPnlAndRoi(spread) {
+        const buyIntrinsic = getTickerPrice(atmStrike, spread.buyLeg.type, 'bid');
+        const targetSellStrike = spread.buyLeg.type === 'call' ? atmStrike + spread.strikeDiff : atmStrike - spread.strikeDiff;
+        const sellIntrinsic = getTickerPrice(targetSellStrike, spread.buyLeg.type, 'ask');
+        const lotSize = spread.buyLeg.lotSize || 1;
+
+        if (buyIntrinsic == null || sellIntrinsic == null) {
+          return { atmPnl: null, roi: null };
+        }
+
+        const atmPnl = ((buyIntrinsic - spread.buyPrice) - (sellIntrinsic - spread.sellPrice) * spread.sellQty) * lotSize;
+        const margin = calcMargin(spread.buyPrice, lotSize, spotPrice, spread.sellQty, spread.sellLeg.lotSize || lotSize);
+        const roi = margin > 0 ? (atmPnl / margin) * 100 : 0;
+
+        return { atmPnl, roi };
+      }
+
+      // Compute ATM P&L and ROI for each spread in topSpreads, and filter by ATM P&L >= 70
+      const processedSpreads = [];
+      for (const spread of topSpreads) {
+        const { atmPnl, roi } = calculateAtmPnlAndRoi(spread);
+        if (atmPnl != null && atmPnl >= 70) {
+          processedSpreads.push({ ...spread, atmPnl, roi });
+        }
+      }
+
+      // Group by buy strike and select the one with highest ROI for each unique strike
+      const callGroups = {};
+      const putGroups = {};
+
+      for (const spread of processedSpreads) {
+        const key = spread.buyLeg.strike;
+        if (spread.buyLeg.type === 'call') {
+          if (!callGroups[key]) callGroups[key] = [];
+          callGroups[key].push(spread);
+        } else {
+          if (!putGroups[key]) putGroups[key] = [];
+          putGroups[key].push(spread);
+        }
+      }
+
+      const uniqueCalls = Object.values(callGroups).map(group => {
+        group.sort((a, b) => b.roi - a.roi);
+        return group[0];
+      });
+      const uniquePuts = Object.values(putGroups).map(group => {
+        group.sort((a, b) => b.roi - a.roi);
+        return group[0];
+      });
+
+      // Sort candidate lists by distance to ATM (closest to ATM first)
+      uniqueCalls.sort((a, b) => Math.abs(a.buyLeg.strike - spotPrice) - Math.abs(b.buyLeg.strike - spotPrice));
+      uniquePuts.sort((a, b) => Math.abs(a.buyLeg.strike - spotPrice) - Math.abs(b.buyLeg.strike - spotPrice));
+
       const uniqueTopSpreads = [
-        ...pickTopUniqueStrikes(topSpreads.filter(s => s.buyLeg.type === 'call'), 10),
-        ...pickTopUniqueStrikes(topSpreads.filter(s => s.buyLeg.type === 'put'), 10)
+        ...uniqueCalls.slice(0, 10),
+        ...uniquePuts.slice(0, 10)
       ];
 
       // Count active positions
@@ -306,13 +386,12 @@ export async function startPaperTradingEngine() {
             const sellConflict = otherActiveSellStrikes.includes(sS);
             if (buyConflict || sellConflict || reservedTargets.has(bS)) return false;
 
-            const stepValid = Math.abs(bS - Number(pos.buyLeg.strike)) >= 400;
             const oldSpotBase = pos.entrySpotPrice || pos.entryBuyPrice || spotPrice;
             const oldThresh = Math.round((oldSpotBase * 0.005) / 100) * 100;
             const spotStepValid = pos.type === 'call'
               ? spotPrice <= oldSpotBase - oldThresh
               : spotPrice >= oldSpotBase + oldThresh;
-            if (!stepValid || !spotStepValid) return false;
+            if (!spotStepValid) return false;
 
             const otherPositionsOfType = sortedPositions.filter(p =>
               p.id !== pos.id && p.underlying === underlying && p.type === pos.type
@@ -322,8 +401,7 @@ export async function startPaperTradingEngine() {
               const spotValid = pos.type === 'call'
                 ? spotPrice <= p.entrySpotPrice - thresh
                 : spotPrice >= p.entrySpotPrice + thresh;
-              const strikeValid = Math.abs(bS - Number(p.buyLeg.strike)) >= 400;
-              return spotValid && strikeValid;
+              return spotValid;
             });
           });
 
@@ -346,33 +424,15 @@ export async function startPaperTradingEngine() {
           }
         }
 
-        // Priority 3: ATM/ITM multi-stage scale-out
-        let isPartial = false;
-        let exitFraction = 1.0;
-
+        // Priority 3: ATM exit
         if (!shouldExit) {
           const isCall = pos.type === 'call';
           const buyStrike = pos.buyLeg.strike;
-          const itmDist = isCall ? spotPrice - buyStrike : buyStrike - spotPrice;
           const isAtmMET = isCall ? spotPrice >= buyStrike : spotPrice <= buyStrike;
-          const sExited = pos.stagesExited || 0;
 
-          if (pos.strikeDiff <= 1000) {
-            if (isAtmMET) { shouldExit = true; exitReason = 'Full Exit @ ATM (<= 1000 diff)'; }
-          } else if (pos.strikeDiff <= 1200) {
-            if (sExited === 0 && isAtmMET) {
-              isPartial = true; exitFraction = 0.5; exitReason = 'Partial Exit 50% @ ATM (<= 1200 diff)';
-            } else if (sExited === 1 && itmDist >= 200) {
-              shouldExit = true; exitReason = 'Final Exit 50% @ 200 ITM (<= 1200 diff)';
-            }
-          } else {
-            if (sExited === 0 && isAtmMET) {
-              isPartial = true; exitFraction = 0.33; exitReason = 'Partial Exit 33% @ ATM';
-            } else if (sExited === 1 && itmDist >= 150) {
-              isPartial = true; exitFraction = 0.5; exitReason = 'Partial Exit 33% @ 150 ITM';
-            } else if (sExited === 2 && itmDist >= 300) {
-              shouldExit = true; exitReason = 'Final Exit 34% @ 300 ITM';
-            }
+          if (isAtmMET) {
+            shouldExit = true;
+            exitReason = 'Full Exit @ ATM';
           }
         }
 
@@ -383,7 +443,7 @@ export async function startPaperTradingEngine() {
 
         let rotationApproved = false;
         if (!canRotateThisType && exitReason.includes('Lost Top 3')) {
-          if (shouldExit || isPartial) { shouldExit = false; isPartial = false; }
+          if (shouldExit) { shouldExit = false; }
         } else if (canRotateThisType && exitReason.includes('Lost Top 3')) {
           if (shouldExit) {
             rotationApproved = true;
@@ -391,72 +451,42 @@ export async function startPaperTradingEngine() {
           }
         }
 
-        if (shouldExit || isPartial) {
+        if (shouldExit) {
           // Final guard for unapproved rotation exits
           if (exitReason.includes('Lost Top 3') && !rotationApproved) {
-            shouldExit = false; isPartial = false;
+            shouldExit = false;
             remaining.push(pos);
             continue;
           }
 
-          const partGrossPnl = grossPnl * exitFraction;
-          const partEntryFee = (pos.entryFee || 0) * exitFraction;
-          const partExitFee = exitFee * exitFraction;
-          const partTotalFees = partEntryFee + partExitFee;
-          const partNetPnl = partGrossPnl - partTotalFees;
+          const totalFees = (pos.entryFee || 0) + exitFee;
+          const netPnl = grossPnl - totalFees;
 
           const tradeRecord = {
             ...pos,
-            id: isPartial ? `${pos.id}-P${pos.stagesExited + 1}` : (pos._pendingLegSwap ? `${pos.id}-LS-${Date.now().toString(36).toUpperCase()}` : pos.id),
-            sellQty: isPartial ? pos.sellQty * exitFraction : pos.sellQty,
-            buyLeg: isPartial
-              ? { ...pos.buyLeg, lotSize: pos.buyLeg.lotSize * exitFraction, exitIv: latestBuyIv }
-              : { ...pos.buyLeg, exitIv: latestBuyIv },
+            id: pos._pendingLegSwap ? `${pos.id}-LS-${Date.now().toString(36).toUpperCase()}` : pos.id,
+            sellQty: pos.sellQty,
+            buyLeg: { ...pos.buyLeg, exitIv: latestBuyIv },
             sellLeg: { ...pos.sellLeg, exitIv: latestSellIv },
-            _exitedBuyQty: isPartial ? pos.buyLeg.lotSize * exitFraction : pos.buyLeg.lotSize,
+            _exitedBuyQty: pos.buyLeg.lotSize,
             exitTime: new Date(),
             exitBuyPrice: latestBuy,
             exitSellPrice: latestSell,
             exitSpotPrice: spotPrice,
-            realizedGrossPnl: partGrossPnl,
-            realizedNetPnl: partNetPnl,
-            entryFee: partEntryFee,
-            exitFee: partExitFee,
-            totalFees: partTotalFees,
+            realizedGrossPnl: grossPnl,
+            realizedNetPnl: netPnl,
+            entryFee: pos.entryFee || 0,
+            exitFee: exitFee,
+            totalFees: totalFees,
             exitReason,
             _latestBuy: latestBuy,
             _latestSell: latestSell,
-            _isPartial: isPartial,
+            _isPartial: false,
             zombieExitTime,
           };
           exited.push(tradeRecord);
 
-          if (isPartial) {
-            // Keep the remaining fraction
-            const remainingPos = {
-              ...pos,
-              sellQty: pos.sellQty * (1 - exitFraction),
-              buyLeg: { ...pos.buyLeg, lotSize: pos.buyLeg.lotSize * (1 - exitFraction) },
-              margin: calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, Math.max(pos.entrySpotPrice || spotPrice, spotPrice), pos.sellQty, pos.sellLeg.lotSize) * (1 - exitFraction),
-              entryFee: (pos.entryFee || 0) * (1 - exitFraction),
-              accumulatedSellPnl: (pos.accumulatedSellPnl || 0) * (1 - exitFraction),
-              stagesExited: (pos.stagesExited || 0) + 1,
-            };
-            remaining.push(remainingPos);
-
-            // Sync partial update to Supabase
-            try {
-              const { error } = await supabase.from('active_positions').update({
-                sell_qty: remainingPos.sellQty,
-                buy_leg: JSON.stringify(remainingPos.buyLeg),
-                margin: remainingPos.margin,
-                entry_fee: remainingPos.entryFee,
-                stages_exited: remainingPos.stagesExited,
-                accumulated_sell_pnl: remainingPos.accumulatedSellPnl,
-              }).eq('id', pos.id);
-              if (error) logError('Partial sync error:', error.message);
-            } catch (e) { logError('Partial sync exception:', e); }
-          } else if (pos._pendingLegSwap) {
+          if (pos._pendingLegSwap) {
             // Leg swap execution
             const target = pos._pendingLegSwap;
             const longPnl = (latestBuy - pos.entryBuyPrice) * pos.buyLeg.lotSize;
@@ -515,7 +545,7 @@ export async function startPaperTradingEngine() {
       const newEntries = [];
 
       if (!onlyExits) {
-        for (const spread of topSpreads) {
+        for (const spread of uniqueTopSpreads) {
           const bStrike = Number(spread.buyLeg.strike);
           const sStrike = Number(spread.sellLeg.strike);
           const spreadType = spread.buyLeg.type;
@@ -546,20 +576,7 @@ export async function startPaperTradingEngine() {
             newEntries.filter(p => p.underlying === underlying && p.type === spreadType).length;
           if (count >= 3) continue;
 
-          // 400pt diversification guard
-          const existingOfType = [
-            ...remaining.filter(p => p.underlying?.toUpperCase() === underlying?.toUpperCase() && p.type?.toLowerCase() === spreadType?.toLowerCase()),
-            ...newEntries.filter(p => p.underlying?.toUpperCase() === underlying?.toUpperCase() && p.type?.toLowerCase() === spreadType?.toLowerCase())
-          ];
-
-          if (existingOfType.length > 0) {
-            const valid = existingOfType.every(p => {
-              const existingLongStrike = Number(p.buyStrike ?? p.buyLeg?.strike ?? p.buy_strike);
-              if (isNaN(existingLongStrike)) return true;
-              return Math.abs(bStrike - existingLongStrike) >= 400;
-            });
-            if (!valid) continue;
-          }
+          // Diversification guard removed
 
           // Entry pricing
           const entryBuyPrice = spread.buyPrice;
@@ -618,7 +635,7 @@ export async function startPaperTradingEngine() {
           }
 
           // Delete from active (skip for leg swaps — they were updated in-place above)
-          if (!t._isPartial && !t.exitReason?.startsWith('Leg Swap')) {
+          if (!t.exitReason?.startsWith('Leg Swap')) {
             await supabase.from('active_positions').delete().eq('id', t.id);
           }
 
@@ -636,17 +653,13 @@ export async function startPaperTradingEngine() {
               .eq('underlying', underlying).eq('type', t.type);
             if (!countError && (activeOfType?.length ?? 0) >= 3) continue;
 
-            // DB-level 400pt diversification guard
-            const { data: activeStrikes400, error: strikeCheckError } = await supabase
-              .from('active_positions').select('buy_strike')
-              .eq('underlying', underlying).eq('type', t.type);
-            if (strikeCheckError) continue;
-            if (activeStrikes400 && activeStrikes400.some(r =>
-              Math.abs(Number(r.buy_strike) - Number(t.buyLeg.strike)) < 400
-            )) {
-              logWarn(`DB Guard: Blocked entry — buy strike ${t.buyLeg.strike} too close (<400 pts).`);
-              continue;
-            }
+            // DB-level diversification guard check removed
+
+            // Buy strike uniqueness
+            const { data: buyConflict } = await supabase.from('active_positions').select('id')
+              .eq('underlying', underlying).eq('type', t.type)
+              .eq('buy_strike', t.buyLeg.strike).limit(1);
+            if (buyConflict && buyConflict.length > 0) continue;
 
             // Sell strike uniqueness
             const { data: sellConflict } = await supabase.from('active_positions').select('id')
