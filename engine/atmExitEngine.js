@@ -177,7 +177,11 @@ export async function startAtmExitEngine() {
   function startWebSocket() {
     if (!config.expiry || !products.length) return;
     symbolMeta = buildSymbolMeta(products, config.expiry, config.underlying, positions);
+    const perpSymbol = `${config.underlying}USD`;
     const allSymbols = Object.keys(symbolMeta);
+    if (!allSymbols.includes(perpSymbol)) {
+      allSymbols.push(perpSymbol);
+    }
     if (allSymbols.length < 2) { logWarn('[ATM] Not enough symbols for WS'); return; }
 
     if (wsHandle) { try { wsHandle.close(); } catch (e) { } wsHandle = null; }
@@ -187,6 +191,14 @@ export async function startAtmExitEngine() {
     wsHandle = createTickerStream(
       allSymbols,
       (msg) => {
+        if (msg.symbol === perpSymbol) {
+          const sp = parseFloat(msg.spot_price || msg.mark_price || msg.close || msg.last_price);
+          if (sp && !isNaN(sp)) {
+            spotPrice = sp;
+            lastSpotUpdate = Date.now();
+          }
+          return;
+        }
         const processed = processTickerMessage(msg, symbolMeta, tickerData);
         if (processed) tickerData[processed.symbol] = processed;
       },

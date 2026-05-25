@@ -142,7 +142,11 @@ export async function startPaperTradingEngine() {
     if (!config.expiry || !products.length) return;
 
     symbolMeta = buildSymbolMeta(products, config.expiry, config.underlying, positions);
+    const perpSymbol = `${config.underlying}USD`;
     const allSymbols = Object.keys(symbolMeta);
+    if (!allSymbols.includes(perpSymbol)) {
+      allSymbols.push(perpSymbol);
+    }
     if (allSymbols.length < 2) {
       logWarn('Not enough symbols to subscribe — skipping WS start');
       return;
@@ -159,6 +163,14 @@ export async function startPaperTradingEngine() {
     wsHandle = createTickerStream(
       allSymbols,
       (msg) => {
+        if (msg.symbol === perpSymbol) {
+          const sp = parseFloat(msg.spot_price || msg.mark_price || msg.close || msg.last_price);
+          if (sp && !isNaN(sp)) {
+            spotPrice = sp;
+            lastSpotUpdate = Date.now();
+          }
+          return;
+        }
         const processed = processTickerMessage(msg, symbolMeta, tickerData);
         if (processed) {
           tickerData[processed.symbol] = processed;
@@ -335,6 +347,72 @@ export async function startPaperTradingEngine() {
         if (liveExitBuy == null || liveExitSell == null) {
           remaining.push(pos);
           continue;
+        }
+
+        // Dynamic ATM ratio-based scaling
+        if (atmStrike !== null) {
+          // Initialize/reconstruct for older/migrated positions if missing
+          if (pos.buyLeg && pos.buyLeg.originalLotSize === undefined) {
+            pos.buyLeg.originalLotSize = pos.buyLeg.lotSize || 1;
+            if (pos.buyLeg.entryAtmRatio === undefined) {
+              const liveBuyIntrinsic = getTickerPrice(atmStrike, pos.type, 'bid');
+              const targetSellStrike = pos.type === 'call' ? atmStrike + pos.strikeDiff : atmStrike - pos.strikeDiff;
+              const liveSellIntrinsic = getTickerPrice(targetSellStrike, pos.type, 'ask');
+              if (liveBuyIntrinsic != null && liveSellIntrinsic != null && liveSellIntrinsic > 0) {
+                pos.buyLeg.entryAtmRatio = parseFloat((Math.round((liveBuyIntrinsic / liveSellIntrinsic) / 0.25) * 0.25).toFixed(2));
+              } else {
+                pos.buyLeg.entryAtmRatio = null;
+              }
+            }
+            try {
+              await supabase.from('active_positions').update({
+                buy_leg: JSON.stringify(pos.buyLeg)
+              }).eq('id', pos.id);
+            } catch (e) {
+              logError(`Failed to initialize entryAtmRatio for position ${pos.id}:`, e);
+            }
+          }
+
+          if (pos.buyLeg && pos.buyLeg.originalLotSize !== undefined && pos.buyLeg.entryAtmRatio != null) {
+            const liveBuyIntrinsic = getTickerPrice(atmStrike, pos.type, 'bid');
+            const targetSellStrike = pos.type === 'call' ? atmStrike + pos.strikeDiff : atmStrike - pos.strikeDiff;
+            const liveSellIntrinsic = getTickerPrice(targetSellStrike, pos.type, 'ask');
+
+            if (liveBuyIntrinsic != null && liveSellIntrinsic != null && liveSellIntrinsic > 0) {
+              const liveAtmRatio = parseFloat((Math.round((liveBuyIntrinsic / liveSellIntrinsic) / 0.25) * 0.25).toFixed(2));
+              const diff = liveAtmRatio - pos.buyLeg.entryAtmRatio;
+              let reductionFactor = 0;
+              if (diff >= 0.5) {
+                const steps = Math.floor(diff / 0.5);
+                reductionFactor = Math.min(0.5, steps * 0.15);
+              }
+              const targetLotSize = pos.buyLeg.originalLotSize * (1 - reductionFactor);
+
+              if (pos.buyLeg.lotSize !== targetLotSize) {
+                log(`⚖️ SCALING: Position ${pos.id} (${pos.type.toUpperCase()}) ATM Ratio increased from ${pos.buyLeg.entryAtmRatio} to ${liveAtmRatio} (diff: ${diff.toFixed(2)}). Adjusting buy lot size from ${pos.buyLeg.lotSize} to ${targetLotSize} (original: ${pos.buyLeg.originalLotSize})`);
+                
+                pos.buyLeg.lotSize = targetLotSize;
+                
+                // Recalculate margin
+                pos.margin = calcMargin(
+                  pos.entryBuyPrice,
+                  pos.buyLeg.lotSize,
+                  spotPrice,
+                  pos.sellQty,
+                  pos.sellLeg.lotSize || 1
+                );
+
+                try {
+                  await supabase.from('active_positions').update({
+                    buy_leg: JSON.stringify(pos.buyLeg),
+                    margin: pos.margin
+                  }).eq('id', pos.id);
+                } catch (e) {
+                  logError(`Failed to update scaled position ${pos.id} in DB:`, e);
+                }
+              }
+            }
+          }
         }
 
         const latestBuy = liveExitBuy;
@@ -585,10 +663,27 @@ export async function startPaperTradingEngine() {
           const tickerSellEntry = tickerData[spread.sellLeg.symbol];
           const entryBuyIv = tickerBuyEntry?.askIv ?? tickerBuyEntry?.iv ?? null;
           const entrySellIv = tickerSellEntry?.bidIv ?? tickerSellEntry?.iv ?? null;
-          const buyLegWithIv = { ...spread.buyLeg, entryIv: entryBuyIv };
+
+          // Calculate ATM ratio scaling
+          const buyIntrinsic = getTickerPrice(atmStrike, spreadType, 'bid');
+          const targetSellStrike = spreadType === 'call' ? atmStrike + spread.strikeDiff : atmStrike - spread.strikeDiff;
+          const sellIntrinsic = getTickerPrice(targetSellStrike, spreadType, 'ask');
+
+          const entryAtmRatio = (buyIntrinsic != null && sellIntrinsic != null && sellIntrinsic > 0)
+            ? parseFloat((Math.round((buyIntrinsic / sellIntrinsic) / 0.25) * 0.25).toFixed(2))
+            : null;
+
+          const originalLotSize = spread.buyLeg.lotSize || 1;
+
+          const buyLegWithIv = {
+            ...spread.buyLeg,
+            entryIv: entryBuyIv,
+            entryAtmRatio,
+            originalLotSize
+          };
           const sellLegWithIv = { ...spread.sellLeg, entryIv: entrySellIv };
 
-          const entryBuyFee = calculateFee(entryBuyPrice, spotPrice, 1, spread.buyLeg.lotSize);
+          const entryBuyFee = calculateFee(entryBuyPrice, spotPrice, 1, originalLotSize);
           const entrySellFee = calculateFee(entrySellPrice, spotPrice, spread.sellQty, spread.sellLeg.lotSize);
           const entryFee = entryBuyFee + entrySellFee;
           const id = `T${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -599,7 +694,7 @@ export async function startPaperTradingEngine() {
             strikeDiff: spread.strikeDiff, entryTime: new Date(),
             entryBuyPrice, entrySellPrice, entrySpotPrice: spotPrice,
             entryFee,
-            margin: calcMargin(entryBuyPrice, spread.buyLeg.lotSize, spotPrice, spread.sellQty, spread.sellLeg.lotSize),
+            margin: calcMargin(entryBuyPrice, originalLotSize, spotPrice, spread.sellQty, spread.sellLeg.lotSize),
           };
           newEntries.push(newPos);
         }
@@ -685,7 +780,9 @@ export async function startPaperTradingEngine() {
                 logError('Insert error:', insertError.message);
               }
             } else {
-              log(`📥 ENTRY: ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} | Qty: 1:${t.sellQty} | Net: $${(t.entryBuyPrice - t.sellQty * t.entrySellPrice).toFixed(2)}`);
+              const originalLotSize = t.sellLeg.lotSize || 1;
+              const ratioLong = t.buyLeg.lotSize / originalLotSize;
+              log(`📥 ENTRY: ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} | Qty: ${ratioLong.toFixed(2)}:${t.sellQty} | Net: $${(t.entryBuyPrice * ratioLong - t.sellQty * t.entrySellPrice).toFixed(2)}`);
             }
           } catch (err) { logError('Entry persistence error:', err); }
         }

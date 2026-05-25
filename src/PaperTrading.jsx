@@ -89,6 +89,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const tickerBufferRef = useRef({});
   const flushTimerRef = useRef(null);
   const lastDbWriteRef = useRef(0);
+  const latestSpotPriceRef = useRef(null);
 
   const flushTickerBuffer = useCallback(() => {
     flushTimerRef.current = null;
@@ -335,13 +336,28 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   useEffect(() => {
     const fetchSpot = () => {
       getSpotPrice(underlying)
-        .then(sp => { if (sp) setSpotPrice(sp); })
+        .then(sp => {
+          if (sp) {
+            latestSpotPriceRef.current = sp;
+            setSpotPrice(sp);
+          }
+        })
         .catch(() => { });
     };
     fetchSpot();
     spotIntervalRef.current = setInterval(fetchSpot, 10000);
     return () => clearInterval(spotIntervalRef.current);
   }, [underlying]);
+
+  // Throttle spot price state updates to UI to exactly once per second
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (latestSpotPriceRef.current !== null) {
+        setSpotPrice(latestSpotPriceRef.current);
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
 
   // ── WebSocket (read-only: feeds Phase 1 PnL display only) ────────────
   const positionsSymbolsKey = React.useMemo(() => {
@@ -394,7 +410,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     if (!selExpiry || !products.length) return;
 
     const symbolMeta = getSymbolMeta();
+    const perpSymbol = `${underlying}USD`;
     const allSymbols = Object.keys(symbolMeta);
+    if (!allSymbols.includes(perpSymbol)) {
+      allSymbols.push(perpSymbol);
+    }
     if (allSymbols.length < 2) return;
 
     if (wsRef.current) {
@@ -409,6 +429,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       allSymbols,
       (msg) => {
         const sym = msg.symbol;
+        if (sym === perpSymbol) {
+          const sp = toFiniteNumber(msg.spot_price ?? msg.mark_price ?? msg.close ?? msg.last_price);
+          if (sp && !isNaN(sp)) {
+            latestSpotPriceRef.current = sp;
+          }
+          return;
+        }
         const meta = symbolMeta[sym];
         if (!meta) return;
 

@@ -47,9 +47,11 @@ Incoming frames are filtered to only process `type === 'v2/ticker'`. All other m
 3. **Redundant Connection Guard (`lastWsSymbolsRef`)**: Hashes the current symbol list. Skips WebSocket teardown/recreate if the symbol set has not changed, avoiding the "WebSocket closed before established" race condition during periodic 5-minute product refreshes.
 4. **50ms Buffered Flush**: All incoming ticker frames are written to `tickerBufferRef` (a plain object). A `setTimeout(flushTickerBuffer, 50)` timer batches and flushes them into `latestTickerDataRef` and triggers a single React state update. This limits render pressure under volatile data bursts.
 
-### Spot Price Polling
+### Spot Price Streaming & Redundancy
 
-All four modules poll `getSpotPrice(underlying)` every **10 seconds** via `setInterval` to keep the spot display and safety guard calculations current.
+To ensure zero-latency spot prices:
+1. **WebSocket Ticker Subscription**: The frontend UI (`PaperTrading.jsx`) and backend engines (`paperTradingEngine.js` and `atmExitEngine.js`) subscribe to the underlying perpetual future contract (e.g., `BTCUSD` or `ETHUSD`) directly over the WebSocket ticker stream. Spot price ticks are processed immediately upon receipt, updating the UI and engine states with zero latency.
+2. **Redundant REST Polling Fallback**: All modules continue to poll `getSpotPrice(underlying)` every **10 seconds** via `setInterval` as a safety net in case of WebSocket disconnects or message drops.
 
 ---
 
@@ -236,6 +238,23 @@ Steps: A → B → C → D → E → F (detailed in sections below).
 
 All active positions are sorted by descending `|buyStrike - spotPrice|` (farthest OTM first). This ensures the weakest positions are evaluated for exits before the stronger ones.
 
+### Dynamic ATM Ratio-Based Scaling
+
+Before checking exit triggers for each sorted position, the engine evaluates the position's live ATM ratio against its entry baseline:
+
+1. **Baseline Extraction**: Reconstructs/initializes `pos.buyLeg.originalLotSize` (defaults to current lot size or `1`) and `pos.buyLeg.entryAtmRatio` (fallback calculations from current prices) if missing for backward compatibility.
+2. **Live Ratio Calculation**: Computes `liveAtmRatio` using:
+   - `liveBuyIntrinsic = getTickerPrice(atmStrike, pos.type, 'bid')`
+   - `targetSellStrike = pos.type === 'call' ? atmStrike + pos.strikeDiff : atmStrike - pos.strikeDiff`
+   - `liveSellIntrinsic = getTickerPrice(targetSellStrike, pos.type, 'ask')`
+   - `liveAtmRatio = parseFloat((Math.round((liveBuyIntrinsic / liveSellIntrinsic) / 0.25) * 0.25).toFixed(2))`
+3. **Adjustment Formula**:
+   - `diff = liveAtmRatio - pos.buyLeg.entryAtmRatio`
+   - If `diff >= 0.5`, `steps = Math.floor(diff / 0.5)`, `reductionFactor = Math.min(0.5, steps * 0.15)`.
+   - Otherwise, `reductionFactor = 0`.
+   - `targetLotSize = pos.buyLeg.originalLotSize * (1 - reductionFactor)`.
+4. **State Persistence**: If `pos.buyLeg.lotSize` differs from `targetLotSize`, updates the memory reference, recalculates `margin` with `calcMargin`, and persists the updated `buy_leg` JSON and `margin` to the Supabase `active_positions` table.
+
 ### C. Exit Priority Tree
 
 Each position is evaluated in strict priority order:
@@ -302,7 +321,7 @@ New entries are opened from `topSpreads` (full candidate pool, not uniqueTopSpre
 2. **Strike Uniqueness**: Block if buy or sell strike already active in `remaining` or `newEntries` (same type/underlying).
 3. **Portfolio Cap**: Block if `remaining + newEntries count >= 3` for this type.
 4. **Strike Diversification Guard (ATM Exit Trading)**: In the ATM Exit Trading engine, new buy strikes must be `>= 400 pts` from all existing buy strikes of the same type. (This guard has been removed from Paper Trading).
-5. **Execution**: `entryBuyPrice = spread.ask`, `entrySellPrice = spread.bid`. Entry IVs captured: `entryBuyIv = ticker.askIv`, `entrySellIv = ticker.bidIv`.
+5. **Execution**: `entryBuyPrice = spread.ask`, `entrySellPrice = spread.bid`. Entry IVs captured: `entryBuyIv = ticker.askIv`, `entrySellIv = ticker.bidIv`. Baseline ATM ratio (`entryAtmRatio`) and unscaled lot size (`originalLotSize`) are computed and stored inside the `buy_leg` JSON metadata at entry.
 6. **Supabase Insert (with three DB-level guards)**:
    - Count guard: `SELECT id WHERE underlying AND type` — abort if count `>= 3`.
    - Buy strike uniqueness: `SELECT id WHERE buy_strike = X` — abort if exists (`buyConflict`).
