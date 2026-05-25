@@ -35,7 +35,7 @@ The app is built around four workflows:
 
 The project uses a decoupled headless architecture to ensure 24/7 strategy execution without relying on an open browser:
 
-1. **Headless Backend Engines (Node.js)**: Dedicated background workers (`paperTradingEngine.js` and `atmExitEngine.js`) run continuously on a VPS. They handle the Delta Exchange WebSocket connections, evaluate trading strategies every second, and persist positions/analytics directly to Supabase.
+1. **Headless Backend Engines (Node.js)**: Dedicated background workers (`paperTradingEngine.js` and `atmExitEngine.js`) run continuously on a VPS. They handle the Delta Exchange WebSocket connections, evaluate exit triggers every second to minimize slippage, scan for new entries on 1-minute boundaries to optimize database reads, and persist positions/analytics directly to Supabase. The engines tolerate up to 120 seconds of spot price staleness to prevent rate-limit lockouts.
 2. **Frontend UI Dashboard**: React (Vite) app that serves as a read-only monitoring dashboard and configuration control panel. It watches the Supabase database via Realtime subscriptions to display live PnL and uses an `engine_heartbeat` table with a ticking UI countdown to guarantee the background engines are healthy.
 3. **Persistence & Sync**: Supabase (PostgreSQL) is the source of truth for configuration, active positions, trade history, and analytics. **Supabase Realtime** subscriptions on `active_positions` deliver instant push-based updates to all connected browser instances (< 1s).
 4. **Chart Engine**: `lightweight-charts` with always-mounted panels to avoid remount jitter.

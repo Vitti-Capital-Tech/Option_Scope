@@ -213,24 +213,16 @@ Applied to both engines using a tiered leverage model based on short notional va
 
 ## 7) Paper Trading Engine (`engine/paperTradingEngine.js`)
 
-### Dual-Phase Evaluation Loop (`evaluateStrategy`)
+### Evaluation Loop & Execution Decoupling
 
-Called every second by a `setInterval`. Uses the `isEvaluatingRef` mutex to prevent re-entrant calls.
+Called every second by `setInterval`. Uses the `isEvaluating` mutex to prevent re-entrant execution.
 
-**Phase 1 — Real-Time PnL (every 1 second):**
+**Decoupled Scans (`onlyExits` flag):**
 
-Triggered when the current time has not crossed a new clock-minute boundary and no scanner update is pending.
+* **Exit Evaluation (every 1 second)**: The engine runs `evaluateStrategy(true)` (Exit-Only) on intermediate seconds. It iterates over active positions, calculates real-time liquidation value P&L and fees, and checks exit triggers (ATM, ITM, expiry, leg swaps, rotations) against streaming WebSocket ticker quotes and polled spot prices. If no exits occur, it does not query or write to Supabase.
+* **Full Evaluation (every minute boundary)**: The engine runs `evaluateStrategy(false)` (Full Run) when a new clock-minute crosses (`currentMinute > lastMinute` or on startup). In addition to checking exits, it scans for new spread candidates, applies entry guards, checks DB-level count/strike restrictions, and inserts new positions into Supabase.
 
-- Reads `latestTickerDataRef.current` directly (no React state read — avoids stale closures).
-- For each position: reads `ticker.bid` (long leg exit price) and `ticker.ask` (short leg exit price).
-- Computes: `grossPnl = (buyPnl × buyLotSize) − (sellPnl × sellQty × sellLotSize) + accumulatedSellPnl`
-- Fee formula: `feePerUnit = min(0.035 × price, 0.0001 × spot)`, then `× qty × lotSize`.
-- Updates current IVs: buy leg uses `ticker.bidIv`, sell leg uses `ticker.askIv`.
-- Uses `setPositions(prev => prev.map(...))` — functional update avoids full array replacement to prevent table flash.
-
-**Phase 2 — Strategy Evaluation (every clock-minute or on scanner sync):**
-
-Triggered when `currentMinute > lastMinute` OR `scannerSyncVersion > lastProcessedScannerVersionRef.current` OR `force = true`.
+* **Spot Price Staleness Guard**: If the polled spot price hasn't updated in 120 seconds (`120000` ms), the evaluation is skipped as a safety measure against dead pricing feeds.
 
 Steps: A → B → C → D → E → F (detailed in sections below).
 
@@ -365,6 +357,10 @@ A UI-layer only feature — the Supabase database always stores original base va
 | Analytics | None | Bucketed `avg_pnl`, `avg_margin` per strike diff / sell qty range |
 | Supabase tables | `active_positions`, `trade_history` | `atm_exit_*` prefix tables (isolated) |
 | Leg swap | Yes | No |
+
+### Evaluation Loop
+
+Uses the identical decoupled execution strategy: checks ATM and rotation exits every second (`evaluateStrategy(true)`), while scanning and entering new positions at clock-minute boundaries (`evaluateStrategy(false)`). Tolerates up to 120 seconds of spot price staleness.
 
 ### Scanner (`scanTickers` internal)
 

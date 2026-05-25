@@ -51,8 +51,8 @@ Browser (React + Vite Dashboard)
 
 - **Charting Engine (UI)** uses imperative refs and always-mounted chart components for smooth updates.
 - **Scanner Engine (UI)** processes option chains for valid ratio candidates using configurable thresholds. Enforces directional filtering (Calls ≥ ATM, Puts ≤ ATM).
-- **Paper Trading Engine (Node.js)** A headless script (`paperTradingEngine.js`) that runs 24/7 on a VPS. Reuses scanner-style candidate selection to simulate positions with a full exit lifecycle: rotation toward better strikes, multi-stage ATM/ITM scale-out, leg swap optimization, and automated expiry settlement. Enforces a hard cap of 3 positions per option type. Tracks Bid/Ask-specific IVs. Synchronizes with Supabase.
-- **ATM Exit Engine (Node.js)** A headless script (`atmExitEngine.js`). Runs an independent, self-contained scanner and evaluation loop. Uses the same entry guards (0.5% spot scaling, 400pt diversification) but a simpler exit strategy: 100% close at ATM. Persists to separate Supabase tables (`atm_exit_*`) and aggregates bucketed running trade analytics.
+- **Paper Trading Engine (Node.js)** A headless script (`paperTradingEngine.js`) that runs 24/7 on a VPS. Reuses scanner-style candidate selection to simulate positions. Evaluates exit rules (ATM, ITM, expiry, leg swaps, rotations) every second to minimize slippage, while running full scans for entries on 1-minute boundaries to optimize DB load. Enforces a hard cap of 3 positions per option type. Tracks Bid/Ask-specific IVs. Tolerates up to 120s spot price staleness. Synchronizes with Supabase.
+- **ATM Exit Engine (Node.js)** A headless script (`atmExitEngine.js`). Runs an independent, self-contained scanner and evaluation loop. Evaluates exit rules every second, while running full scans for entries on 1-minute boundaries. Uses the same entry guards (0.5% spot scaling, 400pt diversification) but a simpler exit strategy: 100% close at ATM. Persists to separate Supabase tables (`atm_exit_*`) and aggregates bucketed running trade analytics. Tolerates up to 120s spot price staleness.
 
 ---
 
@@ -95,7 +95,7 @@ Browser (React + Vite Dashboard)
 
 1. Merge local scan candidates with real-time scanner broadcasts.
    - **Execution-Realistic Entries**: New positions are entered at the Ask for long legs and Bid for short legs, capturing the true cost of crossing the spread.
-2. Each minute, evaluate all active positions for rotation or ATM/ITM/expiry exit triggers.
+2. Evaluate active positions for rotation or ATM/ITM/expiry exit triggers every second to prevent slippage, while scanning and entering new positions on the 1-minute boundary.
     - **Liquidation-Based PnL**: Unrealized PnL is calculated based on immediate exit prices: long positions are valued at the current Bid (selling back) and short positions at the current Ask (buying back).
 3. **Scaling & Uniqueness Guards**: 
    - **Directional Spot Scaling**: Enforces a 0.5% price gap (rounded to 100) between entries for mean-reversion scaling.

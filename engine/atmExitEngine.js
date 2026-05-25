@@ -201,12 +201,12 @@ export async function startAtmExitEngine() {
 
   // ── Core strategy evaluation ──────────────────────────────────────────
 
-  async function evaluateStrategy() {
+  async function evaluateStrategy(onlyExits = false) {
     if (isEvaluating || !spotPrice) return;
 
     // Spot staleness guard
     const spotAge = Date.now() - lastSpotUpdate;
-    if (lastSpotUpdate > 0 && spotAge > 30000) {
+    if (lastSpotUpdate > 0 && spotAge > 120000) {
       logWarn(`[ATM] Spot stale (${Math.round(spotAge / 1000)}s). Skipping evaluation.`);
       return;
     }
@@ -320,59 +320,61 @@ export async function startAtmExitEngine() {
       // ── Entry evaluation ────────────────────────────────────────────────
       const newEntries = [];
 
-      for (const spread of topSpreads) {
-        const spreadType = spread.buyLeg.type;
-        const count = remaining.filter(p => p.underlying === underlying && p.type === spreadType).length +
-          newEntries.filter(p => p.underlying === underlying && p.type === spreadType).length;
-        if (count >= 3) continue;
+      if (!onlyExits) {
+        for (const spread of topSpreads) {
+          const spreadType = spread.buyLeg.type;
+          const count = remaining.filter(p => p.underlying === underlying && p.type === spreadType).length +
+            newEntries.filter(p => p.underlying === underlying && p.type === spreadType).length;
+          if (count >= 3) continue;
 
-        const minutesToExpiry = (new Date(config.expiry).getTime() - Date.now()) / 60000;
-        if (minutesToExpiry < 5) continue;
+          const minutesToExpiry = (new Date(config.expiry).getTime() - Date.now()) / 60000;
+          if (minutesToExpiry < 5) continue;
 
-        const candidateLongStrike = Number(spread.buyLeg.strike);
-        const existingOfType = remaining.filter(p => p.underlying === underlying && p.type === spreadType);
+          const candidateLongStrike = Number(spread.buyLeg.strike);
+          const existingOfType = remaining.filter(p => p.underlying === underlying && p.type === spreadType);
 
-        // 0.5% spot scaling guard
-        let validSpotMove = true;
-        for (const p of existingOfType) {
-          if (p.entrySpotPrice) {
-            const thresh = Math.round((p.entrySpotPrice * 0.005) / 100) * 100;
-            const spotValid = spreadType === 'call'
-              ? spotPrice <= p.entrySpotPrice - thresh
-              : spotPrice >= p.entrySpotPrice + thresh;
-            if (!spotValid) { validSpotMove = false; break; }
+          // 0.5% spot scaling guard
+          let validSpotMove = true;
+          for (const p of existingOfType) {
+            if (p.entrySpotPrice) {
+              const thresh = Math.round((p.entrySpotPrice * 0.005) / 100) * 100;
+              const spotValid = spreadType === 'call'
+                ? spotPrice <= p.entrySpotPrice - thresh
+                : spotPrice >= p.entrySpotPrice + thresh;
+              if (!spotValid) { validSpotMove = false; break; }
+            }
           }
+          if (!validSpotMove) continue;
+
+          // 400pt diversification
+          let validStrikeDiff = true;
+          for (const p of existingOfType) {
+            if (Math.abs(candidateLongStrike - Number(p.buyLeg.strike)) < 400) { validStrikeDiff = false; break; }
+          }
+          if (!validStrikeDiff) continue;
+
+          // Strike collision
+          const buyConflict = [...remaining, ...newEntries].some(p =>
+            p.underlying === underlying && p.type === spreadType && Number(p.buyLeg.strike) === candidateLongStrike
+          );
+          const sellConflict = [...remaining, ...newEntries].some(p =>
+            p.underlying === underlying && p.type === spreadType && Number(p.sellLeg.strike) === Number(spread.sellLeg.strike)
+          );
+          if (buyConflict || sellConflict) continue;
+
+          const entryFee = calculateFee(spread.buyPrice, spotPrice, 1, spread.buyLeg.lotSize) +
+            calculateFee(spread.sellPrice, spotPrice, spread.sellQty, spread.sellLeg.lotSize);
+          const id = `ATM${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+
+          newEntries.push({
+            id, underlying, expiry: config.expiry, type: spreadType,
+            buyLeg: spread.buyLeg, sellLeg: spread.sellLeg, sellQty: spread.sellQty,
+            strikeDiff: spread.strikeDiff, entryTime: new Date(),
+            entryBuyPrice: spread.buyPrice, entrySellPrice: spread.sellPrice,
+            entrySpotPrice: spotPrice, entryFee,
+            margin: calcMargin(spread.buyPrice, spread.buyLeg.lotSize, spotPrice, spread.sellQty, spread.sellLeg.lotSize),
+          });
         }
-        if (!validSpotMove) continue;
-
-        // 400pt diversification
-        let validStrikeDiff = true;
-        for (const p of existingOfType) {
-          if (Math.abs(candidateLongStrike - Number(p.buyLeg.strike)) < 400) { validStrikeDiff = false; break; }
-        }
-        if (!validStrikeDiff) continue;
-
-        // Strike collision
-        const buyConflict = [...remaining, ...newEntries].some(p =>
-          p.underlying === underlying && p.type === spreadType && Number(p.buyLeg.strike) === candidateLongStrike
-        );
-        const sellConflict = [...remaining, ...newEntries].some(p =>
-          p.underlying === underlying && p.type === spreadType && Number(p.sellLeg.strike) === Number(spread.sellLeg.strike)
-        );
-        if (buyConflict || sellConflict) continue;
-
-        const entryFee = calculateFee(spread.buyPrice, spotPrice, 1, spread.buyLeg.lotSize) +
-          calculateFee(spread.sellPrice, spotPrice, spread.sellQty, spread.sellLeg.lotSize);
-        const id = `ATM${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-
-        newEntries.push({
-          id, underlying, expiry: config.expiry, type: spreadType,
-          buyLeg: spread.buyLeg, sellLeg: spread.sellLeg, sellQty: spread.sellQty,
-          strikeDiff: spread.strikeDiff, entryTime: new Date(),
-          entryBuyPrice: spread.buyPrice, entrySellPrice: spread.sellPrice,
-          entrySpotPrice: spotPrice, entryFee,
-          margin: calcMargin(spread.buyPrice, spread.buyLeg.lotSize, spotPrice, spread.sellQty, spread.sellLeg.lotSize),
-        });
       }
 
       // ── Supabase side effects ─────────────────────────────────────────
@@ -402,23 +404,25 @@ export async function startAtmExitEngine() {
         } catch (e) { logError('[ATM] Exit persistence error:', e); }
       }
 
-      for (const t of newEntries) {
-        try {
-          const { data } = await supabase.from('atm_exit_active_positions').select('id')
-            .eq('underlying', underlying).eq('type', t.type);
-          if (data?.length >= 3) continue;
+      if (!onlyExits) {
+        for (const t of newEntries) {
+          try {
+            const { data } = await supabase.from('atm_exit_active_positions').select('id')
+              .eq('underlying', underlying).eq('type', t.type);
+            if (data?.length >= 3) continue;
 
-          await supabase.from('atm_exit_active_positions').insert([{
-            id: t.id, underlying, expiry: config.expiry, type: t.type,
-            buy_leg: JSON.stringify(t.buyLeg), sell_leg: JSON.stringify(t.sellLeg),
-            sell_qty: t.sellQty, strike_diff: t.strikeDiff,
-            entry_time: t.entryTime.toISOString(), entry_buy_price: t.entryBuyPrice,
-            entry_sell_price: t.entrySellPrice, entry_spot_price: t.entrySpotPrice,
-            margin: t.margin, entry_fee: t.entryFee, accumulated_sell_pnl: 0,
-            buy_strike: t.buyLeg.strike, sell_strike: t.sellLeg.strike,
-          }]);
-          log(`[ATM] 📥 ENTRY: ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} | Qty: 1:${t.sellQty}`);
-        } catch (e) { logError('[ATM] Entry persistence error:', e); }
+            await supabase.from('atm_exit_active_positions').insert([{
+              id: t.id, underlying, expiry: config.expiry, type: t.type,
+              buy_leg: JSON.stringify(t.buyLeg), sell_leg: JSON.stringify(t.sellLeg),
+              sell_qty: t.sellQty, strike_diff: t.strikeDiff,
+              entry_time: t.entryTime.toISOString(), entry_buy_price: t.entryBuyPrice,
+              entry_sell_price: t.entrySellPrice, entry_spot_price: t.entrySpotPrice,
+              margin: t.margin, entry_fee: t.entryFee, accumulated_sell_pnl: 0,
+              buy_strike: t.buyLeg.strike, sell_strike: t.sellLeg.strike,
+            }]);
+            log(`[ATM] 📥 ENTRY: ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} | Qty: 1:${t.sellQty}`);
+          } catch (e) { logError('[ATM] Entry persistence error:', e); }
+        }
       }
 
       positions = [...remaining, ...newEntries];
@@ -430,7 +434,9 @@ export async function startAtmExitEngine() {
       });
     } finally {
       isEvaluating = false;
-      lastEvaluated = Date.now();
+      if (!onlyExits) {
+        lastEvaluated = Date.now();
+      }
     }
   }
 
@@ -487,7 +493,9 @@ export async function startAtmExitEngine() {
     const currentMinute = Math.floor(Date.now() / 60000);
     const lastMinute = Math.floor(lastEvaluated / 60000);
     if (currentMinute > lastMinute || lastEvaluated === 0) {
-      await evaluateStrategy();
+      await evaluateStrategy(false); // Full evaluation (exits + entries)
+    } else {
+      await evaluateStrategy(true);  // Exit-only evaluation
     }
   }, 1000);
 
