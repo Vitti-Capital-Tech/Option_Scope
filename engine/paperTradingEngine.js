@@ -465,6 +465,7 @@ export async function startPaperTradingEngine() {
                 try {
                   await supabase.from('active_positions').update({
                     buy_leg: JSON.stringify(pos.buyLeg),
+                    entry_fee: pos.entryFee,
                     margin: pos.margin
                   }).eq('id', pos.id);
                 } catch (e) {
