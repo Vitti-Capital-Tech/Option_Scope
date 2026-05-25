@@ -254,7 +254,11 @@ Before checking exit triggers for each sorted position, the engine evaluates the
    - Otherwise, `reductionFactor = 0`.
    - `targetLotSize = pos.buyLeg.originalLotSize * (1 - reductionFactor)`.
    - Enforce floor: `minAllowed = Math.min(0.5, pos.buyLeg.originalLotSize)`. If `targetLotSize < minAllowed`, set `targetLotSize = minAllowed`.
-4. **State Persistence**: If `targetLotSize` is strictly less than `pos.buyLeg.lotSize`, or if the current lot size is below `minAllowed` (self-healing correction), the engine updates the memory reference, recalculates `margin` with `calcMargin`, and persists the updated `buy_leg` JSON and `margin` to the Supabase `active_positions` table. This ensures the buy quantity is only allowed to decrease (with an absolute floor at 0.5) and never scale back up, while automatically correcting any positions that are currently violating the floor limit.
+4. **State Persistence & Partial Exits**: If `targetLotSize` is strictly less than `pos.buyLeg.lotSize`, the engine records a **partial exit** to the `trade_history` table:
+   - It calculates `deltaQty = pos.buyLeg.lotSize - targetLotSize`, `partialGrossPnl = (liveExitBuy - pos.entryBuyPrice) * deltaQty`, exit fees, and a proportional entry fee `partialEntryFee = pos.entryFee * (deltaQty / pos.buyLeg.lotSize)`.
+   - It writes a new row to `trade_history` with `is_partial = true`, `sell_qty = 0`, and the computed P&L and fees.
+   - It updates the active position's parameters: decrements its `entryFee` by `partialEntryFee`, updates `buy_leg.lotSize = targetLotSize`, recalculates `margin` with `calcMargin`, and updates the `active_positions` table in Supabase.
+   - In case of a self-healing correction where the current lot size is below `minAllowed`, the engine adjusts the active position to the floor value without recording a partial exit in history. This ensures the buy quantity is only allowed to decrease (with an absolute floor at 0.5) and never scale back up.
 
 ### C. Exit Priority Tree
 
