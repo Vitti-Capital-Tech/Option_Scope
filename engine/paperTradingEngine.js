@@ -373,6 +373,8 @@ export async function startPaperTradingEngine() {
             }
           }
 
+
+
           if (pos.buyLeg && pos.buyLeg.originalLotSize !== undefined && pos.buyLeg.entryAtmRatio != null) {
             const liveBuyIntrinsic = getTickerPrice(atmStrike, pos.type, 'bid');
             const targetSellStrike = pos.type === 'call' ? atmStrike + pos.strikeDiff : atmStrike - pos.strikeDiff;
@@ -395,7 +397,7 @@ export async function startPaperTradingEngine() {
               if (targetLotSize < pos.buyLeg.lotSize || pos.buyLeg.lotSize < minAllowed) {
                 const actionStr = targetLotSize < pos.buyLeg.lotSize ? 'Reducing' : 'Correcting (floor limit)';
                 log(`⚖️ SCALING: Position ${pos.id} (${pos.type.toUpperCase()}) ATM Ratio increased from ${pos.buyLeg.entryAtmRatio} to ${liveAtmRatio} (diff: ${diff.toFixed(2)}). ${actionStr} buy lot size from ${pos.buyLeg.lotSize} to ${targetLotSize} (original: ${pos.buyLeg.originalLotSize})`);
-                
+
                 const deltaQty = pos.buyLeg.lotSize - targetLotSize;
                 if (targetLotSize < pos.buyLeg.lotSize && deltaQty > 0) {
                   // Partial exit: record to trade_history
@@ -407,7 +409,7 @@ export async function startPaperTradingEngine() {
                   const partialNetPnl = partialGrossPnl - partialTotalFees;
 
                   const partialTradeId = `${pos.id}-PE-${Date.now().toString(36).toUpperCase()}`;
-                  
+
                   const historyBuyLeg = {
                     ...pos.buyLeg,
                     lotSize: deltaQty,
@@ -450,7 +452,7 @@ export async function startPaperTradingEngine() {
                 }
 
                 pos.buyLeg.lotSize = targetLotSize;
-                
+
                 // Recalculate margin
                 pos.margin = calcMargin(
                   pos.entryBuyPrice,
