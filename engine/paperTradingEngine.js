@@ -388,8 +388,8 @@ export async function startPaperTradingEngine() {
               }
               const targetLotSize = pos.buyLeg.originalLotSize * (1 - reductionFactor);
 
-              if (pos.buyLeg.lotSize !== targetLotSize) {
-                log(`⚖️ SCALING: Position ${pos.id} (${pos.type.toUpperCase()}) ATM Ratio increased from ${pos.buyLeg.entryAtmRatio} to ${liveAtmRatio} (diff: ${diff.toFixed(2)}). Adjusting buy lot size from ${pos.buyLeg.lotSize} to ${targetLotSize} (original: ${pos.buyLeg.originalLotSize})`);
+              if (targetLotSize < pos.buyLeg.lotSize) {
+                log(`⚖️ SCALING: Position ${pos.id} (${pos.type.toUpperCase()}) ATM Ratio increased from ${pos.buyLeg.entryAtmRatio} to ${liveAtmRatio} (diff: ${diff.toFixed(2)}). Reducing buy lot size from ${pos.buyLeg.lotSize} to ${targetLotSize} (original: ${pos.buyLeg.originalLotSize})`);
                 
                 pos.buyLeg.lotSize = targetLotSize;
                 
