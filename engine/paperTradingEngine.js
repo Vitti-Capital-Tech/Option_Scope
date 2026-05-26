@@ -405,7 +405,7 @@ export async function startPaperTradingEngine() {
 
                 if (targetLotSize < pos.buyLeg.lotSize || pos.buyLeg.lotSize < minAllowed) {
                   const actionStr = targetLotSize < pos.buyLeg.lotSize ? 'Reducing' : 'Correcting (floor limit)';
-                  log(`⚖️ SCALING: Position ${pos.id} (${pos.type.toUpperCase()}) ATM Ratio increased from ${pos.buyLeg.entryAtmRatio} to ${liveAtmRatio} (diff: ${diff.toFixed(2)}). ${actionStr} buy lot size from ${pos.buyLeg.lotSize} to ${targetLotSize} (original: ${pos.buyLeg.originalLotSize})`);
+                  log(`⚖️ SCALING: Position ${pos.id} (${pos.type.toUpperCase()}) ATM Ratio increased from maxAtmRatio ${currentMaxAtmRatio} to ${liveAtmRatio} (diff from max: ${(liveAtmRatio - currentMaxAtmRatio).toFixed(2)}). ${actionStr} buy lot size from ${pos.buyLeg.lotSize} to ${targetLotSize} (original: ${pos.buyLeg.originalLotSize})`);
 
                   const deltaQty = pos.buyLeg.lotSize - targetLotSize;
                   if (targetLotSize < pos.buyLeg.lotSize && deltaQty > 0) {
