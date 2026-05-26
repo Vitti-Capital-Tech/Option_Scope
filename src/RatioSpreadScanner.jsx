@@ -213,13 +213,26 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
       }
     }
 
+    const perpSymbol = `${underlying}USD`;
     const allSymbols = Object.keys(symbolMeta);
+    if (!allSymbols.includes(perpSymbol)) {
+      allSymbols.push(perpSymbol);
+    }
     setExpectedTickerCount(allSymbols.length);
 
     const stream = createTickerStream(
       allSymbols,
       (msg) => {
         const sym = msg.symbol;
+        const perpSymbol = `${underlying}USD`;
+        if (sym === perpSymbol) {
+          const sp = toFiniteNumber(msg.spot_price ?? msg.mark_price ?? msg.close ?? msg.last_price);
+          if (sp && !isNaN(sp)) {
+            setSpotPrice(sp);
+          }
+          return;
+        }
+
         const markPrice = toFiniteNumber(msg.mark_price ?? msg.close ?? msg.last_price);
         const bid = toFiniteNumber(msg.quotes?.best_bid);
         const ask = toFiniteNumber(msg.quotes?.best_ask);
