@@ -250,7 +250,7 @@ Before checking exit triggers for each sorted position, the engine evaluates the
    - `liveAtmRatio = parseFloat((Math.round((liveBuyIntrinsic / liveSellIntrinsic) / 0.25) * 0.25).toFixed(2))`
 3. **Adjustment Formula**:
    - `diff = liveAtmRatio - pos.buyLeg.entryAtmRatio`
-   - If `diff >= 0.5`, `steps = Math.floor(diff / 0.5)`, `reductionFactor = Math.min(0.5, steps * 0.15)`.
+   - If `diff >= 1.0`, `steps = Math.floor(diff / 1.0)`, `reductionFactor = Math.min(0.5, steps * 0.1)`.
    - Otherwise, `reductionFactor = 0`.
    - `targetLotSize = pos.buyLeg.originalLotSize * (1 - reductionFactor)`.
    - Enforce floor: `minAllowed = Math.min(0.5, pos.buyLeg.originalLotSize)`. If `targetLotSize < minAllowed`, set `targetLotSize = minAllowed`.

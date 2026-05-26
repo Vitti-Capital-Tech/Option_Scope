@@ -384,9 +384,9 @@ export async function startPaperTradingEngine() {
               const liveAtmRatio = parseFloat((Math.round((liveBuyIntrinsic / liveSellIntrinsic) / 0.25) * 0.25).toFixed(2));
               const diff = liveAtmRatio - pos.buyLeg.entryAtmRatio;
               let reductionFactor = 0;
-              if (diff >= 0.5) {
-                const steps = Math.floor(diff / 0.5);
-                reductionFactor = Math.min(0.5, steps * 0.15);
+              if (diff >= 1.0) {
+                const steps = Math.floor(diff / 1.0);
+                reductionFactor = Math.min(0.5, steps * 0.1);
               }
               let targetLotSize = pos.buyLeg.originalLotSize * (1 - reductionFactor);
               const minAllowed = Math.min(0.5, pos.buyLeg.originalLotSize);
