@@ -323,6 +323,7 @@ export async function startPaperTradingEngine() {
       const remaining = [];
       const exited = [];
       const reservedTargets = new Set();
+      const reservedSellTargets = new Set();
 
       // Sort worst-first (farthest from ATM)
       const sortedPositions = [...positions].sort((a, b) => {
@@ -533,7 +534,7 @@ export async function startPaperTradingEngine() {
 
             const buyConflict = otherActiveBuyStrikes.includes(bS);
             const sellConflict = otherActiveSellStrikes.includes(sS);
-            if (buyConflict || sellConflict || reservedTargets.has(bS)) return false;
+            if (buyConflict || sellConflict || reservedTargets.has(bS) || reservedSellTargets.has(sS)) return false;
 
             const oldSpotBase = pos.entrySpotPrice || pos.entryBuyPrice || spotPrice;
             const oldThresh = Math.round((oldSpotBase * 0.005) / 100) * 100;
@@ -556,6 +557,7 @@ export async function startPaperTradingEngine() {
 
           if (bestTarget) {
             const targetStrike = Number(bestTarget.buyLeg.strike);
+            const targetSellStrike = Number(bestTarget.sellLeg.strike);
             const currentStrike = Number(pos.buyLeg.strike);
             const isPut = pos.type === 'put';
             if (isPut ? (targetStrike > currentStrike) : (targetStrike < currentStrike)) {
@@ -569,6 +571,7 @@ export async function startPaperTradingEngine() {
                 exitReason = `Lost Top 3 and Rank 1 better target available (${targetStrike})`;
               }
               reservedTargets.add(targetStrike);
+              reservedSellTargets.add(targetSellStrike);
             }
           }
         }
@@ -675,6 +678,7 @@ export async function startPaperTradingEngine() {
             try {
               await supabase.from('active_positions').update({
                 buy_leg: JSON.stringify(target.buyLeg),
+                buy_strike: target.buyLeg.strike,
                 sell_qty: target.sellQty,
                 entry_buy_price: target.buyPrice,
                 entry_sell_price: adjustedSellEntryPrice,
