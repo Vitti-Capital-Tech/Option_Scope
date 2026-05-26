@@ -438,13 +438,13 @@ To visualize potential outcomes, the Result Table projects the value of each sca
 ### 1. True ATM Strike Sourcing
 The true market ATM strike is calculated globally in the scanner component (by inspecting the entire unfiltered options chain) and passed as `trueAtmStrike` to `ResultTable.jsx`. This ensures that aggressive filtering in the scanner does not lead to a wrong ATM strike calculation.
 
-### 2. `getTickerPrice` — Nearest-Strike Fallback
+### 2. `getTickerPrice` — Expiry-Filtered Nearest-Strike Fallback
 
-All ATM price lookups go through `getTickerPrice(strike, optType, priceField)`:
+All ATM price lookups go through `getTickerPrice(strike, optType, priceField, expiry)`:
 
-1. **Filter by type**: Collects all tickers from `tickerData` matching `optType` (case-insensitive). Returns `null` immediately if no tickers of that type exist.
+1. **Filter by type and expiry**: Collects all tickers from `tickerData` matching `optType` (case-insensitive) and the requested `expiry`. Returns `null` immediately if no tickers match.
 2. **Exact match**: If a ticker at the requested `strike` is found, its `priceField` (or `markPrice` as fallback) is returned — or `null` if the value is missing/zero.
-3. **Nearest-strike fallback**: If no exact match exists, scans all same-type tickers and picks the one whose strike is closest to the target, subject to a **tolerance** of `Math.max(currentSpot × 0.10, 5000)`. This is wide enough to reliably cover the ATM neighbourhood but tight enough to exclude far-OTM strikes.
+3. **Nearest-strike fallback**: If no exact match exists, scans same-type, same-expiry tickers and picks the one whose strike is closest to the target, subject to a tight asset-specific **tolerance**: **`500`** points for BTC and **`50`** points for ETH.
 4. **Returns `null`** (never `0`) when no ticker satisfies the tolerance, so callers can cleanly distinguish "no data" from "priced at zero".
 
 ### 3. At ATM Ask/Bid Option Chain Shifting & Ratio

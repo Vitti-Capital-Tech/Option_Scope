@@ -195,7 +195,7 @@ export function buildSymbolMeta(products, expiry, underlying, activePositions = 
     );
     if (callProd) {
       const lotSize = parseFloat(callProd.contract_size ?? callProd.quoting_precision ?? 1);
-      symbolMeta[callProd.symbol] = { strike: parseFloat(strike), lotSize, type: 'call', symbol: callProd.symbol };
+      symbolMeta[callProd.symbol] = { strike: parseFloat(strike), lotSize, type: 'call', symbol: callProd.symbol, expiry };
     }
 
     const putProd = products.find(p =>
@@ -205,7 +205,7 @@ export function buildSymbolMeta(products, expiry, underlying, activePositions = 
     );
     if (putProd) {
       const lotSize = parseFloat(putProd.contract_size ?? putProd.quoting_precision ?? 1);
-      symbolMeta[putProd.symbol] = { strike: parseFloat(strike), lotSize, type: 'put', symbol: putProd.symbol };
+      symbolMeta[putProd.symbol] = { strike: parseFloat(strike), lotSize, type: 'put', symbol: putProd.symbol, expiry };
     }
   }
 
@@ -215,13 +215,13 @@ export function buildSymbolMeta(products, expiry, underlying, activePositions = 
       if (pos.buyLeg && !symbolMeta[pos.buyLeg.symbol]) {
         symbolMeta[pos.buyLeg.symbol] = {
           strike: pos.buyLeg.strike, lotSize: pos.buyLeg.lotSize,
-          type: pos.type, symbol: pos.buyLeg.symbol
+          type: pos.type, symbol: pos.buyLeg.symbol, expiry: pos.expiry
         };
       }
       if (pos.sellLeg && !symbolMeta[pos.sellLeg.symbol]) {
         symbolMeta[pos.sellLeg.symbol] = {
           strike: pos.sellLeg.strike, lotSize: pos.sellLeg.lotSize,
-          type: pos.type, symbol: pos.sellLeg.symbol
+          type: pos.type, symbol: pos.sellLeg.symbol, expiry: pos.expiry
         };
       }
     }
@@ -253,6 +253,7 @@ export function processTickerMessage(msg, symbolMeta, prevData) {
     strike: meta.strike,
     lotSize: meta.lotSize,
     type: meta.type,
+    expiry: meta.expiry,
     markPrice: markPrice ?? prev?.markPrice ?? null,
     bid: bid ?? prev?.bid ?? null,
     ask: ask ?? prev?.ask ?? null,
@@ -294,6 +295,7 @@ export async function backfillTickers(underlying, symbolMeta, existingData = {})
         strike: meta.strike,
         lotSize: meta.lotSize,
         type: meta.type,
+        expiry: meta.expiry,
         markPrice: (markPrice && markPrice > 0) ? markPrice : (prev?.markPrice ?? null),
         bid: bid ?? (prev?.bid ?? null),
         ask: ask ?? (prev?.ask ?? null),

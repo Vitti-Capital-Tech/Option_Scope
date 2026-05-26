@@ -225,9 +225,9 @@ export async function startPaperTradingEngine() {
       const localTopPuts = scanTickers(putTickers, config, spotPrice);
       const topSpreads = [...localTopCalls, ...localTopPuts];
 
-      function getTickerPrice(strike, optType, priceField) {
+      function getTickerPrice(strike, optType, priceField, expiry) {
         const lowerType = optType.toLowerCase();
-        const allTickersOfType = allTickers.filter(t => t.type === lowerType);
+        const allTickersOfType = allTickers.filter(t => t.type === lowerType && (!expiry || t.expiry === expiry));
         if (!allTickersOfType.length) return null;
 
         // Exact match first
@@ -237,13 +237,13 @@ export async function startPaperTradingEngine() {
           return (val != null && val > 0) ? val : null;
         }
 
-        // Nearest strike fallback
-        const tolerance = Math.max(spotPrice * 0.10, 5000);
+        // Nearest strike fallback - tight tolerance
+        const maxTolerance = config.underlying === 'ETH' ? 50 : 500;
         let nearest = null;
         let minDist = Infinity;
         for (const t of allTickersOfType) {
           const dist = Math.abs(t.strike - strike);
-          if (dist < minDist && dist <= tolerance) {
+          if (dist < minDist && dist <= maxTolerance) {
             minDist = dist;
             nearest = t;
           }
@@ -254,9 +254,9 @@ export async function startPaperTradingEngine() {
       }
 
       function calculateAtmPnlAndRoi(spread) {
-        const buyIntrinsic = getTickerPrice(atmStrike, spread.buyLeg.type, 'bid');
+        const buyIntrinsic = getTickerPrice(atmStrike, spread.buyLeg.type, 'bid', config.expiry);
         const targetSellStrike = spread.buyLeg.type === 'call' ? atmStrike + spread.strikeDiff : atmStrike - spread.strikeDiff;
-        const sellIntrinsic = getTickerPrice(targetSellStrike, spread.buyLeg.type, 'ask');
+        const sellIntrinsic = getTickerPrice(targetSellStrike, spread.buyLeg.type, 'ask', config.expiry);
         const lotSize = spread.buyLeg.lotSize || 1;
 
         if (buyIntrinsic == null || sellIntrinsic == null) {
@@ -356,9 +356,9 @@ export async function startPaperTradingEngine() {
           if (pos.buyLeg && pos.buyLeg.originalLotSize === undefined) {
             pos.buyLeg.originalLotSize = pos.buyLeg.lotSize || 1;
             if (pos.buyLeg.entryAtmRatio === undefined) {
-              const liveBuyIntrinsic = getTickerPrice(atmStrike, pos.type, 'bid');
+              const liveBuyIntrinsic = getTickerPrice(atmStrike, pos.type, 'bid', pos.expiry);
               const targetSellStrike = pos.type === 'call' ? atmStrike + pos.strikeDiff : atmStrike - pos.strikeDiff;
-              const liveSellIntrinsic = getTickerPrice(targetSellStrike, pos.type, 'ask');
+              const liveSellIntrinsic = getTickerPrice(targetSellStrike, pos.type, 'ask', pos.expiry);
               if (liveBuyIntrinsic != null && liveSellIntrinsic != null && liveSellIntrinsic > 0) {
                 pos.buyLeg.entryAtmRatio = parseFloat((Math.round((liveBuyIntrinsic / liveSellIntrinsic) / 0.25) * 0.25).toFixed(2));
               } else {
@@ -382,9 +382,9 @@ export async function startPaperTradingEngine() {
           }
 
           if (pos.buyLeg && pos.buyLeg.originalLotSize !== undefined && pos.buyLeg.entryAtmRatio != null) {
-            const liveBuyIntrinsic = getTickerPrice(atmStrike, pos.type, 'bid');
+            const liveBuyIntrinsic = getTickerPrice(atmStrike, pos.type, 'bid', pos.expiry);
             const targetSellStrike = pos.type === 'call' ? atmStrike + pos.strikeDiff : atmStrike - pos.strikeDiff;
-            const liveSellIntrinsic = getTickerPrice(targetSellStrike, pos.type, 'ask');
+            const liveSellIntrinsic = getTickerPrice(targetSellStrike, pos.type, 'ask', pos.expiry);
 
             if (liveBuyIntrinsic != null && liveSellIntrinsic != null && liveSellIntrinsic > 0) {
               const liveAtmRatio = parseFloat((Math.round((liveBuyIntrinsic / liveSellIntrinsic) / 0.25) * 0.25).toFixed(2));

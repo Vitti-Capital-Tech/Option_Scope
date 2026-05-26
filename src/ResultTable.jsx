@@ -39,13 +39,16 @@ export default function ResultTable({
       return (val != null && val > 0) ? val : null;
     }
 
-    // Nearest strike fallback
-    const tolerance = Math.max(currentSpot * 0.10, 5000);
+    // Nearest strike fallback - tight tolerance
+    const sampleSymbol = allTickers[0]?.symbol || '';
+    const isEth = sampleSymbol.includes('ETH');
+    const maxTolerance = isEth ? 50 : 500;
+
     let nearest = null;
     let minDist = Infinity;
     for (const t of allTickers) {
       const dist = Math.abs(t.strike - strike);
-      if (dist < minDist && dist <= tolerance) {
+      if (dist < minDist && dist <= maxTolerance) {
         minDist = dist;
         nearest = t;
       }
