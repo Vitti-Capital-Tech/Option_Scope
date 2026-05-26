@@ -364,6 +364,9 @@ export async function startPaperTradingEngine() {
                 pos.buyLeg.entryAtmRatio = null;
               }
             }
+            if (pos.buyLeg.maxAtmRatio === undefined) {
+              pos.buyLeg.maxAtmRatio = pos.buyLeg.entryAtmRatio;
+            }
             try {
               await supabase.from('active_positions').update({
                 buy_leg: JSON.stringify(pos.buyLeg)
@@ -373,7 +376,9 @@ export async function startPaperTradingEngine() {
             }
           }
 
-
+          if (pos.buyLeg && pos.buyLeg.maxAtmRatio === undefined) {
+            pos.buyLeg.maxAtmRatio = pos.buyLeg.entryAtmRatio;
+          }
 
           if (pos.buyLeg && pos.buyLeg.originalLotSize !== undefined && pos.buyLeg.entryAtmRatio != null) {
             const liveBuyIntrinsic = getTickerPrice(atmStrike, pos.type, 'bid');
@@ -382,94 +387,99 @@ export async function startPaperTradingEngine() {
 
             if (liveBuyIntrinsic != null && liveSellIntrinsic != null && liveSellIntrinsic > 0) {
               const liveAtmRatio = parseFloat((Math.round((liveBuyIntrinsic / liveSellIntrinsic) / 0.25) * 0.25).toFixed(2));
-              const diff = liveAtmRatio - pos.buyLeg.entryAtmRatio;
-              let reductionFactor = 0;
-              if (diff >= 1.0) {
-                const steps = Math.floor(diff / 1.0);
-                reductionFactor = Math.min(0.5, steps * 0.1);
-              }
-              let targetLotSize = pos.buyLeg.originalLotSize * (1 - reductionFactor);
-              const minAllowed = Math.min(0.5, pos.buyLeg.originalLotSize);
-              if (targetLotSize < minAllowed) {
-                targetLotSize = minAllowed;
-              }
+              const currentMaxAtmRatio = pos.buyLeg.maxAtmRatio ?? pos.buyLeg.entryAtmRatio;
 
-              if (targetLotSize < pos.buyLeg.lotSize || pos.buyLeg.lotSize < minAllowed) {
-                const actionStr = targetLotSize < pos.buyLeg.lotSize ? 'Reducing' : 'Correcting (floor limit)';
-                log(`⚖️ SCALING: Position ${pos.id} (${pos.type.toUpperCase()}) ATM Ratio increased from ${pos.buyLeg.entryAtmRatio} to ${liveAtmRatio} (diff: ${diff.toFixed(2)}). ${actionStr} buy lot size from ${pos.buyLeg.lotSize} to ${targetLotSize} (original: ${pos.buyLeg.originalLotSize})`);
-
-                const deltaQty = pos.buyLeg.lotSize - targetLotSize;
-                if (targetLotSize < pos.buyLeg.lotSize && deltaQty > 0) {
-                  // Partial exit: record to trade_history
-                  const buyPriceDiff = (liveExitBuy != null && pos.entryBuyPrice != null) ? (liveExitBuy - pos.entryBuyPrice) : 0;
-                  const partialGrossPnl = buyPriceDiff * deltaQty;
-                  const partialExitFee = calculateFee(liveExitBuy, spotPrice, 1, deltaQty);
-                  const partialEntryFee = (pos.entryFee || 0) * (deltaQty / pos.buyLeg.lotSize);
-                  const partialTotalFees = partialEntryFee + partialExitFee;
-                  const partialNetPnl = partialGrossPnl - partialTotalFees;
-
-                  const partialTradeId = `${pos.id}-PE-${Date.now().toString(36).toUpperCase()}`;
-
-                  const historyBuyLeg = {
-                    ...pos.buyLeg,
-                    lotSize: deltaQty,
-                    exitIv: tickerBuy?.bidIv ?? tickerBuy?.iv ?? null
-                  };
-
-                  try {
-                    await supabase.from('trade_history').insert([{
-                      trade_id: partialTradeId,
-                      underlying: pos.underlying,
-                      expiry: pos.expiry,
-                      type: pos.type,
-                      buy_leg: JSON.stringify(historyBuyLeg),
-                      sell_leg: JSON.stringify({ ...pos.sellLeg, lotSize: 0 }),
-                      sell_qty: 0,
-                      strike_diff: pos.strikeDiff,
-                      entry_time: pos.entryTime.toISOString(),
-                      entry_buy_price: pos.entryBuyPrice,
-                      entry_sell_price: pos.entrySellPrice,
-                      entry_spot_price: pos.entrySpotPrice,
-                      margin: pos.margin,
-                      exit_time: new Date().toISOString(),
-                      exit_buy_price: liveExitBuy,
-                      exit_sell_price: liveExitSell,
-                      exit_spot_price: spotPrice,
-                      realized_gross_pnl: partialGrossPnl,
-                      realized_net_pnl: partialNetPnl,
-                      exit_fee: partialExitFee,
-                      total_fees: partialTotalFees,
-                      exit_reason: `Partial Exit: Buy lot size reduced by ${deltaQty.toFixed(4)} due to ATM ratio increase`,
-                      is_partial: true
-                    }]);
-                    log(`📤 PARTIAL EXIT RECORDED: ${pos.id} | Reduced by ${deltaQty.toFixed(4)} | Net PnL: $${partialNetPnl.toFixed(2)}`);
-                  } catch (e) {
-                    logError(`Failed to insert partial exit history for position ${pos.id}:`, e);
-                  }
-
-                  // Update remaining active position's entry fee
-                  pos.entryFee = Math.max(0, (pos.entryFee || 0) - partialEntryFee);
+              if (liveAtmRatio > currentMaxAtmRatio) {
+                const diff = liveAtmRatio - pos.buyLeg.entryAtmRatio;
+                let reductionFactor = 0;
+                if (diff >= 0.5) {
+                  const steps = Math.floor(diff / 0.5);
+                  reductionFactor = Math.min(0.5, steps * 0.1);
+                }
+                let targetLotSize = pos.buyLeg.originalLotSize * (1 - reductionFactor);
+                const minAllowed = Math.min(0.5, pos.buyLeg.originalLotSize);
+                if (targetLotSize < minAllowed) {
+                  targetLotSize = minAllowed;
                 }
 
-                pos.buyLeg.lotSize = targetLotSize;
+                if (targetLotSize < pos.buyLeg.lotSize || pos.buyLeg.lotSize < minAllowed) {
+                  const actionStr = targetLotSize < pos.buyLeg.lotSize ? 'Reducing' : 'Correcting (floor limit)';
+                  log(`⚖️ SCALING: Position ${pos.id} (${pos.type.toUpperCase()}) ATM Ratio increased from ${pos.buyLeg.entryAtmRatio} to ${liveAtmRatio} (diff: ${diff.toFixed(2)}). ${actionStr} buy lot size from ${pos.buyLeg.lotSize} to ${targetLotSize} (original: ${pos.buyLeg.originalLotSize})`);
 
-                // Recalculate margin
-                pos.margin = calcMargin(
-                  pos.entryBuyPrice,
-                  pos.buyLeg.lotSize,
-                  spotPrice,
-                  pos.sellQty,
-                  pos.sellLeg.lotSize || 1
-                );
+                  const deltaQty = pos.buyLeg.lotSize - targetLotSize;
+                  if (targetLotSize < pos.buyLeg.lotSize && deltaQty > 0) {
+                    // Partial exit: record to trade_history
+                    const buyPriceDiff = (liveExitBuy != null && pos.entryBuyPrice != null) ? (liveExitBuy - pos.entryBuyPrice) : 0;
+                    const partialGrossPnl = buyPriceDiff * deltaQty;
+                    const partialExitFee = calculateFee(liveExitBuy, spotPrice, 1, deltaQty);
+                    const partialEntryFee = (pos.entryFee || 0) * (deltaQty / pos.buyLeg.lotSize);
+                    const partialTotalFees = partialEntryFee + partialExitFee;
+                    const partialNetPnl = partialGrossPnl - partialTotalFees;
 
-                try {
-                  await supabase.from('active_positions').update({
-                    buy_leg: JSON.stringify(pos.buyLeg),
-                    entry_fee: pos.entryFee,
-                    margin: pos.margin
-                  }).eq('id', pos.id);
-                } catch (e) {
-                  logError(`Failed to update scaled position ${pos.id} in DB:`, e);
+                    const partialTradeId = `${pos.id}-PE-${Date.now().toString(36).toUpperCase()}`;
+
+                    const historyBuyLeg = {
+                      ...pos.buyLeg,
+                      lotSize: deltaQty,
+                      exitIv: tickerBuy?.bidIv ?? tickerBuy?.iv ?? null
+                    };
+
+                    try {
+                      await supabase.from('trade_history').insert([{
+                        trade_id: partialTradeId,
+                        underlying: pos.underlying,
+                        expiry: pos.expiry,
+                        type: pos.type,
+                        buy_leg: JSON.stringify(historyBuyLeg),
+                        sell_leg: JSON.stringify({ ...pos.sellLeg, lotSize: 0 }),
+                        sell_qty: 0,
+                        strike_diff: pos.strikeDiff,
+                        entry_time: pos.entryTime.toISOString(),
+                        entry_buy_price: pos.entryBuyPrice,
+                        entry_sell_price: pos.entrySellPrice,
+                        entry_spot_price: pos.entrySpotPrice,
+                        margin: pos.margin,
+                        exit_time: new Date().toISOString(),
+                        exit_buy_price: liveExitBuy,
+                        exit_sell_price: liveExitSell,
+                        exit_spot_price: spotPrice,
+                        realized_gross_pnl: partialGrossPnl,
+                        realized_net_pnl: partialNetPnl,
+                        exit_fee: partialExitFee,
+                        total_fees: partialTotalFees,
+                        exit_reason: `Partial Exit: Buy lot size reduced by ${deltaQty.toFixed(4)} due to ATM ratio increase`,
+                        is_partial: true
+                      }]);
+                      log(`📤 PARTIAL EXIT RECORDED: ${pos.id} | Reduced by ${deltaQty.toFixed(4)} | Net PnL: $${partialNetPnl.toFixed(2)}`);
+                    } catch (e) {
+                      logError(`Failed to insert partial exit history for position ${pos.id}:`, e);
+                    }
+
+                    // Update remaining active position's parameters
+                    pos.entryFee = Math.max(0, (pos.entryFee || 0) - partialEntryFee);
+                    pos.buyLeg.maxAtmRatio = liveAtmRatio;
+                  }
+
+                  pos.buyLeg.lotSize = targetLotSize;
+
+                  // Recalculate margin
+                  pos.margin = calcMargin(
+                    pos.entryBuyPrice,
+                    pos.buyLeg.lotSize,
+                    spotPrice,
+                    pos.sellQty,
+                    pos.sellLeg.lotSize || 1
+                  );
+
+                  try {
+                    await supabase.from('active_positions').update({
+                      buy_leg: JSON.stringify(pos.buyLeg),
+                      entry_fee: pos.entryFee,
+                      margin: pos.margin
+                    }).eq('id', pos.id);
+                  } catch (e) {
+                    logError(`Failed to update scaled position ${pos.id} in DB:`, e);
+                  }
                 }
               }
             }
@@ -740,6 +750,7 @@ export async function startPaperTradingEngine() {
             ...spread.buyLeg,
             entryIv: entryBuyIv,
             entryAtmRatio,
+            maxAtmRatio: entryAtmRatio,
             originalLotSize
           };
           const sellLegWithIv = { ...spread.sellLeg, entryIv: entrySellIv };

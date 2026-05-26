@@ -240,17 +240,18 @@ All active positions are sorted by descending `|buyStrike - spotPrice|` (farthes
 
 ### Dynamic ATM Ratio-Based Scaling
 
-Before checking exit triggers for each sorted position, the engine evaluates the position's live ATM ratio against its entry baseline:
+Before checking exit triggers for each sorted position, the engine evaluates the position's live ATM ratio against its entry baseline and its historical maximum:
 
-1. **Baseline Extraction**: Reconstructs/initializes `pos.buyLeg.originalLotSize` (defaults to current lot size or `1`) and `pos.buyLeg.entryAtmRatio` (fallback calculations from current prices) if missing for backward compatibility.
+1. **Baseline Extraction**: Reconstructs/initializes `pos.buyLeg.originalLotSize` (defaults to current lot size or `1`), `pos.buyLeg.entryAtmRatio` (fallback calculations from current prices), and `pos.buyLeg.maxAtmRatio` (defaults to `entryAtmRatio`) if missing for backward compatibility.
 2. **Live Ratio Calculation**: Computes `liveAtmRatio` using:
    - `liveBuyIntrinsic = getTickerPrice(atmStrike, pos.type, 'bid')`
    - `targetSellStrike = pos.type === 'call' ? atmStrike + pos.strikeDiff : atmStrike - pos.strikeDiff`
    - `liveSellIntrinsic = getTickerPrice(targetSellStrike, pos.type, 'ask')`
    - `liveAtmRatio = parseFloat((Math.round((liveBuyIntrinsic / liveSellIntrinsic) / 0.25) * 0.25).toFixed(2))`
 3. **Adjustment Formula**:
+   - Only checked if **`liveAtmRatio > (pos.buyLeg.maxAtmRatio ?? pos.buyLeg.entryAtmRatio)`**.
    - `diff = liveAtmRatio - pos.buyLeg.entryAtmRatio`
-   - If `diff >= 1.0`, `steps = Math.floor(diff / 1.0)`, `reductionFactor = Math.min(0.5, steps * 0.1)`.
+   - If `diff >= 0.5`, `steps = Math.floor(diff / 0.5)`, `reductionFactor = Math.min(0.5, steps * 0.1)`.
    - Otherwise, `reductionFactor = 0`.
    - `targetLotSize = pos.buyLeg.originalLotSize * (1 - reductionFactor)`.
    - Enforce floor: `minAllowed = Math.min(0.5, pos.buyLeg.originalLotSize)`. If `targetLotSize < minAllowed`, set `targetLotSize = minAllowed`.
@@ -265,8 +266,8 @@ Before checking exit triggers for each sorted position, the engine evaluates the
       - `partialTotalFees = partialEntryFee + partialExitFee`
       - `partialNetPnl = partialGrossPnl - partialTotalFees`
     - It writes a new row to `trade_history` with `is_partial = true`, `sell_qty = 0`, `sell_leg.lotSize = 0` (indicating no short leg was closed in the partial exit), and the computed P&L and fees.
-    - It updates the active position's parameters in memory: decrements `pos.entryFee` by `partialEntryFee`, sets `pos.buyLeg.lotSize = targetLotSize`, and recalculates `margin` with `calcMargin` using the remaining `pos.buyLeg.lotSize` and the unchanged original `pos.sellQty`.
-    - It updates the updated columns (`buy_leg`, `margin`) in the `active_positions` table in Supabase.
+    - It updates the active position's parameters in memory: decrements `pos.entryFee` by `partialEntryFee`, sets `pos.buyLeg.lotSize = targetLotSize`, updates `pos.buyLeg.maxAtmRatio = liveAtmRatio`, and recalculates `margin` with `calcMargin` using the remaining `pos.buyLeg.lotSize` and the unchanged original `pos.sellQty`.
+    - It updates the updated columns (`buy_leg`, `entry_fee`, `margin`) in the `active_positions` table in Supabase.
     - In case of a self-healing correction where the current lot size is below `minAllowed`, the engine adjusts the active position to the floor value without recording a partial exit in history. This ensures the buy quantity is only allowed to decrease (with an absolute floor at 0.5) and never scale back up.
 
 ### C. Exit Priority Tree
