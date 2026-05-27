@@ -865,9 +865,9 @@ export async function startPaperTradingEngine() {
           const entrySellIv = tickerSellEntry?.bidIv ?? tickerSellEntry?.iv ?? null;
 
           // Calculate ATM ratio scaling
-          const buyIntrinsic = getTickerPrice(atmStrike, spreadType, 'bid');
+          const buyIntrinsic = getTickerPrice(atmStrike, spreadType, 'bid', config.expiry);
           const targetSellStrike = spreadType === 'call' ? atmStrike + spread.strikeDiff : atmStrike - spread.strikeDiff;
-          const sellIntrinsic = getTickerPrice(targetSellStrike, spreadType, 'ask');
+          const sellIntrinsic = getTickerPrice(targetSellStrike, spreadType, 'ask', config.expiry);
 
           const entryAtmRatio = (buyIntrinsic != null && sellIntrinsic != null && sellIntrinsic > 0)
             ? parseFloat((Math.round((buyIntrinsic / sellIntrinsic) / 0.25) * 0.25).toFixed(2))
