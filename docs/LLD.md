@@ -243,35 +243,30 @@ All active positions are sorted by descending `|buyStrike - spotPrice|` (farthes
 
 ### Dynamic ATM Ratio-Based Scaling
 
-Before checking exit triggers for each sorted position, the engine evaluates the position's live ATM ratio against its entry baseline and its historical maximum:
+For each active position, before evaluating its full exit triggers (such as expiry or ATM exit), the engine checks the trailing stop-loss threshold for dynamic scaling:
 
-1. **Baseline Extraction**: Reconstructs/initializes `pos.buyLeg.originalLotSize` (defaults to current lot size or `1`), `pos.buyLeg.entryAtmRatio` (fallback calculations from current prices), and `pos.buyLeg.maxAtmRatio` (defaults to `entryAtmRatio`) if missing for backward compatibility.
-2. **Live Ratio Calculation**: Computes `liveAtmRatio` using:
-   - `liveBuyIntrinsic = getTickerPrice(atmStrike, pos.type, 'bid')`
-   - `targetSellStrike = pos.type === 'call' ? atmStrike + pos.strikeDiff : atmStrike - pos.strikeDiff`
-   - `liveSellIntrinsic = getTickerPrice(targetSellStrike, pos.type, 'ask')`
-   - `liveAtmRatio = parseFloat((Math.round((liveBuyIntrinsic / liveSellIntrinsic) / 0.25) * 0.25).toFixed(2))`
-3. **Adjustment Formula**:
-   - Only checked if **`liveAtmRatio > (pos.buyLeg.maxAtmRatio ?? pos.buyLeg.entryAtmRatio)`**.
-   - `diff = liveAtmRatio - pos.buyLeg.entryAtmRatio`
-   - If `diff >= 0.5`, `steps = Math.floor(diff / 0.5)`, `reductionFactor = Math.min(0.5, steps * 0.1)`.
-   - Otherwise, `reductionFactor = 0`.
-   - `targetLotSize = pos.buyLeg.originalLotSize * (1 - reductionFactor)`.
-   - Enforce floor: `minAllowed = Math.min(0.5, pos.buyLeg.originalLotSize)`. If `targetLotSize < minAllowed`, set `targetLotSize = minAllowed`.
-
-4. **State Persistence & Partial Exits**: If `targetLotSize` is strictly less than `pos.buyLeg.lotSize`, the engine records a **partial exit** to the `trade_history` table:
-    - It calculates:
-      - `deltaQty = pos.buyLeg.lotSize - targetLotSize`
-      - `buyPriceDiff = liveExitBuy - pos.entryBuyPrice`
-      - `partialGrossPnl = buyPriceDiff * deltaQty`
-      - `partialExitFee = calculateFee(liveExitBuy, spotPrice, 1, deltaQty)`
-      - `partialEntryFee = pos.entryFee * (deltaQty / pos.buyLeg.lotSize)`
-      - `partialTotalFees = partialEntryFee + partialExitFee`
-      - `partialNetPnl = partialGrossPnl - partialTotalFees`
-    - It writes a new row to `trade_history` with `is_partial = true`, `sell_qty = 0`, `sell_leg.lotSize = 0` (indicating no short leg was closed in the partial exit), and the computed P&L and fees.
-    - It updates the active position's parameters in memory: decrements `pos.entryFee` by `partialEntryFee`, sets `pos.buyLeg.lotSize = targetLotSize`, updates `pos.buyLeg.maxAtmRatio = liveAtmRatio`, and recalculates `margin` with `calcMargin` using the remaining `pos.buyLeg.lotSize` and the unchanged original `pos.sellQty`.
-    - It updates the updated columns (`buy_leg`, `entry_fee`, `margin`) in the `active_positions` table in Supabase.
-    - In case of a self-healing correction where the current lot size is below `minAllowed`, the engine adjusts the active position to the floor value without recording a partial exit in history. This ensures the buy quantity is only allowed to decrease (with an absolute floor at 0.5) and never scale back up.
+1. **Checkpoint Recovery**: Sourced from `pos.buyLeg` JSON metadata.
+   - If `pos.buyLeg.lastCheckpointPnl` is undefined (meaning no scale-down has occurred yet):
+     - `checkpointPnl = netPremium` (the credit received at entry: `(entryBuyPrice - entrySellPrice * sellQty) * lotSize`).
+     - `checkpointAtmPnl = liveAtmPnl` (the current live ATM P&L).
+   - If `pos.buyLeg.lastCheckpointPnl` is defined (after scaling):
+     - `checkpointPnl = buyLeg.lastCheckpointPnl`
+     - `checkpointAtmPnl = buyLeg.lastCheckpointAtmPnl` (the frozen ATM P&L from the checkpoint).
+2. **Threshold Calculation**:
+   - `threshold = checkpointAtmPnl * 0.25 + checkpointPnl`
+3. **Loop & Trigger Conditions**: The engine runs a `while` loop evaluated on the P&L trailing threshold:
+   - Loop condition: `while (currentGrossPnl <= threshold)`
+   - Inner checks inside the loop at the point of scaling exit:
+     - Ratio Condition: `liveAtmRatio >= maxAtmRatio` (where `maxAtmRatio` starts at `entryAtmRatio` and is decremented by `2` on each step).
+     - Floor limit check: The remaining long lot size after scaling must be at or above the hard floor of `0.5` (`currentLotSize - 0.25 >= 0.5`).
+4. **Execution & Checkpoint Saving**: If inner conditions are met:
+   - Decrement `pos.buyLeg.lotSize` by `0.25`.
+   - Update `maxAtmRatio` and `entryAtmRatio` by subtracting `2` (i.e. `maxAtmRatio = maxAtmRatio - 2`).
+   - Update checkpoints: Set `pos.buyLeg.lastCheckpointPnl = currentGrossPnl` and `pos.buyLeg.lastCheckpointAtmPnl = liveAtmPnl`.
+   - **`sellQty` remains unchanged**.
+   - Record a **partial exit** to `trade_history` with `is_partial: true`, the closed buy lot size as `0.25`, and the closed sell lot size and sell quantity as `0`.
+   - Recalculate variables (`checkpointPnl`, `checkpointAtmPnl`, `threshold`, `currentGrossPnl`) for the next iteration check of the loop.
+5. **State Persistence**: After the loop completes, if any scaling occurred, recalculate remaining position margin using `calcMargin` and update columns (`buy_leg`, `entry_fee`, `margin`) in the `active_positions` table.
 
 ### C. Exit Priority Tree
 
