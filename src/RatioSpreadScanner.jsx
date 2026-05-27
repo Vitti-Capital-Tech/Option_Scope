@@ -345,7 +345,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
           // Filter by Net Premium: Enforce a symmetric band [-max, +max]
           // If maxNetPremium is 20, we allow netPremium from -20 (max credit) to +20 (max debit).
           const maxNet = Math.abs(config.maxNetPremium);
-          if (netPrem < -maxNet || netPrem > maxNet) continue;
+          if (netPrem < -maxNet) continue;
 
           validPairs.push({
             buyLeg,

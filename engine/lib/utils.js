@@ -123,7 +123,7 @@ export function scanTickers(tickers, config, spotPrice) {
 
       const netPrem = buyPrice - sellQty * sellPrice;
       const maxNet = Math.abs(config.maxNetPremium);
-      if (netPrem < -maxNet || netPrem > maxNet) continue;
+      if (netPrem < -maxNet) continue;
 
       validPairs.push({
         buyLeg, sellLeg, strikeDiff, sellQty,
