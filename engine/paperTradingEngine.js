@@ -797,88 +797,12 @@ export async function startPaperTradingEngine() {
             continue;
           }
 
-          // Portfolio cap & Displacement Check
+          // Portfolio cap
           let count = remaining.filter(p => p.underlying === underlying && p.type === spreadType).length +
             newEntries.filter(p => p.underlying === underlying && p.type === spreadType).length;
           if (count >= 3) {
-            const activeOfType = [
-              ...remaining.filter(p => p.underlying === underlying && p.type === spreadType),
-              ...newEntries.filter(p => p.underlying === underlying && p.type === spreadType)
-            ];
-
-            // Sort by distance to ATM descending (worst/farthest first)
-            activeOfType.sort((a, b) => {
-              const distA = Math.abs(Number(a.buyLeg.strike) - spotPrice);
-              const distB = Math.abs(Number(b.buyLeg.strike) - spotPrice);
-              return distB - distA;
-            });
-
-            const worstPos = activeOfType[0];
-            const worstDist = Math.abs(Number(worstPos.buyLeg.strike) - spotPrice);
-            const candidateDist = Math.abs(bStrike - spotPrice);
-
-            // Enforce 0.5% spot price condition for displacement
-            const oldSpotBase = worstPos.entrySpotPrice || worstPos.entryBuyPrice || spotPrice;
-            const oldThresh = Math.round((oldSpotBase * 0.005) / 100) * 100;
-            const spotStepValid = worstPos.type === 'call'
-              ? spotPrice <= oldSpotBase - oldThresh
-              : spotPrice >= oldSpotBase + oldThresh;
-
-            const otherPositionsOfType = activeOfType.filter(p => p.id !== worstPos.id);
-            const otherScalingValid = otherPositionsOfType.every(p => {
-              if (!p.entrySpotPrice) return true;
-              const thresh = Math.round((p.entrySpotPrice * 0.005) / 100) * 100;
-              const spotValid = p.type === 'call'
-                ? spotPrice <= p.entrySpotPrice - thresh
-                : spotPrice >= p.entrySpotPrice + thresh;
-              return spotValid;
-            });
-
-            if (candidateDist < worstDist && spotStepValid && otherScalingValid) {
-              log(`🔄 DISPLACEMENT: Candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} (dist: ${candidateDist.toFixed(0)}) is closer to ATM than worst active position ${worstPos.id} (${worstPos.buyLeg.strike}/${worstPos.sellLeg.strike}, dist: ${worstDist.toFixed(0)}). Displacing worst position...`);
-
-              // Remove worstPos from active lists
-              const remIndex = remaining.findIndex(p => p.id === worstPos.id);
-              if (remIndex !== -1) {
-                remaining.splice(remIndex, 1);
-              } else {
-                const newIndex = newEntries.findIndex(p => p.id === worstPos.id);
-                if (newIndex !== -1) {
-                  newEntries.splice(newIndex, 1);
-                }
-              }
-
-              // Prep worstPos for exit processing
-              worstPos.exitSpotPrice = spotPrice;
-              worstPos.exitReason = `Lost top 3 and found better target ${bStrike}`;
-
-              const tickerBuy = tickerData[worstPos.buyLeg.symbol];
-              const tickerSell = tickerData[worstPos.sellLeg.symbol];
-              worstPos._latestBuy = tickerBuy?.bid ?? tickerBuy?.markPrice ?? worstPos.entryBuyPrice;
-              worstPos._latestSell = tickerSell?.ask ?? tickerSell?.markPrice ?? worstPos.entrySellPrice;
-              worstPos.exitFee = calculateFee(worstPos._latestBuy, spotPrice, 1, worstPos.buyLeg.lotSize) +
-                calculateFee(worstPos._latestSell, spotPrice, worstPos.sellQty, worstPos.sellLeg.lotSize);
-              worstPos.totalFees = (worstPos.entryFee || 0) + worstPos.exitFee;
-
-              const buyPriceDiff = (worstPos._latestBuy - worstPos.entryBuyPrice) || 0;
-              const sellPriceDiff = (worstPos._latestSell - worstPos.entrySellPrice) || 0;
-              worstPos.realizedGrossPnl = (buyPriceDiff * worstPos.buyLeg.lotSize) - (sellPriceDiff * worstPos.sellQty * worstPos.sellLeg.lotSize) + (worstPos.accumulatedSellPnl || 0);
-              worstPos.realizedNetPnl = worstPos.realizedGrossPnl - worstPos.totalFees;
-              worstPos.zombieExitTime = null;
-
-              exited.push(worstPos);
-
-              // Recalculate count
-              count = remaining.filter(p => p.underlying === underlying && p.type === spreadType).length +
-                newEntries.filter(p => p.underlying === underlying && p.type === spreadType).length;
-            } else {
-              const reasons = [];
-              if (candidateDist >= worstDist) reasons.push("candidate not closer to ATM");
-              if (!spotStepValid) reasons.push(`displaced position spot step invalid (Spot: ${spotPrice}, Entry: ${oldSpotBase}, Thresh: ${oldThresh})`);
-              if (!otherScalingValid) reasons.push("other active positions scaling/spacing guard failed");
-              logWarn(`Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Portfolio cap of 3 reached. Reasons: ${reasons.join(', ')}`);
-              continue;
-            }
+            logWarn(`Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Portfolio cap of 3 reached for type ${spreadType}`);
+            continue;
           }
 
           // Diversification guard removed

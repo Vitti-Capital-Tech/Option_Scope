@@ -334,13 +334,7 @@ New entries are opened from `topSpreads` (full candidate pool, not uniqueTopSpre
 
 1. **Expiry Buffer Guard**: Skip if `minutesToExpiry < 5`.
 2. **Strike Uniqueness**: Block if buy or sell strike already active in `remaining` or `newEntries` (same type/underlying).
-3. **Portfolio Cap & Active-Level Displacement**: Evaluated when `remaining + newEntries count >= 3` for this type:
-   - The engine checks if the new candidate is closer to ATM than the worst active position (farthest from ATM).
-   - If the candidate is closer to ATM, the engine verifies safety guards:
-     - **0.5% Spot Step Condition** on the worst active position (`worstPos`): spot price has moved >= 0.5% (directionally: lower for calls, higher for puts, threshold rounded to the nearest 100) from `worstPos` entry spot price.
-     - **Spacing/Scaling Guards**: spot price passes the 0.5% spacing scaling check against all other active positions of the same type.
-   - If both guards pass, the worst active position is displaced (exited with exit reason: `Lost top 3 and found better target ${bStrike}`) and the new candidate is entered.
-   - If the candidate is not closer to ATM or any safety guard fails, the candidate is skipped and the portfolio cap of 3 is enforced.
+3. **Portfolio Cap**: Block if `remaining + newEntries count >= 3` for this type.
 4. **Strike Diversification Guard (ATM Exit Trading)**: In the ATM Exit Trading engine, new buy strikes must be `>= 400 pts` from all existing buy strikes of the same type. (This guard has been removed from Paper Trading).
 5. **Execution**: `entryBuyPrice = spread.ask`, `entrySellPrice = spread.bid`. Entry IVs captured: `entryBuyIv = ticker.askIv`, `entrySellIv = ticker.bidIv`. Baseline ATM ratio (`entryAtmRatio`) and unscaled lot size (`originalLotSize`) are computed and stored inside the `buy_leg` JSON metadata at entry.
 6. **Supabase Insert (with three DB-level guards)**:
