@@ -106,10 +106,14 @@ Browser (React + Vite Dashboard)
    - Entry IVs captured using directional Bid/Ask IVs (`ask_iv` for buy leg, `bid_iv` for sell leg).
    - Current IVs updated live from the ticker stream using the same directional logic.
    - Dedicated table columns: **IV In (B/S)**, **IV Cur (B/S)**, **IV Out (B/S)**.
-5. **Visual Simulation Mode**: A "What-If" dashboard layer that allows users to simulate the impact of adding custom premium/credit to their strategy visually (including P&L and ratio recalculation) without affecting the database.
-6. **Leg Swap Rotation**: Surgical optimization that swaps only the Long leg and adjusts the Short quantity (using weighted average entry pricing) when the Sell strike remains consistent, minimizing slippage and fees.
-7. **Expiry**: exit 2 minutes early for stable settlement prices.
-8. **Dynamic Portfolio Rotation**:
+5. **ATM Ratio & Price Tracking**:
+   - Captures the exact ATM option prices (`buyIntrinsic`, `sellIntrinsic`) and their ratio (`entryAtmRatio`/`exitAtmRatio`) at entry, leg swap, and exit (full/partial).
+   - Stored in the `buyLeg` JSON metadata within the `active_positions` and `trade_history` tables.
+   - Dedicated Trade History columns: **Entry ATM Ratio (Prices)** and **Exit ATM Ratio (Prices)**.
+6. **Visual Simulation Mode**: A "What-If" dashboard layer that allows users to simulate the impact of adding custom premium/credit to their strategy visually (including P&L and ratio recalculation) without affecting the database.
+7. **Leg Swap Rotation**: Surgical optimization that swaps only the Long leg and adjusts the Short quantity (using weighted average entry pricing) when the Sell strike remains consistent, minimizing slippage and fees.
+8. **Expiry**: exit 2 minutes early for stable settlement prices.
+9. **Dynamic Portfolio Rotation**:
    The engine compares existing positions against current top scanner results:
     - **Displacement Check**: If a position is no longer in the Top 3 unique strikes (the `inTop3` check filters candidates by type and slices exactly the Top 3 unique strikes) AND a superior candidate (closer to ATM) is available, it is marked for rotation.
     - **Atomic Pre-Validation**: The engine validates the replacement candidate against the **0.5% Scaling** guard *before* executing the exit. If the target would be blocked, the rotation is cancelled to prevent empty portfolio slots.
@@ -117,9 +121,9 @@ Browser (React + Vite Dashboard)
     - **1-for-1 Displacement**: To prevent mass exits, the engine uses a **Target Reservation** system. Each new superior candidate in the scanner is "claimed" by exactly one existing inferior position.
     - **Worst-First Processing**: Active positions are evaluated from farthest-to-ATM first, ensuring the least desirable legs are rotated out first.
     - **Cycle Guards**: Rotation only begins once the portfolio hits a threshold (e.g., 3 active legs) and is capped at 3 rotations per evaluation cycle.
-9. Open new positions up to 3 per type from the ranked candidate list. DB count guard prevents exceeding 3 even under race conditions.
-10. Sync all entries and exits to Supabase. Full `positions` array replacement only happens when rows are added/removed, not on routine PnL updates.
-11. **Instant Cross-Device Sync**: Supabase Realtime pushes `active_positions` change events to all connected sessions within < 1s of a write. The `lastDbWriteRef` post-write blackout is reduced from 10s to 3s to minimize the window where a just-written position could be overwritten by a stale Supabase re-fetch. A 10-second fallback poll ensures any missed Realtime events are caught.
+10. Open new positions up to 3 per type from the ranked candidate list. DB count guard prevents exceeding 3 even under race conditions.
+11. Sync all entries and exits to Supabase. Full `positions` array replacement only happens when rows are added/removed, not on routine PnL updates.
+12. **Instant Cross-Device Sync**: Supabase Realtime pushes `active_positions` change events to all connected sessions within < 1s of a write. The `lastDbWriteRef` post-write blackout is reduced from 10s to 3s to minimize the window where a just-written position could be overwritten by a stale Supabase re-fetch. A 10-second fallback poll ensures any missed Realtime events are caught.
 
 ### ATM Exit Trading (Simplified Automated Lifecycle)
 

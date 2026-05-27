@@ -550,6 +550,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       'Entry Time', 'Exit Time', 'Expiry', 'Type', 'Ratio',
       'Buy Strike', 'Sell Strike', 'Entry Buy Price', 'Entry Sell Price',
       'Exit Buy Price', 'Exit Sell Price', 'Entry Spot', 'Exit Spot',
+      'Entry ATM Ratio', 'Entry ATM Buy Price', 'Entry ATM Sell Price',
+      'Exit ATM Ratio', 'Exit ATM Buy Price', 'Exit ATM Sell Price',
       'Gross PnL', 'Total Fees', 'Net PnL', 'Margin', 'Exit Reason'
     ];
     const rows = filteredTradeHistory.map(t => {
@@ -570,11 +572,17 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         t.entryBuyPrice || '', t.entrySellPrice || '',
         t.exitBuyPrice || '', t.exitSellPrice || '',
         t.entrySpotPrice || '', t.exitSpotPrice || '',
+        t.buyLeg?.entryAtmRatio != null ? t.buyLeg.entryAtmRatio.toFixed(2) : '',
+        t.buyLeg?.entryBuyAtmPrice != null ? t.buyLeg.entryBuyAtmPrice.toFixed(2) : '',
+        t.buyLeg?.entrySellAtmPrice != null ? t.buyLeg.entrySellAtmPrice.toFixed(2) : '',
+        t.buyLeg?.exitAtmRatio != null ? t.buyLeg.exitAtmRatio.toFixed(2) : '',
+        t.buyLeg?.exitBuyAtmPrice != null ? t.buyLeg.exitBuyAtmPrice.toFixed(2) : '',
+        t.buyLeg?.exitSellAtmPrice != null ? t.buyLeg.exitSellAtmPrice.toFixed(2) : '',
         grossPnl.toFixed(2), (t.totalFees || 0).toFixed(2), netPnl.toFixed(2),
-        (t.margin || 0).toFixed(2), t.exitReason
-      ].join(',');
+        (t.margin || 0).toFixed(2), t.exitReason || ''
+      ].map(val => `"${String(val).replace(/"/g, '""')}"`).join(',');
     });
-    const csv = [headers.join(','), ...rows].join('\n');
+    const csv = [headers.map(h => `"${h}"`).join(','), ...rows].join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -1180,10 +1188,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                     <th>Spot (In / Out)</th>
                     <th>In (Buy / Sell)</th>
                     <th>IV In (B/S)</th>
+                    <th>Entry ATM Ratio (Prices)</th>
                     <th>Entry Fee</th>
                     <th>Exit Fee</th>
                     <th>Out (Buy / Sell)</th>
                     <th>IV Out (B/S)</th>
+                    <th>Exit ATM Ratio (Prices)</th>
                     <th>Realized P&L</th>
                     <th>Exit Reason</th>
                   </tr></thead>
@@ -1249,6 +1259,18 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                             </div>
                           </td>
                           <td>
+                            {t.buyLeg?.entryAtmRatio != null ? (
+                              <div style={{ display: 'flex', flexDirection: 'column', fontSize: '11px' }}>
+                                <span style={{ fontWeight: 600 }}>{t.buyLeg.entryAtmRatio.toFixed(2)}</span>
+                                <span style={{ color: 'var(--text-dim)', fontSize: '10px' }}>
+                                  ({t.buyLeg.entryBuyAtmPrice != null ? t.buyLeg.entryBuyAtmPrice.toFixed(2) : '—'} / {t.buyLeg.entrySellAtmPrice != null ? t.buyLeg.entrySellAtmPrice.toFixed(2) : '—'})
+                                </span>
+                              </div>
+                            ) : (
+                              <span style={{ color: 'var(--text-dim)' }}>—</span>
+                            )}
+                          </td>
+                          <td>
                             <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
                               ${t.entryFee?.toFixed(2) || '0.00'}
                             </div>
@@ -1269,6 +1291,18 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                               <span>{t.exitBuyIv != null ? t.exitBuyIv.toFixed(1) + '%' : '—'}</span>
                               <span>{t.exitSellIv != null ? t.exitSellIv.toFixed(1) + '%' : '—'}</span>
                             </div>
+                          </td>
+                          <td>
+                            {t.buyLeg?.exitAtmRatio != null ? (
+                              <div style={{ display: 'flex', flexDirection: 'column', fontSize: '11px' }}>
+                                <span style={{ fontWeight: 600 }}>{t.buyLeg.exitAtmRatio.toFixed(2)}</span>
+                                <span style={{ color: 'var(--text-dim)', fontSize: '10px' }}>
+                                  ({t.buyLeg.exitBuyAtmPrice != null ? t.buyLeg.exitBuyAtmPrice.toFixed(2) : '—'} / {t.buyLeg.exitSellAtmPrice != null ? t.buyLeg.exitSellAtmPrice.toFixed(2) : '—'})
+                                </span>
+                              </div>
+                            ) : (
+                              <span style={{ color: 'var(--text-dim)' }}>—</span>
+                            )}
                           </td>
                           <td>
                             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>

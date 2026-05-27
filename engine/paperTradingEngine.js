@@ -453,7 +453,10 @@ export async function startPaperTradingEngine() {
                     const historyBuyLeg = {
                       ...pos.buyLeg,
                       lotSize: deltaQty,
-                      exitIv: tickerBuy?.bidIv ?? tickerBuy?.iv ?? null
+                      exitIv: tickerBuy?.bidIv ?? tickerBuy?.iv ?? null,
+                      exitBuyAtmPrice: liveBuyIntrinsic,
+                      exitSellAtmPrice: liveSellIntrinsic,
+                      exitAtmRatio: liveAtmRatio
                     };
 
                     try {
@@ -667,11 +670,29 @@ export async function startPaperTradingEngine() {
           const totalFees = (pos.entryFee || 0) + exitFee;
           const netPnl = grossPnl - totalFees;
 
+          let exitBuyAtmPrice = null;
+          let exitSellAtmPrice = null;
+          let exitAtmRatio = null;
+          if (atmStrike !== null) {
+            exitBuyAtmPrice = getTickerPrice(atmStrike, pos.type, 'bid', pos.expiry);
+            const targetSellStrike = pos.type === 'call' ? atmStrike + pos.strikeDiff : atmStrike - pos.strikeDiff;
+            exitSellAtmPrice = getTickerPrice(targetSellStrike, pos.type, 'ask', pos.expiry);
+            if (exitBuyAtmPrice != null && exitSellAtmPrice != null && exitSellAtmPrice > 0) {
+              exitAtmRatio = parseFloat((Math.round((exitBuyAtmPrice / exitSellAtmPrice) / 0.25) * 0.25).toFixed(2));
+            }
+          }
+
           const tradeRecord = {
             ...pos,
             id: pos._pendingLegSwap ? `${pos.id}-LS-${Date.now().toString(36).toUpperCase()}` : pos.id,
             sellQty: pos.sellQty,
-            buyLeg: { ...pos.buyLeg, exitIv: latestBuyIv },
+            buyLeg: {
+              ...pos.buyLeg,
+              exitIv: latestBuyIv,
+              exitBuyAtmPrice,
+              exitSellAtmPrice,
+              exitAtmRatio
+            },
             sellLeg: { ...pos.sellLeg, exitIv: latestSellIv },
             _exitedBuyQty: pos.buyLeg.lotSize,
             exitTime: new Date(),
@@ -715,12 +736,14 @@ export async function startPaperTradingEngine() {
             const newActiveEntryFee = (pos.entryFee || 0) - longEntryFee + newLongEntryFee + shortAdjustmentFee;
 
             let newEntryAtmRatio = null;
+            let entryBuyAtmPrice = null;
+            let entrySellAtmPrice = null;
             if (atmStrike !== null) {
-              const liveBuyIntrinsic = getTickerPrice(atmStrike, pos.type, 'bid', pos.expiry);
+              entryBuyAtmPrice = getTickerPrice(atmStrike, pos.type, 'bid', pos.expiry);
               const targetSellStrike = pos.type === 'call' ? atmStrike + target.strikeDiff : atmStrike - target.strikeDiff;
-              const liveSellIntrinsic = getTickerPrice(targetSellStrike, pos.type, 'ask', pos.expiry);
-              if (liveBuyIntrinsic != null && liveSellIntrinsic != null && liveSellIntrinsic > 0) {
-                newEntryAtmRatio = parseFloat((Math.round((liveBuyIntrinsic / liveSellIntrinsic) / 0.25) * 0.25).toFixed(2));
+              entrySellAtmPrice = getTickerPrice(targetSellStrike, pos.type, 'ask', pos.expiry);
+              if (entryBuyAtmPrice != null && entrySellAtmPrice != null && entrySellAtmPrice > 0) {
+                newEntryAtmRatio = parseFloat((Math.round((entryBuyAtmPrice / entrySellAtmPrice) / 0.25) * 0.25).toFixed(2));
               }
             }
 
@@ -729,6 +752,8 @@ export async function startPaperTradingEngine() {
               ...target.buyLeg,
               entryIv: tickerNewBuy?.askIv ?? tickerNewBuy?.iv ?? null,
               entryAtmRatio: newEntryAtmRatio,
+              entryBuyAtmPrice,
+              entrySellAtmPrice,
               maxAtmRatio: newEntryAtmRatio,
               originalLotSize: target.buyLeg.lotSize || 1
             };
@@ -856,6 +881,8 @@ export async function startPaperTradingEngine() {
             lotSize: adjustedLotSize,
             entryIv: entryBuyIv,
             entryAtmRatio,
+            entryBuyAtmPrice: buyIntrinsic,
+            entrySellAtmPrice: sellIntrinsic,
             maxAtmRatio: entryAtmRatio,
             originalLotSize: adjustedLotSize
           };
