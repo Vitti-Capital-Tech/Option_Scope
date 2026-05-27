@@ -205,7 +205,12 @@ export async function startPaperTradingEngine() {
     isEvaluating = true;
     try {
       const allTickers = Object.values(tickerData);
-      if (allTickers.length === 0) return;
+      if (allTickers.length === 0) {
+        if (!onlyExits) {
+          logWarn('No tickers in cache — skipping entry scan.');
+        }
+        return;
+      }
 
       const underlying = config.underlying;
       const selExpiry = config.expiry;
@@ -272,9 +277,16 @@ export async function startPaperTradingEngine() {
 
       // Compute ATM P&L and ROI for each spread in topSpreads, and filter by ATM P&L >= 70
       const processedSpreads = [];
+      if (!onlyExits) {
+        log(`Evaluating ${topSpreads.length} candidate spreads for entry (Spot: ${spotPrice}, ATM Strike: ${atmStrike})`);
+      }
       for (const spread of topSpreads) {
         const { atmPnl, roi } = calculateAtmPnlAndRoi(spread);
-        if (atmPnl != null && atmPnl >= 70) {
+        const passed = (atmPnl != null && atmPnl >= 70);
+        if (!onlyExits) {
+          log(`  Candidate ${spread.buyLeg.type.toUpperCase()} ${spread.buyLeg.strike}/${spread.sellLeg.strike}: ATM P&L = $${atmPnl != null ? atmPnl.toFixed(2) : 'null'} (Min required: $70.00), ROI = ${roi != null ? roi.toFixed(2) : 0}%, Passed = ${passed}`);
+        }
+        if (passed) {
           processedSpreads.push({ ...spread, atmPnl, roi });
         }
       }
@@ -311,6 +323,11 @@ export async function startPaperTradingEngine() {
         ...uniqueCalls.slice(0, 10),
         ...uniquePuts.slice(0, 10)
       ];
+
+      if (!onlyExits && uniqueTopSpreads.length > 0) {
+        const topDesc = uniqueTopSpreads.map(s => `${s.buyLeg.type.toUpperCase()} ${s.buyLeg.strike}/${s.sellLeg.strike} (ROI: ${s.roi.toFixed(1)}%, ATM P&L: $${s.atmPnl.toFixed(1)})`).join(', ');
+        log(`Selected top unique spreads: ${topDesc}`);
+      }
 
       // Count active positions
       const activeCallsCount = positions.filter(p => p.type === 'call' && p.underlying === underlying).length;
@@ -515,63 +532,82 @@ export async function startPaperTradingEngine() {
         const totalFees = (pos.entryFee || 0) + exitFee;
 
         // Check top-3 ranking
-        const inTop3 = uniqueTopSpreads.some(s =>
-          s.buyLeg.type === pos.type && Number(s.buyLeg.strike) === Number(pos.buyLeg.strike)
+        const top3SpreadsOfType = uniqueTopSpreads
+          .filter(s => s.buyLeg.type === pos.type)
+          .slice(0, 3);
+        const inTop3 = top3SpreadsOfType.some(s =>
+          Number(s.buyLeg.strike) === Number(pos.buyLeg.strike)
         );
 
         // Priority 4: Rotation
-        if (!shouldExit && pos.expiry === selExpiry && uniqueTopSpreads.length > 0 && !inTop3) {
-          const otherActiveBuyStrikes = sortedPositions
-            .filter(p => p.id !== pos.id && p.underlying === underlying && p.type === pos.type)
-            .map(p => Number(p.buyLeg.strike));
-          const otherActiveSellStrikes = sortedPositions
-            .filter(p => p.id !== pos.id && p.underlying === underlying && p.type === pos.type)
-            .map(p => Number(p.sellLeg.strike));
+        if (!shouldExit && pos.expiry === selExpiry && uniqueTopSpreads.length > 0) {
+          if (inTop3) {
+            // Position is in the top 3; no need to rotate it out
+          } else {
+            const otherActiveBuyStrikes = sortedPositions
+              .filter(p => p.id !== pos.id && p.underlying === underlying && p.type === pos.type)
+              .map(p => Number(p.buyLeg.strike));
+            const otherActiveSellStrikes = sortedPositions
+              .filter(p => p.id !== pos.id && p.underlying === underlying && p.type === pos.type)
+              .map(p => Number(p.sellLeg.strike));
 
-          const bestTarget = uniqueTopSpreads.filter(s => s.buyLeg.type === pos.type).find(s => {
-            const bS = Number(s.buyLeg.strike);
-            const sS = Number(s.sellLeg.strike);
+            const bestTarget = uniqueTopSpreads.filter(s => s.buyLeg.type === pos.type).find(s => {
+              const bS = Number(s.buyLeg.strike);
+              const sS = Number(s.sellLeg.strike);
 
-            const buyConflict = otherActiveBuyStrikes.includes(bS);
-            const sellConflict = otherActiveSellStrikes.includes(sS);
-            if (buyConflict || sellConflict || reservedTargets.has(bS) || reservedSellTargets.has(sS)) return false;
+              const buyConflict = otherActiveBuyStrikes.includes(bS);
+              const sellConflict = otherActiveSellStrikes.includes(sS);
+              if (buyConflict || sellConflict || reservedTargets.has(bS) || reservedSellTargets.has(sS)) return false;
 
-            const oldSpotBase = pos.entrySpotPrice || pos.entryBuyPrice || spotPrice;
-            const oldThresh = Math.round((oldSpotBase * 0.005) / 100) * 100;
-            const spotStepValid = pos.type === 'call'
-              ? spotPrice <= oldSpotBase - oldThresh
-              : spotPrice >= oldSpotBase + oldThresh;
-            if (!spotStepValid) return false;
-
-            const otherPositionsOfType = sortedPositions.filter(p =>
-              p.id !== pos.id && p.underlying === underlying && p.type === pos.type
-            );
-            return otherPositionsOfType.every(p => {
-              const thresh = Math.round((p.entrySpotPrice * 0.005) / 100) * 100;
-              const spotValid = pos.type === 'call'
-                ? spotPrice <= p.entrySpotPrice - thresh
-                : spotPrice >= p.entrySpotPrice + thresh;
-              return spotValid;
-            });
-          });
-
-          if (bestTarget) {
-            const targetStrike = Number(bestTarget.buyLeg.strike);
-            const targetSellStrike = Number(bestTarget.sellLeg.strike);
-            const currentStrike = Number(pos.buyLeg.strike);
-            const isPut = pos.type === 'put';
-            if (isPut ? (targetStrike > currentStrike) : (targetStrike < currentStrike)) {
-              const isSellStrikeMatch = Number(bestTarget.sellLeg.strike) === Number(pos.sellLeg.strike);
-              if (isSellStrikeMatch) {
-                pos._pendingLegSwap = bestTarget;
-                shouldExit = true;
-                exitReason = `Leg Swap: Buy ${currentStrike} -> ${targetStrike}`;
-              } else {
-                shouldExit = true;
-                exitReason = `Lost Top 3 and Rank 1 better target available (${targetStrike})`;
+              const oldSpotBase = pos.entrySpotPrice || pos.entryBuyPrice || spotPrice;
+              const oldThresh = Math.round((oldSpotBase * 0.005) / 100) * 100;
+              const spotStepValid = pos.type === 'call'
+                ? spotPrice <= oldSpotBase - oldThresh
+                : spotPrice >= oldSpotBase + oldThresh;
+              if (!spotStepValid) {
+                log(`  Candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: spot step invalid (Spot: ${spotPrice}, Entry Spot Base: ${oldSpotBase}, Required movement: ${oldThresh})`);
+                return false;
               }
-              reservedTargets.add(targetStrike);
-              reservedSellTargets.add(targetSellStrike);
+
+              const otherPositionsOfType = sortedPositions.filter(p =>
+                p.id !== pos.id && p.underlying === underlying && p.type === pos.type
+              );
+              const otherScalingValid = otherPositionsOfType.every(p => {
+                const thresh = Math.round((p.entrySpotPrice * 0.005) / 100) * 100;
+                const spotValid = pos.type === 'call'
+                  ? spotPrice <= p.entrySpotPrice - thresh
+                  : spotPrice >= p.entrySpotPrice + thresh;
+                return spotValid;
+              });
+              if (!otherScalingValid) {
+                log(`  Candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: other active positions spot spacing/scaling guard failed`);
+                return false;
+              }
+
+              return true;
+            });
+
+            if (bestTarget) {
+              const targetStrike = Number(bestTarget.buyLeg.strike);
+              const targetSellStrike = Number(bestTarget.sellLeg.strike);
+              const currentStrike = Number(pos.buyLeg.strike);
+              const isPut = pos.type === 'put';
+              const isBetter = isPut ? (targetStrike > currentStrike) : (targetStrike < currentStrike);
+              log(`  Best target found: ${bestTarget.buyLeg.type.toUpperCase()} ${targetStrike}/${targetSellStrike}. Is Better (closer to ATM): ${isBetter}`);
+
+              if (isBetter) {
+                const isSellStrikeMatch = Number(bestTarget.sellLeg.strike) === Number(pos.sellLeg.strike);
+                if (isSellStrikeMatch) {
+                  pos._pendingLegSwap = bestTarget;
+                  shouldExit = true;
+                  exitReason = `Leg Swap: Buy ${currentStrike} -> ${targetStrike}`;
+                } else {
+                  shouldExit = true;
+                  exitReason = `Lost Top 3 and Rank 1 better target available (${targetStrike})`;
+                }
+                reservedTargets.add(targetStrike);
+                reservedSellTargets.add(targetSellStrike);
+              }
             }
           }
         }
@@ -706,28 +742,117 @@ export async function startPaperTradingEngine() {
           // Expiry buffer guard
           const minutesToExpiry = (new Date(spread.buyLeg.symbol?.includes(config.expiry) ? config.expiry : config.expiry).getTime() - Date.now()) / 60000;
           const expiryCheck = (new Date(config.expiry).getTime() - Date.now()) / 60000;
-          if (expiryCheck < 5) continue;
+          if (expiryCheck < 5) {
+            logWarn(`Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: too close to expiry (${expiryCheck.toFixed(1)} mins remaining)`);
+            continue;
+          }
 
           // Buy strike conflict check
-          const buyStrikeConflict = remaining.some(
+          const buyConflictPos = remaining.find(
             p => p.underlying === underlying && p.type === spreadType && Number(p.buyLeg.strike) === bStrike
-          ) || newEntries.some(
+          ) || newEntries.find(
             p => p.underlying === underlying && p.type === spreadType && Number(p.buyLeg.strike) === bStrike
           );
 
           // Sell strike conflict check
-          const sellStrikeConflict = remaining.some(
+          const sellConflictPos = remaining.find(
             p => p.underlying === underlying && p.type === spreadType && Number(p.sellLeg.strike) === sStrike
-          ) || newEntries.some(
+          ) || newEntries.find(
             p => p.underlying === underlying && p.type === spreadType && Number(p.sellLeg.strike) === sStrike
           );
 
-          if (buyStrikeConflict || sellStrikeConflict) continue;
+          if (buyConflictPos) {
+            logWarn(`Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Buy strike conflict with active/new position ${buyConflictPos.id} (${buyConflictPos.buyLeg.strike}/${buyConflictPos.sellLeg.strike})`);
+            continue;
+          }
+          if (sellConflictPos) {
+            logWarn(`Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Sell strike conflict with active/new position ${sellConflictPos.id} (${sellConflictPos.buyLeg.strike}/${sellConflictPos.sellLeg.strike})`);
+            continue;
+          }
 
-          // Portfolio cap
-          const count = remaining.filter(p => p.underlying === underlying && p.type === spreadType).length +
+          // Portfolio cap & Displacement Check
+          let count = remaining.filter(p => p.underlying === underlying && p.type === spreadType).length +
             newEntries.filter(p => p.underlying === underlying && p.type === spreadType).length;
-          if (count >= 3) continue;
+          if (count >= 3) {
+            const activeOfType = [
+              ...remaining.filter(p => p.underlying === underlying && p.type === spreadType),
+              ...newEntries.filter(p => p.underlying === underlying && p.type === spreadType)
+            ];
+
+            // Sort by distance to ATM descending (worst/farthest first)
+            activeOfType.sort((a, b) => {
+              const distA = Math.abs(Number(a.buyLeg.strike) - spotPrice);
+              const distB = Math.abs(Number(b.buyLeg.strike) - spotPrice);
+              return distB - distA;
+            });
+
+            const worstPos = activeOfType[0];
+            const worstDist = Math.abs(Number(worstPos.buyLeg.strike) - spotPrice);
+            const candidateDist = Math.abs(bStrike - spotPrice);
+
+            // Enforce 0.5% spot price condition for displacement
+            const oldSpotBase = worstPos.entrySpotPrice || worstPos.entryBuyPrice || spotPrice;
+            const oldThresh = Math.round((oldSpotBase * 0.005) / 100) * 100;
+            const spotStepValid = worstPos.type === 'call'
+              ? spotPrice <= oldSpotBase - oldThresh
+              : spotPrice >= oldSpotBase + oldThresh;
+
+            const otherPositionsOfType = activeOfType.filter(p => p.id !== worstPos.id);
+            const otherScalingValid = otherPositionsOfType.every(p => {
+              if (!p.entrySpotPrice) return true;
+              const thresh = Math.round((p.entrySpotPrice * 0.005) / 100) * 100;
+              const spotValid = p.type === 'call'
+                ? spotPrice <= p.entrySpotPrice - thresh
+                : spotPrice >= p.entrySpotPrice + thresh;
+              return spotValid;
+            });
+
+            if (candidateDist < worstDist && spotStepValid && otherScalingValid) {
+              log(`🔄 DISPLACEMENT: Candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} (dist: ${candidateDist.toFixed(0)}) is closer to ATM than worst active position ${worstPos.id} (${worstPos.buyLeg.strike}/${worstPos.sellLeg.strike}, dist: ${worstDist.toFixed(0)}). Displacing worst position...`);
+
+              // Remove worstPos from active lists
+              const remIndex = remaining.findIndex(p => p.id === worstPos.id);
+              if (remIndex !== -1) {
+                remaining.splice(remIndex, 1);
+              } else {
+                const newIndex = newEntries.findIndex(p => p.id === worstPos.id);
+                if (newIndex !== -1) {
+                  newEntries.splice(newIndex, 1);
+                }
+              }
+
+              // Prep worstPos for exit processing
+              worstPos.exitSpotPrice = spotPrice;
+              worstPos.exitReason = `Lost top 3 and found better target ${bStrike}`;
+
+              const tickerBuy = tickerData[worstPos.buyLeg.symbol];
+              const tickerSell = tickerData[worstPos.sellLeg.symbol];
+              worstPos._latestBuy = tickerBuy?.bid ?? tickerBuy?.markPrice ?? worstPos.entryBuyPrice;
+              worstPos._latestSell = tickerSell?.ask ?? tickerSell?.markPrice ?? worstPos.entrySellPrice;
+              worstPos.exitFee = calculateFee(worstPos._latestBuy, spotPrice, 1, worstPos.buyLeg.lotSize) +
+                calculateFee(worstPos._latestSell, spotPrice, worstPos.sellQty, worstPos.sellLeg.lotSize);
+              worstPos.totalFees = (worstPos.entryFee || 0) + worstPos.exitFee;
+
+              const buyPriceDiff = (worstPos._latestBuy - worstPos.entryBuyPrice) || 0;
+              const sellPriceDiff = (worstPos._latestSell - worstPos.entrySellPrice) || 0;
+              worstPos.realizedGrossPnl = (buyPriceDiff * worstPos.buyLeg.lotSize) - (sellPriceDiff * worstPos.sellQty * worstPos.sellLeg.lotSize) + (worstPos.accumulatedSellPnl || 0);
+              worstPos.realizedNetPnl = worstPos.realizedGrossPnl - worstPos.totalFees;
+              worstPos.zombieExitTime = null;
+
+              exited.push(worstPos);
+
+              // Recalculate count
+              count = remaining.filter(p => p.underlying === underlying && p.type === spreadType).length +
+                newEntries.filter(p => p.underlying === underlying && p.type === spreadType).length;
+            } else {
+              const reasons = [];
+              if (candidateDist >= worstDist) reasons.push("candidate not closer to ATM");
+              if (!spotStepValid) reasons.push(`displaced position spot step invalid (Spot: ${spotPrice}, Entry: ${oldSpotBase}, Thresh: ${oldThresh})`);
+              if (!otherScalingValid) reasons.push("other active positions scaling/spacing guard failed");
+              logWarn(`Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Portfolio cap of 3 reached. Reasons: ${reasons.join(', ')}`);
+              continue;
+            }
+          }
 
           // Diversification guard removed
 
@@ -822,7 +947,10 @@ export async function startPaperTradingEngine() {
             const { data: activeOfType, error: countError } = await supabase
               .from('active_positions').select('id')
               .eq('underlying', underlying).eq('type', t.type);
-            if (!countError && (activeOfType?.length ?? 0) >= 3) continue;
+            if (!countError && (activeOfType?.length ?? 0) >= 3) {
+              logWarn(`DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} blocked. Active count on DB: ${activeOfType?.length ?? 0}`);
+              continue;
+            }
 
             // DB-level diversification guard check removed
 
@@ -830,13 +958,19 @@ export async function startPaperTradingEngine() {
             const { data: buyConflict } = await supabase.from('active_positions').select('id')
               .eq('underlying', underlying).eq('type', t.type)
               .eq('buy_strike', t.buyLeg.strike).limit(1);
-            if (buyConflict && buyConflict.length > 0) continue;
+            if (buyConflict && buyConflict.length > 0) {
+              logWarn(`DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} blocked. Buy strike conflict on DB.`);
+              continue;
+            }
 
             // Sell strike uniqueness
             const { data: sellConflict } = await supabase.from('active_positions').select('id')
               .eq('underlying', underlying).eq('type', t.type)
               .eq('sell_strike', t.sellLeg.strike).limit(1);
-            if (sellConflict && sellConflict.length > 0) continue;
+            if (sellConflict && sellConflict.length > 0) {
+              logWarn(`DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} blocked. Sell strike conflict on DB.`);
+              continue;
+            }
 
             const { error: insertError } = await supabase.from('active_positions').insert([{
               id: t.id, underlying, expiry: config.expiry, type: t.type,
