@@ -565,7 +565,9 @@ export async function startPaperTradingEngine() {
                 ? spotPrice <= oldSpotBase - oldThresh
                 : spotPrice >= oldSpotBase + oldThresh;
               if (!spotStepValid) {
-                log(`  Candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: spot step invalid (Spot: ${spotPrice}, Entry Spot Base: ${oldSpotBase}, Required movement: ${oldThresh})`);
+                if (!onlyExits) {
+                  log(`  Candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: spot step invalid (Spot: ${spotPrice}, Entry Spot Base: ${oldSpotBase}, Required movement: ${oldThresh})`);
+                }
                 return false;
               }
 
@@ -580,7 +582,9 @@ export async function startPaperTradingEngine() {
                 return spotValid;
               });
               if (!otherScalingValid) {
-                log(`  Candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: other active positions spot spacing/scaling guard failed`);
+                if (!onlyExits) {
+                  log(`  Candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: other active positions spot spacing/scaling guard failed`);
+                }
                 return false;
               }
 
@@ -593,7 +597,9 @@ export async function startPaperTradingEngine() {
               const currentStrike = Number(pos.buyLeg.strike);
               const isPut = pos.type === 'put';
               const isBetter = isPut ? (targetStrike > currentStrike) : (targetStrike < currentStrike);
-              log(`  Best target found: ${bestTarget.buyLeg.type.toUpperCase()} ${targetStrike}/${targetSellStrike}. Is Better (closer to ATM): ${isBetter}`);
+              if (!onlyExits) {
+                log(`  Best target found: ${bestTarget.buyLeg.type.toUpperCase()} ${targetStrike}/${targetSellStrike}. Is Better (closer to ATM): ${isBetter}`);
+              }
 
               if (isBetter) {
                 const isSellStrikeMatch = Number(bestTarget.sellLeg.strike) === Number(pos.sellLeg.strike);
@@ -725,6 +731,7 @@ export async function startPaperTradingEngine() {
               entryFee: newActiveEntryFee,
               accumulatedSellPnl: (pos.accumulatedSellPnl || 0) + (longPnl - longExitFee) + shortAdjustmentPnl,
               entryTime: new Date(),
+              entrySpotPrice: spotPrice,
               margin: calcMargin(target.buyPrice, target.buyLeg.lotSize, spotPrice, target.sellQty, target.sellLeg.lotSize),
             };
             remaining.push(swappedPos);
@@ -740,6 +747,7 @@ export async function startPaperTradingEngine() {
                 entry_fee: newActiveEntryFee,
                 accumulated_sell_pnl: swappedPos.accumulatedSellPnl,
                 entry_time: swappedPos.entryTime.toISOString(),
+                entry_spot_price: spotPrice,
                 margin: swappedPos.margin,
               }).eq('id', pos.id);
             } catch (e) { logError('Leg swap sync error:', e); }
