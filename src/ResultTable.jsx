@@ -155,21 +155,30 @@ export default function ResultTable({
 
                   // Only compute P&L when both legs have valid prices
                   const hasAtmData = buyIntrinsic != null && sellIntrinsic != null;
-                  const atAtmPnl = hasAtmData
-                    ? ((buyIntrinsic - r.buyPrice) - (sellIntrinsic - r.sellPrice) * r.sellQty) * lotSize
-                    : null;
 
                   // Margin calculation matching paper trading leverage tiers
                   const sellLotSize = r.sellLeg.lotSize || lotSize;
-                  const shortValue = currentSpot * r.sellQty * sellLotSize;
-                  let leverage = 200;
-                  if (shortValue <= 200000) leverage = 200;
-                  else if (shortValue <= 450000) leverage = 100;
-                  else if (shortValue <= 950000) leverage = 50;
-                  else if (shortValue <= 1950000) leverage = 25;
-                  else leverage = 25;
+                  let shortValue = currentSpot * r.sellQty * sellLotSize;
 
-                  const margin = (r.buyPrice * lotSize) + (shortValue / leverage);
+                  let adjustedLotSize = lotSize;
+                  let adjustedSellQty = r.sellQty;
+                  let scale = 1;
+
+                  if (shortValue >= 200000) {
+                    scale = 200000 / shortValue;
+                    adjustedLotSize = Number((lotSize * scale).toFixed(2));
+                    adjustedSellQty = Number((r.sellQty * scale).toFixed(2));
+                    shortValue = 200000;
+                  }
+
+                  const leverage = 200; // Fixed leverage as 200
+
+                  // Compute P&L scaled to the adjusted lot size
+                  const atAtmPnl = hasAtmData
+                    ? ((buyIntrinsic - r.buyPrice) - (sellIntrinsic - r.sellPrice) * r.sellQty) * adjustedLotSize
+                    : null;
+
+                  const margin = (r.buyPrice * adjustedLotSize) + (shortValue / leverage);
                   const roi = (atAtmPnl != null && margin > 0) ? (atAtmPnl / margin) * 100 : null;
                   const atmRatio = (buyIntrinsic != null && sellIntrinsic != null && sellIntrinsic > 0)
                     ? (buyIntrinsic / sellIntrinsic)
@@ -180,6 +189,12 @@ export default function ResultTable({
 
                   return {
                     ...r,
+                    buyLeg: {
+                      ...r.buyLeg,
+                      lotSize: adjustedLotSize
+                    },
+                    sellQty: adjustedSellQty,
+                    netPremium: (r.netPremium * scale).toFixed(2),
                     buyIntrinsic,
                     sellIntrinsic,
                     atAtmPnl,

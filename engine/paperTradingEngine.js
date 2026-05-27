@@ -268,8 +268,22 @@ export async function startPaperTradingEngine() {
           return { atmPnl: null, roi: null };
         }
 
-        const atmPnl = ((buyIntrinsic - spread.buyPrice) - (sellIntrinsic - spread.sellPrice) * spread.sellQty) * lotSize;
-        const margin = calcMargin(spread.buyPrice, lotSize, spotPrice, spread.sellQty, spread.sellLeg.lotSize || lotSize);
+        const sellLotSize = spread.sellLeg.lotSize || lotSize;
+        let shortValue = spotPrice * spread.sellQty * sellLotSize;
+
+        let adjustedLotSize = lotSize;
+        let adjustedSellQty = spread.sellQty;
+        let scale = 1;
+
+        if (shortValue >= 200000) {
+          scale = 200000 / shortValue;
+          adjustedLotSize = Number((lotSize * scale).toFixed(2));
+          adjustedSellQty = Number((spread.sellQty * scale).toFixed(2));
+          shortValue = 200000;
+        }
+
+        const atmPnl = ((buyIntrinsic - spread.buyPrice) - (sellIntrinsic - spread.sellPrice) * spread.sellQty) * adjustedLotSize;
+        const margin = calcMargin(spread.buyPrice, adjustedLotSize, spotPrice, adjustedSellQty, sellLotSize);
         const roi = margin > 0 ? (atmPnl / margin) * 100 : 0;
 
         return { atmPnl, roi };
@@ -823,27 +837,42 @@ export async function startPaperTradingEngine() {
 
           const originalLotSize = spread.buyLeg.lotSize || 1;
 
+          const sellLotSize = spread.sellLeg.lotSize || originalLotSize;
+          let shortValue = spotPrice * spread.sellQty * sellLotSize;
+
+          let adjustedLotSize = originalLotSize;
+          let adjustedSellQty = spread.sellQty;
+          let scale = 1;
+
+          if (shortValue >= 200000) {
+            scale = 200000 / shortValue;
+            adjustedLotSize = Number((originalLotSize * scale).toFixed(2));
+            adjustedSellQty = Number((spread.sellQty * scale).toFixed(2));
+            shortValue = 200000;
+          }
+
           const buyLegWithIv = {
             ...spread.buyLeg,
+            lotSize: adjustedLotSize,
             entryIv: entryBuyIv,
             entryAtmRatio,
             maxAtmRatio: entryAtmRatio,
-            originalLotSize
+            originalLotSize: adjustedLotSize
           };
           const sellLegWithIv = { ...spread.sellLeg, entryIv: entrySellIv };
 
-          const entryBuyFee = calculateFee(entryBuyPrice, spotPrice, 1, originalLotSize);
-          const entrySellFee = calculateFee(entrySellPrice, spotPrice, spread.sellQty, spread.sellLeg.lotSize);
+          const entryBuyFee = calculateFee(entryBuyPrice, spotPrice, 1, adjustedLotSize);
+          const entrySellFee = calculateFee(entrySellPrice, spotPrice, adjustedSellQty, spread.sellLeg.lotSize);
           const entryFee = entryBuyFee + entrySellFee;
           const id = `T${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
           const newPos = {
             id, underlying, expiry: config.expiry, type: spreadType,
-            buyLeg: buyLegWithIv, sellLeg: sellLegWithIv, sellQty: spread.sellQty,
+            buyLeg: buyLegWithIv, sellLeg: sellLegWithIv, sellQty: adjustedSellQty,
             strikeDiff: spread.strikeDiff, entryTime: new Date(),
             entryBuyPrice, entrySellPrice, entrySpotPrice: spotPrice,
             entryFee,
-            margin: calcMargin(entryBuyPrice, originalLotSize, spotPrice, spread.sellQty, spread.sellLeg.lotSize),
+            margin: calcMargin(entryBuyPrice, adjustedLotSize, spotPrice, adjustedSellQty, spread.sellLeg.lotSize),
           };
           newEntries.push(newPos);
         }

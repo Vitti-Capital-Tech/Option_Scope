@@ -200,14 +200,10 @@ After every scan, `publishTopSpreads` packages the top-3 calls and puts into a p
 
 ### Margin Calculation (`calcMargin`)
 
-Applied to both engines using a tiered leverage model based on short notional value:
+Applied to both engines using a fixed leverage of 200 and capping the short value at $200,000:
 
-| Short Notional (`spot × sellQty × sellLot`) | Leverage |
-|---|---|
-| <= $200,000 | 200× |
-| <= $450,000 | 100× |
-| <= $950,000 | 50× |
-| > $950,000 | 25× |
+- **Leverage**: Fixed at **200×**
+- **Short Value Cap**: Capped at **$200,000** (`Math.min(200000, shortValue)`)
 
 `margin = (entryBuyPrice × buyLotSize) + (shortValue / leverage)`
 
@@ -462,8 +458,8 @@ All ATM price lookups go through `getTickerPrice(strike, optType, priceField, ex
 
 ### 5. At ATM Margin
 - **Margin Calculation**: Derived from **spread entry prices** (not ATM chain data), so it is always available:
-  `shortValue = spot × sellQty × sellLotSize`
-  `leverage = shortValue <= 200,000 ? 200 : shortValue <= 450,000 ? 100 : shortValue <= 950,000 ? 50 : 25`
+  `shortValue = Math.min(200000, spot × sellQty × sellLotSize)`
+  `leverage = 200`
   `margin = (buyPrice × buyLotSize) + (shortValue / leverage)`
 - **Always rendered**: Because margin does not depend on ATM quote availability, it is never suppressed.
 - **Sorting**: The scanner table groups the spreads by buy strike, sorts the group strikes by their highest candidate ROI descending, and sorts all options/sub-rows within each group by ROI descending. This ensures the most margin-efficient opportunities are ranked at the top.
