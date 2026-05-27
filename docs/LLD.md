@@ -297,7 +297,7 @@ Evaluated only if no exit was triggered, the position's expiry matches `selExpir
 - The engine finds a `bestTarget` in `uniqueTopSpreads` matching the same option type that:
   1. Has no buy/sell strike collision with other active positions.
   2. Has not been reserved by a prior displacement this cycle (`reservedTargets` Set).
-  3. The current spot has moved **>= 0.5%** from the current position's `entrySpotPrice` (directionally: lower for calls, higher for puts).
+  3. The current spot has moved **>= 0.5%** (in either direction) from the current position's `entrySpotPrice`.
   4. Passes the scaling guard against **all other** remaining positions too.
 - If target is directionally closer to ATM, the exit is approved and the target strike is added to `reservedTargets` (1-for-1 reservation).
 

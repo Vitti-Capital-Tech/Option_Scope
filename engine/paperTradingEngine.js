@@ -561,9 +561,7 @@ export async function startPaperTradingEngine() {
 
               const oldSpotBase = pos.entrySpotPrice || pos.entryBuyPrice || spotPrice;
               const oldThresh = Math.round((oldSpotBase * 0.005) / 100) * 100;
-              const spotStepValid = pos.type === 'call'
-                ? spotPrice <= oldSpotBase - oldThresh
-                : spotPrice >= oldSpotBase + oldThresh;
+              const spotStepValid = Math.abs(spotPrice - oldSpotBase) >= oldThresh;
               if (!spotStepValid) {
                 if (!onlyExits) {
                   log(`  Candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: spot step invalid (Spot: ${spotPrice}, Entry Spot Base: ${oldSpotBase}, Required movement: ${oldThresh})`);
@@ -575,10 +573,9 @@ export async function startPaperTradingEngine() {
                 p.id !== pos.id && p.underlying === underlying && p.type === pos.type
               );
               const otherScalingValid = otherPositionsOfType.every(p => {
+                if (!p.entrySpotPrice) return true;
                 const thresh = Math.round((p.entrySpotPrice * 0.005) / 100) * 100;
-                const spotValid = pos.type === 'call'
-                  ? spotPrice <= p.entrySpotPrice - thresh
-                  : spotPrice >= p.entrySpotPrice + thresh;
+                const spotValid = Math.abs(spotPrice - p.entrySpotPrice) >= thresh;
                 return spotValid;
               });
               if (!otherScalingValid) {
