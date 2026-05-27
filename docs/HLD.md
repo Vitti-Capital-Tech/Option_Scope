@@ -111,12 +111,13 @@ Browser (React + Vite Dashboard)
 7. **Expiry**: exit 2 minutes early for stable settlement prices.
 8. **Dynamic Portfolio Rotation**:
    The engine compares existing positions against current top scanner results:
-   - **Displacement Check**: If a position is no longer in the Top 3 unique strikes AND a superior candidate (closer to ATM) is available, it is marked for rotation.
-   - **Atomic Pre-Validation**: The engine validates the replacement candidate against the **0.5% Scaling** guard *before* executing the exit. If the target would be blocked, the rotation is cancelled to prevent empty portfolio slots.
-   - **Conflict-Aware Target Scanning**: It also ensures replacement targets never collide with existing portfolio strikes.
-   - **1-for-1 Displacement**: To prevent mass exits, the engine uses a **Target Reservation** system. Each new superior candidate in the scanner is "claimed" by exactly one existing inferior position.
-   - **Worst-First Processing**: Active positions are evaluated from farthest-to-ATM first, ensuring the least desirable legs are rotated out first.
-   - **Cycle Guards**: Rotation only begins once the portfolio hits a threshold (e.g., 3 active legs) and is capped at 3 rotations per evaluation cycle.
+    - **Displacement Check**: If a position is no longer in the Top 3 unique strikes (the `inTop3` check filters candidates by type and slices exactly the Top 3 unique strikes) AND a superior candidate (closer to ATM) is available, it is marked for rotation.
+    - **Atomic Pre-Validation**: The engine validates the replacement candidate against the **0.5% Scaling** guard *before* executing the exit. If the target would be blocked, the rotation is cancelled to prevent empty portfolio slots.
+    - **Conflict-Aware Target Scanning**: It also ensures replacement targets never collide with existing portfolio strikes.
+    - **1-for-1 Displacement**: To prevent mass exits, the engine uses a **Target Reservation** system. Each new superior candidate in the scanner is "claimed" by exactly one existing inferior position.
+    - **Worst-First Processing**: Active positions are evaluated from farthest-to-ATM first, ensuring the least desirable legs are rotated out first.
+    - **Cycle Guards**: Rotation only begins once the portfolio hits a threshold (e.g., 3 active legs) and is capped at 3 rotations per evaluation cycle.
+    - **Active-Level Displacement on Cap**: During entry evaluations, if the active portfolio limit of 3 is reached, the engine evaluates if a new entry candidate is closer to ATM than the worst active position. If it is closer AND satisfies the 0.5% spot step and spacing scaling guards, it displaces (exits) the worst active position (exitReason: `Lost top 3 and found better target ${bStrike}`) and enters the new candidate.
 9. Open new positions up to 3 per type from the ranked candidate list. DB count guard prevents exceeding 3 even under race conditions.
 10. Sync all entries and exits to Supabase. Full `positions` array replacement only happens when rows are added/removed, not on routine PnL updates.
 11. **Instant Cross-Device Sync**: Supabase Realtime pushes `active_positions` change events to all connected sessions within < 1s of a write. The `lastDbWriteRef` post-write blackout is reduced from 10s to 3s to minimize the window where a just-written position could be overwritten by a stale Supabase re-fetch. A 10-second fallback poll ensures any missed Realtime events are caught.

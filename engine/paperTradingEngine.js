@@ -697,9 +697,28 @@ export async function startPaperTradingEngine() {
             const newLongEntryFee = calculateFee(target.buyPrice, spotPrice, 1, target.buyLeg.lotSize);
             const newActiveEntryFee = (pos.entryFee || 0) - longEntryFee + newLongEntryFee + shortAdjustmentFee;
 
+            let newEntryAtmRatio = null;
+            if (atmStrike !== null) {
+              const liveBuyIntrinsic = getTickerPrice(atmStrike, pos.type, 'bid', pos.expiry);
+              const targetSellStrike = pos.type === 'call' ? atmStrike + target.strikeDiff : atmStrike - target.strikeDiff;
+              const liveSellIntrinsic = getTickerPrice(targetSellStrike, pos.type, 'ask', pos.expiry);
+              if (liveBuyIntrinsic != null && liveSellIntrinsic != null && liveSellIntrinsic > 0) {
+                newEntryAtmRatio = parseFloat((Math.round((liveBuyIntrinsic / liveSellIntrinsic) / 0.25) * 0.25).toFixed(2));
+              }
+            }
+
+            const tickerNewBuy = tickerData[target.buyLeg.symbol];
+            const newBuyLeg = {
+              ...target.buyLeg,
+              entryIv: tickerNewBuy?.askIv ?? tickerNewBuy?.iv ?? null,
+              entryAtmRatio: newEntryAtmRatio,
+              maxAtmRatio: newEntryAtmRatio,
+              originalLotSize: target.buyLeg.lotSize || 1
+            };
+
             const swappedPos = {
               ...pos,
-              buyLeg: target.buyLeg,
+              buyLeg: newBuyLeg,
               sellQty: target.sellQty,
               entryBuyPrice: target.buyPrice,
               entrySellPrice: adjustedSellEntryPrice,
@@ -713,8 +732,8 @@ export async function startPaperTradingEngine() {
             // Sync leg swap to Supabase
             try {
               await supabase.from('active_positions').update({
-                buy_leg: JSON.stringify(target.buyLeg),
-                buy_strike: target.buyLeg.strike,
+                buy_leg: JSON.stringify(newBuyLeg),
+                buy_strike: newBuyLeg.strike,
                 sell_qty: target.sellQty,
                 entry_buy_price: target.buyPrice,
                 entry_sell_price: adjustedSellEntryPrice,
