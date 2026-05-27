@@ -574,16 +574,77 @@ export async function startPaperTradingEngine() {
 
         // Priority 4: Rotation
         if (!shouldExit && pos.expiry === selExpiry && uniqueTopSpreads.length > 0) {
-          if (inTop3) {
-            // Position is in the top 3; no need to rotate it out
-          } else {
-            const otherActiveBuyStrikes = sortedPositions
-              .filter(p => p.id !== pos.id && p.underlying === underlying && p.type === pos.type)
-              .map(p => Number(p.buyLeg.strike));
-            const otherActiveSellStrikes = sortedPositions
-              .filter(p => p.id !== pos.id && p.underlying === underlying && p.type === pos.type)
-              .map(p => Number(p.sellLeg.strike));
+          const otherActiveBuyStrikes = sortedPositions
+            .filter(p => p.id !== pos.id && p.underlying === underlying && p.type === pos.type)
+            .map(p => Number(p.buyLeg.strike));
+          const otherActiveSellStrikes = sortedPositions
+            .filter(p => p.id !== pos.id && p.underlying === underlying && p.type === pos.type)
+            .map(p => Number(p.sellLeg.strike));
 
+          // 1. Check for Leg Swap (same sell strike, better buy strike)
+          const bestSwapTarget = uniqueTopSpreads.filter(s => s.buyLeg.type === pos.type).find(s => {
+            const bS = Number(s.buyLeg.strike);
+            const sS = Number(s.sellLeg.strike);
+
+            // Must match the exact sell strike of the active position
+            if (sS !== Number(pos.sellLeg.strike)) return false;
+
+            // Check buy/sell conflicts
+            const buyConflict = otherActiveBuyStrikes.includes(bS);
+            const sellConflict = otherActiveSellStrikes.includes(sS);
+            if (buyConflict || sellConflict || reservedTargets.has(bS) || reservedSellTargets.has(sS)) return false;
+
+            // Must be a better buy strike (closer to ATM)
+            const currentStrike = Number(pos.buyLeg.strike);
+            const isPut = pos.type === 'put';
+            const isBetter = isPut ? (bS > currentStrike) : (bS < currentStrike);
+            if (!isBetter) return false;
+
+            // Spot step movement guard
+            const oldSpotBase = pos.entrySpotPrice || pos.entryBuyPrice || spotPrice;
+            const oldThresh = Math.round((oldSpotBase * 0.005) / 100) * 100;
+            const spotStepValid = Math.abs(spotPrice - oldSpotBase) >= oldThresh;
+            if (!spotStepValid) {
+              if (!onlyExits) {
+                log(`  Leg Swap candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: spot step invalid (Spot: ${spotPrice}, Entry Spot Base: ${oldSpotBase}, Required movement: ${oldThresh})`);
+              }
+              return false;
+            }
+
+            // Other positions spacing/scaling guard
+            const otherPositionsOfType = sortedPositions.filter(p =>
+              p.id !== pos.id && p.underlying === underlying && p.type === pos.type
+            );
+            const otherScalingValid = otherPositionsOfType.every(p => {
+              if (!p.entrySpotPrice) return true;
+              const thresh = Math.round((p.entrySpotPrice * 0.005) / 100) * 100;
+              const spotValid = Math.abs(spotPrice - p.entrySpotPrice) >= thresh;
+              return spotValid;
+            });
+            if (!otherScalingValid) {
+              if (!onlyExits) {
+                log(`  Leg Swap candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: other active positions spot spacing/scaling guard failed`);
+              }
+              return false;
+            }
+
+            return true;
+          });
+
+          if (bestSwapTarget) {
+            const targetStrike = Number(bestSwapTarget.buyLeg.strike);
+            const targetSellStrike = Number(bestSwapTarget.sellLeg.strike);
+            const currentStrike = Number(pos.buyLeg.strike);
+            if (!onlyExits) {
+              log(`  Leg Swap target found: ${bestSwapTarget.buyLeg.type.toUpperCase()} ${targetStrike}/${targetSellStrike}. Upgrading buy strike from ${currentStrike}`);
+            }
+            pos._pendingLegSwap = bestSwapTarget;
+            shouldExit = true;
+            exitReason = `Leg Swap: Buy ${currentStrike} -> ${targetStrike}`;
+            reservedTargets.add(targetStrike);
+            reservedSellTargets.add(targetSellStrike);
+          } else if (!inTop3) {
+            // 2. Fallback to standard rotation (only for positions not in Top 3)
             const bestTarget = uniqueTopSpreads.filter(s => s.buyLeg.type === pos.type).find(s => {
               const bS = Number(s.buyLeg.strike);
               const sS = Number(s.sellLeg.strike);

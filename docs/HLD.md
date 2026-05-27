@@ -111,11 +111,11 @@ Browser (React + Vite Dashboard)
    - Stored in the `buyLeg` JSON metadata within the `active_positions` and `trade_history` tables.
    - Dedicated Trade History columns: **Entry ATM Ratio (Prices)** and **Exit ATM Ratio (Prices)**.
 6. **Visual Simulation Mode**: A "What-If" dashboard layer that allows users to simulate the impact of adding custom premium/credit to their strategy visually (including P&L and ratio recalculation) without affecting the database.
-7. **Leg Swap Rotation**: Surgical optimization that swaps only the Long leg and adjusts the Short quantity (using weighted average entry pricing) when the Sell strike remains consistent, minimizing slippage and fees.
+7. **Leg Swap Optimization**: Surgical optimization that swaps only the Long leg and adjusts the Short quantity (using weighted average entry pricing) when the Sell strike remains consistent, minimizing slippage and fees. Evaluated for all active positions (including those in the Top 3) when a scanner candidate has the same sell strike and a better buy strike (closer to ATM), resolving sell strike conflicts.
 8. **Expiry**: exit 2 minutes early for stable settlement prices.
 9. **Dynamic Portfolio Rotation**:
    The engine compares existing positions against current top scanner results:
-    - **Displacement Check**: If a position is no longer in the Top 3 unique strikes (the `inTop3` check filters candidates by type and slices exactly the Top 3 unique strikes) AND a superior candidate (closer to ATM) is available, it is marked for rotation.
+    - **Displacement Check**: If a position is no longer in the Top 3 unique strikes (the `inTop3` check filters candidates by type and slices exactly the Top 3 unique strikes) AND a superior candidate (closer to ATM) is available, it is marked for rotation (unless a leg swap was already triggered).
     - **Atomic Pre-Validation**: The engine validates the replacement candidate against the **0.5% Scaling** guard *before* executing the exit. If the target would be blocked, the rotation is cancelled to prevent empty portfolio slots.
     - **Conflict-Aware Target Scanning**: It also ensures replacement targets never collide with existing portfolio strikes.
     - **1-for-1 Displacement**: To prevent mass exits, the engine uses a **Target Reservation** system. Each new superior candidate in the scanner is "claimed" by exactly one existing inferior position.

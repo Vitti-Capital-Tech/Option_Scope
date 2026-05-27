@@ -287,21 +287,27 @@ Evaluated only if no expiry exit was triggered.
 - Condition: Spot price crosses the buy strike (`spotPrice >= buyStrike` for calls, or `spotPrice <= buyStrike` for puts).
 - Action: 100% exit, `exitReason = 'Full Exit @ ATM'`.
 
-**Priority 4 — Rotation (Displacement):**
+**Priority 4 — Rotation & Leg Swap (Two-Stage Evaluation):**
 
-Evaluated only if no exit was triggered, the position's expiry matches `selExpiry`, and `uniqueTopSpreads` is non-empty.
+Evaluated only if no exit was triggered, the position's expiry matches `selExpiry`, and `uniqueTopSpreads` is non-empty. This is evaluated in two sequential stages:
 
-- If the position's buy strike is **not** in the top 3 unique candidate spreads of the same type within `uniqueTopSpreads` (using the `inTop3` check), it is a displacement candidate.
-- The engine finds a `bestTarget` in `uniqueTopSpreads` matching the same option type that:
-  1. Has no buy/sell strike collision with other active positions.
-  2. Has not been reserved by a prior displacement this cycle (`reservedTargets` Set).
-  3. The current spot has moved **>= 0.5%** (in either direction) from the current position's `entrySpotPrice`.
-  4. Passes the scaling guard against **all other** remaining positions too.
-- If target is directionally closer to ATM, the exit is approved and the target strike is added to `reservedTargets` (1-for-1 reservation).
+1. **Stage 1: Leg Swap Upgrade (All Positions)**:
+   - Regardless of whether the position is in the Top 3 (`inTop3` is true or false), the engine scans `uniqueTopSpreads` for a candidate of the same type that has the **exact same sell strike** as the active position, but a **better buy strike** (closer to ATM).
+   - The candidate must pass all safety guards:
+     - No buy/sell strike collision with other active positions (excluding this position's own strikes).
+     - Has not been reserved by a prior swap/rotation this cycle.
+     - The current spot has moved **>= 0.5%** (in either direction) from the current position's `entrySpotPrice`.
+     - Passes the scaling guard against all other remaining positions.
+   - If a valid Leg Swap candidate is found, a Leg Swap is approved (`exitReason = 'Leg Swap: Buy [current] -> [target]'`).
+
+2. **Stage 2: Standard Rotation Fallback (Lost Top 3 Only)**:
+   - If no Leg Swap was triggered, and the position is **not** in the Top 3 unique candidate buy strikes (`inTop3 === false`), it is a candidate for displacement.
+   - The engine finds a `bestTarget` in `uniqueTopSpreads` matching the same option type that passes all safety guards (strike conflicts, reservation, 0.5% spot movement, and spacing guards).
+   - If the target is directionally closer to ATM, the exit is approved (`exitReason = 'Lost Top 3 and Rank 1 better target available ([targetStrike])'`).
 
 **Threshold Guard (Rotation Only):**
 
-Rotations are additionally gated by the portfolio depth requirement:
+Rotations (excluding Leg Swaps) are additionally gated by the portfolio depth requirement:
 
 - Calls can only rotate if `activeCallsCount >= 3`.
 - Puts can only rotate if `activePutsCount >= 3`.
@@ -309,7 +315,7 @@ Rotations are additionally gated by the portfolio depth requirement:
 
 ### D. Leg-Swap Optimization
 
-If a rotation target shares the exact same **sell strike** as the current position, a Leg Swap is executed instead of a full spread exit:
+When a Leg Swap is executed (either in Stage 1 or Stage 2):
 
 1. Realizes P&L only on the Long leg (closed at current bid).
 2. Adjusts sell quantity using `deltaQty = targetSellQty - currentSellQty`.
