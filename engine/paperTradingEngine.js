@@ -465,7 +465,7 @@ export async function startPaperTradingEngine() {
                         realized_net_pnl: partialNetPnl,
                         exit_fee: partialExitFee,
                         total_fees: partialTotalFees,
-                        exit_reason: `Partial Exit: Buy lot size reduced by ${deltaQty.toFixed(4)} due to ATM ratio increase`,
+                        exit_reason: `Partial Exit: Buy lot size reduced by ${deltaQty.toFixed(4)} due to ATM ratio increase (Ratio: ${currentMaxAtmRatio.toFixed(2)} -> ${liveAtmRatio.toFixed(2)}, Price: ${pos.entryBuyPrice.toFixed(2)} -> ${liveExitBuy.toFixed(2)}, Diff: ${buyPriceDiff.toFixed(2)})`,
                         is_partial: true
                       }]);
                       log(`📤 PARTIAL EXIT RECORDED: ${pos.id} | Reduced by ${deltaQty.toFixed(4)} | Net PnL: $${partialNetPnl.toFixed(2)}`);
