@@ -708,8 +708,29 @@ export async function startPaperTradingEngine() {
             continue;
           }
 
-          const totalFees = (pos.entryFee || 0) + exitFee;
-          const netPnl = grossPnl - totalFees;
+          let finalGrossPnl = grossPnl;
+          let finalExitFee = exitFee;
+          let finalEntryFee = pos.entryFee || 0;
+          let finalTotalFees = totalFees;
+          let finalNetPnl = netPnl;
+          let finalSellQty = pos.sellQty;
+          let finalSellLeg = { ...pos.sellLeg, exitIv: latestSellIv };
+
+          const isLegSwap = exitReason.startsWith('Leg Swap');
+          if (isLegSwap) {
+            // Gross PNL based on change in buyQty (only long leg)
+            finalGrossPnl = (latestBuy - pos.entryBuyPrice) * pos.buyLeg.lotSize;
+            // Exit fee based on long leg exit only
+            finalExitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize);
+            // Entry fee apportioned to long leg
+            const longEntryFee = (pos.entryFee || 0) * (pos.buyLeg.lotSize / (pos.buyLeg.lotSize + (pos.sellQty * pos.sellLeg.lotSize)));
+            finalEntryFee = longEntryFee;
+            finalTotalFees = finalEntryFee + finalExitFee;
+            finalNetPnl = finalGrossPnl - finalTotalFees;
+            // sellQty should be 0 when exiting
+            finalSellQty = 0;
+            finalSellLeg = { ...pos.sellLeg, lotSize: 0, exitIv: latestSellIv };
+          }
 
           let exitBuyAtmPrice = null;
           let exitSellAtmPrice = null;
@@ -726,7 +747,7 @@ export async function startPaperTradingEngine() {
           const tradeRecord = {
             ...pos,
             id: pos._pendingLegSwap ? `${pos.id}-LS-${Date.now().toString(36).toUpperCase()}` : pos.id,
-            sellQty: pos.sellQty,
+            sellQty: finalSellQty,
             buyLeg: {
               ...pos.buyLeg,
               exitIv: latestBuyIv,
@@ -734,17 +755,17 @@ export async function startPaperTradingEngine() {
               exitSellAtmPrice,
               exitAtmRatio
             },
-            sellLeg: { ...pos.sellLeg, exitIv: latestSellIv },
+            sellLeg: finalSellLeg,
             _exitedBuyQty: pos.buyLeg.lotSize,
             exitTime: new Date(),
             exitBuyPrice: latestBuy,
             exitSellPrice: latestSell,
             exitSpotPrice: spotPrice,
-            realizedGrossPnl: grossPnl,
-            realizedNetPnl: netPnl,
-            entryFee: pos.entryFee || 0,
-            exitFee: exitFee,
-            totalFees: totalFees,
+            realizedGrossPnl: finalGrossPnl,
+            realizedNetPnl: finalNetPnl,
+            entryFee: finalEntryFee,
+            exitFee: finalExitFee,
+            totalFees: finalTotalFees,
             exitReason,
             _latestBuy: latestBuy,
             _latestSell: latestSell,
@@ -756,9 +777,9 @@ export async function startPaperTradingEngine() {
           if (pos._pendingLegSwap) {
             // Leg swap execution
             const target = pos._pendingLegSwap;
-            const longPnl = (latestBuy - pos.entryBuyPrice) * pos.buyLeg.lotSize;
-            const longExitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize);
-            const longEntryFee = (pos.entryFee || 0) * (pos.buyLeg.lotSize / (pos.buyLeg.lotSize + (pos.sellQty * pos.sellLeg.lotSize)));
+            const longPnl = finalGrossPnl;
+            const longExitFee = finalExitFee;
+            const longEntryFee = finalEntryFee;
 
             // Apply $200,000 cap scaling to the target spread
             const targetLotSize = target.buyLeg.lotSize || 1;
