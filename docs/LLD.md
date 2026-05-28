@@ -288,12 +288,11 @@ Evaluated only if no exit was triggered, the position's expiry matches `selExpir
      - No buy/sell strike collision with other active positions (excluding this position's own strikes).
      - Has not been reserved by a prior swap/rotation this cycle.
      - The current spot has moved **>= 0.5%** (in either direction) from the current position's `entrySpotPrice`.
-     - Passes the scaling guard against all other remaining positions.
    - If a valid Leg Swap candidate is found, a Leg Swap is approved (`exitReason = 'Leg Swap: Buy [current] -> [target]'`).
 
 2. **Stage 2: Standard Rotation Fallback (Lost Top 3 Only)**:
    - If no Leg Swap was triggered, and the position is **not** in the Top 3 unique candidate buy strikes (`inTop3 === false`), it is a candidate for displacement.
-   - The engine finds a `bestTarget` in `uniqueTopSpreads` matching the same option type that passes all safety guards (strike conflicts, reservation, 0.5% spot movement, and spacing guards).
+   - The engine finds a `bestTarget` in `uniqueTopSpreads` matching the same option type that passes all safety guards (strike conflicts, reservation, and 0.5% spot movement).
    - If the target is directionally closer to ATM, the exit is approved (`exitReason = 'Lost Top 3 and Rank 1 better target available ([targetStrike])'`).
 
 **Threshold Guard (Rotation Only):**

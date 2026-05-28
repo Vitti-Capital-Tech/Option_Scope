@@ -603,23 +603,6 @@ export async function startPaperTradingEngine() {
               return false;
             }
 
-            // Other positions spacing/scaling guard
-            const otherPositionsOfType = sortedPositions.filter(p =>
-              p.id !== pos.id && p.underlying === underlying && p.type === pos.type
-            );
-            const otherScalingValid = otherPositionsOfType.every(p => {
-              if (!p.entrySpotPrice) return true;
-              const thresh = Math.round((p.entrySpotPrice * 0.005) / 100) * 100;
-              const spotValid = Math.abs(spotPrice - p.entrySpotPrice) >= thresh;
-              return spotValid;
-            });
-            if (!otherScalingValid) {
-              if (!onlyExits) {
-                log(`  Leg Swap candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: other active positions spot spacing/scaling guard failed`);
-              }
-              return false;
-            }
-
             return true;
           });
 
@@ -651,22 +634,6 @@ export async function startPaperTradingEngine() {
               if (!spotStepValid) {
                 if (!onlyExits) {
                   log(`  Candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: spot step invalid (Spot: ${spotPrice}, Entry Spot Base: ${oldSpotBase}, Required movement: ${oldThresh})`);
-                }
-                return false;
-              }
-
-              const otherPositionsOfType = sortedPositions.filter(p =>
-                p.id !== pos.id && p.underlying === underlying && p.type === pos.type
-              );
-              const otherScalingValid = otherPositionsOfType.every(p => {
-                if (!p.entrySpotPrice) return true;
-                const thresh = Math.round((p.entrySpotPrice * 0.005) / 100) * 100;
-                const spotValid = Math.abs(spotPrice - p.entrySpotPrice) >= thresh;
-                return spotValid;
-              });
-              if (!otherScalingValid) {
-                if (!onlyExits) {
-                  log(`  Candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: other active positions spot spacing/scaling guard failed`);
                 }
                 return false;
               }
