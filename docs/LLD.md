@@ -243,30 +243,21 @@ All active positions are sorted by descending `|buyStrike - spotPrice|` (farthes
 
 ### Dynamic ATM Ratio-Based Scaling
 
-For each active position, before evaluating its full exit triggers (such as expiry or ATM exit), the engine checks the trailing stop-loss threshold for dynamic scaling:
+For each active position, before evaluating its full exit triggers (such as expiry or ATM exit), the engine checks whether the position qualifies for a partial scale-down based on profitability, trailing PnL threshold, and ATM ratio drift:
 
-1. **Checkpoint Recovery**: Sourced from `pos.buyLeg` JSON metadata.
-   - If `pos.buyLeg.lastCheckpointPnl` is undefined (meaning no scale-down has occurred yet):
-     - `checkpointPnl = netPremium` (the credit received at entry: `(entryBuyPrice - entrySellPrice * sellQty) * lotSize`).
-     - `checkpointAtmPnl = liveAtmPnl` (the current live ATM P&L).
-   - If `pos.buyLeg.lastCheckpointPnl` is defined (after scaling):
-     - `checkpointPnl = buyLeg.lastCheckpointPnl`
-     - `checkpointAtmPnl = buyLeg.lastCheckpointAtmPnl` (the frozen ATM P&L from the checkpoint).
-2. **Threshold Calculation**:
-   - `threshold = checkpointAtmPnl * 0.25 + checkpointPnl`
-3. **Loop & Trigger Conditions**: The engine runs a `while` loop evaluated on the P&L trailing threshold:
-   - Loop condition: `while (currentGrossPnl <= threshold)`
-   - Inner checks inside the loop at the point of scaling exit:
-     - Ratio Condition: `liveAtmRatio >= maxAtmRatio` (where `maxAtmRatio` starts at `entryAtmRatio` and is decremented by `2` on each step).
-     - Floor limit check: The remaining long lot size after scaling must be at or above the hard floor of `0.5` (`currentLotSize - 0.25 >= 0.5`).
-4. **Execution & Checkpoint Saving**: If inner conditions are met:
+1. **Profitability Guard**: The position's unrealized `currentGrossPnl` (including accumulated sell PnL from leg swaps) must be **greater than zero**. This prevents scaling from triggering immediately at entry when PnL is zero.
+2. **Trailing Threshold Check**: Checkpoint values are recovered from `pos.buyLeg` metadata (or initialized from entry values on first evaluation). The trailing threshold is `checkpointAtmPnl * 0.25 + checkpointPnl`. The condition `currentGrossPnl <= threshold` must be met, meaning the position's PnL has deteriorated below the trailing stop level.
+3. **ATM Ratio Condition (1:x comparison)**: The live ATM ratio (`liveAtmRatio`, computed as `buyIntrinsic / sellIntrinsic` rounded to nearest `0.25`) is compared to the position's tracked `maxAtmRatio` (which starts at `entryAtmRatio` at entry). The condition is: **`maxAtmRatio <= liveAtmRatio - 2`**. This means the ATM ratio must have increased by at least `2` (in 1:x terms) from the tracked max before scaling triggers.
+4. **Floor Limit**: The remaining long lot size after scaling must be at or above the hard floor of `0.5` (`currentLotSize - 0.25 >= 0.5`).
+5. **Execution**: If all conditions are met (while loop):
    - Decrement `pos.buyLeg.lotSize` by `0.25`.
-   - Update `maxAtmRatio` and `entryAtmRatio` by subtracting `2` (i.e. `maxAtmRatio = maxAtmRatio - 2`).
-   - Update checkpoints: Set `pos.buyLeg.lastCheckpointPnl = currentGrossPnl` and `pos.buyLeg.lastCheckpointAtmPnl = liveAtmPnl`.
+   - **Increment** `maxAtmRatio` by `+2` (raising the bar for the next scaling step, i.e. `maxAtmRatio = maxAtmRatio + 2`).
+   - `entryAtmRatio` is **preserved** (never modified — it is a historical entry-time value).
+   - Save checkpoint values: `pos.buyLeg.lastCheckpointPnl = currentGrossPnl` and `pos.buyLeg.lastCheckpointAtmPnl = liveAtmPnl`.
    - **`sellQty` remains unchanged**.
    - Record a **partial exit** to `trade_history` with `is_partial: true`, the closed buy lot size as `0.25`, and the closed sell lot size and sell quantity as `0`.
-   - Recalculate variables (`checkpointPnl`, `checkpointAtmPnl`, `threshold`, `currentGrossPnl`) for the next iteration check of the loop.
-5. **State Persistence**: After the loop completes, if any scaling occurred, recalculate remaining position margin using `calcMargin` and update columns (`buy_leg`, `entry_fee`, `margin`) in the `active_positions` table.
+   - Recalculate `checkpointPnl`, `checkpointAtmPnl`, `threshold`, and `currentGrossPnl` for the next iteration check of the loop.
+6. **State Persistence**: After the loop completes, if any scaling occurred, recalculate remaining position margin using `calcMargin` and update columns (`buy_leg`, `entry_fee`, `margin`) in the `active_positions` table.
 
 ### C. Exit Priority Tree
 
