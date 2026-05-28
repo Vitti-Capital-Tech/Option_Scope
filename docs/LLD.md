@@ -247,15 +247,15 @@ For each active position, before evaluating its full exit triggers (such as expi
 
 1. **Profitability Guard**: The position's unrealized `currentGrossPnl` (including accumulated sell PnL from leg swaps) must be **greater than zero**. This prevents scaling from triggering immediately at entry when PnL is zero.
 2. **Trailing Threshold Check**: Checkpoint values are recovered from `pos.buyLeg` metadata (or initialized from entry values on first evaluation). The trailing threshold is `checkpointAtmPnl * 0.25 + checkpointPnl`. The condition `currentGrossPnl <= threshold` must be met, meaning the position's PnL has deteriorated below the trailing stop level.
-3. **ATM Ratio Condition (1:x comparison)**: The live ATM ratio (`liveAtmRatio`, computed as `buyIntrinsic / sellIntrinsic` rounded to nearest `0.25`) is compared to the position's own current ratio (`pos.sellQty / currentLotSize`). The condition is: **`liveAtmRatio >= (pos.sellQty / currentLotSize) + 2`**. This means the market's ATM ratio must have increased by at least `2` (in 1:x terms) from the position's current ratio before scaling triggers.
-4. **Floor Limit**: The remaining long lot size after scaling must be at or above the hard floor of `0.5` (`currentLotSize - 0.25 >= 0.5`).
+3. **ATM Ratio Condition (1:x comparison)**: The live ATM ratio (`liveAtmRatio`, computed as `buyIntrinsic / sellIntrinsic` rounded to nearest `0.25`) is compared to the tracked `maxAtmRatio` (which starts as the historical `entryAtmRatio` for unscaled positions, and updates to the position lot ratio `pos.sellQty / currentLotSize` at each scaling step). The condition is: **`liveAtmRatio >= maxAtmRatio + 2`**. This means the market's ATM ratio must have increased by at least `2` (in 1:x terms) from the tracked `maxAtmRatio` before scaling triggers.
+4. **Floor Limit**: The remaining long lot size after scaling must be at or above the fixed floor limit of `0.5` (`currentLotSize - deltaBuyQty >= floorLimit`).
 5. **Execution**: If all conditions are met (while loop):
-   - Decrement `pos.buyLeg.lotSize` by `0.25`.
+   - Decrement `pos.buyLeg.lotSize` by `deltaBuyQty` (which is 25% of the original long quantity).
    - Update `pos.buyLeg.maxAtmRatio` in metadata to reflect the new ratio of the position (`pos.sellQty / currentLotSize`).
    - `entryAtmRatio` is **preserved** (never modified — it is a historical entry-time value).
    - Save checkpoint values: `pos.buyLeg.lastCheckpointPnl = currentGrossPnl` and `pos.buyLeg.lastCheckpointAtmPnl = liveAtmPnl`.
    - **`sellQty` remains unchanged**.
-   - Record a **partial exit** to `trade_history` with `is_partial: true`, the closed buy lot size as `0.25`, and the closed sell lot size and sell quantity as `0`.
+   - Record a **partial exit** to `trade_history` with `is_partial: true`, the closed buy lot size as `deltaBuyQty`, and the closed sell lot size and sell quantity as `0`.
    - Recalculate `checkpointPnl`, `checkpointAtmPnl`, `threshold`, and `currentGrossPnl` for the next iteration check of the loop.
 6. **State Persistence**: After the loop completes, if any scaling occurred, recalculate remaining position margin using `calcMargin` and update columns (`buy_leg`, `entry_fee`, `margin`) in the `active_positions` table.
 
