@@ -125,7 +125,7 @@ The Scanner also writes the top-3 results to `localStorage` under the key `vitti
 | `minIvDiff` | 5 | Minimum IV spread (%) between buy and sell legs |
 | `maxRatioDeviation` | 0.25 | Max allowed deviation between premium ratio and delta-notional ratio |
 | `minSellPremium` | 10 | Minimum sell leg premium required to avoid illiquid pairs |
-| `maxNetPremium` | 20 | Symmetric net premium band: `[-max, +max]` allows credit and debit spreads |
+| `maxNetPremium` | 20 | Maximum net premium (debit cap): spreads with `netPremium > maxNetPremium` are filtered out |
 | `minLongDist` | 500 | Minimum spot distance (pts) the buy strike must be from current spot |
 | `maxSellQty` | 10 | Maximum allowed sell quantity (ratio cap) |
 
@@ -150,7 +150,7 @@ The scanner runs an O(N²) pair search within each option type (calls and puts s
    - `spotDist >= minLongDist` (buy strike to spot)
    - `sellPrice >= minSellPremium`
    - `ratioDeviation <= maxRatioDeviation`
-   - `netPremium` within `[-maxNetPremium, +maxNetPremium]`
+   - `netPremium <= maxNetPremium` (one-sided upper bound debit cap)
    - `sellQty <= maxSellQty`
 6. **`sellQty` Calculation**: `rawQty = buyDN / sellDN`, rounded to nearest 0.25 with minimum of 1.
 7. **Sorting**: Closest buy strike to ATM first; ties broken by ascending `netPremium`.
@@ -233,9 +233,8 @@ Steps: A → B → C → D → E → F (detailed in sections below).
 
 ### A. Candidate Pool Construction
 
-1. **Local Scan**: Filters `latestTickerDataRef` by option type and ATM direction. Runs `scanTickers` (same algorithm as `RatioSpreadScanner`) on calls and puts separately.
-2. **Scanner Merge**: If the Scanner's `BroadcastChannel` snapshot (`scannerTopRef.current`) matches the current `underlying` and `expiry`, the engine merges its IDs with the local results. Scanner results take priority; local results backfill any gaps up to 6 total.
-3. **Unique Ranking List (`uniqueTopSpreads`)**: A deduplicated and filtered view (one entry per buy strike, max 10 per type) where candidate spreads are filtered by `ATM P&L >= $50` and sorted by ROI descending to choose the best candidate per buy strike. Used for ranking, rotation, and entry decisions.
+1. **Self-Contained Local Scan**: The headless engine runs its own `scanTickers` (same algorithm as `RatioSpreadScanner`) on calls and puts separately, filtered by option type and ATM direction. Unlike the browser-based version, the headless engine does **not** merge results from the `RatioSpreadScanner` `BroadcastChannel` — it is fully self-contained.
+2. **Unique Ranking List (`uniqueTopSpreads`)**: A deduplicated and filtered view (one entry per buy strike, max 10 per type) where candidate spreads are filtered by `ATM P&L >= $50` and sorted by ROI descending to choose the best candidate per buy strike. Used for ranking, rotation, and entry decisions.
 
 ### B. Sorted Position Processing (Worst-First)
 
@@ -325,7 +324,7 @@ Spreads scanned from the options chain are evaluated for their potential At-The-
 
 ### F. Entry Logic
 
-New entries are opened from `topSpreads` (full candidate pool, not uniqueTopSpreads) after the exit pass:
+New entries are opened from `uniqueTopSpreads` (the deduplicated, ROI-ranked candidate list) after the exit pass:
 
 1. **Expiry Buffer Guard**: Skip if `minutesToExpiry < 5`.
 2. **Strike Uniqueness**: Block if buy or sell strike already active in `remaining` or `newEntries` (same type/underlying).
@@ -369,8 +368,8 @@ A UI-layer only feature — the Supabase database always stores original base va
 
 | Feature | PaperTrading | ATMExitTrading |
 |---|---|---|
-| Exit logic | Multi-stage partials (33%/50%) + rotation | 100% at ATM only |
-| Scanner source | Merges local scan + BroadcastChannel | Fully self-contained local scan only |
+| Exit logic | Dynamic ATM ratio-based scaling (25% of original qty partial exits) + rotation | 100% at ATM only |
+| Scanner source | Self-contained local scan (headless, no BroadcastChannel) | Fully self-contained local scan only |
 | Start/Stop | Manual toggle | Always-on (auto-starts on product load) |
 | Analytics | None | Bucketed `avg_pnl`, `avg_margin` per strike diff / sell qty range |
 | Supabase tables | `active_positions`, `trade_history` | `atm_exit_*` prefix tables (isolated) |

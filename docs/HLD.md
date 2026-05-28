@@ -93,7 +93,7 @@ Browser (React + Vite Dashboard)
 
 ### Paper Trading (Automated Lifecycle)
 
-1. Merge local scan candidates with real-time scanner broadcasts.
+1. Run a self-contained local scan for ratio spread candidates (the headless engine does not merge from the browser Scanner's BroadcastChannel).
    - **Execution-Realistic Entries**: New positions are entered at the Ask for long legs and Bid for short legs, capturing the true cost of crossing the spread.
 2. Evaluate active positions for rotation or ATM/expiry exit triggers every second to prevent slippage, while scanning and entering new positions on the 1-minute boundary.
     - **Liquidation-Based PnL**: Unrealized PnL is calculated based on immediate exit prices: long positions are valued at the current Bid (selling back) and short positions at the current Ask (buying back).
