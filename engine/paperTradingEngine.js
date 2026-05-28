@@ -298,7 +298,7 @@ export async function startPaperTradingEngine() {
         const { atmPnl, roi } = calculateAtmPnlAndRoi(spread);
         const passed = (atmPnl != null && atmPnl >= 50);
         if (!onlyExits) {
-          log(`  Candidate ${spread.buyLeg.type.toUpperCase()} ${spread.buyLeg.strike}/${spread.sellLeg.strike}: ATM P&L = $${atmPnl != null ? atmPnl.toFixed(2) : 'null'} (Min required: $70.00), ROI = ${roi != null ? roi.toFixed(2) : 0}%, Passed = ${passed}`);
+          log(`  Candidate ${spread.buyLeg.type.toUpperCase()} ${spread.buyLeg.strike}/${spread.sellLeg.strike}: ATM P&L = $${atmPnl != null ? atmPnl.toFixed(2) : 'null'} (Min required: $50.00), ROI = ${roi != null ? roi.toFixed(2) : 0}%, Passed = ${passed}`);
         }
         if (passed) {
           processedSpreads.push({ ...spread, atmPnl, roi });

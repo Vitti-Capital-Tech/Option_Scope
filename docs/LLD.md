@@ -225,7 +225,7 @@ Called every second by `setInterval`. Uses the `isEvaluating` mutex to prevent r
 **Decoupled Scans (`onlyExits` flag):**
 
 * **Exit Evaluation (every 1 second)**: The engine runs `evaluateStrategy(true)` (Exit-Only) on intermediate seconds. It iterates over active positions, calculates real-time liquidation value P&L and fees, and checks exit triggers (ATM, expiry, leg swaps, rotations) against streaming WebSocket ticker quotes and polled spot prices. If no exits occur, it does not query or write to Supabase.
-* **Full Evaluation (every minute boundary)**: The engine runs `evaluateStrategy(false)` (Full Run) when a new clock-minute crosses (`currentMinute > lastMinute` or on startup). In addition to checking exits, it scans for new spread candidates, filters them by ATM P&L >= $70, sorts them to pick the best ROI candidate per buy strike, checks DB-level count/strike restrictions, and inserts new positions into Supabase.
+* **Full Evaluation (every minute boundary)**: The engine runs `evaluateStrategy(false)` (Full Run) when a new clock-minute crosses (`currentMinute > lastMinute` or on startup). In addition to checking exits, it scans for new spread candidates, filters them by ATM P&L >= $50, sorts them to pick the best ROI candidate per buy strike, checks DB-level count/strike restrictions, and inserts new positions into Supabase.
 
 * **Spot Price Staleness Guard**: If the polled spot price hasn't updated in 120 seconds (`120000` ms), the evaluation is skipped as a safety measure against dead pricing feeds.
 
@@ -235,7 +235,7 @@ Steps: A → B → C → D → E → F (detailed in sections below).
 
 1. **Local Scan**: Filters `latestTickerDataRef` by option type and ATM direction. Runs `scanTickers` (same algorithm as `RatioSpreadScanner`) on calls and puts separately.
 2. **Scanner Merge**: If the Scanner's `BroadcastChannel` snapshot (`scannerTopRef.current`) matches the current `underlying` and `expiry`, the engine merges its IDs with the local results. Scanner results take priority; local results backfill any gaps up to 6 total.
-3. **Unique Ranking List (`uniqueTopSpreads`)**: A deduplicated and filtered view (one entry per buy strike, max 10 per type) where candidate spreads are filtered by `ATM P&L >= $70` and sorted by ROI descending to choose the best candidate per buy strike. Used for ranking, rotation, and entry decisions.
+3. **Unique Ranking List (`uniqueTopSpreads`)**: A deduplicated and filtered view (one entry per buy strike, max 10 per type) where candidate spreads are filtered by `ATM P&L >= $50` and sorted by ROI descending to choose the best candidate per buy strike. Used for ranking, rotation, and entry decisions.
 
 ### B. Sorted Position Processing (Worst-First)
 
@@ -320,7 +320,7 @@ Spreads scanned from the options chain are evaluated for their potential At-The-
 1. **getTickerPrice**: Sourced using live quotes (bid for long leg, ask for short leg) with nearest-strike fallbacks.
 2. **ATM P&L Calculation**: `[(ATM_Bid - entryBuyPrice) - (OTM_Ask - entrySellPrice) × sellQty] × lotSize`.
 3. **ROI Calculation**: `(ATM_PnL / Margin) × 100`.
-4. **Gauntlet Filter**: Candidates with `ATM P&L < $70` are discarded.
+4. **Gauntlet Filter**: Candidates with `ATM P&L < $50` are discarded.
 5. **Selection**: For each unique buy strike, candidates are sorted by ROI descending, and the one with the highest ROI is chosen.
 
 ### F. Entry Logic
