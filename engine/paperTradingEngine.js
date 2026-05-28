@@ -401,8 +401,8 @@ export async function startPaperTradingEngine() {
 
           if (pos.buyLeg && pos.buyLeg.originalLotSize !== undefined && buyIntrinsic != null && sellIntrinsic != null && sellIntrinsic > 0) {
             const liveAtmRatio = parseFloat((Math.round((buyIntrinsic / sellIntrinsic) / 0.25) * 0.25).toFixed(2));
-            let maxAtmRatio = pos.buyLeg.maxAtmRatio ?? pos.buyLeg.entryAtmRatio;
             let currentLotSize = pos.buyLeg.lotSize;
+            let maxAtmRatio = Number((pos.sellQty / currentLotSize).toFixed(2));
             let entryFee = pos.entryFee || 0;
             let hasScaled = false;
             let partialExitsToRecord = [];
@@ -421,11 +421,11 @@ export async function startPaperTradingEngine() {
 
             let threshold = (checkpointAtmPnl * 0.25) + checkpointPnl;
 
-            // Scaling conditions: profitable AND PnL below trailing threshold AND ATM ratio (1:x) increased by >= 2
-            while (currentGrossPnl > 0 && currentGrossPnl <= threshold && maxAtmRatio !== null && maxAtmRatio <= liveAtmRatio - 2 && currentLotSize - 0.25 >= 0.5) {
+            // Scaling conditions: profitable AND PnL below trailing threshold AND ATM ratio (1:x) increased by >= 2 relative to position's ratio
+            while (currentGrossPnl > 0 && currentGrossPnl <= threshold && liveAtmRatio >= maxAtmRatio + 2 && currentLotSize - 0.25 >= 0.5) {
               const deltaBuyQty = 0.25;
 
-              log(`⚖️ SCALING: Position ${pos.id} (${pos.type.toUpperCase()}) - PnL: $${currentGrossPnl.toFixed(2)} <= Threshold: $${threshold.toFixed(2)}. ATM ratio (1:x) increased: Max ${maxAtmRatio} <= Live ${liveAtmRatio} - 2. Reducing buy lot size from ${currentLotSize} to ${currentLotSize - deltaBuyQty}.`);
+              log(`⚖️ SCALING: Position ${pos.id} (${pos.type.toUpperCase()}) - PnL: $${currentGrossPnl.toFixed(2)} <= Threshold: $${threshold.toFixed(2)}. ATM ratio (1:x) increased: Position Ratio ${maxAtmRatio.toFixed(2)} <= Live ${liveAtmRatio} - 2. Reducing buy lot size from ${currentLotSize} to ${currentLotSize - deltaBuyQty}.`);
 
               const partialGrossPnl = buyPriceDiff * deltaBuyQty;
               const partialExitFee = calculateFee(liveExitBuy, spotPrice, 1, deltaBuyQty);
@@ -466,7 +466,7 @@ export async function startPaperTradingEngine() {
                 realized_net_pnl: partialNetPnl,
                 exit_fee: partialExitFee,
                 total_fees: partialTotalFees,
-                exit_reason: `Partial Exit: Buy lot size reduced by ${deltaBuyQty.toFixed(2)} due to ATM ratio increase (Live Ratio: ${liveAtmRatio}, Max Ratio: ${maxAtmRatio})`,
+                exit_reason: `Partial Exit: Buy lot size reduced by ${deltaBuyQty.toFixed(2)} due to ATM ratio increase (Live Ratio: ${liveAtmRatio}, Position Ratio: ${maxAtmRatio.toFixed(2)})`,
                 is_partial: true
               });
 
@@ -479,8 +479,8 @@ export async function startPaperTradingEngine() {
 
               currentLotSize = Number((currentLotSize - 0.25).toFixed(2));
 
-              // Increment maxAtmRatio by 2 (raise the bar for next scaling step)
-              pos.buyLeg.maxAtmRatio = Number((maxAtmRatio + 2).toFixed(2));
+              // Update maxAtmRatio in the metadata to reflect the new ratio of the position
+              pos.buyLeg.maxAtmRatio = Number((pos.sellQty / currentLotSize).toFixed(2));
               maxAtmRatio = pos.buyLeg.maxAtmRatio;
 
               // Recalculate checkpoints & threshold for the next loop iteration
