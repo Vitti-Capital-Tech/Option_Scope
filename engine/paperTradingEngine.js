@@ -796,20 +796,36 @@ export async function startPaperTradingEngine() {
             const longExitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize);
             const longEntryFee = (pos.entryFee || 0) * (pos.buyLeg.lotSize / (pos.buyLeg.lotSize + (pos.sellQty * pos.sellLeg.lotSize)));
 
-            const deltaQty = target.sellQty - pos.sellQty;
+            // Apply $200,000 cap scaling to the target spread
+            const targetLotSize = target.buyLeg.lotSize || 1;
+            const targetSellLotSize = target.sellLeg.lotSize || targetLotSize;
+            let targetShortValue = spotPrice * target.sellQty * targetSellLotSize;
+
+            let adjustedTargetLotSize = targetLotSize;
+            let adjustedTargetSellQty = target.sellQty;
+            let swapScale = 1;
+
+            if (targetShortValue >= 200000) {
+              swapScale = 200000 / targetShortValue;
+              adjustedTargetLotSize = Number((targetLotSize * swapScale).toFixed(2));
+              adjustedTargetSellQty = Number((target.sellQty * swapScale).toFixed(2));
+              targetShortValue = 200000;
+            }
+
+            const deltaQty = adjustedTargetSellQty - pos.sellQty;
             let adjustedSellEntryPrice = pos.entrySellPrice;
             let shortAdjustmentFee = 0;
             let shortAdjustmentPnl = 0;
 
             if (deltaQty > 0) {
-              adjustedSellEntryPrice = ((pos.sellQty * pos.entrySellPrice) + (deltaQty * latestSell)) / target.sellQty;
+              adjustedSellEntryPrice = ((pos.sellQty * pos.entrySellPrice) + (deltaQty * latestSell)) / adjustedTargetSellQty;
               shortAdjustmentFee = calculateFee(latestSell, spotPrice, Math.abs(deltaQty), pos.sellLeg.lotSize);
             } else if (deltaQty < 0) {
               shortAdjustmentFee = calculateFee(latestSell, spotPrice, Math.abs(deltaQty), pos.sellLeg.lotSize);
               shortAdjustmentPnl = (pos.entrySellPrice - latestSell) * Math.abs(deltaQty) * pos.sellLeg.lotSize;
             }
 
-            const newLongEntryFee = calculateFee(target.buyPrice, spotPrice, 1, target.buyLeg.lotSize);
+            const newLongEntryFee = calculateFee(target.buyPrice, spotPrice, 1, adjustedTargetLotSize);
             const newActiveEntryFee = (pos.entryFee || 0) - longEntryFee + newLongEntryFee + shortAdjustmentFee;
 
             let newEntryAtmRatio = null;
@@ -827,25 +843,27 @@ export async function startPaperTradingEngine() {
             const tickerNewBuy = tickerData[target.buyLeg.symbol];
             const newBuyLeg = {
               ...target.buyLeg,
+              lotSize: adjustedTargetLotSize,
               entryIv: tickerNewBuy?.askIv ?? tickerNewBuy?.iv ?? null,
               entryAtmRatio: newEntryAtmRatio,
               entryBuyAtmPrice,
               entrySellAtmPrice,
               maxAtmRatio: newEntryAtmRatio,
-              originalLotSize: target.buyLeg.lotSize || 1
+              originalLotSize: adjustedTargetLotSize,
+              originalSellQty: target.sellQty
             };
 
             const swappedPos = {
               ...pos,
               buyLeg: newBuyLeg,
-              sellQty: target.sellQty,
+              sellQty: adjustedTargetSellQty,
               entryBuyPrice: target.buyPrice,
               entrySellPrice: adjustedSellEntryPrice,
               entryFee: newActiveEntryFee,
               accumulatedSellPnl: (pos.accumulatedSellPnl || 0) + (longPnl - longExitFee) + shortAdjustmentPnl,
               entryTime: new Date(),
               entrySpotPrice: spotPrice,
-              margin: calcMargin(target.buyPrice, target.buyLeg.lotSize, spotPrice, target.sellQty, target.sellLeg.lotSize),
+              margin: calcMargin(target.buyPrice, adjustedTargetLotSize, spotPrice, adjustedTargetSellQty, target.sellLeg.lotSize),
             };
             remaining.push(swappedPos);
 
@@ -854,7 +872,7 @@ export async function startPaperTradingEngine() {
               await supabase.from('active_positions').update({
                 buy_leg: JSON.stringify(newBuyLeg),
                 buy_strike: newBuyLeg.strike,
-                sell_qty: target.sellQty,
+                sell_qty: adjustedTargetSellQty,
                 entry_buy_price: target.buyPrice,
                 entry_sell_price: adjustedSellEntryPrice,
                 entry_fee: newActiveEntryFee,
@@ -961,7 +979,8 @@ export async function startPaperTradingEngine() {
             entryBuyAtmPrice: buyIntrinsic,
             entrySellAtmPrice: sellIntrinsic,
             maxAtmRatio: entryAtmRatio,
-            originalLotSize: adjustedLotSize
+            originalLotSize: adjustedLotSize,
+            originalSellQty: spread.sellQty
           };
           const sellLegWithIv = { ...spread.sellLeg, entryIv: entrySellIv };
 

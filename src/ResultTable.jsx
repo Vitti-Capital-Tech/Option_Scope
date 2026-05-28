@@ -194,6 +194,8 @@ export default function ResultTable({
                       lotSize: adjustedLotSize
                     },
                     sellQty: adjustedSellQty,
+                    originalSellQty: r.sellQty,
+                    originalLotSize: lotSize,
                     netPremium: (r.netPremium * scale).toFixed(2),
                     buyIntrinsic,
                     sellIntrinsic,
@@ -283,6 +285,11 @@ export default function ResultTable({
                             <span className='scanner-buy'>{bestRow.buyLeg.lotSize}</span>/
                             <span className='scanner-sell'>{bestRow.sellQty}</span>
                           </div>
+                          {bestRow.originalSellQty !== undefined && bestRow.originalLotSize !== undefined && (
+                            <div style={{ fontSize: '9px', color: 'var(--text-muted)', fontWeight: 'normal', marginTop: 2 }}>
+                              (1:{(Math.round((bestRow.originalSellQty / bestRow.originalLotSize) * 4) / 4).toFixed(2)})
+                            </div>
+                          )}
                         </td>
                         <td>
                           <div className={parseFloat(bestRow.netPremium) < 0 ? 'scanner-buy' : 'scanner-sell'} style={{ fontWeight: 700 }}>
@@ -355,6 +362,11 @@ export default function ResultTable({
                                 <span className='scanner-buy'>{r.buyLeg.lotSize}</span>/
                                 <span className='scanner-sell'>{r.sellQty}</span>
                               </div>
+                              {r.originalSellQty !== undefined && r.originalLotSize !== undefined && (
+                                <div style={{ fontSize: '9px', color: 'var(--text-muted)', fontWeight: 'normal', marginTop: 2 }}>
+                                  (1:{(Math.round((r.originalSellQty / r.originalLotSize) * 4) / 4).toFixed(2)})
+                                </div>
+                              )}
                             </td>
                             <td>
                               <div className={parseFloat(r.netPremium) < 0 ? 'scanner-buy' : 'scanner-sell'} style={{ fontWeight: 700 }}>

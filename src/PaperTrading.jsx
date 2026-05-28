@@ -683,12 +683,19 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     else if (r.includes('33%') || r.includes('34%')) mult = 3;
 
     const sellQty = t.sellQty || 0;
-    const originalSell = Math.round((sellQty * mult) * 4) / 4;
+    const origLot = t.buyLeg?.originalLotSize || t.buyLeg?.lotSize || 1;
+    
+    let uncappedSellQty = t.buyLeg?.originalSellQty !== undefined
+      ? t.buyLeg.originalSellQty
+      : sellQty / origLot;
+
+    const originalSell = Math.round((uncappedSellQty * mult) * 4) / 4;
     let simSell = originalSell;
     if (extraCreditMode && t.entrySellPrice > 0) {
       const extraLots = extraCreditAmount / t.entrySellPrice;
-      simSell += (Math.round(extraLots / 0.25) * 0.25) * mult;
+      simSell += ((Math.round(extraLots / 0.25) * 0.25) / origLot) * mult;
     }
+    simSell = Math.round(simSell * 4) / 4;
     return `1:${simSell.toFixed(2)}`;
   };
 
@@ -1030,6 +1037,17 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                       const displaySellQty = extraCreditMode && p.entrySellPrice > 0
                         ? p.sellQty + (Math.round((extraCreditAmount / p.entrySellPrice) / 0.25) * 0.25)
                         : p.sellQty;
+
+                      const origLot = p.buyLeg?.originalLotSize || p.buyLeg?.lotSize || 1;
+                      const rawOrigSellQty = p.buyLeg?.originalSellQty !== undefined
+                        ? (extraCreditMode && p.entrySellPrice > 0
+                            ? p.buyLeg.originalSellQty + (Math.round((extraCreditAmount / p.entrySellPrice) / 0.25) * 0.25) / (p.buyLeg.originalLotSize || 1)
+                            : p.buyLeg.originalSellQty)
+                        : (extraCreditMode && p.entrySellPrice > 0
+                            ? (p.sellQty + (Math.round((extraCreditAmount / p.entrySellPrice) / 0.25) * 0.25)) / origLot
+                            : p.sellQty / origLot);
+                      const displayOrigSellQty = Math.round(rawOrigSellQty * 4) / 4;
+
                       return (
                         <tr key={p.id} className={`pt-row-${p.type}`}>
                           <td>
@@ -1037,6 +1055,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                               <span className={`pt-type-badge ${p.type}`}>{p.type.toUpperCase()}</span>
                               <span style={{ fontSize: '10px', color: extraCreditMode ? 'var(--accent)' : 'var(--text-dim)', fontWeight: 600 }}>
                                 {p.buyLeg.lotSize.toFixed(2)}:{displaySellQty.toFixed(2)}
+                              </span>
+                              <span style={{ fontSize: '9px', color: 'var(--text-dim)', opacity: 0.8 }}>
+                                (Orig 1:{displayOrigSellQty.toFixed(2)})
                               </span>
                             </div>
                           </td>
@@ -1210,6 +1231,16 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                         ? t.sellQty + (Math.round((extraCreditAmount / t.entrySellPrice) / 0.25) * 0.25)
                         : t.sellQty;
 
+                      const origLot = t.buyLeg?.originalLotSize || t.buyLeg?.lotSize || 1;
+                      const rawOrigSellQty = t.buyLeg?.originalSellQty !== undefined
+                        ? (extraCreditMode && t.entrySellPrice > 0
+                            ? t.buyLeg.originalSellQty + (Math.round((extraCreditAmount / t.entrySellPrice) / 0.25) * 0.25) / (t.buyLeg.originalLotSize || 1)
+                            : t.buyLeg.originalSellQty)
+                        : (extraCreditMode && t.entrySellPrice > 0
+                            ? (t.sellQty + (Math.round((extraCreditAmount / t.entrySellPrice) / 0.25) * 0.25)) / origLot
+                            : t.sellQty / origLot);
+                      const displayOrigSellQty = Math.round(rawOrigSellQty * 4) / 4;
+
                       return (
                         <tr key={i}>
                           <td style={{ color: 'var(--text-dim)', fontSize: '11px', whiteSpace: 'nowrap' }}>{formatDateTime(t.entryTime)}</td>
@@ -1228,6 +1259,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                               </span>
                               <span style={{ fontSize: '10px', color: extraCreditMode ? 'var(--accent)' : 'var(--text-dim)', fontWeight: 600 }}>
                                 {t.buyLeg.lotSize.toFixed(2)}:{displaySellQty.toFixed(2)}
+                              </span>
+                              <span style={{ fontSize: '9px', color: 'var(--text-dim)', opacity: 0.8 }}>
+                                (Orig 1:{displayOrigSellQty.toFixed(2)})
                               </span>
                             </div>
                           </td>
