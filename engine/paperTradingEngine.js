@@ -410,8 +410,8 @@ export async function startPaperTradingEngine() {
             const buyPriceDiff = (liveExitBuy != null && pos.entryBuyPrice != null) ? (liveExitBuy - pos.entryBuyPrice) : 0;
             const sellPriceDiff = (liveExitSell != null && pos.entrySellPrice != null) ? (liveExitSell - pos.entrySellPrice) : 0;
 
-            let checkpointPnl = pos.buyLeg.lastCheckpointPnl !== undefined 
-              ? pos.buyLeg.lastCheckpointPnl 
+            let checkpointPnl = pos.buyLeg.lastCheckpointPnl !== undefined
+              ? pos.buyLeg.lastCheckpointPnl
               : (pos.entryBuyPrice - pos.entrySellPrice * pos.sellQty) * currentLotSize;
             let checkpointAtmPnl = pos.buyLeg.lastCheckpointAtmPnl !== undefined
               ? pos.buyLeg.lastCheckpointAtmPnl
@@ -421,7 +421,7 @@ export async function startPaperTradingEngine() {
             let currentGrossPnl = (buyPriceDiff * currentLotSize) - (sellPriceDiff * pos.sellQty * (pos.sellLeg.lotSize || 1)) + (pos.accumulatedSellPnl || 0);
 
             while (currentGrossPnl <= threshold) {
-              if (maxAtmRatio !== null && liveAtmRatio >= maxAtmRatio) {
+              if (maxAtmRatio !== null && liveAtmRatio > maxAtmRatio) {
                 if (currentLotSize - 0.25 >= 0.5) {
                   const deltaBuyQty = 0.25;
 
@@ -472,13 +472,13 @@ export async function startPaperTradingEngine() {
 
                   // Update checkpoints and loop variables
                   entryFee = Math.max(0, entryFee - partialEntryFee);
-                  
+
                   // Save checkpoint values on the buyLeg object
                   pos.buyLeg.lastCheckpointPnl = currentGrossPnl;
                   pos.buyLeg.lastCheckpointAtmPnl = ((buyIntrinsic - pos.entryBuyPrice) - (sellIntrinsic - pos.entrySellPrice) * pos.sellQty) * currentLotSize;
-                  
+
                   currentLotSize = Number((currentLotSize - 0.25).toFixed(2));
-                  
+
                   if (pos.buyLeg.entryAtmRatio != null) {
                     pos.buyLeg.entryAtmRatio = Number((pos.buyLeg.entryAtmRatio - 2).toFixed(2));
                   }
