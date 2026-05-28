@@ -339,13 +339,9 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
 
           const deltaDiff = buyDN - sellQty * sellDN;
 
-
           const netPrem = buyPrice - sellQty * sellPrice;
 
-          // Filter by Net Premium: Enforce a symmetric band [-max, +max]
-          // If maxNetPremium is 20, we allow netPremium from -20 (max credit) to +20 (max debit).
-          const maxNet = Math.abs(config.maxNetPremium);
-          if (netPrem < -maxNet) continue;
+          if (netPrem > config.maxNetPremium) continue;
 
           validPairs.push({
             buyLeg,

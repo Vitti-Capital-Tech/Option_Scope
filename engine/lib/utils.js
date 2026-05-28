@@ -117,8 +117,8 @@ export function scanTickers(tickers, config, spotPrice) {
       if (sellQty > (config.maxSellQty || 10)) continue;
 
       const netPrem = buyPrice - sellQty * sellPrice;
-      const maxNet = Math.abs(config.maxNetPremium);
-      if (netPrem < -maxNet) continue;
+
+      if (netPrem > config.maxNetPremium) continue;
 
       validPairs.push({
         buyLeg, sellLeg, strikeDiff, sellQty,
