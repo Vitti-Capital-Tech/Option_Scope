@@ -8,11 +8,37 @@ import ATMExitTrading from './ATMExitTrading.jsx'
 import { useTabSync } from './useTabSync.js'
 
 function Root() {
-  const [page, setPage] = useState('charts');
+  const [page, setPage] = useState(() => {
+    const path = window.location.pathname.replace(/^\//, '') || 'charts';
+    return ['charts', 'scanner', 'trading', 'atm-exit'].includes(path) ? path : 'charts';
+  });
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
 
-  // Cross-tab sync: page navigation + theme stay in sync across tabs
+  // Cross-tab sync: theme stays in sync across tabs
   const { broadcast } = useTabSync({ page, setPage, theme, setTheme });
+
+  // Sync URL path with active page state
+  useEffect(() => {
+    const currentPath = window.location.pathname.replace(/^\//, '');
+    if (currentPath !== page) {
+      window.history.pushState(null, '', '/' + page);
+    }
+  }, [page]);
+
+  // Handle browser back/forward buttons
+  useEffect(() => {
+    const handlePopState = () => {
+      const path = window.location.pathname.replace(/^\//, '') || 'charts';
+      const validPages = ['charts', 'scanner', 'trading', 'atm-exit'];
+      if (validPages.includes(path)) {
+        setPage(path);
+      } else {
+        setPage('charts');
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
 
   useEffect(() => {
     if (theme === 'light') {

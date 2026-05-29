@@ -13,7 +13,7 @@ This document is the authoritative implementation reference for every module, en
 | `RatioSpreadScanner.jsx` | Standalone option-chain scanner. Computes premium-to-delta-notional ratio deviation pairs, publishes top-3 results via `BroadcastChannel` and `localStorage`. |
 | `PaperTrading.jsx` | React UI Dashboard for Paper Trading. Reads `active_positions`, `trade_history`, and heartbeat from Supabase. |
 | `ATMExitTrading.jsx` | React UI Dashboard for ATM Exit Trading. Reads bucketed analytics and heartbeat from Supabase. |
-| `engine/paperTradingEngine.js` | Headless Node.js engine. Handles entries, full ATM exits, leg-swaps, rotation, IV tracking, fee calculations, and Supabase persistence. |
+| `engine/paperTradingEngine.js` | Headless Node.js engine. Handles entries, full ATM exits, rotation, IV tracking, fee calculations, and Supabase persistence. |
 | `engine/atmExitEngine.js` | Headless Node.js engine. Self-contained scanner, single ATM exit rule, bucketed analytics aggregation, and separate Supabase tables. |
 | `ResultTable.jsx` | Reusable grouped table renderer for ratio spread candidates. |
 | `api.js` | Network abstraction: Delta REST calls, `createTickerStream` (WS with auto-reconnect), `createWS` (raw WS), `getTickers` (REST backfill). |
@@ -85,7 +85,7 @@ Converts Delta's raw decimal fractions to display percentages and screens invali
 
 ### ATM Ratio & Price Tracking in PaperTrading
 
-- **Entry ATM Metrics**: Sourced using the ATM option chain quotes (`buyIntrinsic` and `sellIntrinsic` at ATM strike) during candidate selection or leg swap updates. Stored as `entryAtmRatio`, `entryBuyAtmPrice`, and `entrySellAtmPrice` inside the `buyLeg` JSON metadata within `active_positions`.
+- **Entry ATM Metrics**: Sourced using the ATM option chain quotes (`buyIntrinsic` and `sellIntrinsic` at ATM strike) during candidate selection. Stored as `entryAtmRatio`, `entryBuyAtmPrice`, and `entrySellAtmPrice` inside the `buyLeg` JSON metadata within `active_positions`.
 - **Exit ATM Metrics**: Captured similarly using live quotes at the moment of exit (both full and partial exits). Saved as `exitAtmRatio`, `exitBuyAtmPrice`, and `exitSellAtmPrice` inside the `buyLeg` JSON metadata within `trade_history`.
 - **UI Table Rendering**: `PaperTrading.jsx` reads these values from the parsed `buyLeg` JSON object of each historical trade. Renders **Entry ATM Ratio (Prices)** and **Exit ATM Ratio (Prices)** columns displaying the ratio and underlying intrinsic prices in stacked formats (e.g. `0.75` and `(150.00 / 200.00)`). Shows `—` for legacy database rows.
 - **CSV Export Support**: Included as `Entry ATM Ratio`, `Entry ATM Buy Price`, `Entry ATM Sell Price`, `Exit ATM Ratio`, `Exit ATM Buy Price`, and `Exit ATM Sell Price` columns in the exported CSV.
@@ -222,9 +222,7 @@ Applied to both engines using a fixed leverage of 200 and capping the short valu
 
 Called every second by `setInterval`. Uses the `isEvaluating` mutex to prevent re-entrant execution.
 
-**Decoupled Scans (`onlyExits` flag):**
-
-* **Exit Evaluation (every 1 second)**: The engine runs `evaluateStrategy(true)` (Exit-Only) on intermediate seconds. It iterates over active positions, calculates real-time liquidation value P&L and fees, and checks exit triggers (ATM, expiry, leg swaps, rotations) against streaming WebSocket ticker quotes and polled spot prices. If no exits occur, it does not query or write to Supabase.
+* **Exit Evaluation (every 1 second)**: The engine runs `evaluateStrategy(true)` (Exit-Only) on intermediate seconds. It iterates over active positions, calculates real-time liquidation value P&L and fees, and checks exit triggers (ATM, expiry, rotations) against streaming WebSocket ticker quotes and polled spot prices. If no exits occur, it does not query or write to Supabase.
 * **Full Evaluation (every minute boundary)**: The engine runs `evaluateStrategy(false)` (Full Run) when a new clock-minute crosses (`currentMinute > lastMinute` or on startup). In addition to checking exits, it scans for new spread candidates, filters them by ATM P&L >= $50, sorts them to pick the best ROI candidate per buy strike, checks DB-level count/strike restrictions, and inserts new positions into Supabase.
 
 * **Spot Price Staleness Guard**: If the polled spot price hasn't updated in 120 seconds (`120000` ms), the evaluation is skipped as a safety measure against dead pricing feeds.
@@ -244,13 +242,13 @@ All active positions are sorted by descending `|buyStrike - spotPrice|` (farthes
 
 For each active position, before evaluating its full exit triggers (such as expiry or ATM exit), the engine checks whether the position qualifies for a partial scale-down based on profitability, trailing PnL threshold, and ATM ratio drift:
 
-1. **Profitability Guard**: The position's unrealized `currentGrossPnl` (including accumulated sell PnL from leg swaps) must be **greater than zero**. This prevents scaling from triggering immediately at entry when PnL is zero.
+1. **Profitability Guard**: The position's unrealized `currentGrossPnl` (including accumulated sell PnL) must be **greater than zero**. This prevents scaling from triggering immediately at entry when PnL is zero.
 2. **Trailing Threshold Check**: Checkpoint values are recovered from `pos.buyLeg` metadata (or initialized from entry values on first evaluation). The trailing threshold is `checkpointAtmPnl * 0.25 + checkpointPnl`. The condition `currentGrossPnl <= threshold` must be met, meaning the position's PnL has deteriorated below the trailing stop level.
 3. **Hypothetical Reduction & Recalculation**: The engine hypothetically reduces the current long lot size by `deltaBuyQty` (25% of original long quantity): `hypotheticalLotSize = currentLotSize - deltaBuyQty`. It then recalculates the position's lot ratio under this hypothetical reduction: `recalculatedRatio = pos.sellQty / hypotheticalLotSize`.
 4. **ATM Ratio Comparison (1:x comparison)**: The live ATM ratio (`liveAtmRatio`, computed as `buyIntrinsic / sellIntrinsic` rounded to nearest `0.25`) is compared to the `recalculatedRatio`. The condition is: **`liveAtmRatio >= recalculatedRatio + 2`**. This means the market's ATM ratio must be at least `2` points higher than the recalculated position ratio before the exit is triggered.
 5. **Floor Limit**: The hypothetical long lot size must be at or above the fixed floor limit of `0.5` (`hypotheticalLotSize >= 0.5`).
 6. **Execution**: If all conditions are met (while loop):
-   - Record a **partial exit** to `trade_history` with `is_partial: true`, the closed buy lot size as `deltaBuyQty`, and the closed sell lot size and sell quantity as `0`.
+   - Record a **partial exit** to `trade_history` with `is_partial: true`, the closed buy lot size as `deltaBuyQty`, and the closed sell lot size and sell quantity as `0`. The `exit_reason` is recorded in a concise format containing the exact initial and live ATM buy/sell prices, live and recalculated ratios, and realized vs remaining unrealized net PnL.
    - Update `pos.buyLeg.lotSize = hypotheticalLotSize`.
    - Update `pos.buyLeg.maxAtmRatio` in metadata to reflect the new ratio of the position (`recalculatedRatio`).
    - `entryAtmRatio` is **preserved** (never modified — it is a historical entry-time value).
@@ -278,40 +276,24 @@ Evaluated only if no expiry exit was triggered.
 - Condition: Spot price crosses the buy strike (`spotPrice >= buyStrike` for calls, or `spotPrice <= buyStrike` for puts).
 - Action: 100% exit, `exitReason = 'Full Exit @ ATM'`.
 
-**Priority 4 — Rotation & Leg Swap (Two-Stage Evaluation):**
+**Priority 4 — Rotation (Lost Top 3 Only):**
 
-Evaluated only if no exit was triggered, the position's expiry matches `selExpiry`, and `uniqueTopSpreads` is non-empty. This is evaluated in two sequential stages:
-
-1. **Stage 1: Leg Swap Upgrade (All Positions)**:
-   - Regardless of whether the position is in the Top 3 (`inTop3` is true or false), the engine scans `uniqueTopSpreads` for a candidate of the same type that has the **exact same sell strike** as the active position, but a **better buy strike** (closer to ATM).
-   - The candidate must pass all safety guards:
-     - No buy/sell strike collision with other active positions (excluding this position's own strikes).
-     - Has not been reserved by a prior swap/rotation this cycle.
-     - The current spot has moved **>= 0.5%** (in either direction) from the current position's `entrySpotPrice`.
-   - If a valid Leg Swap candidate is found, a Leg Swap is approved (`exitReason = 'Leg Swap: Buy [current] -> [target]'`).
-
-2. **Stage 2: Standard Rotation Fallback (Lost Top 3 Only)**:
-   - If no Leg Swap was triggered, and the position is **not** in the Top 3 unique candidate buy strikes (`inTop3 === false`), it is a candidate for displacement.
-   - The engine finds a `bestTarget` in `uniqueTopSpreads` matching the same option type that passes all safety guards (strike conflicts, reservation, and 0.5% spot movement).
-   - If the target is directionally closer to ATM, the exit is approved (`exitReason = 'Lost Top 3 and Rank 1 better target available ([targetStrike])'`).
+Evaluated only if no exit was triggered, the position's expiry matches `selExpiry`, and `uniqueTopSpreads` is non-empty.
+- If the position is **not** in the Top 3 unique candidate buy strikes (`inTop3 === false`), it is a candidate for displacement.
+- The engine finds a `bestTarget` in `uniqueTopSpreads` matching the same option type that passes all safety guards (strike conflicts, reservation, and 0.5% spot movement).
+- If the target is directionally closer to ATM, the exit is approved (`exitReason = 'Lost Top 3 and Rank 1 better target available ([targetStrike])'`).
 
 **Threshold Guard (Rotation Only):**
 
-Rotations (excluding Leg Swaps) are additionally gated by the portfolio depth requirement:
+Rotations are gated by the portfolio depth requirement:
 
 - Calls can only rotate if `activeCallsCount >= 3`.
 - Puts can only rotate if `activePutsCount >= 3`.
 - Maximum `MAX_ROTATIONS_PER_CYCLE = 3` total rotations per evaluation cycle.
 
-### D. Leg-Swap Optimization
+### D. Full Portfolio Rotation
 
-When a Leg Swap is executed (either in Stage 1 or Stage 2):
-
-1. Realizes P&L only on the Long leg (closed at current bid).
-2. Adjusts sell quantity using `deltaQty = targetSellQty - currentSellQty`.
-3. Recalculates `entrySellPrice` as a weighted average: `(oldQty × oldPrice + deltaQty × currentPrice) / newQty`.
-4. Fees from the long exit and short adjustment are consolidated into `accumulatedSellPnl` and `entryFee` of the surviving position.
-5. The mutated position is written back to Supabase via an `UPDATE` (not a delete/insert cycle).
+When a standard rotation is executed, the engine performs a full exit (both legs) of the active position and deletes it from Supabase, allowing a new position to be opened during the subsequent entries scan on the minute boundary.
 
 ### E. ATM P&L & ROI Candidate Filtering
 
@@ -373,7 +355,7 @@ A UI-layer only feature — the Supabase database always stores original base va
 | Start/Stop | Manual toggle | Always-on (auto-starts on product load) |
 | Analytics | None | Bucketed `avg_pnl`, `avg_margin` per strike diff / sell qty range |
 | Supabase tables | `active_positions`, `trade_history` | `atm_exit_*` prefix tables (isolated) |
-| Leg swap | Yes | No |
+| Leg swap | No | No |
 
 ### Evaluation Loop
 
