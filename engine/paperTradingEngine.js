@@ -445,18 +445,13 @@ export async function startPaperTradingEngine() {
                 exitAtmRatio: liveAtmRatio
               };
 
-              const initBuy = pos.buyLeg.entryBuyAtmPrice != null ? pos.buyLeg.entryBuyAtmPrice.toFixed(1) : 'N/A';
-              const initSell = pos.buyLeg.entrySellAtmPrice != null ? pos.buyLeg.entrySellAtmPrice.toFixed(1) : 'N/A';
-              const liveBuy = buyIntrinsic != null ? buyIntrinsic.toFixed(1) : 'N/A';
-              const liveSell = sellIntrinsic != null ? sellIntrinsic.toFixed(1) : 'N/A';
-
               const remainingGrossPnl = (buyPriceDiff * hypotheticalLotSize) - (sellPriceDiff * pos.sellQty * (pos.sellLeg.lotSize || 1)) + (pos.accumulatedSellPnl || 0);
               const remainingExitFee = calculateFee(liveExitBuy, spotPrice, 1, hypotheticalLotSize) +
                 calculateFee(liveExitSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize || 1);
               const remainingEntryFee = Math.max(0, entryFee - partialEntryFee);
               const remainingNetPnl = remainingGrossPnl - (remainingEntryFee + remainingExitFee);
 
-              const partialExitReason = `PE Qty:${deltaBuyQty.toFixed(2)} | ATM Init:${initBuy}/${initSell} Live:${liveBuy}/${liveSell} Ratio:${liveAtmRatio.toFixed(2)}/${recalculatedRatio.toFixed(2)} | PnL Realized:$${partialNetPnl.toFixed(1)} Unrealized:$${remainingNetPnl.toFixed(1)}`;
+              const partialExitReason = `Partial Exit: Entry ATM PnL: ${pos.buyLeg.lastCheckpointAtmPnl.toFixed(2)} | Live ATM Ratio: ${liveAtmRatio.toFixed(2)} | Recalculated Ratio: ${recalculatedRatio.toFixed(2)} | PnL Realized:$${partialNetPnl.toFixed(2)} | Unrealized:$${remainingNetPnl.toFixed(2)}`;
 
               partialExitsToRecord.push({
                 trade_id: partialTradeId,
