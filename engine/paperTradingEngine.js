@@ -6,7 +6,6 @@
  * strategy every minute, and writes all state to Supabase.
  *
  * Features preserved from browser version:
- * - Leg swap optimization
  * - Rotation with worst-first, 1-for-1 reservation
  * - 0.5% spot scaling guard
  * - DB-level count/strike guards
@@ -446,6 +445,19 @@ export async function startPaperTradingEngine() {
                 exitAtmRatio: liveAtmRatio
               };
 
+              const initBuy = pos.buyLeg.entryBuyAtmPrice != null ? pos.buyLeg.entryBuyAtmPrice.toFixed(1) : 'N/A';
+              const initSell = pos.buyLeg.entrySellAtmPrice != null ? pos.buyLeg.entrySellAtmPrice.toFixed(1) : 'N/A';
+              const liveBuy = buyIntrinsic != null ? buyIntrinsic.toFixed(1) : 'N/A';
+              const liveSell = sellIntrinsic != null ? sellIntrinsic.toFixed(1) : 'N/A';
+
+              const remainingGrossPnl = (buyPriceDiff * hypotheticalLotSize) - (sellPriceDiff * pos.sellQty * (pos.sellLeg.lotSize || 1)) + (pos.accumulatedSellPnl || 0);
+              const remainingExitFee = calculateFee(liveExitBuy, spotPrice, 1, hypotheticalLotSize) +
+                calculateFee(liveExitSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize || 1);
+              const remainingEntryFee = Math.max(0, entryFee - partialEntryFee);
+              const remainingNetPnl = remainingGrossPnl - (remainingEntryFee + remainingExitFee);
+
+              const partialExitReason = `PE Qty:${deltaBuyQty.toFixed(2)} | ATM Init:${initBuy}/${initSell} Live:${liveBuy}/${liveSell} Ratio:${liveAtmRatio.toFixed(2)}/${recalculatedRatio.toFixed(2)} | PnL Realized:$${partialNetPnl.toFixed(1)} Unrealized:$${remainingNetPnl.toFixed(1)}`;
+
               partialExitsToRecord.push({
                 trade_id: partialTradeId,
                 underlying: pos.underlying,
@@ -468,7 +480,7 @@ export async function startPaperTradingEngine() {
                 realized_net_pnl: partialNetPnl,
                 exit_fee: partialExitFee,
                 total_fees: partialTotalFees,
-                exit_reason: `Partial Exit: Buy lot size reduced by ${deltaBuyQty.toFixed(2)} due to ATM ratio increase (Live Ratio: ${liveAtmRatio}, Recalculated Position Ratio: ${recalculatedRatio.toFixed(2)})`,
+                exit_reason: partialExitReason,
                 is_partial: true
               });
 
@@ -578,53 +590,8 @@ export async function startPaperTradingEngine() {
             .filter(p => p.id !== pos.id && p.underlying === underlying && p.type === pos.type)
             .map(p => Number(p.sellLeg.strike));
 
-          // 1. Check for Leg Swap (same sell strike, better buy strike)
-          const bestSwapTarget = uniqueTopSpreads.filter(s => s.buyLeg.type === pos.type).find(s => {
-            const bS = Number(s.buyLeg.strike);
-            const sS = Number(s.sellLeg.strike);
-
-            // Must match the exact sell strike of the active position
-            if (sS !== Number(pos.sellLeg.strike)) return false;
-
-            // Check buy/sell conflicts
-            const buyConflict = otherActiveBuyStrikes.includes(bS);
-            const sellConflict = otherActiveSellStrikes.includes(sS);
-            if (buyConflict || sellConflict || reservedTargets.has(bS) || reservedSellTargets.has(sS)) return false;
-
-            // Must be a better buy strike (closer to ATM)
-            const currentStrike = Number(pos.buyLeg.strike);
-            const isPut = pos.type === 'put';
-            const isBetter = isPut ? (bS > currentStrike) : (bS < currentStrike);
-            if (!isBetter) return false;
-
-            // Spot step movement guard
-            const oldSpotBase = pos.entrySpotPrice || pos.entryBuyPrice || spotPrice;
-            const oldThresh = Math.round((oldSpotBase * 0.005) / 100) * 100;
-            const spotStepValid = Math.abs(spotPrice - oldSpotBase) >= oldThresh;
-            if (!spotStepValid) {
-              if (!onlyExits) {
-                log(`  Leg Swap candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: spot step invalid (Spot: ${spotPrice}, Entry Spot Base: ${oldSpotBase}, Required movement: ${oldThresh})`);
-              }
-              return false;
-            }
-
-            return true;
-          });
-
-          if (bestSwapTarget) {
-            const targetStrike = Number(bestSwapTarget.buyLeg.strike);
-            const targetSellStrike = Number(bestSwapTarget.sellLeg.strike);
-            const currentStrike = Number(pos.buyLeg.strike);
-            if (!onlyExits) {
-              log(`  Leg Swap target found: ${bestSwapTarget.buyLeg.type.toUpperCase()} ${targetStrike}/${targetSellStrike}. Upgrading buy strike from ${currentStrike}`);
-            }
-            pos._pendingLegSwap = bestSwapTarget;
-            shouldExit = true;
-            exitReason = `Leg Swap: Buy ${currentStrike} -> ${targetStrike}`;
-            reservedTargets.add(targetStrike);
-            reservedSellTargets.add(targetSellStrike);
-          } else if (!inTop3) {
-            // 2. Fallback to standard rotation (only for positions not in Top 3)
+          if (!inTop3) {
+            // Fallback to standard rotation (only for positions not in Top 3)
             const bestTarget = uniqueTopSpreads.filter(s => s.buyLeg.type === pos.type).find(s => {
               const bS = Number(s.buyLeg.strike);
               const sS = Number(s.sellLeg.strike);
@@ -657,15 +624,8 @@ export async function startPaperTradingEngine() {
               }
 
               if (isBetter) {
-                const isSellStrikeMatch = Number(bestTarget.sellLeg.strike) === Number(pos.sellLeg.strike);
-                if (isSellStrikeMatch) {
-                  pos._pendingLegSwap = bestTarget;
-                  shouldExit = true;
-                  exitReason = `Leg Swap: Buy ${currentStrike} -> ${targetStrike}`;
-                } else {
-                  shouldExit = true;
-                  exitReason = `Lost Top 3 and Rank 1 better target available (${targetStrike})`;
-                }
+                shouldExit = true;
+                exitReason = `Lost Top 3 and Rank 1 better target available (${targetStrike})`;
                 reservedTargets.add(targetStrike);
                 reservedSellTargets.add(targetSellStrike);
               }
@@ -708,29 +668,13 @@ export async function startPaperTradingEngine() {
             continue;
           }
 
-          let finalGrossPnl = grossPnl;
-          let finalExitFee = exitFee;
-          let finalEntryFee = pos.entryFee || 0;
-          let finalTotalFees = totalFees;
-          let finalNetPnl = netPnl;
-          let finalSellQty = pos.sellQty;
-          let finalSellLeg = { ...pos.sellLeg, exitIv: latestSellIv };
-
-          const isLegSwap = exitReason.startsWith('Leg Swap');
-          if (isLegSwap) {
-            // Gross PNL based on change in buyQty (only long leg)
-            finalGrossPnl = (latestBuy - pos.entryBuyPrice) * pos.buyLeg.lotSize;
-            // Exit fee based on long leg exit only
-            finalExitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize);
-            // Entry fee apportioned to long leg
-            const longEntryFee = (pos.entryFee || 0) * (pos.buyLeg.lotSize / (pos.buyLeg.lotSize + (pos.sellQty * pos.sellLeg.lotSize)));
-            finalEntryFee = longEntryFee;
-            finalTotalFees = finalEntryFee + finalExitFee;
-            finalNetPnl = finalGrossPnl - finalTotalFees;
-            // sellQty should be 0 when exiting
-            finalSellQty = 0;
-            finalSellLeg = { ...pos.sellLeg, lotSize: 0, exitIv: latestSellIv };
-          }
+          const finalGrossPnl = grossPnl;
+          const finalExitFee = exitFee;
+          const finalEntryFee = pos.entryFee || 0;
+          const finalTotalFees = totalFees;
+          const finalNetPnl = grossPnl - totalFees;
+          const finalSellQty = pos.sellQty;
+          const finalSellLeg = { ...pos.sellLeg, exitIv: latestSellIv };
 
           let exitBuyAtmPrice = null;
           let exitSellAtmPrice = null;
@@ -746,7 +690,6 @@ export async function startPaperTradingEngine() {
 
           const tradeRecord = {
             ...pos,
-            id: pos._pendingLegSwap ? `${pos.id}-LS-${Date.now().toString(36).toUpperCase()}` : pos.id,
             sellQty: finalSellQty,
             buyLeg: {
               ...pos.buyLeg,
@@ -773,101 +716,6 @@ export async function startPaperTradingEngine() {
             zombieExitTime,
           };
           exited.push(tradeRecord);
-
-          if (pos._pendingLegSwap) {
-            // Leg swap execution
-            const target = pos._pendingLegSwap;
-            const longPnl = finalGrossPnl;
-            const longExitFee = finalExitFee;
-            const longEntryFee = finalEntryFee;
-
-            // Apply $200,000 cap scaling to the target spread
-            const targetLotSize = target.buyLeg.lotSize || 1;
-            const targetSellLotSize = target.sellLeg.lotSize || targetLotSize;
-            let targetShortValue = spotPrice * target.sellQty * targetSellLotSize;
-
-            let adjustedTargetLotSize = targetLotSize;
-            let adjustedTargetSellQty = target.sellQty;
-            let swapScale = 1;
-
-            if (targetShortValue >= 200000) {
-              swapScale = 200000 / targetShortValue;
-              adjustedTargetLotSize = Number((targetLotSize * swapScale).toFixed(2));
-              adjustedTargetSellQty = Number((target.sellQty * swapScale).toFixed(2));
-              targetShortValue = 200000;
-            }
-
-            const deltaQty = adjustedTargetSellQty - pos.sellQty;
-            let adjustedSellEntryPrice = pos.entrySellPrice;
-            let shortAdjustmentFee = 0;
-            let shortAdjustmentPnl = 0;
-
-            if (deltaQty > 0) {
-              adjustedSellEntryPrice = ((pos.sellQty * pos.entrySellPrice) + (deltaQty * latestSell)) / adjustedTargetSellQty;
-              shortAdjustmentFee = calculateFee(latestSell, spotPrice, Math.abs(deltaQty), pos.sellLeg.lotSize);
-            } else if (deltaQty < 0) {
-              shortAdjustmentFee = calculateFee(latestSell, spotPrice, Math.abs(deltaQty), pos.sellLeg.lotSize);
-              shortAdjustmentPnl = (pos.entrySellPrice - latestSell) * Math.abs(deltaQty) * pos.sellLeg.lotSize;
-            }
-
-            const newLongEntryFee = calculateFee(target.buyPrice, spotPrice, 1, adjustedTargetLotSize);
-            const newActiveEntryFee = (pos.entryFee || 0) - longEntryFee + newLongEntryFee + shortAdjustmentFee;
-
-            let newEntryAtmRatio = null;
-            let entryBuyAtmPrice = null;
-            let entrySellAtmPrice = null;
-            if (atmStrike !== null) {
-              entryBuyAtmPrice = getTickerPrice(atmStrike, pos.type, 'bid', pos.expiry);
-              const targetSellStrike = pos.type === 'call' ? atmStrike + target.strikeDiff : atmStrike - target.strikeDiff;
-              entrySellAtmPrice = getTickerPrice(targetSellStrike, pos.type, 'ask', pos.expiry);
-              if (entryBuyAtmPrice != null && entrySellAtmPrice != null && entrySellAtmPrice > 0) {
-                newEntryAtmRatio = parseFloat((Math.round((entryBuyAtmPrice / entrySellAtmPrice) / 0.25) * 0.25).toFixed(2));
-              }
-            }
-
-            const tickerNewBuy = tickerData[target.buyLeg.symbol];
-            const newBuyLeg = {
-              ...target.buyLeg,
-              lotSize: adjustedTargetLotSize,
-              entryIv: tickerNewBuy?.askIv ?? tickerNewBuy?.iv ?? null,
-              entryAtmRatio: newEntryAtmRatio,
-              entryBuyAtmPrice,
-              entrySellAtmPrice,
-              maxAtmRatio: newEntryAtmRatio,
-              originalLotSize: adjustedTargetLotSize,
-              originalSellQty: target.sellQty
-            };
-
-            const swappedPos = {
-              ...pos,
-              buyLeg: newBuyLeg,
-              sellQty: adjustedTargetSellQty,
-              entryBuyPrice: target.buyPrice,
-              entrySellPrice: adjustedSellEntryPrice,
-              entryFee: newActiveEntryFee,
-              accumulatedSellPnl: (pos.accumulatedSellPnl || 0) + (longPnl - longExitFee) + shortAdjustmentPnl,
-              entryTime: new Date(),
-              entrySpotPrice: spotPrice,
-              margin: calcMargin(target.buyPrice, adjustedTargetLotSize, spotPrice, adjustedTargetSellQty, target.sellLeg.lotSize),
-            };
-            remaining.push(swappedPos);
-
-            // Sync leg swap to Supabase
-            try {
-              await supabase.from('active_positions').update({
-                buy_leg: JSON.stringify(newBuyLeg),
-                buy_strike: newBuyLeg.strike,
-                sell_qty: adjustedTargetSellQty,
-                entry_buy_price: target.buyPrice,
-                entry_sell_price: adjustedSellEntryPrice,
-                entry_fee: newActiveEntryFee,
-                accumulated_sell_pnl: swappedPos.accumulatedSellPnl,
-                entry_time: swappedPos.entryTime.toISOString(),
-                entry_spot_price: spotPrice,
-                margin: swappedPos.margin,
-              }).eq('id', pos.id);
-            } catch (e) { logError('Leg swap sync error:', e); }
-          }
         } else {
           remaining.push(pos);
         }
@@ -1015,10 +863,8 @@ export async function startPaperTradingEngine() {
             if (histError) logError('History insert error:', histError.message);
           }
 
-          // Delete from active (skip for leg swaps — they were updated in-place above)
-          if (!t.exitReason?.startsWith('Leg Swap')) {
-            await supabase.from('active_positions').delete().eq('id', t.id);
-          }
+          // Delete from active
+          await supabase.from('active_positions').delete().eq('id', t.id);
 
           log(`📤 EXIT: ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} | ${t.exitReason} | PnL: $${t.realizedNetPnl?.toFixed(2)}`);
         } catch (err) { logError('Exit persistence error:', err); }
