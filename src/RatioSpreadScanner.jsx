@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   loadProducts, getExpiries, getStrikes, getSpotPrice,
-  fmtExpiry, createTickerStream
+  fmtExpiry, createTickerStream, getTickers
 } from './api';
 import { useTabListener } from './useTabSync';
 
@@ -156,7 +156,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
   }, [underlying]);
 
   // ── Build strike pairs and subscribe to WS ──────────────────────────────
-  const startScan = useCallback(() => {
+  const startScan = useCallback(async () => {
     if (!selExpiry || !products.length) {
       return;
     }
@@ -219,6 +219,50 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
       allSymbols.push(perpSymbol);
     }
     setExpectedTickerCount(allSymbols.length);
+
+    // REST Backfill
+    try {
+      const restTickers = await getTickers(underlying, allSymbols);
+      if (restTickers && Array.isArray(restTickers)) {
+        for (const t of restTickers) {
+          const sym = t.symbol;
+          const meta = symbolMeta[sym];
+          if (!meta) continue;
+
+          const { strike, lotSize, type } = meta;
+          const markPrice = toFiniteNumber(t.mark_price ?? t.last_price);
+          const bid = toFiniteNumber(t.quotes?.best_bid);
+          const ask = toFiniteNumber(t.quotes?.best_ask);
+          const bidIv = normalizeIv(toFiniteNumber(t.quotes?.bid_iv));
+          const askIv = normalizeIv(toFiniteNumber(t.quotes?.ask_iv));
+          const iv = normalizeIv(toFiniteNumber(t.mark_vol ?? t.quotes?.mark_iv ?? t.greeks?.iv));
+          const delta = t.greeks ? toFiniteNumber(t.greeks.delta) : null;
+          const gamma = t.greeks ? toFiniteNumber(t.greeks.gamma) : null;
+          const theta = t.greeks ? toFiniteNumber(t.greeks.theta) : null;
+
+          latestTickerDataRef.current[sym] = {
+            symbol: sym,
+            strike,
+            lotSize,
+            type,
+            markPrice,
+            bid,
+            ask,
+            bidIv,
+            askIv,
+            iv,
+            delta,
+            deltaNotional: delta !== null ? Math.abs(delta) * lotSize : null,
+            gamma,
+            theta,
+            lastUpdate: Date.now(),
+          };
+        }
+        setTickerData({ ...latestTickerDataRef.current });
+      }
+    } catch (e) {
+      console.error('REST backfill error in scanner:', e);
+    }
 
     const stream = createTickerStream(
       allSymbols,
