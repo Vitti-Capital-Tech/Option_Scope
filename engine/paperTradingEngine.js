@@ -424,9 +424,9 @@ export async function startPaperTradingEngine() {
 
             let threshold = (checkpointAtmPnl * 0.25) + checkpointPnl;
 
-            // Scaling conditions: profitable AND PnL below trailing threshold AND hypothetical lot size >= floor limit AND live ATM ratio >= recalculated position ratio + 2
+            // Scaling conditions: profitable AND PnL above trailing threshold AND hypothetical lot size >= floor limit AND live ATM ratio >= recalculated position ratio + 1
             while (currentGrossPnl > 0 && currentGrossPnl >= threshold && hypotheticalLotSize >= floorLimit && liveAtmRatio >= recalculatedRatio + 1) {
-              log(`⚖️ SCALING: Position ${pos.id} (${pos.type.toUpperCase()}) - PnL: $${currentGrossPnl.toFixed(2)} <= Threshold: $${threshold.toFixed(2)}. ATM ratio (1:x) increased: Recalculated Ratio ${recalculatedRatio.toFixed(2)} <= Live ${liveAtmRatio} - 2. Reducing buy lot size from ${currentLotSize} to ${hypotheticalLotSize}.`);
+              log(`⚖️ SCALING: Position ${pos.id} (${pos.type.toUpperCase()}) - PnL: $${currentGrossPnl.toFixed(2)} >= Threshold: $${threshold.toFixed(2)}. ATM ratio (1:x) increased: Recalculated Ratio ${recalculatedRatio.toFixed(2)} <= Live ${liveAtmRatio} - 1. Reducing buy lot size from ${currentLotSize} to ${hypotheticalLotSize}.`);
 
               const partialGrossPnl = buyPriceDiff * deltaBuyQty;
               const partialExitFee = calculateFee(liveExitBuy, spotPrice, 1, deltaBuyQty);
@@ -451,7 +451,11 @@ export async function startPaperTradingEngine() {
               const remainingEntryFee = Math.max(0, entryFee - partialEntryFee);
               const remainingNetPnl = remainingGrossPnl - (remainingEntryFee + remainingExitFee);
 
-              const partialExitReason = `Partial Exit: Entry ATM PnL: ${checkpointAtmPnl.toFixed(2)} | Live ATM Ratio: ${liveAtmRatio.toFixed(2)} | Recalculated Ratio: ${recalculatedRatio.toFixed(2)} | PnL Realized:$${partialNetPnl.toFixed(2)} | Unrealized:$${remainingNetPnl.toFixed(2)}`;
+              const nextNetPremium = (pos.entryBuyPrice * hypotheticalLotSize) - (pos.entrySellPrice * pos.sellQty * (pos.sellLeg.lotSize || 1));
+              const nextPremiumType = nextNetPremium >= 0 ? 'Debit' : 'Credit';
+              const nextPremiumVal = Math.abs(nextNetPremium);
+
+              const partialExitReason = `Partial Exit: Entry ATM PnL: ${checkpointAtmPnl.toFixed(2)} | Live ATM Ratio: ${liveAtmRatio.toFixed(2)} | Recalculated Ratio: ${recalculatedRatio.toFixed(2)} | Next Debit/Credit at Entry: $${nextPremiumVal.toFixed(2)} (${nextPremiumType}) | Unrealized:$${remainingNetPnl.toFixed(2)}`;
 
               partialExitsToRecord.push({
                 trade_id: partialTradeId,
