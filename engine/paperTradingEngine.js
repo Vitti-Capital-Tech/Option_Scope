@@ -424,9 +424,9 @@ export async function startPaperTradingEngine() {
 
             let threshold = (checkpointAtmPnl * 0.25) + checkpointPnl;
 
-            // Scaling conditions: profitable AND PnL below trailing threshold AND hypothetical lot size >= floor limit AND live ATM ratio >= recalculated position ratio + 2
-            while (currentGrossPnl > 0 && currentGrossPnl <= threshold && hypotheticalLotSize >= floorLimit && liveAtmRatio >= recalculatedRatio + 2) {
-              log(`⚖️ SCALING: Position ${pos.id} (${pos.type.toUpperCase()}) - PnL: $${currentGrossPnl.toFixed(2)} <= Threshold: $${threshold.toFixed(2)}. ATM ratio (1:x) increased: Recalculated Ratio ${recalculatedRatio.toFixed(2)} <= Live ${liveAtmRatio} - 2. Reducing buy lot size from ${currentLotSize} to ${hypotheticalLotSize}.`);
+            // Scaling conditions: profitable AND PnL below trailing threshold AND hypothetical lot size >= floor limit AND live ATM ratio >= recalculated position ratio + 1
+            while (currentGrossPnl > 0 && currentGrossPnl <= threshold && hypotheticalLotSize >= floorLimit && liveAtmRatio >= recalculatedRatio + 1) {
+              log(`⚖️ SCALING: Position ${pos.id} (${pos.type.toUpperCase()}) - PnL: $${currentGrossPnl.toFixed(2)} <= Threshold: $${threshold.toFixed(2)}. ATM ratio (1:x) increased: Recalculated Ratio ${recalculatedRatio.toFixed(2)} <= Live ${liveAtmRatio} - 1. Reducing buy lot size from ${currentLotSize} to ${hypotheticalLotSize}.`);
 
               const partialGrossPnl = buyPriceDiff * deltaBuyQty;
               const partialExitFee = calculateFee(liveExitBuy, spotPrice, 1, deltaBuyQty);
