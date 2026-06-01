@@ -383,14 +383,15 @@ export async function startPaperTradingEngine() {
         // Dynamic ATM ratio-based scaling
         if (atmStrike !== null) {
           // Initialize/reconstruct for older/migrated positions if missing
-          if (pos.buyLeg && pos.buyLeg.originalLotSize === undefined) {
-            pos.buyLeg.originalLotSize = pos.buyLeg.lotSize || 1;
+          if (pos.buyLeg && (pos.buyLeg.originalLotSize === undefined || pos.buyLeg.originalSellQty === undefined)) {
+            pos.buyLeg.originalLotSize = pos.buyLeg.originalLotSize !== undefined ? pos.buyLeg.originalLotSize : (pos.buyLeg.lotSize || 1);
+            pos.buyLeg.originalSellQty = pos.buyLeg.originalSellQty !== undefined ? pos.buyLeg.originalSellQty : (pos.sellQty || 0);
             try {
               await supabase.from('active_positions').update({
                 buy_leg: JSON.stringify(pos.buyLeg)
               }).eq('id', pos.id);
             } catch (e) {
-              logError(`Failed to initialize originalLotSize for position ${pos.id}:`, e);
+              logError(`Failed to initialize originalLotSize/originalSellQty for position ${pos.id}:`, e);
             }
           }
 
@@ -451,11 +452,13 @@ export async function startPaperTradingEngine() {
               const remainingEntryFee = Math.max(0, entryFee - partialEntryFee);
               const remainingNetPnl = remainingGrossPnl - (remainingEntryFee + remainingExitFee);
 
-              const nextNetPremium = (pos.entryBuyPrice * hypotheticalLotSize) - (pos.entrySellPrice * pos.sellQty * (pos.sellLeg.lotSize || 1));
-              const nextPremiumType = nextNetPremium >= 0 ? 'Debit' : 'Credit';
-              const nextPremiumVal = Math.abs(nextNetPremium);
+              const originalLotSize = pos.buyLeg.originalLotSize || pos.buyLeg.lotSize || 1;
+              const originalSellQty = pos.buyLeg.originalSellQty || pos.sellQty || 0;
+              const entryNetPremium = (pos.entryBuyPrice * originalLotSize) - (pos.entrySellPrice * originalSellQty * (pos.sellLeg.lotSize || 1));
+              const entryPremiumType = entryNetPremium >= 0 ? 'Debit' : 'Credit';
+              const entryPremiumVal = Math.abs(entryNetPremium);
 
-              const partialExitReason = `Partial Exit: Entry ATM PnL: ${checkpointAtmPnl.toFixed(2)} | Live ATM Ratio: ${liveAtmRatio.toFixed(2)} | Recalculated Ratio: ${recalculatedRatio.toFixed(2)} | Next Debit/Credit at Entry: $${nextPremiumVal.toFixed(2)} (${nextPremiumType}) | Unrealized:$${remainingNetPnl.toFixed(2)}`;
+              const partialExitReason = `Partial Exit: Entry ATM PnL: ${checkpointAtmPnl.toFixed(2)} | Live ATM Ratio: ${liveAtmRatio.toFixed(2)} | Recalculated Ratio: ${recalculatedRatio.toFixed(2)} | Net Debit/Credit at Entry: $${entryPremiumVal.toFixed(2)} (${entryPremiumType}) | Unrealized:$${remainingNetPnl.toFixed(2)}`;
 
               partialExitsToRecord.push({
                 trade_id: partialTradeId,

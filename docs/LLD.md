@@ -248,7 +248,7 @@ For each active position, before evaluating its full exit triggers (such as expi
 4. **ATM Ratio Comparison (1:x comparison)**: The live ATM ratio (`liveAtmRatio`, computed as `buyIntrinsic / sellIntrinsic` rounded to nearest `0.25`) is compared to the `recalculatedRatio`. The condition is: **`liveAtmRatio >= recalculatedRatio + 1`**. This means the market's ATM ratio must be at least **1 point** higher than the recalculated position ratio before the exit is triggered.
 5. **Floor Limit**: The hypothetical long lot size must be at or above the fixed floor limit of `0.5` (`hypotheticalLotSize >= 0.5`).
 6. **Execution**: If all conditions are met (while loop):
-   - Record a **partial exit** to `trade_history` with `is_partial: true`, the closed buy lot size as `deltaBuyQty`, and the closed sell lot size and sell quantity as `0`. The `exit_reason` is recorded in a concise format containing the exact initial and live ATM buy/sell prices, live and recalculated ratios, net debit/credit at entry of the remaining position, and remaining unrealized net PnL.
+   - Record a **partial exit** to `trade_history` with `is_partial: true`, the closed buy lot size as `deltaBuyQty`, and the closed sell lot size and sell quantity as `0`. The `exit_reason` is recorded in a concise format containing the exact initial and live ATM buy/sell prices, live and recalculated ratios, original net debit/credit at entry of the position, and remaining unrealized net PnL.
    - Update `pos.buyLeg.lotSize = hypotheticalLotSize`.
    - Update `pos.buyLeg.maxAtmRatio` in metadata to reflect the new ratio of the position (`recalculatedRatio`).
    - `entryAtmRatio` is **preserved** (never modified — it is a historical entry-time value).
