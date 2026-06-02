@@ -82,7 +82,7 @@ Browser (React + Vite Dashboard)
 
 1. Subscribe to all option symbols in the selected expiry.
 2. Buffer and batch ticker updates (50ms flush) to limit render pressure.
-3. Evaluate pair candidates using strike/IV/premium/deviation constraints. Uses **execution-realistic pricing**: Long legs are evaluated at the **Ask** and Short legs at the **Bid**. Similarly, **IV Diff** is calculated using directional IVs (Ask IV for long, Bid IV for short).
+3. Evaluate pair candidates using strike/IV/premium/deviation constraints. Uses **execution-realistic pricing**: Long legs are evaluated at the **Ask** and Short legs at the **Bid**. Similarly, **IV Diff** is calculated using directional IVs (Ask IV for long, Bid IV for short). Candidates must pass a **quote freshness guard**: both the buy and sell legs must have bid/ask quotes updated by the WebSocket stream in the last 120 seconds (`bidUpdatedAt > 0` and `askUpdatedAt > 0`), which prevents utilizing stale REST-backfilled quotes on illiquid strikes.
 4. Project spread values to the ATM boundary using live option chain shifting:
    - **At ATM Ask/Bid**: Pulls the current option chain Bid for the ATM strike (long leg) and the Ask for the OTM strike at `ATM ± strikeDiff` (short leg). If the exact strike is missing from `tickerData`, the nearest available strike within a tight asset-specific tolerance (**500** points for BTC and **50** points for ETH) under the same contract expiry is used as a fallback. Directly shows the ATM premium ratio below the prices, rounded to the nearest 0.25. Displays `—` when no suitable ticker exists.
    - **At ATM P&L**: Computes the liquidation payout using the live ATM option chain quotes: `[(ATM_Bid - Entry_Long) - (OTM_Ask - Entry_Short) × Qty] × lotSize`. Computed only when both legs have valid (non-null, non-zero) prices; shows `—` otherwise. Directly displays the Return on Margin (ROI %) inside the same cell.
@@ -93,7 +93,7 @@ Browser (React + Vite Dashboard)
 ### Paper Trading (Automated Lifecycle)
 
 1. Run a self-contained local scan for ratio spread candidates (the headless engine does not merge from the browser Scanner's BroadcastChannel).
-   - **Strict Execution-Realistic Entries**: New positions are entered at the Ask for long legs and Bid for short legs. Entries require live active quotes and are strictly rejected if executable quotes (Ask/Bid) are missing, capturing the true cost of crossing the spread and preventing unrealistic model-price fills.
+   - **Strict Execution-Realistic Entries**: New positions are entered at the Ask for long legs and Bid for short legs. Entries require live active quotes and are strictly rejected if executable quotes (Ask/Bid) are missing or if they are stale. The system checks that the bid/ask quotes for both legs have been confirmed by the WebSocket stream in the last 120 seconds (`bidUpdatedAt > 0` and `askUpdatedAt > 0`). This prevents executing entries on model-derived or stale REST ticker prices from illiquid strikes.
 2. Evaluate active positions for rotation or ATM/expiry exit triggers every second to prevent slippage, while scanning and entering new positions on the 1-minute boundary.
     - **Liquidation-Based PnL**: Unrealized PnL is calculated based on immediate exit prices: long positions are valued at the current Bid (selling back) and short positions at the current Ask (buying back).
 3. **Scaling & Uniqueness Guards**: 

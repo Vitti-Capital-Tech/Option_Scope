@@ -93,6 +93,13 @@ export function scanTickers(tickers, config, spotPrice) {
       const sellPrice = sellLeg.bid;
       
       if (buyPrice == null || sellPrice == null || buyPrice <= 0 || sellPrice <= 0) continue;
+
+      // Require WS-confirmed quotes (reject stale REST backfill data)
+      const now = Date.now();
+      const FRESHNESS_MS = 120000; // 120 seconds
+      const buyAskFresh = (buyLeg.askUpdatedAt || 0) > 0 && (now - buyLeg.askUpdatedAt) < FRESHNESS_MS;
+      const sellBidFresh = (sellLeg.bidUpdatedAt || 0) > 0 && (now - sellLeg.bidUpdatedAt) < FRESHNESS_MS;
+      if (!buyAskFresh || !sellBidFresh) continue;
       const buyIv = buyLeg.askIv ?? buyLeg.iv;
       const sellIv = sellLeg.bidIv ?? sellLeg.iv;
 

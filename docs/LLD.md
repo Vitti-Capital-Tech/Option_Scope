@@ -20,6 +20,10 @@ This document is the authoritative implementation reference for every module, en
 | `scannerUtils.js` | Shared helpers: `normalizeIv`, `toFiniteNumber`, `matchesOptionType`, `formatTime`, `formatDateTime`. |
 | `supabase.js` | Supabase client singleton. |
 | `useTabSync.js` | `BroadcastChannel` sync hook (`useTabSync` for root, `useTabListener` for children). |
+| `engine/lib/deltaApi.js` | Backend API adapter for Delta Exchange. Implements WebSockets with auto-reconnect, ticker stream parsing, REST endpoints, and unconfirmed (timestamp = 0) REST ticker backfills. |
+| `engine/lib/utils.js` | Shared backend algorithmic logic including candidate spread scanning (`scanTickers` with quote freshness validation), rotation target selection, and margin calculations. |
+| `engine/lib/heartbeat.js` | Helper module executing the continuous status update ticks for the backend engines to Supabase. |
+| `engine/lib/supabase.js` | Supabase client initialization wrapper for backend VPS engines. |
 
 ---
 
@@ -43,7 +47,7 @@ Incoming frames are filtered to only process `type === 'v2/ticker'`. All other m
 ### Key Network Subsystems
 
 1. **Auto-Reconnect**: Self-heals on network drops with a 3-second backoff. Critical for VPS unattended operation.
-2. **REST Backfill (`refreshAllTickers`)**: Triggered on algo start or manual page refresh. Calls `/v2/tickers` and merges results into `latestTickerDataRef` without zeroing existing data — prevents the "PnL = 0" glitch before the first WebSocket frame arrives.
+2. **REST Backfill (`refreshAllTickers` / `backfillTickers`)**: Triggered on algo start or manual page refresh. Calls `/v2/tickers` and merges results into the local ticker cache without zeroing existing data — prevents the "PnL = 0" glitch before the first WebSocket frame arrives. Crucially, to prevent executing entries on stale/model-derived REST prices, backfilled quotes are tagged with `bidUpdatedAt = 0` and `askUpdatedAt = 0` (marking them as unconfirmed).
 3. **Redundant Connection Guard (`lastWsSymbolsRef`)**: Hashes the current symbol list. Skips WebSocket teardown/recreate if the symbol set has not changed, avoiding the "WebSocket closed before established" race condition during periodic 5-minute product refreshes.
 4. **50ms Buffered Flush**: All incoming ticker frames are written to `tickerBufferRef` (a plain object). A `setTimeout(flushTickerBuffer, 50)` timer batches and flushes them into `latestTickerDataRef` and triggers a single React state update. This limits render pressure under volatile data bursts.
 
@@ -142,7 +146,7 @@ The scanner runs an O(N²) pair search within each option type (calls and puts s
 
 1. **Directional Filtering**: Universe is split at ATM — Calls at strike `>= atmStrike`, Puts at strike `<= atmStrike`.
 2. **Leg Assignment**: For calls, the lower strike is the buy (long) leg; for puts, the higher strike is the buy leg.
-3. **Strict Execution-Realistic Pricing**: `buyPrice = buyLeg.ask`, `sellPrice = sellLeg.bid`. The pair is skipped immediately if either active quote is missing. No fallback to `markPrice` or `lastPrice` is allowed for entries.
+3. **Strict Execution-Realistic Pricing & Freshness Check**: `buyPrice = buyLeg.ask`, `sellPrice = sellLeg.bid`. The pair is skipped immediately if either active quote is missing. No fallback to `markPrice` or `lastPrice` is allowed for entries. Additionally, quotes must be WS-confirmed and fresh: both legs are checked to ensure their `bidUpdatedAt` and `askUpdatedAt` timestamps are greater than `0` (ignoring REST-backfilled data) and less than 120,000 milliseconds old (`Date.now() - updatedAt < 120000`), preventing stale entries on illiquid strikes.
 4. **Directional IV**: `buyIv = buyLeg.askIv ?? iv`, `sellIv = sellLeg.bidIv ?? iv`. Pair is skipped if either IV is null.
 5. **Filter Gauntlet** (all must pass):
    - `strikeDiff >= minStrikeDiff`

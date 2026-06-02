@@ -302,6 +302,8 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
           lastPrice: lastPrice ?? prevBuffered?.lastPrice ?? null,
           bid: bid ?? prevBuffered?.bid ?? null,
           ask: ask ?? prevBuffered?.ask ?? null,
+          bidUpdatedAt: bid != null ? Date.now() : (prevBuffered?.bidUpdatedAt ?? 0),
+          askUpdatedAt: ask != null ? Date.now() : (prevBuffered?.askUpdatedAt ?? 0),
           bidIv: bidIv ?? prevBuffered?.bidIv ?? null,
           askIv: askIv ?? prevBuffered?.askIv ?? null,
           iv: iv ?? prevBuffered?.iv ?? null,
@@ -355,6 +357,13 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
           const sellPrice = sellLeg.bid;
 
           if (buyPrice == null || sellPrice == null || buyPrice <= 0 || sellPrice <= 0) continue;
+
+          // Require WS-confirmed quotes (reject stale REST backfill data)
+          const now = Date.now();
+          const FRESHNESS_MS = 120000; // 120 seconds
+          const buyAskFresh = (buyLeg.askUpdatedAt || 0) > 0 && (now - buyLeg.askUpdatedAt) < FRESHNESS_MS;
+          const sellBidFresh = (sellLeg.bidUpdatedAt || 0) > 0 && (now - sellLeg.bidUpdatedAt) < FRESHNESS_MS;
+          if (!buyAskFresh || !sellBidFresh) continue;
           const buyIv = buyLeg.askIv ?? buyLeg.iv;
           const sellIv = sellLeg.bidIv ?? sellLeg.iv;
 
