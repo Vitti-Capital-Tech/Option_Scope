@@ -35,7 +35,7 @@ export default function ResultTable({
     // Exact match first
     const exact = allTickers.find(t => t.strike === strike);
     if (exact) {
-      const val = exact[priceField] ?? exact.markPrice;
+      const val = exact[priceField] ?? exact.lastPrice ?? exact.markPrice;
       return (val != null && val > 0) ? val : null;
     }
 
@@ -54,7 +54,7 @@ export default function ResultTable({
       }
     }
     if (!nearest) return null;
-    const val = nearest[priceField] ?? nearest.markPrice;
+    const val = nearest[priceField] ?? nearest.lastPrice ?? nearest.markPrice;
     return (val != null && val > 0) ? val : null;
   };
 

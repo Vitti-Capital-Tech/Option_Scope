@@ -237,7 +237,7 @@ export async function startPaperTradingEngine() {
         // Exact match first
         const exact = allTickersOfType.find(t => t.strike === strike);
         if (exact) {
-          const val = exact[priceField] ?? exact.markPrice;
+          const val = exact[priceField] ?? exact.lastPrice ?? exact.markPrice;
           return (val != null && val > 0) ? val : null;
         }
 
@@ -253,7 +253,7 @@ export async function startPaperTradingEngine() {
           }
         }
         if (!nearest) return null;
-        const val = nearest[priceField] ?? nearest.markPrice;
+         const val = nearest[priceField] ?? nearest.lastPrice ?? nearest.markPrice;
         return (val != null && val > 0) ? val : null;
       }
 
@@ -372,8 +372,8 @@ export async function startPaperTradingEngine() {
         // Data gap guard
         const tickerBuy = tickerData[pos.buyLeg.symbol];
         const tickerSell = tickerData[pos.sellLeg.symbol];
-        const liveExitBuy = tickerBuy?.bid ?? tickerBuy?.markPrice;
-        const liveExitSell = tickerSell?.ask ?? tickerSell?.markPrice;
+        const liveExitBuy = tickerBuy?.bid ?? tickerBuy?.lastPrice ?? tickerBuy?.markPrice;
+        const liveExitSell = tickerSell?.ask ?? tickerSell?.lastPrice ?? tickerSell?.markPrice;
 
         if (liveExitBuy == null || liveExitSell == null) {
           remaining.push(pos);

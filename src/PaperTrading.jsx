@@ -439,7 +439,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         const meta = symbolMeta[sym];
         if (!meta) return;
 
-        const markPrice = toFiniteNumber(msg.mark_price ?? msg.last_price ?? msg.close);
+        const markPrice = toFiniteNumber(msg.mark_price);
+        const lastPrice = toFiniteNumber(msg.last_price ?? msg.close);
         const bid = toFiniteNumber(msg.quotes?.best_bid);
         const ask = toFiniteNumber(msg.quotes?.best_ask);
         const bidIv = normalizeIv(toFiniteNumber(msg.quotes?.bid_iv));
@@ -451,6 +452,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         tickerBufferRef.current[sym] = {
           symbol: sym, strike: meta.strike, lotSize: meta.lotSize, type: meta.type,
           markPrice: markPrice ?? prev?.markPrice ?? null,
+          lastPrice: lastPrice ?? prev?.lastPrice ?? null,
           bid: bid ?? prev?.bid ?? null,
           ask: ask ?? prev?.ask ?? null,
           bidIv: bidIv ?? prev?.bidIv ?? null,
@@ -484,8 +486,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         return prev.map(pos => {
           const tickerBuy = live[pos.buyLeg?.symbol];
           const tickerSell = live[pos.sellLeg?.symbol];
-          const latestBuy = tickerBuy?.bid ?? tickerBuy?.markPrice ?? pos.currentBuyPrice;
-          const latestSell = tickerSell?.ask ?? tickerSell?.markPrice ?? pos.currentSellPrice;
+          const latestBuy = tickerBuy?.bid ?? tickerBuy?.lastPrice ?? tickerBuy?.markPrice ?? pos.currentBuyPrice;
+          const latestSell = tickerSell?.ask ?? tickerSell?.lastPrice ?? tickerSell?.markPrice ?? pos.currentSellPrice;
 
           // If we don't have any price at all for both legs, skip this position's updates
           if (latestBuy == null && latestSell == null) return pos;

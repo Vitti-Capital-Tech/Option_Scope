@@ -238,7 +238,8 @@ export function processTickerMessage(msg, symbolMeta, prevData) {
   const meta = symbolMeta[sym];
   if (!meta) return null;
 
-  const markPrice = toFiniteNumber(msg.mark_price ?? msg.last_price ?? msg.close);
+  const markPrice = toFiniteNumber(msg.mark_price);
+  const lastPrice = toFiniteNumber(msg.last_price ?? msg.close);
   const bid = toFiniteNumber(msg.quotes?.best_bid);
   const ask = toFiniteNumber(msg.quotes?.best_ask);
   const bidIv = normalizeIv(toFiniteNumber(msg.quotes?.bid_iv));
@@ -255,6 +256,7 @@ export function processTickerMessage(msg, symbolMeta, prevData) {
     type: meta.type,
     expiry: meta.expiry,
     markPrice: markPrice ?? prev?.markPrice ?? null,
+    lastPrice: lastPrice ?? prev?.lastPrice ?? null,
     bid: bid ?? prev?.bid ?? null,
     ask: ask ?? prev?.ask ?? null,
     bidIv: bidIv ?? prev?.bidIv ?? null,
@@ -283,7 +285,8 @@ export async function backfillTickers(underlying, symbolMeta, existingData = {})
       if (!meta) continue;
 
       const prev = existingData[t.symbol];
-      const markPrice = toFiniteNumber(t.mark_price ?? t.last_price ?? t.close);
+      const markPrice = toFiniteNumber(t.mark_price);
+      const lastPrice = toFiniteNumber(t.last_price ?? t.close);
       const iv = normalizeIv(toFiniteNumber(t.mark_vol ?? t.quotes?.mark_iv ?? t.greeks?.iv));
       const bid = toFiniteNumber(t.quotes?.best_bid);
       const ask = toFiniteNumber(t.quotes?.best_ask);
@@ -297,6 +300,7 @@ export async function backfillTickers(underlying, symbolMeta, existingData = {})
         type: meta.type,
         expiry: meta.expiry,
         markPrice: (markPrice && markPrice > 0) ? markPrice : (prev?.markPrice ?? null),
+        lastPrice: (lastPrice && lastPrice > 0) ? lastPrice : (prev?.lastPrice ?? null),
         bid: bid ?? (prev?.bid ?? null),
         ask: ask ?? (prev?.ask ?? null),
         bidIv: bidIv ?? (prev?.bidIv ?? null),

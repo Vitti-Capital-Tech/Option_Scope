@@ -277,7 +277,8 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
           return;
         }
 
-        const markPrice = toFiniteNumber(msg.mark_price ?? msg.close ?? msg.last_price);
+        const markPrice = toFiniteNumber(msg.mark_price);
+        const lastPrice = toFiniteNumber(msg.last_price ?? msg.close);
         const bid = toFiniteNumber(msg.quotes?.best_bid);
         const ask = toFiniteNumber(msg.quotes?.best_ask);
         const bidIv = normalizeIv(toFiniteNumber(msg.quotes?.bid_iv));
@@ -298,6 +299,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
           lotSize,
           type,
           markPrice: markPrice ?? prevBuffered?.markPrice ?? null,
+          lastPrice: lastPrice ?? prevBuffered?.lastPrice ?? null,
           bid: bid ?? prevBuffered?.bid ?? null,
           ask: ask ?? prevBuffered?.ask ?? null,
           bidIv: bidIv ?? prevBuffered?.bidIv ?? null,
@@ -349,8 +351,10 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
 
           // For Buy Leg (Long): use Ask price and Ask IV
           // For Sell Leg (Short): use Bid price and Bid IV
-          const buyPrice = buyLeg.ask ?? buyLeg.markPrice;
-          const sellPrice = sellLeg.bid ?? sellLeg.markPrice;
+          const buyPrice = buyLeg.ask;
+          const sellPrice = sellLeg.bid;
+
+          if (buyPrice == null || sellPrice == null || buyPrice <= 0 || sellPrice <= 0) continue;
           const buyIv = buyLeg.askIv ?? buyLeg.iv;
           const sellIv = sellLeg.bidIv ?? sellLeg.iv;
 
