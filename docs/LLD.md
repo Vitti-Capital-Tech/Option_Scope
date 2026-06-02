@@ -142,7 +142,7 @@ The scanner runs an O(N²) pair search within each option type (calls and puts s
 
 1. **Directional Filtering**: Universe is split at ATM — Calls at strike `>= atmStrike`, Puts at strike `<= atmStrike`.
 2. **Leg Assignment**: For calls, the lower strike is the buy (long) leg; for puts, the higher strike is the buy leg.
-3. **Execution-Realistic Pricing**: `buyPrice = buyLeg.ask ?? markPrice`, `sellPrice = sellLeg.bid ?? markPrice`.
+3. **Strict Execution-Realistic Pricing**: `buyPrice = buyLeg.ask`, `sellPrice = sellLeg.bid`. The pair is skipped immediately if either active quote is missing. No fallback to `markPrice` or `lastPrice` is allowed for entries.
 4. **Directional IV**: `buyIv = buyLeg.askIv ?? iv`, `sellIv = sellLeg.bidIv ?? iv`. Pair is skipped if either IV is null.
 5. **Filter Gauntlet** (all must pass):
    - `strikeDiff >= minStrikeDiff`
