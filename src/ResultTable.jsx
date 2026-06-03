@@ -196,7 +196,7 @@ export default function ResultTable({
                     sellQty: adjustedSellQty,
                     originalSellQty: r.sellQty,
                     originalLotSize: lotSize,
-                    netPremium: (r.netPremium * scale).toFixed(2),
+                    netPremium: Number(r.netPremium).toFixed(2),
                     buyIntrinsic,
                     sellIntrinsic,
                     atAtmPnl,
