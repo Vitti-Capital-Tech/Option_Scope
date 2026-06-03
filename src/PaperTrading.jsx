@@ -38,6 +38,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     minLongDist: 500,
     maxSellQty: 10,
   }));
+  const [isConfigLoaded, setIsConfigLoaded] = useState(false);
 
   const underlying = config.underlying;
   const selExpiry = config.expiry;
@@ -107,11 +108,21 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       setProducts(prods);
       const exps = getExpiries(prods);
       setExpiries(exps);
-      if (exps.length && (!selExpiry || !exps.includes(selExpiry))) {
+      if (isConfigLoaded && exps.length && (!selExpiry || !exps.includes(selExpiry))) {
         updateConfig('expiry', exps[0]);
       }
     } catch (e) { console.error('Failed to load products:', e); }
-  }, [underlying, selExpiry]);
+  }, [underlying, selExpiry, isConfigLoaded]);
+
+  // Validate expiry when config and products are loaded
+  useEffect(() => {
+    if (isConfigLoaded && products.length > 0) {
+      const exps = getExpiries(products);
+      if (exps.length && (!selExpiry || !exps.includes(selExpiry))) {
+        updateConfig('expiry', exps[0]);
+      }
+    }
+  }, [isConfigLoaded, products, selExpiry]);
 
   useEffect(() => {
     setExpiries([]);
@@ -169,6 +180,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           minLongDist: data.min_long_dist || 500,
           maxSellQty: data.max_sell_qty || 10,
         });
+        setIsConfigLoaded(true);
       }
     } catch (e) { }
   }, []);

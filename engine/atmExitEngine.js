@@ -464,9 +464,10 @@ export async function startAtmExitEngine() {
         await fetchConfig();
         if (config.underlying !== oldUnderlying || config.expiry !== oldExpiry) {
           await refreshProducts();
+          await fetchActivePositions();
           tickerData = {};
           startWebSocket();
-          await fetchActivePositions();
+          tickerData = await backfillTickers(config.underlying, symbolMeta, tickerData);
         }
       })
       .subscribe();

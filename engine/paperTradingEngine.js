@@ -1152,9 +1152,10 @@ export async function startPaperTradingEngine() {
           if (config.underlying !== oldUnderlying || config.expiry !== oldExpiry) {
             log(`Config changed: ${oldUnderlying}/${oldExpiry} → ${config.underlying}/${config.expiry}`);
             await refreshProducts();
+            await fetchActivePositions();
             tickerData = {};
             startWebSocket();
-            await fetchActivePositions();
+            tickerData = await backfillTickers(config.underlying, symbolMeta, tickerData);
           }
         }
       )
