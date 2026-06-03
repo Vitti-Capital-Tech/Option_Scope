@@ -188,7 +188,8 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
       const { data, error } = await supabase
         .from('atm_exit_trade_history').select('*')
         .eq('underlying', underlying)
-        .order('exit_time', { ascending: false });
+        .order('exit_time', { ascending: false })
+        .limit(100);
       if (error || !data) return;
       setTradeHistory(data.map(t => ({
         id: t.trade_id || t.id,
@@ -272,33 +273,139 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
   }, [refreshProducts]);
 
   useEffect(() => {
+    let interval = null;
     const fetchSpot = () =>
       getSpotPrice(underlying)
         .then(sp => { if (sp) setSpotPrice(sp); })
         .catch(() => { });
-    fetchSpot();
-    const id = setInterval(fetchSpot, 10000);
-    return () => clearInterval(id);
+
+    const start = () => {
+      fetchSpot();
+      interval = setInterval(fetchSpot, 10000);
+    };
+    const stop = () => {
+      if (interval) clearInterval(interval);
+    };
+
+    if (document.visibilityState === 'visible') {
+      start();
+    }
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        start();
+      } else {
+        stop();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
   }, [underlying]);
 
-  // ─── Polling ──────────────────────────────────────────────────────────────────
+  // ─── Realtime Subscriptions & Visibility Guard ───────────────────────────────
 
   useEffect(() => {
     fetchConfig();
     fetchActivePositions();
     fetchTradeHistory();
-    fetchAnalytics();
-    fetchHeartbeat();
 
-    const id = setInterval(() => {
-      fetchActivePositions();
-      fetchTradeHistory();
+    const realtimeChannel = supabase
+      .channel('atm_exit_active_positions_changes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'atm_exit_active_positions' },
+        () => { fetchActivePositions(); }
+      )
+      .subscribe();
+
+    const historyChannel = supabase
+      .channel('atm_exit_trade_history_changes')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'atm_exit_trade_history' },
+        () => { fetchTradeHistory(); }
+      )
+      .subscribe();
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        fetchActivePositions();
+        fetchTradeHistory();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      supabase.removeChannel(realtimeChannel);
+      supabase.removeChannel(historyChannel);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [fetchConfig, fetchActivePositions, fetchTradeHistory]);
+
+  // Analytics Polling (every 5 minutes, only when visible)
+  useEffect(() => {
+    let interval = null;
+    const start = () => {
       fetchAnalytics();
-      fetchHeartbeat();
-    }, 10000);
+      interval = setInterval(fetchAnalytics, 5 * 60 * 1000);
+    };
+    const stop = () => {
+      if (interval) clearInterval(interval);
+    };
 
-    return () => clearInterval(id);
-  }, [fetchConfig, fetchActivePositions, fetchTradeHistory, fetchAnalytics, fetchHeartbeat]);
+    if (document.visibilityState === 'visible') {
+      start();
+    }
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        start();
+      } else {
+        stop();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [fetchAnalytics]);
+
+  // Heartbeat Polling (every 30 seconds, only when visible)
+  useEffect(() => {
+    let interval = null;
+    const start = () => {
+      fetchHeartbeat();
+      interval = setInterval(fetchHeartbeat, 30000);
+    };
+    const stop = () => {
+      if (interval) clearInterval(interval);
+    };
+
+    if (document.visibilityState === 'visible') {
+      start();
+    }
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        start();
+      } else {
+        stop();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [fetchHeartbeat]);
 
   // ─── Tab sync ─────────────────────────────────────────────────────────────────
 

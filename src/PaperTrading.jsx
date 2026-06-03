@@ -244,7 +244,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         .from('trade_history')
         .select('*')
         .eq('underlying', underlying)
-        .order('exit_time', { ascending: false });
+        .order('exit_time', { ascending: false })
+        .limit(100);
 
       if (error) return;
       if (data) {
@@ -298,16 +299,19 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       )
       .subscribe();
 
-    // Fallback polling
-    const interval = setInterval(() => {
-      fetchSupabaseActivePositions();
-      fetchSupabaseTradeHistory();
-    }, 10000);
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        fetchSupabaseActivePositions();
+        fetchSupabaseTradeHistory();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibility);
 
     return () => {
       supabase.removeChannel(realtimeChannel);
       supabase.removeChannel(historyChannel);
-      clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibility);
     };
   }, [fetchSupabaseActivePositions, fetchSupabaseTradeHistory, fetchSupabaseConfig]);
 
@@ -339,13 +343,37 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   }, []);
 
   useEffect(() => {
-    fetchHeartbeat();
-    const interval = setInterval(fetchHeartbeat, 5000);
-    return () => clearInterval(interval);
+    let interval = null;
+    const start = () => {
+      fetchHeartbeat();
+      interval = setInterval(fetchHeartbeat, 30000);
+    };
+    const stop = () => {
+      if (interval) clearInterval(interval);
+    };
+
+    if (document.visibilityState === 'visible') {
+      start();
+    }
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        start();
+      } else {
+        stop();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
   }, [fetchHeartbeat]);
 
   // ── Spot price (for PnL display math) ────────────────────────────────
   useEffect(() => {
+    let interval = null;
     const fetchSpot = () => {
       getSpotPrice(underlying)
         .then(sp => {
@@ -356,9 +384,32 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         })
         .catch(() => { });
     };
-    fetchSpot();
-    spotIntervalRef.current = setInterval(fetchSpot, 10000);
-    return () => clearInterval(spotIntervalRef.current);
+
+    const start = () => {
+      fetchSpot();
+      interval = setInterval(fetchSpot, 10000);
+    };
+    const stop = () => {
+      if (interval) clearInterval(interval);
+    };
+
+    if (document.visibilityState === 'visible') {
+      start();
+    }
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        start();
+      } else {
+        stop();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
   }, [underlying]);
 
   // Throttle spot price state updates to UI to exactly once per second
