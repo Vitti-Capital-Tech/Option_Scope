@@ -866,7 +866,7 @@ export async function startPaperTradingEngine() {
               entryBuyAtmPrice,
               entrySellAtmPrice,
               maxAtmRatio: newEntryAtmRatio,
-              originalLotSize: adjustedTargetLotSize,
+              originalLotSize: target.buyLeg.lotSize || 1,
               originalSellQty: target.sellQty
             };
 
@@ -996,7 +996,7 @@ export async function startPaperTradingEngine() {
             entryBuyAtmPrice: buyIntrinsic,
             entrySellAtmPrice: sellIntrinsic,
             maxAtmRatio: entryAtmRatio,
-            originalLotSize: adjustedLotSize,
+            originalLotSize: spread.buyLeg.lotSize || 1,
             originalSellQty: spread.sellQty
           };
           const sellLegWithIv = { ...spread.sellLeg, entryIv: entrySellIv };
