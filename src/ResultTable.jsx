@@ -175,7 +175,7 @@ export default function ResultTable({
 
                   // Compute P&L scaled to the adjusted lot size
                   const atAtmPnl = hasAtmData
-                    ? ((buyIntrinsic - r.buyPrice) - (sellIntrinsic - r.sellPrice) * r.sellQty) * adjustedLotSize
+                    ? ((buyIntrinsic - r.buyPrice) + (r.sellPrice - sellIntrinsic) * r.sellQty) * adjustedLotSize
                     : null;
 
                   const margin = (r.buyPrice * adjustedLotSize) + (shortValue / leverage);
@@ -292,7 +292,7 @@ export default function ResultTable({
                           )}
                         </td>
                         <td>
-                          <div className={parseFloat(bestRow.netPremium) < 0 ? 'scanner-buy' : 'scanner-sell'} style={{ fontWeight: 700 }}>
+                          <div className={parseFloat(bestRow.netPremium) >= 0 ? 'scanner-buy' : 'scanner-sell'} style={{ fontWeight: 700 }}>
                             ${Math.abs(parseFloat(bestRow.netPremium))}
                           </div>
                           <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
@@ -369,7 +369,7 @@ export default function ResultTable({
                               )}
                             </td>
                             <td>
-                              <div className={parseFloat(r.netPremium) < 0 ? 'scanner-buy' : 'scanner-sell'} style={{ fontWeight: 700 }}>
+                              <div className={parseFloat(r.netPremium) >= 0 ? 'scanner-buy' : 'scanner-sell'} style={{ fontWeight: 700 }}>
                                 ${Math.abs(parseFloat(r.netPremium))}
                               </div>
                               <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>

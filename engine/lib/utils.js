@@ -125,9 +125,9 @@ export function scanTickers(tickers, config, spotPrice) {
       const sellQty = Math.max(1, Math.round(rawQty / 0.25) * 0.25);
       if (sellQty > (config.maxSellQty || 10)) continue;
 
-      const netPrem = buyPrice - sellQty * sellPrice;
+      const netPrem = sellQty * sellPrice - buyPrice;
 
-      if (netPrem > config.maxNetPremium) continue;
+      if (netPrem < -config.maxNetPremium) continue;
 
       validPairs.push({
         buyLeg, sellLeg, strikeDiff, sellQty,
@@ -140,7 +140,7 @@ export function scanTickers(tickers, config, spotPrice) {
     const distA = Math.abs(a.buyLeg.strike - spotPrice);
     const distB = Math.abs(b.buyLeg.strike - spotPrice);
     if (distA !== distB) return distA - distB;
-    return a.netPremium - b.netPremium;
+    return b.netPremium - a.netPremium;
   });
 
   return validPairs.slice(0, 50);

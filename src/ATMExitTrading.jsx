@@ -373,7 +373,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
       const sumMargin = g.trades.reduce((s, t) => s + (t.margin || 0), 0);
       const sumFees = g.trades.reduce((s, t) => s + (t.totalFees || 0), 0);
       const sumPnl = g.trades.reduce((s, t) => s + (t.realizedNetPnl || 0), 0);
-      const sumNP = g.trades.reduce((s, t) => s + ((t.entryBuyPrice || 0) - (t.sellQty || 0) * (t.entrySellPrice || 0)), 0);
+      const sumNP = g.trades.reduce((s, t) => s + ((t.sellQty || 0) * (t.entrySellPrice || 0) - (t.entryBuyPrice || 0)), 0);
       buckets[g.bucketName].push({
         type: g.type, strike_diff: g.strike_diff, trade_count: n,
         avg_margin: sumMargin / n, avg_fees: sumFees / n,
@@ -957,7 +957,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
                       <tbody>
                         {(calculatedAnalyticsData[tableName] || []).map(row => {
                           const np = row.avg_net_premium || 0;
-                          const isCredit = np < 0;
+                          const isCredit = np >= 0;
                           const pnlMV = getAnalyticsValue(row.avg_pnl, showTotalMode, row.trade_count);
                           const feesMV = getAnalyticsValue(row.avg_fees, showTotalMode, row.trade_count);
                           const npMV = getAnalyticsValue(Math.abs(np), showTotalMode, row.trade_count);

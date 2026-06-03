@@ -493,10 +493,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           if (latestBuy == null && latestSell == null) return pos;
 
           const hasBothPrices = latestBuy != null && latestSell != null;
-          const buyPnl = hasBothPrices ? ((latestBuy - pos.entryBuyPrice) || 0) : 0;
-          const sellPnl = hasBothPrices ? (((latestSell - pos.entrySellPrice) * pos.sellQty) || 0) : 0;
+          const buyPnl = hasBothPrices ? ((latestBuy - pos.entryBuyPrice) || 0) : 0; // Sell - Buy
+          const sellPnl = hasBothPrices ? (((pos.entrySellPrice - latestSell) * pos.sellQty) || 0) : 0; // Sell - Buy
           const grossPnl = hasBothPrices
-            ? (buyPnl * pos.buyLeg.lotSize) - (sellPnl * pos.sellLeg.lotSize) + (pos.accumulatedSellPnl || 0)
+            ? (buyPnl * pos.buyLeg.lotSize) + (sellPnl * pos.sellLeg.lotSize) + (pos.accumulatedSellPnl || 0)
             : pos.unrealizedGrossPnl;
           const exitFee = hasBothPrices
             ? calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize) + calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize)

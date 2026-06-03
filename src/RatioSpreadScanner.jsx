@@ -396,9 +396,9 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
 
           const deltaDiff = buyDN - sellQty * sellDN;
 
-          const netPrem = buyPrice - sellQty * sellPrice;
+          const netPrem = sellQty * sellPrice - buyPrice;
 
-          if (netPrem > config.maxNetPremium) continue;
+          if (netPrem < -config.maxNetPremium) continue;
 
           validPairs.push({
             buyLeg,
@@ -419,12 +419,12 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
         }
       }
 
-      // Sort: closest to ATM first, then by net premium ascending
+      // Sort: closest to ATM first, then by net premium descending (highest credit/lowest debit first)
       validPairs.sort((a, b) => {
         const distA = Math.abs(a.buyLeg.strike - spotPrice);
         const distB = Math.abs(b.buyLeg.strike - spotPrice);
         if (distA !== distB) return distA - distB;
-        return a.netPremium - b.netPremium;
+        return b.netPremium - a.netPremium;
       });
       return validPairs;
     };

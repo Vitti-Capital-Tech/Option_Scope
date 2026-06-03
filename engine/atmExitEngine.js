@@ -35,7 +35,7 @@ function getQtyTable(sellQty) {
 async function upsertAnalytics(trade) {
   try {
     const tableName = getQtyTable(trade.sellQty);
-    const netPremium = (trade.entryBuyPrice || 0) - (trade.sellQty || 0) * (trade.entrySellPrice || 0);
+    const netPremium = (trade.sellQty || 0) * (trade.entrySellPrice || 0) - (trade.entryBuyPrice || 0);
     const strikeDiff = Math.round((trade.strikeDiff || 0) / 100) * 100;
 
     const { data: existing } = await supabase
@@ -279,9 +279,9 @@ export async function startAtmExitEngine() {
         }
 
         // PnL
-        const buyPriceDiff = (latestBuy - pos.entryBuyPrice) || 0;
-        const sellPriceDiff = (latestSell - pos.entrySellPrice) || 0;
-        const grossPnl = (buyPriceDiff * pos.buyLeg.lotSize) - (sellPriceDiff * pos.sellQty * pos.sellLeg.lotSize) + (pos.accumulatedSellPnl || 0);
+        const buyPriceDiff = (latestBuy - pos.entryBuyPrice) || 0; // Sell - Buy
+        const sellPriceDiff = (pos.entrySellPrice - latestSell) || 0; // Sell - Buy
+        const grossPnl = (buyPriceDiff * pos.buyLeg.lotSize) + (sellPriceDiff * pos.sellQty * pos.sellLeg.lotSize) + (pos.accumulatedSellPnl || 0);
         const exitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize) + calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
         const totalFees = (pos.entryFee || 0) + exitFee;
 

@@ -154,10 +154,10 @@ The scanner runs an O(N²) pair search within each option type (calls and puts s
    - `spotDist >= minLongDist` (buy strike to spot)
    - `sellPrice >= minSellPremium`
    - `ratioDeviation <= maxRatioDeviation`
-   - `netPremium <= maxNetPremium` (one-sided upper bound debit cap)
+   - `netPremium >= -maxNetPremium` (one-sided upper bound debit cap)
    - `sellQty <= maxSellQty`
 6. **`sellQty` Calculation**: `rawQty = buyDN / sellDN`, rounded to nearest 0.25 with minimum of 1.
-7. **Sorting**: Closest buy strike to ATM first; ties broken by ascending `netPremium`.
+7. **Sorting**: Closest buy strike to ATM first; ties broken by descending `netPremium` (highest credit/lowest debit first).
 
 ### `pickTopUniqueStrikes`
 

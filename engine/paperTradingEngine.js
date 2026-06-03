@@ -281,7 +281,7 @@ export async function startPaperTradingEngine() {
           shortValue = 200000;
         }
 
-        const atmPnl = ((buyIntrinsic - spread.buyPrice) - (sellIntrinsic - spread.sellPrice) * spread.sellQty) * adjustedLotSize;
+        const atmPnl = ((buyIntrinsic - spread.buyPrice) + (spread.sellPrice - sellIntrinsic) * spread.sellQty) * adjustedLotSize;
         const margin = calcMargin(spread.buyPrice, adjustedLotSize, spotPrice, adjustedSellQty, sellLotSize);
         const roi = margin > 0 ? (atmPnl / margin) * 100 : 0;
 
@@ -411,17 +411,18 @@ export async function startPaperTradingEngine() {
             let hasScaled = false;
             let partialExitsToRecord = [];
 
-            const buyPriceDiff = (liveExitBuy != null && pos.entryBuyPrice != null) ? (liveExitBuy - pos.entryBuyPrice) : 0;
-            const sellPriceDiff = (liveExitSell != null && pos.entrySellPrice != null) ? (liveExitSell - pos.entrySellPrice) : 0;
+            const buyPriceDiff = (liveExitBuy != null && pos.entryBuyPrice != null) ? (liveExitBuy - pos.entryBuyPrice) : 0; // Sell - Buy
+            const sellPriceDiff = (liveExitSell != null && pos.entrySellPrice != null) ? (pos.entrySellPrice - liveExitSell) : 0; // Sell - Buy
 
-            let currentGrossPnl = (buyPriceDiff * currentLotSize) - (sellPriceDiff * pos.sellQty * (pos.sellLeg.lotSize || 1)) + (pos.accumulatedSellPnl || 0);
+            let currentGrossPnl = (buyPriceDiff * currentLotSize) + (sellPriceDiff * pos.sellQty * (pos.sellLeg.lotSize || 1)) + (pos.accumulatedSellPnl || 0);
 
+            // Initialize checkpointPnl to the entry debit (which is -netPremium) if not already set
             let checkpointPnl = pos.buyLeg.lastCheckpointPnl !== undefined
               ? pos.buyLeg.lastCheckpointPnl
-              : (pos.entryBuyPrice - pos.entrySellPrice * pos.sellQty) * currentLotSize;
+              : -(pos.entrySellPrice * pos.sellQty - pos.entryBuyPrice) * currentLotSize;
             let checkpointAtmPnl = pos.buyLeg.lastCheckpointAtmPnl !== undefined
               ? pos.buyLeg.lastCheckpointAtmPnl
-              : ((buyIntrinsic - pos.entryBuyPrice) - (sellIntrinsic - pos.entrySellPrice) * pos.sellQty) * currentLotSize;
+              : ((buyIntrinsic - pos.entryBuyPrice) + (pos.entrySellPrice - sellIntrinsic) * pos.sellQty) * currentLotSize;
 
             let threshold = (checkpointAtmPnl * 0.05) + checkpointPnl;
 
@@ -446,7 +447,7 @@ export async function startPaperTradingEngine() {
                 exitAtmRatio: liveAtmRatio
               };
 
-              const remainingGrossPnl = (buyPriceDiff * hypotheticalLotSize) - (sellPriceDiff * pos.sellQty * (pos.sellLeg.lotSize || 1)) + (pos.accumulatedSellPnl || 0);
+              const remainingGrossPnl = (buyPriceDiff * hypotheticalLotSize) + (sellPriceDiff * pos.sellQty * (pos.sellLeg.lotSize || 1)) + (pos.accumulatedSellPnl || 0);
               const remainingExitFee = calculateFee(liveExitBuy, spotPrice, 1, hypotheticalLotSize) +
                 calculateFee(liveExitSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize || 1);
               const remainingEntryFee = Math.max(0, entryFee - partialEntryFee);
@@ -454,8 +455,8 @@ export async function startPaperTradingEngine() {
 
               const originalLotSize = pos.buyLeg.originalLotSize || pos.buyLeg.lotSize || 1;
               const originalSellQty = pos.buyLeg.originalSellQty || pos.sellQty || 0;
-              const entryNetPremium = (pos.entryBuyPrice * originalLotSize) - (pos.entrySellPrice * originalSellQty * (pos.sellLeg.lotSize || 1));
-              const entryPremiumType = entryNetPremium >= 0 ? 'Debit' : 'Credit';
+              const entryNetPremium = (pos.entrySellPrice * originalSellQty * (pos.sellLeg.lotSize || 1)) - (pos.entryBuyPrice * originalLotSize);
+              const entryPremiumType = entryNetPremium >= 0 ? 'Credit' : 'Debit';
               const entryPremiumVal = Math.abs(entryNetPremium);
 
               const partialExitReason = `Partial Exit: Entry ATM PnL: ${checkpointAtmPnl.toFixed(2)} | Live ATM Ratio: ${liveAtmRatio.toFixed(2)} | Recalculated Ratio: ${recalculatedRatio.toFixed(2)} | Net Debit/Credit at Entry: $${entryPremiumVal.toFixed(2)} (${entryPremiumType}) | Unrealized:$${remainingNetPnl.toFixed(2)}`;
@@ -491,7 +492,7 @@ export async function startPaperTradingEngine() {
 
               // Save checkpoint values on the buyLeg object
               pos.buyLeg.lastCheckpointPnl = currentGrossPnl;
-              pos.buyLeg.lastCheckpointAtmPnl = ((buyIntrinsic - pos.entryBuyPrice) - (sellIntrinsic - pos.entrySellPrice) * pos.sellQty) * currentLotSize;
+              pos.buyLeg.lastCheckpointAtmPnl = ((buyIntrinsic - pos.entryBuyPrice) + (pos.entrySellPrice - sellIntrinsic) * pos.sellQty) * currentLotSize;
 
               currentLotSize = hypotheticalLotSize;
 
@@ -502,7 +503,7 @@ export async function startPaperTradingEngine() {
               checkpointPnl = pos.buyLeg.lastCheckpointPnl;
               checkpointAtmPnl = pos.buyLeg.lastCheckpointAtmPnl;
               threshold = (checkpointAtmPnl * 0.05) + checkpointPnl;
-              currentGrossPnl = (buyPriceDiff * currentLotSize) - (sellPriceDiff * pos.sellQty * (pos.sellLeg.lotSize || 1)) + (pos.accumulatedSellPnl || 0);
+              currentGrossPnl = (buyPriceDiff * currentLotSize) + (sellPriceDiff * pos.sellQty * (pos.sellLeg.lotSize || 1)) + (pos.accumulatedSellPnl || 0);
 
               hasScaled = true;
 
@@ -568,9 +569,9 @@ export async function startPaperTradingEngine() {
         }
 
         // PnL calculations
-        const buyPriceDiff = (latestBuy != null && pos.entryBuyPrice != null) ? (latestBuy - pos.entryBuyPrice) : 0;
-        const sellPriceDiff = (latestSell != null && pos.entrySellPrice != null) ? (latestSell - pos.entrySellPrice) : 0;
-        const grossPnl = (buyPriceDiff * pos.buyLeg.lotSize) - (sellPriceDiff * pos.sellQty * pos.sellLeg.lotSize) + (pos.accumulatedSellPnl || 0);
+        const buyPriceDiff = (latestBuy != null && pos.entryBuyPrice != null) ? (latestBuy - pos.entryBuyPrice) : 0; // Sell - Buy
+        const sellPriceDiff = (latestSell != null && pos.entrySellPrice != null) ? (pos.entrySellPrice - latestSell) : 0; // Sell - Buy
+        const grossPnl = (buyPriceDiff * pos.buyLeg.lotSize) + (sellPriceDiff * pos.sellQty * pos.sellLeg.lotSize) + (pos.accumulatedSellPnl || 0);
         const exitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize) +
           calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
         const totalFees = (pos.entryFee || 0) + exitFee;
@@ -925,7 +926,7 @@ export async function startPaperTradingEngine() {
             } else {
               const originalLotSize = t.sellLeg.lotSize || 1;
               const ratioLong = t.buyLeg.lotSize / originalLotSize;
-              log(`📥 ENTRY: ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} | Qty: ${ratioLong.toFixed(2)}:${t.sellQty} | Net: $${(t.entryBuyPrice * ratioLong - t.sellQty * t.entrySellPrice).toFixed(2)}`);
+              log(`📥 ENTRY: ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} | Qty: ${ratioLong.toFixed(2)}:${t.sellQty} | Net: $${(t.sellQty * t.entrySellPrice - t.entryBuyPrice * ratioLong).toFixed(2)}`);
             }
           } catch (err) { logError('Entry persistence error:', err); }
         }
