@@ -431,6 +431,7 @@ export async function startPaperTradingEngine() {
               log(`⚖️ SCALING: Position ${pos.id} (${pos.type.toUpperCase()}) - PnL: $${currentGrossPnl.toFixed(2)} >= Threshold: $${threshold.toFixed(2)}. ATM ratio (1:x) increased: Recalculated Ratio ${recalculatedRatio.toFixed(2)} <= Live ${liveAtmRatio} - 1. Reducing buy lot size from ${currentLotSize} to ${hypotheticalLotSize}.`);
 
               const partialGrossPnl = buyPriceDiff * deltaBuyQty;
+              pos.accumulatedSellPnl = (pos.accumulatedSellPnl || 0) + partialGrossPnl;
               const partialExitFee = calculateFee(liveExitBuy, spotPrice, 1, deltaBuyQty);
               const partialEntryFee = (pos.entryFee || 0) * (deltaBuyQty / pos.buyLeg.lotSize);
               const partialTotalFees = partialEntryFee + partialExitFee;
@@ -540,7 +541,8 @@ export async function startPaperTradingEngine() {
                 await supabase.from('active_positions').update({
                   buy_leg: JSON.stringify(pos.buyLeg),
                   entry_fee: pos.entryFee,
-                  margin: pos.margin
+                  margin: pos.margin,
+                  accumulated_sell_pnl: pos.accumulatedSellPnl
                 }).eq('id', pos.id);
               } catch (e) {
                 logError(`Failed to update scaled position ${pos.id} in DB:`, e);
@@ -571,7 +573,7 @@ export async function startPaperTradingEngine() {
         // PnL calculations
         const buyPriceDiff = (latestBuy != null && pos.entryBuyPrice != null) ? (latestBuy - pos.entryBuyPrice) : 0; // Sell - Buy
         const sellPriceDiff = (latestSell != null && pos.entrySellPrice != null) ? (pos.entrySellPrice - latestSell) : 0; // Sell - Buy
-        const grossPnl = (buyPriceDiff * pos.buyLeg.lotSize) + (sellPriceDiff * pos.sellQty * pos.sellLeg.lotSize) + (pos.accumulatedSellPnl || 0);
+        const grossPnl = (buyPriceDiff * pos.buyLeg.lotSize) + (sellPriceDiff * pos.sellQty * pos.sellLeg.lotSize);
         const exitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize) +
           calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
         const totalFees = (pos.entryFee || 0) + exitFee;
