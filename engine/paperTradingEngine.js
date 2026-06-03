@@ -253,7 +253,7 @@ export async function startPaperTradingEngine() {
           }
         }
         if (!nearest) return null;
-         const val = nearest[priceField] ?? nearest.lastPrice ?? nearest.markPrice;
+        const val = nearest[priceField] ?? nearest.lastPrice ?? nearest.markPrice;
         return (val != null && val > 0) ? val : null;
       }
 
@@ -426,7 +426,7 @@ export async function startPaperTradingEngine() {
             let threshold = (checkpointAtmPnl * 0.05) + checkpointPnl;
 
             // Scaling conditions: profitable AND PnL above trailing threshold AND hypothetical lot size >= floor limit AND live ATM ratio >= recalculated position ratio + 0.25
-            while (currentGrossPnl > 0 && currentGrossPnl >= threshold && hypotheticalLotSize >= floorLimit && liveAtmRatio >= recalculatedRatio + 0.25) {
+            while (currentGrossPnl >= threshold && hypotheticalLotSize >= floorLimit && liveAtmRatio >= recalculatedRatio + 0.25) {
               log(`⚖️ SCALING: Position ${pos.id} (${pos.type.toUpperCase()}) - PnL: $${currentGrossPnl.toFixed(2)} >= Threshold: $${threshold.toFixed(2)}. ATM ratio (1:x) increased: Recalculated Ratio ${recalculatedRatio.toFixed(2)} <= Live ${liveAtmRatio} - 0.25. Reducing buy lot size from ${currentLotSize} to ${hypotheticalLotSize}.`);
 
               const partialGrossPnl = buyPriceDiff * deltaBuyQty;
