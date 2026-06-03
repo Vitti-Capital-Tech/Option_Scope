@@ -630,6 +630,17 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         grossPnl += extraPnl;
         netPnl += extraPnl;
       }
+      let margin = t.margin || 0;
+      if (extraCreditMode && t.entrySellPrice > 0) {
+        const buyPrice = t.entryBuyPrice || 0;
+        const buyLot = t.buyLeg?.lotSize || 1;
+        const sellLot = t.sellLeg?.lotSize || 1;
+        const spot = t.entrySpotPrice || 0;
+        const longMargin = buyPrice * buyLot;
+        const shortValue = Math.min(200000, spot * sellQty * sellLot);
+        const leverage = 200;
+        margin = longMargin + (shortValue / leverage);
+      }
       return [
         formatDateTime(t.entryTime), formatDateTime(t.exitTime), fmtExpiry(t.expiry),
         t.type.toUpperCase(), `${t.buyLeg.lotSize.toFixed(2)}:${sellQty.toFixed(2)}`,
@@ -644,7 +655,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         t.buyLeg?.exitBuyAtmPrice != null ? t.buyLeg.exitBuyAtmPrice.toFixed(2) : '',
         t.buyLeg?.exitSellAtmPrice != null ? t.buyLeg.exitSellAtmPrice.toFixed(2) : '',
         grossPnl.toFixed(2), (t.totalFees || 0).toFixed(2), netPnl.toFixed(2),
-        (t.margin || 0).toFixed(2), t.exitReason || ''
+        margin.toFixed(2), t.exitReason || ''
       ].map(val => `"${String(val).replace(/"/g, '""')}"`).join(',');
     });
     const csv = [headers.map(h => `"${h}"`).join(','), ...rows].join('\n');
@@ -715,9 +726,26 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   ).length;
   const winRate = tradeHistory.length > 0
     ? ((wins / tradeHistory.length) * 100).toFixed(1) : '—';
-  const totalMargin = positions
-    .filter(p => p.underlying === underlying)
-    .reduce((s, p) => s + (p.margin || 0), 0);
+  const calculatePositionMargin = useCallback((p, isExtraMode = false) => {
+    const buyPrice = p.entryBuyPrice || 0;
+    const buyLot = p.buyLeg?.lotSize || 1;
+    const sellLot = p.sellLeg?.lotSize || 1;
+    const spot = spotPrice || p.entrySpotPrice || 0;
+    let sellQty = p.sellQty;
+    if (isExtraMode && p.entrySellPrice > 0) {
+      sellQty += Math.round((extraCreditAmount / p.entrySellPrice) / 0.25) * 0.25;
+    }
+    const longMargin = buyPrice * buyLot;
+    const shortValue = Math.min(200000, spot * sellQty * sellLot);
+    const leverage = 200;
+    return longMargin + (shortValue / leverage);
+  }, [spotPrice, extraCreditAmount]);
+
+  const totalMargin = React.useMemo(() => {
+    return positions
+      .filter(p => p.underlying === underlying)
+      .reduce((s, p) => s + calculatePositionMargin(p, extraCreditMode), 0);
+  }, [positions, underlying, extraCreditMode, calculatePositionMargin]);
   const filteredRealizedPnl = filteredTradeHistory.reduce((s, t) =>
     s + (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || 0)), 0);
   const filteredWins = filteredTradeHistory.filter(t =>
@@ -1161,9 +1189,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                           <td><span className={`pt-pnl ${pnlClass}`}>{pnlValue > 0 ? '+' : ''}{pnlValue.toFixed(2)}</span></td>
                           <td>
                             <div className="pt-margin-cell">
-                              <span>${(p.margin || 0).toFixed(0)}</span>
+                              <span>${calculatePositionMargin(p, extraCreditMode).toFixed(0)}</span>
                               <div className="pt-margin-bar">
-                                <div className="pt-margin-fill" style={{ width: `${Math.min(100, (p.margin / (totalMargin || 1)) * 100)}%` }} />
+                                <div className="pt-margin-fill" style={{ width: `${Math.min(100, (calculatePositionMargin(p, extraCreditMode) / (totalMargin || 1)) * 100)}%` }} />
                               </div>
                             </div>
                           </td>
