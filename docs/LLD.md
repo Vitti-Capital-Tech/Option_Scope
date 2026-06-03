@@ -55,7 +55,7 @@ Incoming frames are filtered to only process `type === 'v2/ticker'`. All other m
 
 To ensure zero-latency spot prices:
 1. **WebSocket Ticker Subscription**: The frontend UI (`PaperTrading.jsx`) and backend engines (`paperTradingEngine.js` and `atmExitEngine.js`) subscribe to the underlying perpetual future contract (e.g., `BTCUSD` or `ETHUSD`) directly over the WebSocket ticker stream. Spot price ticks are processed immediately upon receipt, updating the UI and engine states with zero latency.
-2. **Redundant REST Polling Fallback**: All modules continue to poll `getSpotPrice(underlying)` every **10 seconds** via `setInterval` as a safety net in case of WebSocket disconnects or message drops.
+2. **REST Polling & Tab Visibility Pause**: Spot price REST polling continues every **10 seconds** via `setInterval` as a safety net. To minimize egress, tab visibility listeners pause this interval when the tab goes to the background, performing a single update check when the tab is focused again.
 
 ---
 
@@ -199,7 +199,7 @@ After every scan, `publishTopSpreads` packages the top-3 calls and puts into a p
 
 **Supabase Realtime Subscription**: On mount (when `trading = true`), the engine subscribes to `postgres_changes` events on `active_positions` (`event: '*'`). Any INSERT, UPDATE, or DELETE by any client (engine tab, browser tab) triggers an immediate `fetchSupabaseActivePositions()` call, delivering the update to all connected sessions in < 1 second. The channel is unsubscribed (`supabase.removeChannel`) on component unmount or when `trading` becomes `false`.
 
-**Fallback Polling**: A 10-second `setInterval` polls `fetchSupabaseActivePositions` and `fetchSupabaseTradeHistory` as a safety net for any missed Realtime events.
+**Egress Optimization & Polling Removal**: Standard 10-second fallback polling intervals for positions and trade history are completely removed from the UI. The UI relies on the Realtime channels for updates, reducing PostgREST bandwidth.
 
 **DB-Level Count Guard (pre-insert)**: Before inserting any new position, the engine queries `active_positions` for the current `(underlying, type)` pair. If the live count is `>= 3`, the insert is aborted. Uses plain `.select('id')` (not `{ head: true }`) to ensure non-null response data.
 
@@ -207,16 +207,18 @@ After every scan, `publishTopSpreads` packages the top-3 calls and puts into a p
 
 **DB Unique Constraint Fallback**: A PostgreSQL unique constraint on `(buy_strike, sell_strike)` is the final safety net. Error code `23505` is caught and logged but does not crash the engine.
 
-**Write Throttle (`lastDbWriteRef`)**: Tracks Unix timestamp of the last local database write. The Supabase Realtime subscription (and the 30-second fallback poll) skip the fetch if a local write occurred within the last **3 seconds** to prevent a just-written position from being overwritten by a stale re-fetch before the DB has finished committing. (Previously 10 seconds — reduced to minimize the staleness window.)
+**Write Throttle (`lastDbWriteRef`)**: Tracks Unix timestamp of the last local database write. The Supabase Realtime subscription skips updates if a local write occurred within the last **3 seconds** to prevent a just-written position from being overwritten by a stale re-fetch before the DB has finished committing. (Previously 10 seconds — reduced to minimize the staleness window.)
 
-### Margin Calculation (`calcMargin`)
+### Margin Calculation (`calcMargin` & Live UI Margin)
 
-Applied to both engines using a fixed leverage of 200 and capping the short value at $200,000:
+Applied at entry in both engines and dynamically in the frontend UI:
 
 - **Leverage**: Fixed at **200×**
 - **Short Value Cap**: Capped at **$200,000** (`Math.min(200000, shortValue)`)
-
-`margin = (entryBuyPrice × buyLotSize) + (shortValue / leverage)`
+- **Static Entry Margin**: `margin = (entryBuyPrice × buyLotSize) + (shortValue / leverage)`
+- **Dynamic Live UI Margin**: In the frontend UI (`PaperTrading.jsx`), the margin for active positions is calculated in real-time as:
+  `liveMargin = (currentBuyPrice × buyLotSize) + (shortValue / leverage)`
+  where `currentBuyPrice` is the live option premium quote (falling back to `entryBuyPrice` if unavailable) and `shortValue` uses the live underlying spot price (capped at `$200,000` exposure), allowing the margin to tick dynamically in real-time.
 
 ---
 
@@ -247,9 +249,9 @@ All active positions are sorted by descending `|buyStrike - spotPrice|` (farthes
 For each active position, before evaluating its full exit triggers (such as expiry or ATM exit), the engine checks whether the position qualifies for a partial scale-down based on profitability, trailing PnL threshold, and ATM ratio drift:
 
 1. **Profitability Guard**: The position's unrealized `currentGrossPnl` (including accumulated sell PnL) must be **greater than zero**. This prevents scaling from triggering immediately at entry when PnL is zero.
-2. **Trailing Threshold Check**: Checkpoint values are recovered from `pos.buyLeg` metadata (or initialized from entry values on first evaluation). The trailing threshold is `checkpointAtmPnl * 0.05 + checkpointPnl`. The condition `currentGrossPnl >= threshold` must be met, meaning the position's PnL is at or above the trailing threshold.
-3. **Hypothetical Reduction & Recalculation**: The engine hypothetically reduces the current long lot size by `deltaBuyQty` (5% of original long quantity): `hypotheticalLotSize = currentLotSize - deltaBuyQty`. It then recalculates the position's lot ratio under this hypothetical reduction: `recalculatedRatio = pos.sellQty / hypotheticalLotSize`.
-4. **ATM Ratio Comparison (1:x comparison)**: The live ATM ratio (`liveAtmRatio`, computed as `buyIntrinsic / sellIntrinsic` rounded to nearest `0.25`) is compared to the `recalculatedRatio`. The condition is: **`liveAtmRatio >= recalculatedRatio + 0.25`**. This means the market's ATM ratio must be at least **0.25** points higher than the recalculated position ratio before the exit is triggered.
+2. **Trailing Threshold Check**: Checkpoint values are recovered from `pos.buyLeg` metadata (or initialized from entry values on first evaluation). The trailing threshold is `checkpointAtmPnl * 0.25 + checkpointPnl`. The condition `currentGrossPnl >= threshold` must be met, meaning the position's PnL is at or above the trailing threshold.
+3. **Hypothetical Reduction & Recalculation**: The engine hypothetically reduces the current long lot size by `deltaBuyQty` (25% of original long quantity): `hypotheticalLotSize = currentLotSize - deltaBuyQty`. It then recalculates the position's lot ratio under this hypothetical reduction: `recalculatedRatio = pos.sellQty / hypotheticalLotSize`.
+4. **ATM Ratio Comparison (1:x comparison)**: The live ATM ratio (`liveAtmRatio`, computed as `buyIntrinsic / sellIntrinsic` rounded to nearest `0.25`) is compared to the `recalculatedRatio`. The condition is: **`liveAtmRatio >= recalculatedRatio + 1`**. This means the market's ATM ratio must be at least **1** point higher than the recalculated position ratio before the exit is triggered.
 5. **Floor Limit**: The hypothetical long lot size must be at or above the fixed floor limit of `0.5` (`hypotheticalLotSize >= 0.5`).
 6. **Execution**: If all conditions are met (while loop):
    - Record a **partial exit** to `trade_history` with `is_partial: true`, the closed buy lot size as `deltaBuyQty`, and the closed sell lot size and sell quantity as `0`. The `exit_reason` is recorded in a concise format containing the exact initial and live ATM buy/sell prices, live and recalculated ratios, original net debit/credit at entry of the position, and remaining unrealized net PnL.
@@ -359,7 +361,7 @@ A UI-layer only feature — the Supabase database always stores original base va
 | Start/Stop | Manual toggle | Always-on (auto-starts on product load) |
 | Analytics | None | Bucketed `avg_pnl`, `avg_margin` per strike diff / sell qty range |
 | Supabase tables | `active_positions`, `trade_history` | `atm_exit_*` prefix tables (isolated) |
-| Leg swap | No | No |
+| Leg swap | Yes (same sell strike, better buy strike) | No |
 
 ### Evaluation Loop
 
