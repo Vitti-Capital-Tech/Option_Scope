@@ -727,7 +727,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const winRate = tradeHistory.length > 0
     ? ((wins / tradeHistory.length) * 100).toFixed(1) : '—';
   const calculatePositionMargin = useCallback((p, isExtraMode = false) => {
-    const buyPrice = p.entryBuyPrice || 0;
+    const buyPrice = p.currentBuyPrice != null ? p.currentBuyPrice : (p.entryBuyPrice || 0);
     const buyLot = p.buyLeg?.lotSize || 1;
     const sellLot = p.sellLeg?.lotSize || 1;
     const spot = spotPrice || p.entrySpotPrice || 0;
