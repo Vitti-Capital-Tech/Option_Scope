@@ -414,15 +414,16 @@ export async function startPaperTradingEngine() {
             const buyPriceDiff = (liveExitBuy != null && pos.entryBuyPrice != null) ? (liveExitBuy - pos.entryBuyPrice) : 0;
             const sellPriceDiff = (liveExitSell != null && pos.entrySellPrice != null) ? (pos.entrySellPrice - liveExitSell) : 0;
 
+            // NOTE: DB column is "accumulated_sell_pnl" but it actually tracks accumulated BUY leg partial exit PnL
             let accumulatedPartialBuyPnl = pos.accumulatedSellPnl || 0;
 
             let currentGrossPnl = (buyPriceDiff * currentLotSize)
               + (sellPriceDiff * pos.sellQty * (pos.sellLeg.lotSize || 1))
               + accumulatedPartialBuyPnl;
 
-            // REVERT: back to original checkpointAtmPnl approach
-            const atmPnlPerUnit = (buyIntrinsic - pos.entryBuyPrice)
-              + (pos.entrySellPrice - sellIntrinsic) * pos.sellQty;
+            // ATM PnL: buy side scales with lotSize, sell side is fixed (sellQty unchanged in partial exits)
+            const atmBuyPnlPerLot = buyIntrinsic - pos.entryBuyPrice;
+            const atmSellPnlTotal = (pos.entrySellPrice - sellIntrinsic) * pos.sellQty * (pos.sellLeg.lotSize || 1);
 
             let checkpointPnl = pos.buyLeg.lastCheckpointPnl !== undefined
               ? pos.buyLeg.lastCheckpointPnl
@@ -431,7 +432,7 @@ export async function startPaperTradingEngine() {
 
             let checkpointAtmPnl = pos.buyLeg.lastCheckpointAtmPnl !== undefined
               ? pos.buyLeg.lastCheckpointAtmPnl
-              : atmPnlPerUnit * currentLotSize;
+              : (atmBuyPnlPerLot * currentLotSize) + atmSellPnlTotal;
 
             let threshold = (checkpointAtmPnl * 0.05) + checkpointPnl;
 
@@ -444,8 +445,8 @@ export async function startPaperTradingEngine() {
 
               const partialGrossPnl = buyPriceDiff * deltaBuyQty;
 
-              // FIX B1: originalLotSize as denominator
-              const partialEntryFee = (pos.entryFee || 0) * (deltaBuyQty / originalLotSize);
+              // Proportional entry fee: use local (decremented) entryFee and currentLotSize
+              const partialEntryFee = entryFee * (deltaBuyQty / currentLotSize);
               const partialExitFee = calculateFee(liveExitBuy, spotPrice, 1, deltaBuyQty);
               const partialTotalFees = partialEntryFee + partialExitFee;
               const partialNetPnl = partialGrossPnl - partialTotalFees;
@@ -532,8 +533,8 @@ export async function startPaperTradingEngine() {
               checkpointPnl = currentGrossPnl;
               pos.buyLeg.lastCheckpointPnl = checkpointPnl;
 
-              // REVERT: save checkpointAtmPnl on new lot size
-              checkpointAtmPnl = atmPnlPerUnit * currentLotSize;
+              // Recalculate ATM PnL: buy scales with reduced lot size, sell stays fixed
+              checkpointAtmPnl = (atmBuyPnlPerLot * currentLotSize) + atmSellPnlTotal;
               pos.buyLeg.lastCheckpointAtmPnl = checkpointAtmPnl;
 
               threshold = (checkpointAtmPnl * 0.05) + checkpointPnl;
@@ -549,7 +550,7 @@ export async function startPaperTradingEngine() {
             if (hasScaled) {
               pos.entryFee = entryFee;
               pos.buyLeg.lotSize = currentLotSize;
-              pos.accumulatedSellPnl = accumulatedPartialBuyPnl;
+              pos.accumulatedSellPnl = accumulatedPartialBuyPnl; // DB column name is misleading; tracks buy leg partial PnL
 
               pos.margin = calcMargin(
                 pos.entryBuyPrice,
@@ -600,9 +601,9 @@ export async function startPaperTradingEngine() {
           }
         }
 
-        // PnL calculations
-        const buyPriceDiff = (latestBuy != null && pos.entryBuyPrice != null) ? (latestBuy - pos.entryBuyPrice) : 0; // Sell - Buy
-        const sellPriceDiff = (latestSell != null && pos.entrySellPrice != null) ? (pos.entrySellPrice - latestSell) : 0; // Sell - Buy
+        // PnL calculations (for remaining lots only; partial exit PnL stored separately in trade_history with is_partial=true)
+        const buyPriceDiff = (latestBuy != null && pos.entryBuyPrice != null) ? (latestBuy - pos.entryBuyPrice) : 0;
+        const sellPriceDiff = (latestSell != null && pos.entrySellPrice != null) ? (pos.entrySellPrice - latestSell) : 0;
         const grossPnl = (buyPriceDiff * pos.buyLeg.lotSize) + (sellPriceDiff * pos.sellQty * pos.sellLeg.lotSize);
         const exitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize) +
           calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
