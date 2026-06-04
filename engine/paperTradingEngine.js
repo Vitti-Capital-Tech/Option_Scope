@@ -406,7 +406,9 @@ export async function startPaperTradingEngine() {
             const floorLimit = 0.5;
             let currentLotSize = pos.buyLeg.lotSize;
             let hypotheticalLotSize = Number((currentLotSize - deltaBuyQty).toFixed(2));
-            let recalculatedRatio = Number((pos.sellQty / hypotheticalLotSize).toFixed(2));
+            let recalculatedRatio = hypotheticalLotSize > 0
+              ? Number((pos.sellQty / hypotheticalLotSize).toFixed(2))
+              : Infinity;
             let entryFee = pos.entryFee || 0;
             let hasScaled = false;
             let partialExitsToRecord = [];
@@ -480,8 +482,12 @@ export async function startPaperTradingEngine() {
               const entryPremiumType = entryNetPremium >= 0 ? 'Credit' : 'Debit';
               const entryPremiumVal = Math.abs(entryNetPremium);
 
-              // UPDATED partial exit reason
-              const nextThreshold = (checkpointAtmPnl * 0.05) + currentGrossPnl;
+              // Compute next threshold using post-update values (after lot size reduction)
+              const postAtmPnl = (atmBuyPnlPerLot * hypotheticalLotSize) + atmSellPnlTotal;
+              const postGrossPnl = (buyPriceDiff * hypotheticalLotSize)
+                + (sellPriceDiff * pos.sellQty * (pos.sellLeg.lotSize || 1))
+                + accumulatedPartialBuyPnl;
+              const nextThreshold = (postAtmPnl * 0.05) + postGrossPnl;
               const partialExitReason = [
                 `Partial Exit`,
                 `Checkpoint PnL: $${checkpointPnl.toFixed(2)}`,
@@ -544,7 +550,9 @@ export async function startPaperTradingEngine() {
               hasScaled = true;
 
               hypotheticalLotSize = Number((currentLotSize - deltaBuyQty).toFixed(2));
-              recalculatedRatio = Number((pos.sellQty / hypotheticalLotSize).toFixed(2));
+              recalculatedRatio = hypotheticalLotSize > 0
+                ? Number((pos.sellQty / hypotheticalLotSize).toFixed(2))
+                : Infinity;
             }
 
             if (hasScaled) {
