@@ -481,7 +481,20 @@ export async function startPaperTradingEngine() {
               const entryPremiumType = entryNetPremium >= 0 ? 'Credit' : 'Debit';
               const entryPremiumVal = Math.abs(entryNetPremium);
 
-              const partialExitReason = `Partial Exit: ATM PnL/unit: ${atmPnlPerUnit.toFixed(2)} | Live ATM Ratio: ${liveAtmRatio.toFixed(2)} | Recalculated Ratio: ${recalculatedRatio.toFixed(2)} | Net Debit/Credit at Entry: $${entryPremiumVal.toFixed(2)} (${entryPremiumType}) | Unrealized: $${remainingNetPnl.toFixed(2)}`;
+              const nextThreshold = checkpointPnl + (atmPnlPerUnit * currentLotSize * 0.05);
+
+              const partialExitReason = [
+                `Partial Exit`,
+                `Checkpoint PnL: $${checkpointPnl.toFixed(2)}`,
+                `ATM PnL/unit (frozen): $${atmPnlPerUnit.toFixed(2)}`,
+                `ATM step (5%): $${(atmPnlPerUnit * currentLotSize * 0.05).toFixed(2)}`,
+                `Next threshold: $${nextThreshold.toFixed(2)}`,
+                `Live ATM Ratio: ${liveAtmRatio.toFixed(2)}`,
+                `Recalculated Ratio: ${recalculatedRatio.toFixed(2)}`,
+                `Lots remaining: ${currentLotSize.toFixed(2)}`,
+                `Net ${entryPremiumType} at Entry: $${entryPremiumVal.toFixed(2)}`,
+                `Unrealized: $${remainingNetPnl.toFixed(2)}`
+              ].join(' | ');
 
               partialExitsToRecord.push({
                 trade_id: partialTradeId,
@@ -526,7 +539,6 @@ export async function startPaperTradingEngine() {
 
               // Freeze the next threshold at THIS moment's ATM step — stored in DB
               // Next tick loads this directly, no recalculation with drifted ATM prices
-              const nextThreshold = checkpointPnl + (atmPnlPerUnit * currentLotSize * 0.05);
               pos.buyLeg.lastCheckpointThreshold = nextThreshold;
               threshold = nextThreshold;
 
