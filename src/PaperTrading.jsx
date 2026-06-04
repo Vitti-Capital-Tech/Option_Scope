@@ -244,8 +244,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         .from('trade_history')
         .select('*')
         .eq('underlying', underlying)
-        .order('exit_time', { ascending: false })
-        .limit(100);
+        .order('exit_time', { ascending: false });
 
       if (error) return;
       if (data) {
@@ -777,7 +776,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
     const sellQty = t.sellQty || 0;
     const origLot = t.buyLeg?.originalLotSize || t.buyLeg?.lotSize || 1;
-    
+
     let uncappedSellQty = t.buyLeg?.originalSellQty !== undefined
       ? t.buyLeg.originalSellQty
       : sellQty / origLot;
@@ -1134,11 +1133,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                       const origLot = p.buyLeg?.originalLotSize || p.buyLeg?.lotSize || 1;
                       const rawOrigSellQty = p.buyLeg?.originalSellQty !== undefined
                         ? (extraCreditMode && p.entrySellPrice > 0
-                            ? p.buyLeg.originalSellQty + (Math.round((extraCreditAmount / p.entrySellPrice) / 0.25) * 0.25) / (p.buyLeg.originalLotSize || 1)
-                            : p.buyLeg.originalSellQty)
+                          ? p.buyLeg.originalSellQty + (Math.round((extraCreditAmount / p.entrySellPrice) / 0.25) * 0.25) / (p.buyLeg.originalLotSize || 1)
+                          : p.buyLeg.originalSellQty)
                         : (extraCreditMode && p.entrySellPrice > 0
-                            ? (p.sellQty + (Math.round((extraCreditAmount / p.entrySellPrice) / 0.25) * 0.25)) / origLot
-                            : p.sellQty / origLot);
+                          ? (p.sellQty + (Math.round((extraCreditAmount / p.entrySellPrice) / 0.25) * 0.25)) / origLot
+                          : p.sellQty / origLot);
                       const displayOrigSellQty = Math.round(rawOrigSellQty * 4) / 4;
 
                       return (
@@ -1327,11 +1326,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                       const origLot = t.buyLeg?.originalLotSize || t.buyLeg?.lotSize || 1;
                       const rawOrigSellQty = t.buyLeg?.originalSellQty !== undefined
                         ? (extraCreditMode && t.entrySellPrice > 0
-                            ? t.buyLeg.originalSellQty + (Math.round((extraCreditAmount / t.entrySellPrice) / 0.25) * 0.25) / (t.buyLeg.originalLotSize || 1)
-                            : t.buyLeg.originalSellQty)
+                          ? t.buyLeg.originalSellQty + (Math.round((extraCreditAmount / t.entrySellPrice) / 0.25) * 0.25) / (t.buyLeg.originalLotSize || 1)
+                          : t.buyLeg.originalSellQty)
                         : (extraCreditMode && t.entrySellPrice > 0
-                            ? (t.sellQty + (Math.round((extraCreditAmount / t.entrySellPrice) / 0.25) * 0.25)) / origLot
-                            : t.sellQty / origLot);
+                          ? (t.sellQty + (Math.round((extraCreditAmount / t.entrySellPrice) / 0.25) * 0.25)) / origLot
+                          : t.sellQty / origLot);
                       const displayOrigSellQty = Math.round(rawOrigSellQty * 4) / 4;
 
                       return (
