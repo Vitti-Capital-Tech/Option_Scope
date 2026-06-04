@@ -428,12 +428,13 @@ export async function startPaperTradingEngine() {
 
             let checkpointPnl = pos.buyLeg.lastCheckpointPnl !== undefined
               ? pos.buyLeg.lastCheckpointPnl
-              : -(pos.entrySellPrice * pos.sellQty - pos.entryBuyPrice) * currentLotSize;
+              : -((pos.entrySellPrice * pos.sellQty * (pos.sellLeg.lotSize || 1))
+                - (pos.entryBuyPrice * currentLotSize));
 
-            // FIX B4 (checkpointAtmPnl): use per-unit value × currentLotSize at comparison time
-            // atmPnlPerUnit is fixed (buyIntrinsic/sellIntrinsic don't change in this tick)
-            // so threshold step scales naturally with position size each iteration
-            let threshold = (atmPnlPerUnit * currentLotSize * 0.05) + checkpointPnl;
+            // Load frozen threshold if exists, otherwise calculate fresh
+            let threshold = pos.buyLeg.lastCheckpointThreshold !== undefined
+              ? pos.buyLeg.lastCheckpointThreshold
+              : (atmPnlPerUnit * currentLotSize * 0.05) + checkpointPnl;
 
             while (
               currentGrossPnl >= threshold &&
@@ -511,25 +512,25 @@ export async function startPaperTradingEngine() {
               // Update running entry fee
               entryFee = Math.max(0, entryFee - partialEntryFee);
 
-              // FIX B3 (checkpointPnl): save AFTER lot size reduction for apples-to-apples comparison
+              // Reduce lot size first
               currentLotSize = hypotheticalLotSize;
 
-              checkpointPnl = (buyPriceDiff * currentLotSize)
-                + (sellPriceDiff * pos.sellQty * (pos.sellLeg.lotSize || 1))
-                + accumulatedPartialBuyPnl;
-
-              pos.buyLeg.lastCheckpointPnl = checkpointPnl;
-              pos.buyLeg.maxAtmRatio = recalculatedRatio;
-
-              // FIX B4 (threshold): recompute using per-unit ATM PnL × new currentLotSize
-              threshold = (atmPnlPerUnit * currentLotSize * 0.05) + checkpointPnl;
-
-              // Recalculate currentGrossPnl on new lot size for next iteration
+              // Recalculate grossPnl on new lot size
               currentGrossPnl = (buyPriceDiff * currentLotSize)
                 + (sellPriceDiff * pos.sellQty * (pos.sellLeg.lotSize || 1))
                 + accumulatedPartialBuyPnl;
 
-              hasScaled = true;
+              // Save checkpoint as current grossPnl
+              checkpointPnl = currentGrossPnl;
+              pos.buyLeg.lastCheckpointPnl = checkpointPnl;
+
+              // Freeze the next threshold at THIS moment's ATM step — stored in DB
+              // Next tick loads this directly, no recalculation with drifted ATM prices
+              const nextThreshold = checkpointPnl + (atmPnlPerUnit * currentLotSize * 0.05);
+              pos.buyLeg.lastCheckpointThreshold = nextThreshold;
+              threshold = nextThreshold;
+
+              pos.buyLeg.maxAtmRatio = recalculatedRatio;
 
               hypotheticalLotSize = Number((currentLotSize - deltaBuyQty).toFixed(2));
               recalculatedRatio = Number((pos.sellQty / hypotheticalLotSize).toFixed(2));
