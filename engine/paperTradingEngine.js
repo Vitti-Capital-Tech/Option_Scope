@@ -429,8 +429,8 @@ export async function startPaperTradingEngine() {
 
             let checkpointPnl = pos.buyLeg.lastCheckpointPnl !== undefined
               ? pos.buyLeg.lastCheckpointPnl
-              : -((pos.entrySellPrice * pos.sellQty * (pos.sellLeg.lotSize || 1))
-                - (pos.entryBuyPrice * currentLotSize));
+              : (pos.entrySellPrice * pos.sellQty * (pos.sellLeg.lotSize || 1))
+              - (pos.entryBuyPrice * currentLotSize);
 
             let checkpointAtmPnl = pos.buyLeg.lastCheckpointAtmPnl !== undefined
               ? pos.buyLeg.lastCheckpointAtmPnl
