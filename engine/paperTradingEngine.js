@@ -433,7 +433,7 @@ export async function startPaperTradingEngine() {
               const partialGrossPnl = buyPriceDiff * deltaBuyQty;
               pos.accumulatedSellPnl = (pos.accumulatedSellPnl || 0) + partialGrossPnl;
               const partialExitFee = calculateFee(liveExitBuy, spotPrice, 1, deltaBuyQty);
-              const partialEntryFee = (pos.entryFee || 0) * (deltaBuyQty / pos.buyLeg.lotSize);
+              const partialEntryFee = (pos.entryFee || 0) * (deltaBuyQty / originalLotSize);
               const partialTotalFees = partialEntryFee + partialExitFee;
               const partialNetPnl = partialGrossPnl - partialTotalFees;
 
@@ -454,7 +454,6 @@ export async function startPaperTradingEngine() {
               const remainingEntryFee = Math.max(0, entryFee - partialEntryFee);
               const remainingNetPnl = remainingGrossPnl - (remainingEntryFee + remainingExitFee);
 
-              const originalLotSize = pos.buyLeg.originalLotSize || pos.buyLeg.lotSize || 1;
               const originalSellQty = pos.buyLeg.originalSellQty || pos.sellQty || 0;
               const entryNetPremium = (pos.entrySellPrice * originalSellQty * (pos.sellLeg.lotSize || 1)) - (pos.entryBuyPrice * originalLotSize);
               const entryPremiumType = entryNetPremium >= 0 ? 'Credit' : 'Debit';
