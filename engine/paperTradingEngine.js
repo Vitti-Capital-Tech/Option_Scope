@@ -401,7 +401,7 @@ export async function startPaperTradingEngine() {
 
           if (pos.buyLeg && pos.buyLeg.originalLotSize !== undefined && buyIntrinsic != null && sellIntrinsic != null && sellIntrinsic > 0) {
             const liveAtmRatio = parseFloat((Math.round((buyIntrinsic / sellIntrinsic) / 0.25) * 0.25).toFixed(2));
-            const originalLotSize = pos.buyLeg.originalLotSize || pos.buyLeg.lotSize || 1;  // FIX B2: declared once only
+            const originalLotSize = pos.buyLeg.originalLotSize || pos.buyLeg.lotSize || 1;
             const deltaBuyQty = Number((originalLotSize * 0.05).toFixed(2));
             const floorLimit = 0.5;
             let currentLotSize = pos.buyLeg.lotSize;
@@ -414,15 +414,13 @@ export async function startPaperTradingEngine() {
             const buyPriceDiff = (liveExitBuy != null && pos.entryBuyPrice != null) ? (liveExitBuy - pos.entryBuyPrice) : 0;
             const sellPriceDiff = (liveExitSell != null && pos.entrySellPrice != null) ? (pos.entrySellPrice - liveExitSell) : 0;
 
-            // FIX B2 (naming): rename to accumulatedPartialBuyPnl for clarity
             let accumulatedPartialBuyPnl = pos.accumulatedSellPnl || 0;
 
             let currentGrossPnl = (buyPriceDiff * currentLotSize)
               + (sellPriceDiff * pos.sellQty * (pos.sellLeg.lotSize || 1))
               + accumulatedPartialBuyPnl;
 
-            // FIX B3 (checkpointPnl): store ATM PnL per unit, not scaled by lotSize
-            // This avoids lot-size mismatch across iterations entirely
+            // REVERT: back to original checkpointAtmPnl approach
             const atmPnlPerUnit = (buyIntrinsic - pos.entryBuyPrice)
               + (pos.entrySellPrice - sellIntrinsic) * pos.sellQty;
 
@@ -431,10 +429,11 @@ export async function startPaperTradingEngine() {
               : -((pos.entrySellPrice * pos.sellQty * (pos.sellLeg.lotSize || 1))
                 - (pos.entryBuyPrice * currentLotSize));
 
-            // Load frozen threshold if exists, otherwise calculate fresh
-            let threshold = pos.buyLeg.lastCheckpointThreshold !== undefined
-              ? pos.buyLeg.lastCheckpointThreshold
-              : (atmPnlPerUnit * currentLotSize * 0.05) + checkpointPnl;
+            let checkpointAtmPnl = pos.buyLeg.lastCheckpointAtmPnl !== undefined
+              ? pos.buyLeg.lastCheckpointAtmPnl
+              : atmPnlPerUnit * currentLotSize;
+
+            let threshold = (checkpointAtmPnl * 0.05) + checkpointPnl;
 
             while (
               currentGrossPnl >= threshold &&
@@ -445,7 +444,7 @@ export async function startPaperTradingEngine() {
 
               const partialGrossPnl = buyPriceDiff * deltaBuyQty;
 
-              // FIX B1: use originalLotSize as denominator — entry fee was paid on full original size
+              // FIX B1: originalLotSize as denominator
               const partialEntryFee = (pos.entryFee || 0) * (deltaBuyQty / originalLotSize);
               const partialExitFee = calculateFee(liveExitBuy, spotPrice, 1, deltaBuyQty);
               const partialTotalFees = partialEntryFee + partialExitFee;
@@ -464,8 +463,7 @@ export async function startPaperTradingEngine() {
                 exitAtmRatio: liveAtmRatio
               };
 
-              // FIX B5 (remainingGrossPnl): use hypotheticalLotSize and subtract partialGrossPnl
-              // from accumulatedPartialBuyPnl to avoid double counting
+              // FIX B5: remainingGrossPnl double count fix
               const remainingGrossPnl = (buyPriceDiff * hypotheticalLotSize)
                 + (sellPriceDiff * pos.sellQty * (pos.sellLeg.lotSize || 1))
                 + (accumulatedPartialBuyPnl - partialGrossPnl);
@@ -481,17 +479,17 @@ export async function startPaperTradingEngine() {
               const entryPremiumType = entryNetPremium >= 0 ? 'Credit' : 'Debit';
               const entryPremiumVal = Math.abs(entryNetPremium);
 
-              const nextThreshold = checkpointPnl + (atmPnlPerUnit * currentLotSize * 0.05);
-
+              // UPDATED partial exit reason
+              const nextThreshold = (checkpointAtmPnl * 0.05) + currentGrossPnl;
               const partialExitReason = [
                 `Partial Exit`,
                 `Checkpoint PnL: $${checkpointPnl.toFixed(2)}`,
-                `ATM PnL/unit (frozen): $${atmPnlPerUnit.toFixed(2)}`,
-                `ATM step (5%): $${(atmPnlPerUnit * currentLotSize * 0.05).toFixed(2)}`,
+                `Checkpoint ATM PnL: $${checkpointAtmPnl.toFixed(2)}`,
+                `ATM step (5%): $${(checkpointAtmPnl * 0.05).toFixed(2)}`,
                 `Next threshold: $${nextThreshold.toFixed(2)}`,
                 `Live ATM Ratio: ${liveAtmRatio.toFixed(2)}`,
                 `Recalculated Ratio: ${recalculatedRatio.toFixed(2)}`,
-                `Lots remaining: ${currentLotSize.toFixed(2)}`,
+                `Lots remaining: ${hypotheticalLotSize.toFixed(2)}`,
                 `Net ${entryPremiumType} at Entry: $${entryPremiumVal.toFixed(2)}`,
                 `Unrealized: $${remainingNetPnl.toFixed(2)}`
               ].join(' | ');
@@ -522,27 +520,27 @@ export async function startPaperTradingEngine() {
                 is_partial: true
               });
 
-              // Update running entry fee
               entryFee = Math.max(0, entryFee - partialEntryFee);
 
-              // Reduce lot size first
+              // FIX B3: save checkpoint AFTER lot size reduction
               currentLotSize = hypotheticalLotSize;
 
-              // Recalculate grossPnl on new lot size
               currentGrossPnl = (buyPriceDiff * currentLotSize)
                 + (sellPriceDiff * pos.sellQty * (pos.sellLeg.lotSize || 1))
                 + accumulatedPartialBuyPnl;
 
-              // Save checkpoint as current grossPnl
               checkpointPnl = currentGrossPnl;
               pos.buyLeg.lastCheckpointPnl = checkpointPnl;
 
-              // Freeze the next threshold at THIS moment's ATM step — stored in DB
-              // Next tick loads this directly, no recalculation with drifted ATM prices
-              pos.buyLeg.lastCheckpointThreshold = nextThreshold;
-              threshold = nextThreshold;
+              // REVERT: save checkpointAtmPnl on new lot size
+              checkpointAtmPnl = atmPnlPerUnit * currentLotSize;
+              pos.buyLeg.lastCheckpointAtmPnl = checkpointAtmPnl;
+
+              threshold = (checkpointAtmPnl * 0.05) + checkpointPnl;
 
               pos.buyLeg.maxAtmRatio = recalculatedRatio;
+
+              hasScaled = true;
 
               hypotheticalLotSize = Number((currentLotSize - deltaBuyQty).toFixed(2));
               recalculatedRatio = Number((pos.sellQty / hypotheticalLotSize).toFixed(2));
@@ -551,7 +549,7 @@ export async function startPaperTradingEngine() {
             if (hasScaled) {
               pos.entryFee = entryFee;
               pos.buyLeg.lotSize = currentLotSize;
-              pos.accumulatedSellPnl = accumulatedPartialBuyPnl;  // keep DB field name for compatibility
+              pos.accumulatedSellPnl = accumulatedPartialBuyPnl;
 
               pos.margin = calcMargin(
                 pos.entryBuyPrice,
@@ -561,7 +559,7 @@ export async function startPaperTradingEngine() {
                 pos.sellLeg.lotSize || 1
               );
 
-              // FIX B6 (DB inserts): single batched insert instead of sequential awaits
+              // FIX B6: batched insert
               try {
                 await supabase.from('trade_history').insert(partialExitsToRecord);
                 log(`📤 PARTIAL EXITS RECORDED: ${pos.id} | ${partialExitsToRecord.length} exits | Total reduced: ${partialExitsToRecord.length * deltaBuyQty} lots`);
@@ -582,6 +580,7 @@ export async function startPaperTradingEngine() {
             }
           }
         }
+
         const latestBuy = liveExitBuy;
         const latestSell = liveExitSell;
         const latestBuyIv = tickerBuy?.bidIv ?? tickerBuy?.iv ?? null;
