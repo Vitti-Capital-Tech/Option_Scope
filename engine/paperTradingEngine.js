@@ -382,10 +382,10 @@ export async function startPaperTradingEngine() {
 
         // Dynamic ATM ratio-based scaling
         if (atmStrike !== null) {
-          // Initialize/reconstruct for older/migrated positions if missing
+          // Initialize missing fields for older positions
           if (pos.buyLeg && (pos.buyLeg.originalLotSize === undefined || pos.buyLeg.originalSellQty === undefined)) {
-            pos.buyLeg.originalLotSize = pos.buyLeg.originalLotSize !== undefined ? pos.buyLeg.originalLotSize : (pos.buyLeg.lotSize || 1);
-            pos.buyLeg.originalSellQty = pos.buyLeg.originalSellQty !== undefined ? pos.buyLeg.originalSellQty : (pos.sellQty || 0);
+            pos.buyLeg.originalLotSize = pos.buyLeg.originalLotSize ?? (pos.buyLeg.lotSize || 1);
+            pos.buyLeg.originalSellQty = pos.buyLeg.originalSellQty ?? (pos.sellQty || 0);
             try {
               await supabase.from('active_positions').update({
                 buy_leg: JSON.stringify(pos.buyLeg)
@@ -401,7 +401,7 @@ export async function startPaperTradingEngine() {
 
           if (pos.buyLeg && pos.buyLeg.originalLotSize !== undefined && buyIntrinsic != null && sellIntrinsic != null && sellIntrinsic > 0) {
             const liveAtmRatio = parseFloat((Math.round((buyIntrinsic / sellIntrinsic) / 0.25) * 0.25).toFixed(2));
-            const originalLotSize = pos.buyLeg.originalLotSize || pos.buyLeg.lotSize || 1;
+            const originalLotSize = pos.buyLeg.originalLotSize || pos.buyLeg.lotSize || 1;  // FIX B2: declared once only
             const deltaBuyQty = Number((originalLotSize * 0.05).toFixed(2));
             const floorLimit = 0.5;
             let currentLotSize = pos.buyLeg.lotSize;
@@ -411,31 +411,46 @@ export async function startPaperTradingEngine() {
             let hasScaled = false;
             let partialExitsToRecord = [];
 
-            const buyPriceDiff = (liveExitBuy != null && pos.entryBuyPrice != null) ? (liveExitBuy - pos.entryBuyPrice) : 0; // Sell - Buy
-            const sellPriceDiff = (liveExitSell != null && pos.entrySellPrice != null) ? (pos.entrySellPrice - liveExitSell) : 0; // Sell - Buy
+            const buyPriceDiff = (liveExitBuy != null && pos.entryBuyPrice != null) ? (liveExitBuy - pos.entryBuyPrice) : 0;
+            const sellPriceDiff = (liveExitSell != null && pos.entrySellPrice != null) ? (pos.entrySellPrice - liveExitSell) : 0;
 
-            let currentGrossPnl = (buyPriceDiff * currentLotSize) + (sellPriceDiff * pos.sellQty * (pos.sellLeg.lotSize || 1)) + (pos.accumulatedSellPnl || 0);
+            // FIX B2 (naming): rename to accumulatedPartialBuyPnl for clarity
+            let accumulatedPartialBuyPnl = pos.accumulatedSellPnl || 0;
 
-            // Initialize checkpointPnl to the entry debit (which is -netPremium) if not already set
+            let currentGrossPnl = (buyPriceDiff * currentLotSize)
+              + (sellPriceDiff * pos.sellQty * (pos.sellLeg.lotSize || 1))
+              + accumulatedPartialBuyPnl;
+
+            // FIX B3 (checkpointPnl): store ATM PnL per unit, not scaled by lotSize
+            // This avoids lot-size mismatch across iterations entirely
+            const atmPnlPerUnit = (buyIntrinsic - pos.entryBuyPrice)
+              + (pos.entrySellPrice - sellIntrinsic) * pos.sellQty;
+
             let checkpointPnl = pos.buyLeg.lastCheckpointPnl !== undefined
               ? pos.buyLeg.lastCheckpointPnl
               : -(pos.entrySellPrice * pos.sellQty - pos.entryBuyPrice) * currentLotSize;
-            let checkpointAtmPnl = pos.buyLeg.lastCheckpointAtmPnl !== undefined
-              ? pos.buyLeg.lastCheckpointAtmPnl
-              : ((buyIntrinsic - pos.entryBuyPrice) + (pos.entrySellPrice - sellIntrinsic) * pos.sellQty) * currentLotSize;
 
-            let threshold = (checkpointAtmPnl * 0.05) + checkpointPnl;
+            // FIX B4 (checkpointAtmPnl): use per-unit value × currentLotSize at comparison time
+            // atmPnlPerUnit is fixed (buyIntrinsic/sellIntrinsic don't change in this tick)
+            // so threshold step scales naturally with position size each iteration
+            let threshold = (atmPnlPerUnit * currentLotSize * 0.05) + checkpointPnl;
 
-            // Scaling conditions: profitable AND PnL above trailing threshold AND hypothetical lot size >= floor limit AND live ATM ratio >= recalculated position ratio + 1
-            while (currentGrossPnl >= threshold && hypotheticalLotSize >= floorLimit && liveAtmRatio >= recalculatedRatio + 0.25) {
+            while (
+              currentGrossPnl >= threshold &&
+              hypotheticalLotSize >= floorLimit &&
+              liveAtmRatio >= recalculatedRatio + 0.25
+            ) {
               log(`⚖️ SCALING: Position ${pos.id} (${pos.type.toUpperCase()}) - PnL: $${currentGrossPnl.toFixed(2)} >= Threshold: $${threshold.toFixed(2)}. ATM ratio (1:x) increased: Recalculated Ratio ${recalculatedRatio.toFixed(2)} <= Live ${liveAtmRatio} - 1. Reducing buy lot size from ${currentLotSize} to ${hypotheticalLotSize}.`);
 
               const partialGrossPnl = buyPriceDiff * deltaBuyQty;
-              pos.accumulatedSellPnl = (pos.accumulatedSellPnl || 0) + partialGrossPnl;
-              const partialExitFee = calculateFee(liveExitBuy, spotPrice, 1, deltaBuyQty);
+
+              // FIX B1: use originalLotSize as denominator — entry fee was paid on full original size
               const partialEntryFee = (pos.entryFee || 0) * (deltaBuyQty / originalLotSize);
+              const partialExitFee = calculateFee(liveExitBuy, spotPrice, 1, deltaBuyQty);
               const partialTotalFees = partialEntryFee + partialExitFee;
               const partialNetPnl = partialGrossPnl - partialTotalFees;
+
+              accumulatedPartialBuyPnl += partialGrossPnl;
 
               const partialTradeId = `${pos.id}-PE-${Date.now().toString(36).toUpperCase()}-${partialExitsToRecord.length}`;
 
@@ -448,18 +463,24 @@ export async function startPaperTradingEngine() {
                 exitAtmRatio: liveAtmRatio
               };
 
-              const remainingGrossPnl = (buyPriceDiff * hypotheticalLotSize) + (sellPriceDiff * pos.sellQty * (pos.sellLeg.lotSize || 1)) + (pos.accumulatedSellPnl || 0);
-              const remainingExitFee = calculateFee(liveExitBuy, spotPrice, 1, hypotheticalLotSize) +
-                calculateFee(liveExitSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize || 1);
+              // FIX B5 (remainingGrossPnl): use hypotheticalLotSize and subtract partialGrossPnl
+              // from accumulatedPartialBuyPnl to avoid double counting
+              const remainingGrossPnl = (buyPriceDiff * hypotheticalLotSize)
+                + (sellPriceDiff * pos.sellQty * (pos.sellLeg.lotSize || 1))
+                + (accumulatedPartialBuyPnl - partialGrossPnl);
+
+              const remainingExitFee = calculateFee(liveExitBuy, spotPrice, 1, hypotheticalLotSize)
+                + calculateFee(liveExitSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize || 1);
               const remainingEntryFee = Math.max(0, entryFee - partialEntryFee);
               const remainingNetPnl = remainingGrossPnl - (remainingEntryFee + remainingExitFee);
 
               const originalSellQty = pos.buyLeg.originalSellQty || pos.sellQty || 0;
-              const entryNetPremium = (pos.entrySellPrice * originalSellQty * (pos.sellLeg.lotSize || 1)) - (pos.entryBuyPrice * originalLotSize);
+              const entryNetPremium = (pos.entrySellPrice * originalSellQty * (pos.sellLeg.lotSize || 1))
+                - (pos.entryBuyPrice * originalLotSize);
               const entryPremiumType = entryNetPremium >= 0 ? 'Credit' : 'Debit';
               const entryPremiumVal = Math.abs(entryNetPremium);
 
-              const partialExitReason = `Partial Exit: Entry ATM PnL: ${checkpointAtmPnl.toFixed(2)} | Live ATM Ratio: ${liveAtmRatio.toFixed(2)} | Recalculated Ratio: ${recalculatedRatio.toFixed(2)} | Net Debit/Credit at Entry: $${entryPremiumVal.toFixed(2)} (${entryPremiumType}) | Unrealized:$${remainingNetPnl.toFixed(2)}`;
+              const partialExitReason = `Partial Exit: ATM PnL/unit: ${atmPnlPerUnit.toFixed(2)} | Live ATM Ratio: ${liveAtmRatio.toFixed(2)} | Recalculated Ratio: ${recalculatedRatio.toFixed(2)} | Net Debit/Credit at Entry: $${entryPremiumVal.toFixed(2)} (${entryPremiumType}) | Unrealized: $${remainingNetPnl.toFixed(2)}`;
 
               partialExitsToRecord.push({
                 trade_id: partialTradeId,
@@ -487,27 +508,29 @@ export async function startPaperTradingEngine() {
                 is_partial: true
               });
 
-              // Update entry fee
+              // Update running entry fee
               entryFee = Math.max(0, entryFee - partialEntryFee);
 
-              // Save checkpoint values on the buyLeg object
-              pos.buyLeg.lastCheckpointPnl = currentGrossPnl;
-              pos.buyLeg.lastCheckpointAtmPnl = ((buyIntrinsic - pos.entryBuyPrice) + (pos.entrySellPrice - sellIntrinsic) * pos.sellQty) * currentLotSize;
-
+              // FIX B3 (checkpointPnl): save AFTER lot size reduction for apples-to-apples comparison
               currentLotSize = hypotheticalLotSize;
 
-              // Update maxAtmRatio in the metadata to reflect the new ratio of the position
+              checkpointPnl = (buyPriceDiff * currentLotSize)
+                + (sellPriceDiff * pos.sellQty * (pos.sellLeg.lotSize || 1))
+                + accumulatedPartialBuyPnl;
+
+              pos.buyLeg.lastCheckpointPnl = checkpointPnl;
               pos.buyLeg.maxAtmRatio = recalculatedRatio;
 
-              // Recalculate checkpoints & threshold for the next loop iteration
-              checkpointPnl = pos.buyLeg.lastCheckpointPnl;
-              checkpointAtmPnl = pos.buyLeg.lastCheckpointAtmPnl;
-              threshold = (checkpointAtmPnl * 0.05) + checkpointPnl;
-              currentGrossPnl = (buyPriceDiff * currentLotSize) + (sellPriceDiff * pos.sellQty * (pos.sellLeg.lotSize || 1)) + (pos.accumulatedSellPnl || 0);
+              // FIX B4 (threshold): recompute using per-unit ATM PnL × new currentLotSize
+              threshold = (atmPnlPerUnit * currentLotSize * 0.05) + checkpointPnl;
+
+              // Recalculate currentGrossPnl on new lot size for next iteration
+              currentGrossPnl = (buyPriceDiff * currentLotSize)
+                + (sellPriceDiff * pos.sellQty * (pos.sellLeg.lotSize || 1))
+                + accumulatedPartialBuyPnl;
 
               hasScaled = true;
 
-              // Prepare for the next loop iteration comparison
               hypotheticalLotSize = Number((currentLotSize - deltaBuyQty).toFixed(2));
               recalculatedRatio = Number((pos.sellQty / hypotheticalLotSize).toFixed(2));
             }
@@ -515,8 +538,8 @@ export async function startPaperTradingEngine() {
             if (hasScaled) {
               pos.entryFee = entryFee;
               pos.buyLeg.lotSize = currentLotSize;
+              pos.accumulatedSellPnl = accumulatedPartialBuyPnl;  // keep DB field name for compatibility
 
-              // Recalculate margin
               pos.margin = calcMargin(
                 pos.entryBuyPrice,
                 pos.buyLeg.lotSize,
@@ -525,17 +548,14 @@ export async function startPaperTradingEngine() {
                 pos.sellLeg.lotSize || 1
               );
 
-              // Record partial exits
-              for (const record of partialExitsToRecord) {
-                try {
-                  await supabase.from('trade_history').insert([record]);
-                  log(`📤 PARTIAL EXIT RECORDED: ${pos.id} | Reduced buy lot size by ${deltaBuyQty} | Net PnL: $${record.realized_net_pnl.toFixed(2)}`);
-                } catch (e) {
-                  logError(`Failed to insert partial exit history for position ${pos.id}:`, e);
-                }
+              // FIX B6 (DB inserts): single batched insert instead of sequential awaits
+              try {
+                await supabase.from('trade_history').insert(partialExitsToRecord);
+                log(`📤 PARTIAL EXITS RECORDED: ${pos.id} | ${partialExitsToRecord.length} exits | Total reduced: ${partialExitsToRecord.length * deltaBuyQty} lots`);
+              } catch (e) {
+                logError(`Failed to insert partial exit history for position ${pos.id}:`, e);
               }
 
-              // Update active position in Supabase
               try {
                 await supabase.from('active_positions').update({
                   buy_leg: JSON.stringify(pos.buyLeg),
@@ -549,7 +569,6 @@ export async function startPaperTradingEngine() {
             }
           }
         }
-
         const latestBuy = liveExitBuy;
         const latestSell = liveExitSell;
         const latestBuyIv = tickerBuy?.bidIv ?? tickerBuy?.iv ?? null;
