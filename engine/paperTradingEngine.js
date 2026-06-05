@@ -295,7 +295,7 @@ export async function startPaperTradingEngine() {
       }
       for (const spread of topSpreads) {
         const { atmPnl, roi } = calculateAtmPnlAndRoi(spread);
-        const passed = (atmPnl != null && atmPnl >= 0);
+        const passed = (atmPnl != null && atmPnl >= 50);
         if (!onlyExits) {
           log(`  Candidate ${spread.buyLeg.type.toUpperCase()} ${spread.buyLeg.strike}/${spread.sellLeg.strike}: ATM P&L = $${atmPnl != null ? atmPnl.toFixed(2) : 'null'} (Min required: $50.00), ROI = ${roi != null ? roi.toFixed(2) : 0}%, Passed = ${passed}`);
         }
@@ -402,7 +402,7 @@ export async function startPaperTradingEngine() {
           if (pos.buyLeg && pos.buyLeg.originalLotSize !== undefined && buyIntrinsic != null && sellIntrinsic != null && sellIntrinsic > 0) {
             const liveAtmRatio = parseFloat((Math.round((buyIntrinsic / sellIntrinsic) / 0.25) * 0.25).toFixed(2));
             const originalLotSize = pos.buyLeg.originalLotSize || pos.buyLeg.lotSize || 1;
-            const deltaBuyQty = Number((originalLotSize * 0.05).toFixed(2));
+            const deltaBuyQty = Number((originalLotSize * 0.25).toFixed(2));
             const floorLimit = 0.5;
             let currentLotSize = pos.buyLeg.lotSize;
             let hypotheticalLotSize = Number((currentLotSize - deltaBuyQty).toFixed(2));
@@ -436,12 +436,12 @@ export async function startPaperTradingEngine() {
               ? pos.buyLeg.lastCheckpointAtmPnl
               : (atmBuyPnlPerLot * currentLotSize) + atmSellPnlTotal;
 
-            let threshold = (checkpointAtmPnl * 0.05) + checkpointPnl;
+            let threshold = (checkpointAtmPnl * 0.25) + checkpointPnl;
 
             while (
               currentGrossPnl >= threshold &&
               hypotheticalLotSize >= floorLimit &&
-              liveAtmRatio >= recalculatedRatio + 0.25
+              liveAtmRatio >= recalculatedRatio + 1
             ) {
               log(`⚖️ SCALING: Position ${pos.id} (${pos.type.toUpperCase()}) - PnL: $${currentGrossPnl.toFixed(2)} >= Threshold: $${threshold.toFixed(2)}. ATM ratio (1:x) increased: Recalculated Ratio ${recalculatedRatio.toFixed(2)} <= Live ${liveAtmRatio} - 1. Reducing buy lot size from ${currentLotSize} to ${hypotheticalLotSize}.`);
 
@@ -487,12 +487,12 @@ export async function startPaperTradingEngine() {
               const postGrossPnl = (buyPriceDiff * hypotheticalLotSize)
                 + (sellPriceDiff * pos.sellQty * (pos.sellLeg.lotSize || 1))
                 + accumulatedPartialBuyPnl;
-              const nextThreshold = (postAtmPnl * 0.05) + postGrossPnl;
+              const nextThreshold = (postAtmPnl * 0.25) + postGrossPnl;
               const partialExitReason = [
                 `Partial Exit`,
                 `Checkpoint PnL: $${checkpointPnl.toFixed(2)}`,
                 `Checkpoint ATM PnL: $${checkpointAtmPnl.toFixed(2)}`,
-                `ATM step (5%): $${(checkpointAtmPnl * 0.05).toFixed(2)}`,
+                `ATM step (25%): $${(checkpointAtmPnl * 0.25).toFixed(2)}`,
                 `Next threshold: $${nextThreshold.toFixed(2)}`,
                 `Live ATM Ratio: ${liveAtmRatio.toFixed(2)}`,
                 `Recalculated Ratio: ${recalculatedRatio.toFixed(2)}`,
@@ -543,7 +543,7 @@ export async function startPaperTradingEngine() {
               checkpointAtmPnl = (atmBuyPnlPerLot * currentLotSize) + atmSellPnlTotal;
               pos.buyLeg.lastCheckpointAtmPnl = checkpointAtmPnl;
 
-              threshold = (checkpointAtmPnl * 0.05) + checkpointPnl;
+              threshold = (checkpointAtmPnl * 0.25) + checkpointPnl;
 
               pos.buyLeg.maxAtmRatio = recalculatedRatio;
 
