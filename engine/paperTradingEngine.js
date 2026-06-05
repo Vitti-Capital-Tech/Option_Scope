@@ -490,6 +490,8 @@ export async function startPaperTradingEngine() {
               const nextThreshold = (postAtmPnl * 0.25) + postGrossPnl;
               const partialExitReason = [
                 `Partial Exit`,
+                `Current Gross PnL: $${currentGrossPnl.toFixed(2)}`,
+                `Threshold Met: $${threshold.toFixed(2)}`,
                 `Checkpoint PnL: $${checkpointPnl.toFixed(2)}`,
                 `Checkpoint ATM PnL: $${checkpointAtmPnl.toFixed(2)}`,
                 `ATM step (25%): $${(checkpointAtmPnl * 0.25).toFixed(2)}`,
