@@ -499,8 +499,7 @@ export async function startPaperTradingEngine() {
                 `Live ATM Ratio: ${liveAtmRatio.toFixed(2)}`,
                 `Recalculated Ratio: ${recalculatedRatio.toFixed(2)}`,
                 `Lots remaining: ${hypotheticalLotSize.toFixed(2)}`,
-                `Net ${entryPremiumType} at Entry: $${entryPremiumVal.toFixed(2)}`,
-                `Unrealized: $${remainingNetPnl.toFixed(2)}`
+                `Net ${entryPremiumType} at Entry: $${entryPremiumVal.toFixed(2)}`
               ].join(' | ');
 
               partialExitsToRecord.push({
