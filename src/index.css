@@ -1,4 +1,22 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-bg: var(--bg);
+  --color-bg2: var(--bg2);
+  --color-bg3: var(--bg3);
+  --color-border: var(--border);
+  --color-text: var(--text);
+  --color-text-dim: var(--text-dim);
+  --color-accent: var(--accent);
+  --color-accent2: var(--accent2);
+  --color-call: var(--call);
+  --color-put: var(--put);
+  --color-comb: var(--comb);
+  --color-danger: var(--danger);
+  
+  --animate-pt-pulse: pt-pulse 2s ease-in-out infinite;
+}
 
 *,
 *::before,

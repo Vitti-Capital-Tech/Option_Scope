@@ -909,7 +909,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                   : expiries.map(e => <option key={e} value={e}>{fmtExpiry(e)}</option>)}
               </select>
             </div>
-            <button 
+            <button
               className="pt-filters-toggle-btn"
               onClick={() => setIsFiltersCollapsed(!isFiltersCollapsed)}
             >
@@ -938,7 +938,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               </div>
             ))}
           </div>
-
+        </div>
+        <div className='flex justify-between mt-3! px-10!'>
           {spotPrice && (
             <div className="pt-spot-display">
               <span className="pt-spot-label">SPOT</span>
@@ -946,12 +947,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             </div>
           )}
 
-          <div className="pt-status-badge live">
+          <div className="pt-status-badge live ml-10">
             <span className="pt-pulse"></span>
             LIVE ALGO
           </div>
-
-          <div style={{ flex: 1 }} />
         </div>
 
         {/* ── KPI Dashboard ───────────────────────────── */}

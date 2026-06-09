@@ -741,15 +741,17 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
                 }
               </select>
             </div>
+            <div className='form-group row-inline'>
+              <button
+                className={`btn-start ${scanning ? 'btn-stop' : ''}`}
+                onClick={scanning ? handleStopScan : handleStartScan}
+                disabled={!selExpiry}
+                style={{ padding: '6px 16px', fontSize: 13, fontWeight: 600, marginLeft: 8 }}
+              >
+                {scanning ? '■ STOP SCAN' : '▶ START SCAN'}
+              </button>
+            </div>
             <button
-              className={`btn-start ${scanning ? 'btn-stop' : ''}`}
-              onClick={scanning ? handleStopScan : handleStartScan}
-              disabled={!selExpiry}
-              style={{ padding: '6px 16px', fontSize: 13, fontWeight: 600, marginLeft: 8 }}
-            >
-              {scanning ? '■ STOP SCAN' : '▶ START SCAN'}
-            </button>
-            <button 
               className="scanner-filters-toggle-btn"
               onClick={() => setIsFiltersCollapsed(!isFiltersCollapsed)}
             >
