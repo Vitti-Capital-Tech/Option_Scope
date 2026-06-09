@@ -611,7 +611,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       return;
     }
     const headers = [
-      'Entry Time', 'Exit Time', 'Expiry', 'Type', 'Ratio',
+      'Entry Time', 'Exit Time', 'Expiry', 'Type', 'Ratio', 'Original Ratio',
       'Buy Strike', 'Sell Strike', 'Entry Buy Price', 'Entry Sell Price',
       'Exit Buy Price', 'Exit Sell Price', 'Entry Spot', 'Exit Spot',
       'Entry ATM Ratio', 'Entry ATM Buy Price', 'Entry ATM Sell Price',
@@ -643,6 +643,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       return [
         formatDateTime(t.entryTime), formatDateTime(t.exitTime), fmtExpiry(t.expiry),
         t.type.toUpperCase(), `${t.buyLeg.lotSize.toFixed(2)}:${sellQty.toFixed(2)}`,
+        `${(t.buyLeg?.originalLotSize || t.buyLeg.lotSize).toFixed(2)}:${(t.buyLeg?.originalSellQty || sellQty).toFixed(2)}`,
         t.buyLeg.strike, t.sellLeg.strike,
         t.entryBuyPrice || '', t.entrySellPrice || '',
         t.exitBuyPrice || '', t.exitSellPrice || '',
