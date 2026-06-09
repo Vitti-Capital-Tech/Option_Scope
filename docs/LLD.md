@@ -92,7 +92,7 @@ Converts Delta's raw decimal fractions to display percentages and screens invali
 - **Entry ATM Metrics**: Sourced using the ATM option chain quotes (`buyIntrinsic` and `sellIntrinsic` at ATM strike) during candidate selection. Stored as `entryAtmRatio`, `entryBuyAtmPrice`, and `entrySellAtmPrice` inside the `buyLeg` JSON metadata within `active_positions`.
 - **Exit ATM Metrics**: Captured similarly using live quotes at the moment of exit (both full and partial exits). Saved as `exitAtmRatio`, `exitBuyAtmPrice`, and `exitSellAtmPrice` inside the `buyLeg` JSON metadata within `trade_history`.
 - **UI Table Rendering**: `PaperTrading.jsx` reads these values from the parsed `buyLeg` JSON object of each historical trade. Renders **Entry ATM Ratio (Prices)** and **Exit ATM Ratio (Prices)** columns displaying the ratio and underlying intrinsic prices in stacked formats (e.g. `0.75` and `(150.00 / 200.00)`). Shows `—` for legacy database rows.
-- **CSV Export Support**: Included as `Entry ATM Ratio`, `Entry ATM Buy Price`, `Entry ATM Sell Price`, `Exit ATM Ratio`, `Exit ATM Buy Price`, and `Exit ATM Sell Price` columns in the exported CSV.
+- **CSV Export Support**: Included as `Ratio`, `Original Ratio`, `Entry ATM Ratio`, `Entry ATM Buy Price`, `Entry ATM Sell Price`, `Exit ATM Ratio`, `Exit ATM Buy Price`, and `Exit ATM Sell Price` columns in the exported CSV.
 
 ---
 
@@ -254,7 +254,7 @@ For each active position, before evaluating its full exit triggers (such as expi
 4. **ATM Ratio Comparison (1:x comparison)**: The live ATM ratio (`liveAtmRatio`, computed as `buyIntrinsic / sellIntrinsic` rounded to nearest `0.25`) is compared to the `recalculatedRatio`. The condition is: **`liveAtmRatio >= recalculatedRatio + 1`**. This means the market's ATM ratio must be at least **1** point higher than the recalculated position ratio before the exit is triggered.
 5. **Floor Limit**: The hypothetical long lot size must be at or above the fixed floor limit of `0.5` (`hypotheticalLotSize >= 0.5`).
 6. **Execution**: If all conditions are met (while loop):
-   - Record a **partial exit** to `trade_history` with `is_partial: true`, the closed buy lot size as `deltaBuyQty`, and the closed sell lot size and sell quantity as `0`. The `exit_reason` is recorded in a concise format containing the exact initial and live ATM buy/sell prices, live and recalculated ratios, original net debit/credit at entry of the position, and remaining unrealized net PnL.
+   - Record a **partial exit** to `trade_history` with `is_partial: true`, the closed buy lot size as `deltaBuyQty`, and the closed sell lot size and sell quantity as `0`. The `exit_reason` is recorded in a concise format containing the exact initial and live ATM buy/sell prices, live and recalculated ratios, and original net debit/credit at entry of the position.
    - Update `pos.buyLeg.lotSize = hypotheticalLotSize`.
    - Update `pos.buyLeg.maxAtmRatio` in metadata to reflect the new ratio of the position (`recalculatedRatio`).
    - `entryAtmRatio` is **preserved** (never modified — it is a historical entry-time value).
@@ -282,12 +282,22 @@ Evaluated only if no expiry exit was triggered.
 - Condition: Spot price crosses the buy strike (`spotPrice >= buyStrike` for calls, or `spotPrice <= buyStrike` for puts).
 - Action: 100% exit, `exitReason = 'Full Exit @ ATM'`.
 
-**Priority 4 — Rotation (Lost Top 3 Only):**
+**Priority 4 — Rotation & Leg Swap:**
 
 Evaluated only if no exit was triggered, the position's expiry matches `selExpiry`, and `uniqueTopSpreads` is non-empty.
-- If the position is **not** in the Top 3 unique candidate buy strikes (`inTop3 === false`), it is a candidate for displacement.
-- The engine finds a `bestTarget` in `uniqueTopSpreads` matching the same option type that passes all safety guards (strike conflicts, reservation, and 0.5% spot movement).
-- If the target is directionally closer to ATM, the exit is approved (`exitReason = 'Lost Top 3 and Rank 1 better target available ([targetStrike])'`).
+
+1. **Leg Swap Check (Same Sell Strike, Better Buy Strike)**:
+   - Always checked first (even if the active position is still in the Top 3 unique candidate strikes).
+   - Looks for a candidate in `uniqueTopSpreads` with the exact same sell strike as the active position, but a better (closer to ATM) buy strike.
+   - Enforces the **0.5% Spot Step Movement Guard** on the spot price relative to the active position's entry spot base.
+   - Enforces the **Net Premium Swap Cost Check**: calculates `netPremiumSwap = (deltaQty * latestSell) - (s.buyPrice - latestBuy)`, where `deltaQty = s.sellQty - pos.sellQty` and `latestSell` is the ask price of the sell leg. If `netPremiumSwap < -10` (representing a debit greater than $10.00), the candidate is rejected.
+   - If a valid swap target is found, `shouldExit` is set to `true`, and `exitReason` is set to `Leg Swap: Buy [currentStrike] -> [targetStrike]`.
+
+2. **Fallback to Standard Rotation (Only if not in Top 3)**:
+   - Evaluated only if no Leg Swap was triggered, and the position is not in the Top 3 unique strikes (`inTop3 === false`).
+   - Finds a `bestTarget` in `uniqueTopSpreads` that passes safety guards (strike conflicts, reservation, and 0.5% spot movement).
+   - If the fallback candidate happens to have the same sell strike, it checks the **Net Premium Swap Cost Check** as well; if the cost is too high (i.e. `netPremiumSwap < -10`), it rejects that candidate.
+   - If the target is directionally closer to ATM, the exit is approved (`exitReason = 'Lost Top 3 and Rank 1 better target available ([targetStrike])'`).
 
 **Threshold Guard (Rotation Only):**
 

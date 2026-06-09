@@ -654,12 +654,12 @@ export async function startPaperTradingEngine() {
             const isBetter = isPut ? (bS > currentStrike) : (bS < currentStrike);
             if (!isBetter) return false;
 
-            // Swap PnL guard: net premium swap cost must be a debit of 10 or better (swapCost <= 10)
+            // Swap PnL guard: net premium swap cost (sell - buy) must be at least -10 (i.e. max 10 debit)
             const deltaQty = s.sellQty - pos.sellQty;
-            const swapCost = (s.buyPrice - latestBuy) - (deltaQty * latestSell);
-            if (swapCost > 10) {
+            const netPremiumSwap = (deltaQty * latestSell) - (s.buyPrice - latestBuy);
+            if (netPremiumSwap < -10) {
               if (!onlyExits) {
-                log(`  Leg Swap candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: net premium swap cost too high ($${swapCost.toFixed(2)} > $10.00 debit)`);
+                log(`  Leg Swap candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: net premium swap cost too high ($${netPremiumSwap.toFixed(2)} < -$10.00 credit/debit)`);
               }
               return false;
             }
@@ -702,8 +702,8 @@ export async function startPaperTradingEngine() {
               // If it's a leg swap (same sell strike), check swap cost based on net premium
               if (sS === Number(pos.sellLeg.strike)) {
                 const deltaQty = s.sellQty - pos.sellQty;
-                const swapCost = (s.buyPrice - latestBuy) - (deltaQty * latestSell);
-                if (swapCost > 10) return false;
+                const netPremiumSwap = (deltaQty * latestSell) - (s.buyPrice - latestBuy);
+                if (netPremiumSwap < -10) return false;
               }
 
               const oldSpotBase = pos.entrySpotPrice || pos.entryBuyPrice || spotPrice;
