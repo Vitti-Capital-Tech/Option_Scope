@@ -654,6 +654,15 @@ export async function startPaperTradingEngine() {
             const isBetter = isPut ? (bS > currentStrike) : (bS < currentStrike);
             if (!isBetter) return false;
 
+            // Swap PnL guard: swap cost must be a debit of 10 or better (swapCost <= 10)
+            const swapCost = s.buyPrice - latestBuy;
+            if (swapCost > 10) {
+              if (!onlyExits) {
+                log(`  Leg Swap candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: swap cost too high ($${swapCost.toFixed(2)} > $10.00 debit)`);
+              }
+              return false;
+            }
+
             // Spot step movement guard
             const oldSpotBase = pos.entrySpotPrice || pos.entryBuyPrice || spotPrice;
             const oldThresh = Math.round((oldSpotBase * 0.005) / 100) * 100;
@@ -688,6 +697,12 @@ export async function startPaperTradingEngine() {
               const buyConflict = otherActiveBuyStrikes.includes(bS);
               const sellConflict = otherActiveSellStrikes.includes(sS);
               if (buyConflict || sellConflict || reservedTargets.has(bS) || reservedSellTargets.has(sS)) return false;
+
+              // If it's a leg swap (same sell strike), check swap cost
+              if (sS === Number(pos.sellLeg.strike)) {
+                const swapCost = s.buyPrice - latestBuy;
+                if (swapCost > 10) return false;
+              }
 
               const oldSpotBase = pos.entrySpotPrice || pos.entryBuyPrice || spotPrice;
               const oldThresh = Math.round((oldSpotBase * 0.005) / 100) * 100;
