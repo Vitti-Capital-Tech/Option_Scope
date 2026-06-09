@@ -36,6 +36,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
     maxSellQty: 10,
   });
   const [isConfigLoaded, setIsConfigLoaded] = useState(false);
+  const [isFiltersCollapsed, setIsFiltersCollapsed] = useState(() => window.innerWidth <= 900);
 
   const underlying = config.underlying;
   const selExpiry = config.expiry;
@@ -559,7 +560,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
                 <rect x="12" y="9" width="3" height="9" rx="0.6" fill="currentColor" />
                 <rect x="17" y="6" width="3" height="12" rx="0.6" fill="currentColor" />
               </svg>
-            </span> Charts
+            </span> <span className="nav-tab-text">Charts</span>
           </button>
           <button className="nav-tab" onClick={() => onNavigate('scanner')}>
             <span className="nav-tab-icon" aria-hidden="true">
@@ -568,7 +569,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
                 <circle cx="12" cy="12" r="4.5" stroke="currentColor" strokeWidth="1.8" />
                 <circle cx="12" cy="12" r="1.7" fill="currentColor" />
               </svg>
-            </span> Ratio Spread
+            </span> <span className="nav-tab-text">Ratio Spread</span>
           </button>
           <button className="nav-tab" onClick={() => onNavigate('trading')}>
             <span className="nav-tab-icon" aria-hidden="true">
@@ -577,7 +578,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
                 <line x1="3" y1="9" x2="21" y2="9"></line>
                 <line x1="9" y1="21" x2="9" y2="9"></line>
               </svg>
-            </span> Paper Trading
+            </span> <span className="nav-tab-text">Paper Trading</span>
           </button>
           <button className="nav-tab active">
             <span className="nav-tab-icon" aria-hidden="true">
@@ -586,7 +587,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
                 <line x1="12" y1="16" x2="12" y2="12"></line>
                 <line x1="12" y1="8" x2="12.01" y2="8"></line>
               </svg>
-            </span> ATM Exit
+            </span> <span className="nav-tab-text">ATM Exit</span>
           </button>
         </div>
 
@@ -633,7 +634,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
 
         {/* ── Control Panel (config display + config writing, no trading toggle) ── */}
         <div className="pt-control-panel">
-          <div className="pt-control-section" style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+          <div className="pt-control-section">
             <span className="pt-control-label">Config</span>
 
             <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -650,8 +651,17 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
               </select>
             </div>
 
-            <div style={{ width: 1, height: 24, backgroundColor: 'var(--border)' }} />
+            <button 
+              className="pt-filters-toggle-btn"
+              onClick={() => setIsFiltersCollapsed(!isFiltersCollapsed)}
+            >
+              {isFiltersCollapsed ? 'SHOW FILTERS' : 'HIDE FILTERS'}
+            </button>
+          </div>
 
+          <div className="hide-mobile" style={{ width: 1, height: 24, backgroundColor: 'var(--border)' }}></div>
+
+          <div className={`pt-filters-container ${isFiltersCollapsed ? 'collapsed' : 'expanded'}`}>
             <span className="pt-control-label">Filters</span>
             {[
               { label: 'Min Strike Diff ($)', key: 'minStrikeDiff', width: 60, step: undefined },
@@ -770,7 +780,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
                 <span className="pt-section-count">{positions.filter(p => p.underlying === underlying).length}</span>
               </div>
 
-              <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+              <div className="pt-section-controls">
                 {/* Heartbeat last-updated stamp */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                   {heartbeat && (
@@ -852,11 +862,11 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
                     <th>Type / Ratio</th>
                     <th>Expiry</th>
                     <th>Buy / Sell Strike</th>
-                    <th>Entry Spot</th>
+                    <th className="hide-mobile">Entry Spot</th>
                     <th>In (Buy / Sell)</th>
                     <th>Unrl P&L</th>
-                    <th>Margin</th>
-                    <th>Duration</th>
+                    <th className="hide-xs">Margin</th>
+                    <th className="hide-mobile">Duration</th>
                   </tr></thead>
                   <tbody>
                     {positions.filter(p => p.underlying === underlying).map(p => {
@@ -879,7 +889,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
                               <span className="pt-strike-sell" style={{ fontSize: '11px', opacity: 0.8 }}>{p.sellLeg.strike.toLocaleString()}</span>
                             </div>
                           </td>
-                          <td>
+                          <td className="hide-mobile">
                             <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-dim)' }}>
                               {p.entrySpotPrice ? p.entrySpotPrice.toLocaleString() : '—'}
                             </span>
@@ -895,7 +905,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
                               {pnlValue > 0 ? '+' : ''}{pnlValue.toFixed(2)}
                             </span>
                           </td>
-                          <td>
+                          <td className="hide-xs">
                             <div className="pt-margin-cell">
                               <span>${(p.margin || 0).toFixed(0)}</span>
                               <div className="pt-margin-bar">
@@ -903,7 +913,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
                               </div>
                             </div>
                           </td>
-                          <td><span className="pt-duration">{fmtDuration(Date.now() - p.entryTime)}</span></td>
+                          <td className="hide-mobile"><span className="pt-duration">{fmtDuration(Date.now() - p.entryTime)}</span></td>
                         </tr>
                       );
                     })}
@@ -915,14 +925,14 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
 
           {/* ── Trade History ─────────────────────────────────────────────────── */}
           <div className="pt-section">
-            <div className="pt-section-header" style={{
+            <div className="pt-section-header pt-history-header" style={{
               flexDirection: 'column', alignItems: 'stretch', gap: '16px',
               padding: '16px 20px', borderBottom: '1px solid var(--border)',
               background: 'linear-gradient(180deg, var(--bg2) 0%, var(--bg) 100%)',
             }}>
-              <div style={{ display: 'flex', alignItems: 'center', width: '100%', position: 'relative', minHeight: '36px' }}>
+              <div className="pt-history-row-1">
                 {/* Title */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div className="pt-history-title-area">
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '32px', height: '32px', borderRadius: '8px', background: 'rgba(240, 185, 11, 0.1)', color: 'var(--accent)' }}>
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 8v4l3 3" /><circle cx="12" cy="12" r="10" /></svg>
                   </div>
@@ -936,7 +946,7 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
                 </div>
 
                 {/* Centered date filter */}
-                <div style={{ position: 'absolute', left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: '4px', background: 'var(--bg3)', padding: '4px 8px', borderRadius: '12px', border: '1px solid var(--border)', boxShadow: '0 4px 12px rgba(0,0,0,0.15)' }}>
+                <div className="pt-history-date-filter">
                   <button onClick={() => adjustFilterDay(-1)} title="Previous Day" style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', display: 'flex', padding: '6px', borderRadius: '6px' }}>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
                   </button>
@@ -963,9 +973,9 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
               <div className="pt-table-scroll">
                 <table className="pt-table">
                   <thead><tr>
-                    <th>Entry Time</th>
-                    <th>Exit Time</th>
-                    <th>Duration</th>
+                    <th className="hide-mobile">Entry Time</th>
+                    <th className="hide-mobile">Exit Time</th>
+                    <th className="hide-mobile">Duration</th>
                     <th>Expiry</th>
                     <th>Type / Ratio</th>
                     <th>Buy / Sell Strike</th>
@@ -981,9 +991,9 @@ export default function ATMExitTrading({ onNavigate, theme, toggleTheme }) {
                       const durationMs = t.exitTime && t.entryTime ? (t.exitTime - t.entryTime) : 0;
                       return (
                         <tr key={i}>
-                          <td style={{ color: 'var(--text-dim)', fontSize: '11px', whiteSpace: 'nowrap' }}>{formatDateTime(t.entryTime)}</td>
-                          <td style={{ color: 'var(--text-dim)', fontSize: '11px', whiteSpace: 'nowrap' }}>{formatDateTime(t.exitTime)}</td>
-                          <td><span className="pt-duration" style={{ fontSize: '11px' }}>{fmtDuration(durationMs)}</span></td>
+                          <td className="hide-mobile" style={{ color: 'var(--text-dim)', fontSize: '11px', whiteSpace: 'nowrap' }}>{formatDateTime(t.entryTime)}</td>
+                          <td className="hide-mobile" style={{ color: 'var(--text-dim)', fontSize: '11px', whiteSpace: 'nowrap' }}>{formatDateTime(t.exitTime)}</td>
+                          <td className="hide-mobile"><span className="pt-duration" style={{ fontSize: '11px' }}>{fmtDuration(durationMs)}</span></td>
                           <td><span style={{ fontSize: '11px', fontWeight: 600 }}>{fmtExpiry(t.expiry)}</span></td>
                           <td>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>

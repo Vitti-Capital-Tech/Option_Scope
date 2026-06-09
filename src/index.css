@@ -2442,3 +2442,442 @@ body.light-theme .pt-live-badge {
   opacity: 0.9;
 }
 
+/* ── Global Responsiveness Utilities ─────────────────── */
+@media (max-width: 768px) {
+  .hide-mobile {
+    display: none !important;
+  }
+  .nav-tab-text {
+    display: none !important;
+  }
+  .nav-tab {
+    padding: 6px 8px !important;
+    gap: 0 !important;
+  }
+  .navbar {
+    padding: 0 10px !important;
+  }
+}
+
+@media (max-width: 480px) {
+  .hide-xs {
+    display: none !important;
+  }
+  .ws-badge span {
+    display: none !important;
+  }
+}
+
+/* ── Sidebar configuration grid on mobile ─────────────── */
+@media (max-width: 900px) {
+  .sidebar .card:first-of-type {
+    display: flex;
+    flex-direction: column;
+  }
+  
+  /* Create a grid layout for config fields inside the first card */
+  .sidebar .card:first-of-type .form-group:not(.btn-start) {
+    display: inline-block;
+    width: calc(50% - 6px);
+    margin-right: 12px;
+    vertical-align: top;
+    margin-bottom: 12px;
+    box-sizing: border-box;
+  }
+  
+  .sidebar .card:first-of-type .form-group:nth-child(even) {
+    margin-right: 0;
+  }
+
+  .sidebar .card:first-of-type button.btn-start {
+    width: 100% !important;
+    clear: both;
+    margin-top: 8px;
+  }
+}
+
+/* Collapsible sidebar styles */
+.sidebar-toggle-btn {
+  display: none;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  margin-bottom: 12px;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  box-sizing: border-box;
+}
+
+@media (max-width: 900px) {
+  .sidebar-toggle-btn {
+    display: flex;
+  }
+  
+  .sidebar-collapsible {
+    display: none;
+    flex-direction: column;
+    gap: 12px;
+  }
+  
+  .sidebar-collapsible.expanded {
+    display: flex;
+  }
+}
+
+/* Ratio Spread Scanner tab bar for mobile */
+.scanner-mobile-tabs {
+  display: none;
+  gap: 8px;
+  margin-bottom: 12px;
+  width: 100%;
+  padding: 0 12px;
+  box-sizing: border-box;
+}
+
+.scanner-mobile-tab {
+  flex: 1;
+  padding: 10px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
+  border-radius: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.scanner-mobile-tab.active {
+  background: rgba(0, 217, 163, 0.1);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+@media (max-width: 900px) {
+  .scanner-mobile-tabs {
+    display: flex;
+  }
+  .scanner-main {
+    flex-direction: column !important;
+  }
+  .scanner-main.show-call .scanner-table-wrap:nth-child(2) {
+    display: none !important;
+  }
+  .scanner-main.show-put .scanner-table-wrap:nth-child(1) {
+    display: none !important;
+  }
+}
+
+/* ── Scanner Config Bar Responsiveness ────────────────── */
+.scanner-config-bar {
+  display: flex;
+  gap: 24px;
+  padding: 12px 24px;
+  background-color: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.scanner-config-main {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.scanner-config-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-dim);
+  letter-spacing: 0.5px;
+}
+
+.scanner-filters-toggle-btn {
+  display: none;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.scanner-filters-container {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.scanner-config-bar .form-group.row-inline {
+  margin-bottom: 0;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.scanner-config-bar .form-group.row-inline label {
+  margin-bottom: 0;
+  white-space: nowrap;
+}
+
+.scanner-config-bar .form-group.row-inline select,
+.scanner-config-bar .form-group.row-inline input {
+  width: auto;
+  padding: 4px 8px;
+}
+
+@media (max-width: 900px) {
+  .scanner-config-bar {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 12px 16px;
+    gap: 12px;
+  }
+  
+  .scanner-config-main {
+    justify-content: space-between;
+    width: 100%;
+  }
+  
+  .scanner-filters-toggle-btn {
+    display: inline-block;
+  }
+  
+  .scanner-filters-container {
+    display: none;
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+    gap: 10px;
+    border-top: 1px solid var(--border);
+    padding-top: 12px;
+  }
+  
+  .scanner-filters-container.expanded {
+    display: flex;
+  }
+  
+  .scanner-filters-container .form-group.row-inline {
+    width: calc(50% - 6px);
+    display: inline-flex !important;
+    justify-content: space-between;
+  }
+  
+  .scanner-filters-container .form-group.row-inline input {
+    width: 70px;
+  }
+  
+  .scanner-filters-container .filter-title {
+    width: 100%;
+    margin-bottom: 4px;
+  }
+}
+
+/* ── Paper Trading & ATM Exit Collapsible Filters ──────── */
+.pt-filters-toggle-btn {
+  display: none;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.pt-filters-container {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 900px) {
+  .pt-control-panel {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 12px 16px !important;
+    gap: 12px;
+  }
+  
+  .pt-control-section {
+    justify-content: space-between;
+    width: 100%;
+    flex-wrap: wrap;
+    gap: 12px !important;
+  }
+  
+  .pt-filters-toggle-btn {
+    display: inline-block;
+  }
+  
+  .pt-filters-container {
+    display: none;
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+    gap: 10px;
+    border-top: 1px solid var(--border);
+    padding-top: 12px;
+  }
+  
+  .pt-filters-container.expanded {
+    display: flex;
+  }
+  
+  .pt-filters-container .form-group {
+    width: calc(50% - 6px);
+    display: inline-flex !important;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0;
+  }
+  
+  .pt-filters-container .form-group label {
+    margin-bottom: 0;
+    white-space: nowrap;
+  }
+  
+  .pt-filters-container .form-group input {
+    width: 70px !important;
+    padding: 4px 8px;
+  }
+}
+
+/* ── Paper Trading & ATM Exit Responsive Headers & Table Scroll ──────── */
+.pt-section-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.pt-history-row-1 {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  position: relative;
+  min-height: 36px;
+}
+
+.pt-history-title-area {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.pt-history-date-filter {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg3);
+  padding: 4px 8px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 5;
+}
+
+.pt-history-row-2 {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 24px;
+  padding: 0 4px;
+}
+
+@media (max-width: 900px) {
+  .pt-section-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px 16px;
+  }
+
+  .pt-section-controls {
+    flex-wrap: wrap;
+    width: 100%;
+    gap: 12px;
+    border-top: 1px solid var(--border);
+    padding-top: 10px;
+  }
+
+  .pt-history-row-1 {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .pt-history-title-area {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .pt-history-date-filter {
+    position: static;
+    transform: none;
+    width: 100%;
+    justify-content: center;
+    box-sizing: border-box;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .pt-history-row-2 {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    width: 100%;
+    margin-top: 12px;
+    border-top: 1px solid var(--border);
+    padding-top: 12px;
+  }
+
+  .pt-history-stats {
+    width: 100%;
+    justify-content: space-between;
+    gap: 12px !important;
+  }
+
+  .pt-export-btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .pt-table-scroll {
+    position: relative;
+    overflow-x: auto !important;
+    overflow-y: auto;
+    max-width: 100%;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .pt-table {
+    width: max-content !important;
+    min-width: 100% !important;
+  }
+
+  .pt-table th, .pt-table td {
+    white-space: nowrap !important;
+  }
+}
+
+
+
+
+

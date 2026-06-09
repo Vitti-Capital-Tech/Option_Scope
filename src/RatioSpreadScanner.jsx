@@ -27,6 +27,8 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
   const [expectedTickerCount, setExpectedTickerCount] = useState(0);
   const [lastRefreshed, setLastRefreshed] = useState(0);
   const [timeRemaining, setTimeRemaining] = useState(null);
+  const [activeTableTab, setActiveTableTab] = useState('call');
+  const [isFiltersCollapsed, setIsFiltersCollapsed] = useState(() => window.innerWidth <= 900);
 
   const wsRef = useRef(null);
   const scanIntervalRef = useRef(null);
@@ -653,7 +655,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
                 <rect x="12" y="9" width="3" height="9" rx="0.6" fill="currentColor" />
                 <rect x="17" y="6" width="3" height="12" rx="0.6" fill="currentColor" />
               </svg>
-            </span> Charts
+            </span> <span className="nav-tab-text">Charts</span>
           </button>
           <button
             className="nav-tab active"
@@ -664,7 +666,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
                 <circle cx="12" cy="12" r="4.5" stroke="currentColor" strokeWidth="1.8" />
                 <circle cx="12" cy="12" r="1.7" fill="currentColor" />
               </svg>
-            </span> Ratio Spread
+            </span> <span className="nav-tab-text">Ratio Spread</span>
           </button>
           <button
             className="nav-tab"
@@ -676,7 +678,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
                 <line x1="3" y1="9" x2="21" y2="9"></line>
                 <line x1="9" y1="21" x2="9" y2="9"></line>
               </svg>
-            </span> Paper Trading
+            </span> <span className="nav-tab-text">Paper Trading</span>
           </button>
           <button
             className="nav-tab"
@@ -688,7 +690,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
                 <line x1="12" y1="16" x2="12" y2="12"></line>
                 <line x1="12" y1="8" x2="12.01" y2="8"></line>
               </svg>
-            </span> ATM Exit
+            </span> <span className="nav-tab-text">ATM Exit</span>
           </button>
         </div>
 
@@ -721,22 +723,18 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
 
       <div className="body" style={{ flexDirection: 'column' }}>
         {/* Topbar Configuration */}
-        <div style={{
-          display: 'flex', gap: 32, padding: '16px 24px',
-          backgroundColor: 'var(--bg-card)', borderBottom: '1px solid var(--border)',
-          alignItems: 'center', flexWrap: 'wrap'
-        }}>
-          <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-dim)', letterSpacing: '0.5px' }}>SCANNER CONFIG</span>
-            <div className="form-group" style={{ marginBottom: 0, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <label style={{ marginBottom: 0 }}>Underlying:</label>
-              <select value={underlying} onChange={e => { setUnderlying(e.target.value); stopScan(); }} style={{ padding: '4px 8px', width: 'auto' }}>
+        <div className="scanner-config-bar">
+          <div className="scanner-config-main">
+            <span className="scanner-config-title">SCANNER CONFIG</span>
+            <div className="form-group row-inline">
+              <label>Underlying:</label>
+              <select value={underlying} onChange={e => { setUnderlying(e.target.value); stopScan(); }}>
                 {UNDERLYINGS.map(u => <option key={u}>{u}</option>)}
               </select>
             </div>
-            <div className="form-group" style={{ marginBottom: 0, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <label style={{ marginBottom: 0 }}>Expiry:</label>
-              <select value={selExpiry} onChange={e => { setSelExpiry(e.target.value); stopScan(); }} disabled={!expiries.length} style={{ padding: '4px 8px', width: 'auto' }}>
+            <div className="form-group row-inline">
+              <label>Expiry:</label>
+              <select value={selExpiry} onChange={e => { setSelExpiry(e.target.value); stopScan(); }} disabled={!expiries.length}>
                 {!expiries.length
                   ? <option>Loading...</option>
                   : expiries.map(e => <option key={e} value={e}>{fmtExpiry(e)}</option>)
@@ -751,86 +749,86 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             >
               {scanning ? '■ STOP SCAN' : '▶ START SCAN'}
             </button>
+            <button 
+              className="scanner-filters-toggle-btn"
+              onClick={() => setIsFiltersCollapsed(!isFiltersCollapsed)}
+            >
+              {isFiltersCollapsed ? 'SHOW FILTERS' : 'HIDE FILTERS'}
+            </button>
           </div>
 
-          <div style={{ width: 1, height: 24, backgroundColor: 'var(--border)' }}></div>
+          <div className="hide-mobile" style={{ width: 1, height: 24, backgroundColor: 'var(--border)' }}></div>
 
-          <div style={{ display: 'flex', gap: 20, alignItems: 'center', flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-dim)', letterSpacing: '0.5px' }}>FILTERS</span>
-            <div className="form-group" style={{ marginBottom: 0, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <label style={{ marginBottom: 0 }}>Min Strike Diff ($):</label>
+          <div className={`scanner-filters-container ${isFiltersCollapsed ? 'collapsed' : 'expanded'}`}>
+            <span className="scanner-config-title filter-title">FILTERS</span>
+            <div className="form-group row-inline">
+              <label>Min Strike Diff ($):</label>
               <input
                 type="number"
                 value={config.minStrikeDiff}
                 onChange={e => updateConfig('minStrikeDiff', Number(e.target.value))}
-                style={{ width: 60, padding: '4px 8px' }}
               />
             </div>
-            <div className="form-group" style={{ marginBottom: 0, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <label style={{ marginBottom: 0 }}>Min IV Diff (%):</label>
+            <div className="form-group row-inline">
+              <label>Min IV Diff (%):</label>
               <input
                 type="number"
                 value={config.minIvDiff}
                 onChange={e => updateConfig('minIvDiff', Number(e.target.value))}
-                style={{ width: 50, padding: '4px 8px' }}
               />
             </div>
-            <div className="form-group" style={{ marginBottom: 0, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <label style={{ marginBottom: 0 }}>Max Ratio Dev:</label>
+            <div className="form-group row-inline">
+              <label>Max Ratio Dev:</label>
               <input
                 type="number"
                 step="0.01"
                 value={config.maxRatioDeviation}
                 onChange={e => updateConfig('maxRatioDeviation', Number(e.target.value))}
-                style={{ width: 60, padding: '4px 8px' }}
               />
             </div>
-            <div className="form-group" style={{ marginBottom: 0, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <label style={{ marginBottom: 0 }}>Min Sell Prem ($):</label>
+            <div className="form-group row-inline">
+              <label>Min Sell Prem ($):</label>
               <input
                 type="number"
                 value={config.minSellPremium}
                 onChange={e => updateConfig('minSellPremium', Number(e.target.value))}
-                style={{ width: 60, padding: '4px 8px' }}
               />
             </div>
 
-            <div className="form-group" style={{ marginBottom: 0, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <label style={{ marginBottom: 0 }}>Max Debit ($):</label>
+            <div className="form-group row-inline">
+              <label>Max Debit ($):</label>
               <input
                 type="number"
                 value={config.maxNetPremium}
                 onChange={e => updateConfig('maxNetPremium', Number(e.target.value))}
-                style={{ width: 60, padding: '4px 8px' }}
               />
             </div>
-            <div className="form-group" style={{ marginBottom: 0, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <label style={{ marginBottom: 0 }}>Min Long Dist:</label>
+            <div className="form-group row-inline">
+              <label>Min Long Dist:</label>
               <input
                 type="number"
                 value={config.minLongDist}
                 onChange={e => updateConfig('minLongDist', Number(e.target.value))}
-                style={{ width: 60, padding: '4px 8px' }}
               />
             </div>
-            <div className="form-group" style={{ marginBottom: 0, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <label style={{ marginBottom: 0 }}>Max Ratio (1:X):</label>
+            <div className="form-group row-inline">
+              <label>Max Ratio (1:X):</label>
               <input
                 type="number"
                 step="0.25"
                 value={config.maxSellQty}
                 onChange={e => updateConfig('maxSellQty', Number(e.target.value))}
-                style={{ width: 65, padding: '4px 8px' }}
               />
             </div>
-
-
           </div>
-
-          <div style={{ flex: 1 }}></div>
         </div>
 
-        <main className="main" style={{ position: 'relative', padding: 12, gap: 12, display: 'flex', flexDirection: 'row', overflow: 'hidden', flex: 1 }}>
+        <div className="scanner-mobile-tabs">
+          <div className={`scanner-mobile-tab ${activeTableTab === 'call' ? 'active' : ''}`} onClick={() => setActiveTableTab('call')}>Call Spreads</div>
+          <div className={`scanner-mobile-tab ${activeTableTab === 'put' ? 'active' : ''}`} onClick={() => setActiveTableTab('put')}>Put Spreads</div>
+        </div>
+
+        <main className={`main scanner-main show-${activeTableTab}`} style={{ position: 'relative', padding: 12, gap: 12, display: 'flex', flexDirection: 'row', overflow: 'hidden', flex: 1 }}>
           <ResultTable
             title="CALL SPREAD"
             type="CALL"

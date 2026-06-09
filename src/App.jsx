@@ -668,6 +668,7 @@ const ChartPanel = forwardRef(function ChartPanel({
 
 // ── App ───────────────────────────────────────────────────────────────────────
 export default function App({ onNavigate, theme, toggleTheme }) {
+  const [isConfigCollapsed, setIsConfigCollapsed] = useState(() => window.innerWidth <= 900);
   const [underlying, setUnderlying] = useState('BTC');
   const [tf, setTf] = useState('1m');
   const [priceType, setPriceType] = useState('mark');
@@ -1541,7 +1542,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                 <rect x="12" y="9" width="3" height="9" rx="0.6" fill="currentColor" />
                 <rect x="17" y="6" width="3" height="12" rx="0.6" fill="currentColor" />
               </svg>
-            </span> Charts
+            </span> <span className="nav-tab-text">Charts</span>
           </button>
           <button className="nav-tab" onClick={() => onNavigate('scanner')}>
             <span className="nav-tab-icon" aria-hidden="true">
@@ -1550,7 +1551,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                 <circle cx="12" cy="12" r="4.5" stroke="currentColor" strokeWidth="1.8" />
                 <circle cx="12" cy="12" r="1.7" fill="currentColor" />
               </svg>
-            </span> Ratio Spread
+            </span> <span className="nav-tab-text">Ratio Spread</span>
           </button>
           <button className="nav-tab" onClick={() => onNavigate('trading')}>
             <span className="nav-tab-icon" aria-hidden="true">
@@ -1559,7 +1560,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                 <line x1="3" y1="9" x2="21" y2="9"></line>
                 <line x1="9" y1="21" x2="9" y2="9"></line>
               </svg>
-            </span> Paper Trading
+            </span> <span className="nav-tab-text">Paper Trading</span>
           </button>
           <button className="nav-tab" onClick={() => onNavigate('atm-exit')}>
             <span className="nav-tab-icon" aria-hidden="true">
@@ -1568,7 +1569,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                 <line x1="12" y1="16" x2="12" y2="12"></line>
                 <line x1="12" y1="8" x2="12.01" y2="8"></line>
               </svg>
-            </span> ATM Exit
+            </span> <span className="nav-tab-text">ATM Exit</span>
           </button>
         </div>
 
@@ -1607,8 +1608,29 @@ export default function App({ onNavigate, theme, toggleTheme }) {
       <div className="body">
         {/* Sidebar */}
         <aside className="sidebar">
-          <div className="card">
-            <div className="card-title">Configuration</div>
+          <button 
+            className="sidebar-toggle-btn"
+            onClick={() => setIsConfigCollapsed(!isConfigCollapsed)}
+          >
+            <span>{isConfigCollapsed ? 'SHOW CONFIGURATION' : 'HIDE CONFIGURATION'}</span>
+            <svg 
+              width="14" 
+              height="14" 
+              viewBox="0 0 24 24" 
+              fill="none" 
+              stroke="currentColor" 
+              strokeWidth="2.5" 
+              strokeLinecap="round" 
+              strokeLinejoin="round"
+              style={{ transform: isConfigCollapsed ? 'rotate(0deg)' : 'rotate(180deg)', transition: 'transform 0.2s' }}
+            >
+              <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+          </button>
+          
+          <div className={`sidebar-collapsible ${isConfigCollapsed ? '' : 'expanded'}`} style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div className="card">
+              <div className="card-title">Configuration</div>
 
             <div className="form-group">
               <label>Underlying</label>
@@ -1722,9 +1744,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
               ))}
             </div>
           </div>
-
-
-
+          </div>
         </aside>
 
         {/* Chart area — charts ALWAYS mounted, overlay sits on top */}

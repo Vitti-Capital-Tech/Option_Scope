@@ -71,11 +71,11 @@ export default function ResultTable({
           {results.length > 0 && (
             <span className="scanner-match-badge">{results.length} match{results.length !== 1 ? 'es' : ''}</span>
           )}
-          <div style={{ fontSize: 12 }}>
+          <div className="hide-mobile" style={{ fontSize: 12 }}>
             Spot Price: {spotPrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
           {lastRefreshed > 0 && (
-            <div style={{ fontSize: 12, color: 'var(--text)', borderLeft: '1px solid var(--border)', paddingLeft: 8 }}>
+            <div className="hide-xs" style={{ fontSize: 12, color: 'var(--text)', borderLeft: '1px solid var(--border)', paddingLeft: 8 }}>
               Updated: {new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }).format(new Date(lastRefreshed))}
             </div>
           )}
@@ -137,8 +137,8 @@ export default function ResultTable({
                 <th>Prem (B/S)</th>
                 <th>Qty (B/S)</th>
                 <th>Net/IV</th>
-                <th>Δ (B/S)</th>
-                <th style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.2)', background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>ATM Ask/Bid</th>
+                <th className="hide-mobile">Δ (B/S)</th>
+                <th className="hide-mobile" style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.2)', background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>ATM Ask/Bid</th>
                 <th style={{ background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>ATM P&L</th>
                 <th style={{ borderRight: '1px solid rgba(0, 217, 163, 0.2)', background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>Margin</th>
               </tr>
@@ -299,7 +299,7 @@ export default function ResultTable({
                             {bestRow.ivDiff.toFixed(1)}% IV
                           </div>
                         </td>
-                        <td>
+                        <td className="hide-mobile">
                           <div>
                             <span className='scanner-buy'>{bestRow.buyLeg.lotSize}</span>/
                             <span className='scanner-sell'>{bestRow.sellLeg.delta?.toFixed(4)}</span>
@@ -309,7 +309,7 @@ export default function ResultTable({
                           </div>
                         </td>
 
-                        <td style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.1)', background: 'rgba(0, 217, 163, 0.02)' }}>
+                        <td className="hide-mobile" style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.1)', background: 'rgba(0, 217, 163, 0.02)' }}>
                           <div>
                             <div className="scanner-buy">{bestRow.buyIntrinsic != null ? `$${bestRow.buyIntrinsic.toFixed(2)}` : '—'}</div>
                             <div className="scanner-sell">{bestRow.sellIntrinsic != null ? `$${bestRow.sellIntrinsic.toFixed(2)}` : '—'}</div>
@@ -376,7 +376,7 @@ export default function ResultTable({
                                 {r.ivDiff.toFixed(1)}% IV
                               </div>
                             </td>
-                            <td>
+                            <td className="hide-mobile">
                               <div>
                                 <span className='scanner-buy'>{r.buyLeg.lotSize}</span>/
                                 <span className='scanner-sell'>{r.sellLeg.delta?.toFixed(4)}</span>
@@ -386,7 +386,7 @@ export default function ResultTable({
                               </div>
                             </td>
 
-                            <td style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.1)', background: 'rgba(0, 217, 163, 0.01)' }}>
+                            <td className="hide-mobile" style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.1)', background: 'rgba(0, 217, 163, 0.01)' }}>
                               <div>
                                 <div className="scanner-buy">{r.buyIntrinsic != null ? `$${r.buyIntrinsic.toFixed(2)}` : '—'}</div>
                                 <div className="scanner-sell">{r.sellIntrinsic != null ? `$${r.sellIntrinsic.toFixed(2)}` : '—'}</div>
