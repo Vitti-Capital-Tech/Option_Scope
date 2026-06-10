@@ -686,7 +686,9 @@ export async function startPaperTradingEngine() {
             }
             pos._pendingLegSwap = bestSwapTarget;
             shouldExit = true;
-            exitReason = `Leg Swap: Buy ${currentStrike} -> ${targetStrike}`;
+            const deltaQty = bestSwapTarget.sellQty - pos.sellQty;
+            const netPremiumSwap = (deltaQty * latestSell) - (bestSwapTarget.buyPrice - latestBuy);
+            exitReason = `Leg Swap: Buy ${currentStrike} -> ${targetStrike} | Old Buy: $${latestBuy.toFixed(2)} | New Buy: $${bestSwapTarget.buyPrice.toFixed(2)} | Old Sell Qty: ${pos.sellQty} | New Sell Qty: ${bestSwapTarget.sellQty} | Sell Price: $${latestSell.toFixed(2)} | Net Premium Swap: $${netPremiumSwap.toFixed(2)}`;
             reservedTargets.add(targetStrike);
             reservedSellTargets.add(targetSellStrike);
           } else if (!inTop3) {
@@ -734,7 +736,9 @@ export async function startPaperTradingEngine() {
                 if (isSellStrikeMatch) {
                   pos._pendingLegSwap = bestTarget;
                   shouldExit = true;
-                  exitReason = `Leg Swap: Buy ${currentStrike} -> ${targetStrike}`;
+                  const deltaQty = bestTarget.sellQty - pos.sellQty;
+                  const netPremiumSwap = (deltaQty * latestSell) - (bestTarget.buyPrice - latestBuy);
+                  exitReason = `Leg Swap: Buy ${currentStrike} -> ${targetStrike} | Old Buy: $${latestBuy.toFixed(2)} | New Buy: $${bestTarget.buyPrice.toFixed(2)} | Old Sell Qty: ${pos.sellQty} | New Sell Qty: ${bestTarget.sellQty} | Sell Price: $${latestSell.toFixed(2)} | Net Premium Swap: $${netPremiumSwap.toFixed(2)}`;
                 } else {
                   shouldExit = true;
                   exitReason = `Lost Top 3 and Rank 1 better target available (${targetStrike})`;
