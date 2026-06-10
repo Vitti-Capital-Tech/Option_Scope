@@ -214,6 +214,17 @@ export async function startPaperTradingEngine() {
       const underlying = config.underlying;
       const selExpiry = config.expiry;
 
+      function getScaledSellQty(s) {
+        const targetLotSize = s.buyLeg.lotSize || 1;
+        const targetSellLotSize = s.sellLeg.lotSize || targetLotSize;
+        const targetShortValue = spotPrice * s.sellQty * targetSellLotSize;
+        if (targetShortValue >= 200000) {
+          const swapScale = 200000 / targetShortValue;
+          return Number((s.sellQty * swapScale).toFixed(2));
+        }
+        return s.sellQty;
+      }
+
       // Identify ATM strike
       let atmStrike = null;
       let minDiff = Infinity;
@@ -655,7 +666,7 @@ export async function startPaperTradingEngine() {
             if (!isBetter) return false;
 
             // Swap PnL guard: net premium swap cost (sell - buy) must be at least -10 (i.e. max 10 debit)
-            const deltaQty = s.sellQty - pos.sellQty;
+            const deltaQty = getScaledSellQty(s) - pos.sellQty;
             const netPremiumSwap = (deltaQty * latestSell) - (s.buyPrice - latestBuy);
             if (netPremiumSwap < -10) {
               if (!onlyExits) {
@@ -686,9 +697,9 @@ export async function startPaperTradingEngine() {
             }
             pos._pendingLegSwap = bestSwapTarget;
             shouldExit = true;
-            const deltaQty = bestSwapTarget.sellQty - pos.sellQty;
+            const deltaQty = getScaledSellQty(bestSwapTarget) - pos.sellQty;
             const netPremiumSwap = (deltaQty * latestSell) - (bestSwapTarget.buyPrice - latestBuy);
-            exitReason = `Leg Swap: Buy ${currentStrike} -> ${targetStrike} | Old Buy: $${latestBuy.toFixed(2)} | New Buy: $${bestSwapTarget.buyPrice.toFixed(2)} | Old Sell Qty: ${pos.sellQty} | New Sell Qty: ${bestSwapTarget.sellQty} | Sell Price: $${latestSell.toFixed(2)} | Net Premium Swap: $${netPremiumSwap.toFixed(2)}`;
+            exitReason = `Leg Swap: Buy ${currentStrike} -> ${targetStrike} | Old Buy: $${latestBuy.toFixed(2)} | New Buy: $${bestSwapTarget.buyPrice.toFixed(2)} | Old Sell Qty: ${pos.sellQty} | New Sell Qty: ${getScaledSellQty(bestSwapTarget)} | Sell Price: $${latestSell.toFixed(2)} | Net Premium Swap: $${netPremiumSwap.toFixed(2)}`;
             reservedTargets.add(targetStrike);
             reservedSellTargets.add(targetSellStrike);
           } else if (!inTop3) {
@@ -703,7 +714,7 @@ export async function startPaperTradingEngine() {
 
               // If it's a leg swap (same sell strike), check swap cost based on net premium
               if (sS === Number(pos.sellLeg.strike)) {
-                const deltaQty = s.sellQty - pos.sellQty;
+                const deltaQty = getScaledSellQty(s) - pos.sellQty;
                 const netPremiumSwap = (deltaQty * latestSell) - (s.buyPrice - latestBuy);
                 if (netPremiumSwap < -10) return false;
               }
@@ -736,9 +747,9 @@ export async function startPaperTradingEngine() {
                 if (isSellStrikeMatch) {
                   pos._pendingLegSwap = bestTarget;
                   shouldExit = true;
-                  const deltaQty = bestTarget.sellQty - pos.sellQty;
+                  const deltaQty = getScaledSellQty(bestTarget) - pos.sellQty;
                   const netPremiumSwap = (deltaQty * latestSell) - (bestTarget.buyPrice - latestBuy);
-                  exitReason = `Leg Swap: Buy ${currentStrike} -> ${targetStrike} | Old Buy: $${latestBuy.toFixed(2)} | New Buy: $${bestTarget.buyPrice.toFixed(2)} | Old Sell Qty: ${pos.sellQty} | New Sell Qty: ${bestTarget.sellQty} | Sell Price: $${latestSell.toFixed(2)} | Net Premium Swap: $${netPremiumSwap.toFixed(2)}`;
+                  exitReason = `Leg Swap: Buy ${currentStrike} -> ${targetStrike} | Old Buy: $${latestBuy.toFixed(2)} | New Buy: $${bestTarget.buyPrice.toFixed(2)} | Old Sell Qty: ${pos.sellQty} | New Sell Qty: ${getScaledSellQty(bestTarget)} | Sell Price: $${latestSell.toFixed(2)} | Net Premium Swap: $${netPremiumSwap.toFixed(2)}`;
                 } else {
                   shouldExit = true;
                   exitReason = `Lost Top 3 and Rank 1 better target available (${targetStrike})`;

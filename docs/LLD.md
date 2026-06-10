@@ -290,7 +290,7 @@ Evaluated only if no exit was triggered, the position's expiry matches `selExpir
    - Always checked first (even if the active position is still in the Top 3 unique candidate strikes).
    - Looks for a candidate in `uniqueTopSpreads` with the exact same sell strike as the active position, but a better (closer to ATM) buy strike.
    - Enforces the **0.5% Spot Step Movement Guard** on the spot price relative to the active position's entry spot base.
-   - Enforces the **Net Premium Swap Cost Check**: calculates `netPremiumSwap = (deltaQty * latestSell) - (s.buyPrice - latestBuy)`, where `deltaQty = s.sellQty - pos.sellQty` and `latestSell` is the ask price of the sell leg. If `netPremiumSwap < -10` (representing a debit greater than $10.00), the candidate is rejected.
+   - Enforces the **Net Premium Swap Cost Check**: calculates `netPremiumSwap = (deltaQty * latestSell) - (s.buyPrice - latestBuy)`, where `deltaQty = getScaledSellQty(s) - pos.sellQty` (enforcing the $200,000 portfolio cap scaling at 200× leverage on the candidate's `s.sellQty` first) and `latestSell` is the ask price of the sell leg. If `netPremiumSwap < -10` (representing a debit greater than $10.00), the candidate is rejected.
    - If a valid swap target is found, `shouldExit` is set to `true`, and `exitReason` is set to `Leg Swap: Buy [currentStrike] -> [targetStrike]`.
 
 2. **Fallback to Standard Rotation (Only if not in Top 3)**:
