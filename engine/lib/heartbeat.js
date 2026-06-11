@@ -5,10 +5,9 @@
  */
 import { supabase } from './supabase.js';
 import { log, logError } from './utils.js';
-
 /**
  * Create a heartbeat manager for a specific engine.
- * @param {string} engineId - 'paper_trading' or 'atm_exit'
+ * @param {string} engineId - 'paper_trading'
  */
 export function createHeartbeat(engineId) {
   let intervalTimer = null;
