@@ -607,8 +607,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       if (payload.config) {
         const updates = {};
         const keys = [
-          'underlying', 'expiry', 'minStrikeDiff', 'minIvDiff', 'maxRatioDeviation',
-          'minSellPremium', 'maxNetPremium', 'minLongDist', 'maxSellQty',
+          'underlying',
           'atmRatioScaling', 'atmRatioDistanceCall', 'atmRatioDistancePut'
         ];
         keys.forEach(k => {

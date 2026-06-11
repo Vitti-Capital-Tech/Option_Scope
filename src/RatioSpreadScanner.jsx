@@ -544,8 +544,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
       if (payload.config) {
         const updates = {};
         const keys = [
-          'underlying', 'expiry', 'minStrikeDiff', 'minIvDiff', 'maxRatioDeviation',
-          'minSellPremium', 'maxNetPremium', 'minLongDist', 'maxSellQty',
+          'underlying',
           'atmRatioScaling', 'atmRatioDistanceCall', 'atmRatioDistancePut'
         ];
         keys.forEach(k => {
@@ -560,7 +559,6 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
           });
         }
         if (payload.config.underlying) setUnderlying(payload.config.underlying);
-        if (payload.config.expiry) setSelExpiry(payload.config.expiry);
       }
     }
   });
