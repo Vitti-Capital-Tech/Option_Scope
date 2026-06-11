@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { useForm } from 'react-hook-form';
 import {
   loadProducts, getExpiries, getStrikes, getSpotPrice,
   fmtExpiry, createTickerStream, apiGet, getTickers
@@ -32,13 +33,30 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const [configDbId, setConfigDbId] = useState(null);
 
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
-  const [modalAccountName, setModalAccountName] = useState('');
-  const [modalAccountBalance, setModalAccountBalance] = useState('10000');
   const [isCreatingAccount, setIsCreatingAccount] = useState(false);
   const [isDeletingAccount, setIsDeletingAccount] = useState(false);
 
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [isSavingAccount, setIsSavingAccount] = useState(false);
+
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [accountToDeleteId, setAccountToDeleteId] = useState(null);
+
+  const {
+    register: registerCreate,
+    handleSubmit: handleSubmitCreate,
+    formState: { errors: errorsCreate },
+    reset: resetCreate
+  } = useForm({
+    defaultValues: { name: '', balance: 10000 }
+  });
+
+  const {
+    register: registerEdit,
+    handleSubmit: handleSubmitEdit,
+    formState: { errors: errorsEdit },
+    reset: resetEdit
+  } = useForm();
 
   const [config, setConfig] = useState(() => ({
     underlying: 'BTC',
@@ -192,17 +210,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     };
   }, [fetchAccounts]);
 
-  const handleModalSubmit = async () => {
-    const trimmedName = modalAccountName.trim();
-    if (!trimmedName) {
-      alert("Account name cannot be empty.");
-      return;
-    }
-    const balance = parseFloat(modalAccountBalance);
-    if (isNaN(balance) || balance <= 0) {
-      alert("Invalid balance. Please enter a positive number.");
-      return;
-    }
+  const handleModalSubmit = async (data) => {
+    const trimmedName = data.name.trim();
+    const balance = data.balance;
 
     setIsCreatingAccount(true);
     try {
@@ -241,6 +251,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
         setActiveAccountId(accData.id);
         setIsCreateModalOpen(false);
+        resetCreate();
       } else {
         alert("Account was created, but details could not be retrieved. Please check if Row Level Security (RLS) is blocking the query.");
       }
@@ -251,17 +262,48 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     }
   };
 
-  const handleRenameAccount = async (accountId, name) => {
-    if (!name.trim()) return;
+  const triggerCreateAccount = () => {
+    resetCreate({
+      name: `Account ${accounts.length + 1}`,
+      balance: 10000
+    });
+    setIsCreateModalOpen(true);
+  };
+
+  const triggerEditAccount = () => {
+    const activeAccount = accounts.find(a => a.id === activeAccountId);
+    if (!activeAccount) return;
+    resetEdit({
+      name: activeAccount.name,
+      balance: activeAccount.balance
+    });
+    setIsEditModalOpen(true);
+  };
+
+  const handleEditSubmit = async (data) => {
+    const trimmedName = data.name.trim();
+    const balance = data.balance;
+
+    setIsSavingAccount(true);
     try {
-      setAccounts(prev => prev.map(a => a.id === accountId ? { ...a, name: name.trim() } : a));
-      await supabase
+      setAccounts(prev => prev.map(a => a.id === activeAccountId ? { ...a, name: trimmedName, balance } : a));
+      const { error } = await supabase
         .from('paper_trading_accounts')
-        .update({ name: name.trim() })
-        .eq('id', accountId);
+        .update({ name: trimmedName, balance })
+        .eq('id', activeAccountId);
+
+      if (error) {
+        console.error('Failed to update account:', error);
+        alert(`Failed to update account: ${error.message}`);
+        return;
+      }
+
       await fetchAccounts();
+      setIsEditModalOpen(false);
     } catch (e) {
-      console.error('Rename account error:', e);
+      console.error('Edit account exception:', e);
+    } finally {
+      setIsSavingAccount(false);
     }
   };
 
@@ -274,11 +316,17 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     if (!accountToDeleteId) return;
     setIsDeletingAccount(true);
     try {
-      await supabase
+      const { error } = await supabase
         .from('paper_trading_accounts')
         .delete()
         .eq('id', accountToDeleteId);
-      
+
+      if (error) {
+        console.error('Failed to delete account:', error);
+        alert(`Failed to delete account: ${error.message}`);
+        return;
+      }
+
       await fetchAccounts();
       setIsDeleteModalOpen(false);
       setAccountToDeleteId(null);
@@ -286,20 +334,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       console.error('Delete account error:', e);
     } finally {
       setIsDeletingAccount(false);
-    }
-  };
-
-  const handleUpdateBalance = async (newVal) => {
-    if (!activeAccountId) return;
-    const parsed = parseFloat(newVal);
-    if (isNaN(parsed) || parsed < 0) return;
-    try {
-      await supabase
-        .from('paper_trading_accounts')
-        .update({ balance: parsed })
-        .eq('id', activeAccountId);
-    } catch (e) {
-      console.error('Update balance error:', e);
     }
   };
 
@@ -1104,11 +1138,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           </select>
 
           <button
-            onClick={() => {
-              setModalAccountName(`Account ${accounts.length + 1}`);
-              setModalAccountBalance('10000');
-              setIsCreateModalOpen(true);
-            }}
+            onClick={triggerCreateAccount}
             style={{
               padding: '6px 12px',
               borderRadius: 6,
@@ -1174,24 +1204,48 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                   : expiries.map(e => <option key={e} value={e}>{fmtExpiry(e)}</option>)}
               </select>
             </div>
-            <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-              <label style={{ marginBottom: 0 }}>Account Name:</label>
-              <input
-                type="text"
-                value={accounts.find(a => a.id === activeAccountId)?.name ?? ''}
-                onChange={e => handleRenameAccount(activeAccountId, e.target.value)}
-                style={{ padding: '6px 12px', width: '130px', fontSize: '13px', background: 'var(--bg3)', border: '1px solid var(--border)', color: 'var(--text)', borderRadius: '4px' }}
-              />
-            </div>
-            <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-              <label style={{ marginBottom: 0 }}>Balance ($):</label>
-              <input
-                type="number"
-                value={accounts.find(a => a.id === activeAccountId)?.balance ?? 10000}
-                onChange={e => handleUpdateBalance(e.target.value)}
-                style={{ padding: '6px 12px', width: '100px', fontSize: '13px', background: 'var(--bg3)', border: '1px solid var(--border)', color: 'var(--text)', borderRadius: '4px' }}
-              />
-            </div>
+            {activeAccountId && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, background: 'var(--bg)', padding: '6px 12px', borderRadius: '6px', border: '1px solid var(--border)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)', textTransform: 'uppercase' }}>Active:</span>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>
+                    {accounts.find(a => a.id === activeAccountId)?.name ?? ''}
+                  </span>
+                </div>
+                <div style={{ width: 1, height: 14, backgroundColor: 'var(--border)' }}></div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)', textTransform: 'uppercase' }}>Balance:</span>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--accent)' }}>
+                    ${(accounts.find(a => a.id === activeAccountId)?.balance ?? 0).toLocaleString()}
+                  </span>
+                </div>
+                <button
+                  onClick={triggerEditAccount}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    background: 'transparent',
+                    border: 'none',
+                    color: 'var(--text-dim)',
+                    cursor: 'pointer',
+                    padding: '2px',
+                    borderRadius: '4px',
+                    marginLeft: '4px',
+                    outline: 'none',
+                    transition: 'color 0.2s'
+                  }}
+                  onMouseOver={e => e.currentTarget.style.color = 'var(--accent)'}
+                  onMouseOut={e => e.currentTarget.style.color = 'var(--text-dim)'}
+                  title="Edit Account Details"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                    <path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                  </svg>
+                </button>
+              </div>
+            )}
             <button
               className="pt-filters-toggle-btn"
               onClick={() => setIsFiltersCollapsed(!isFiltersCollapsed)}
@@ -1741,7 +1795,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           justifyContent: 'center',
           zIndex: 9999
         }}>
-          <div style={{
+          <form onSubmit={handleSubmitCreate(handleModalSubmit)} style={{
             background: 'var(--bg2)',
             border: '1px solid var(--border)',
             borderRadius: '8px',
@@ -1758,42 +1812,58 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-dim)' }}>Account Name</label>
               <input
                 type="text"
-                value={modalAccountName}
-                onChange={e => setModalAccountName(e.target.value)}
+                {...registerCreate('name', {
+                  required: 'Account name is required',
+                  validate: value => value.trim() !== '' || 'Account name cannot be empty'
+                })}
                 placeholder="e.g. BTC Aggressive"
                 style={{
                   padding: '8px 12px',
                   borderRadius: '6px',
-                  border: '1px solid var(--border)',
+                  border: errorsCreate.name ? '1px solid #f85149' : '1px solid var(--border)',
                   background: 'var(--bg3)',
                   color: 'var(--text)',
                   fontSize: '13px',
                   outline: 'none'
                 }}
               />
+              {errorsCreate.name && (
+                <span style={{ fontSize: '11px', color: '#f85149', marginTop: '2px' }}>
+                  {errorsCreate.name.message}
+                </span>
+              )}
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
               <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-dim)' }}>Initial Balance ($)</label>
               <input
                 type="number"
-                value={modalAccountBalance}
-                onChange={e => setModalAccountBalance(e.target.value)}
+                {...registerCreate('balance', {
+                  required: 'Initial balance is required',
+                  valueAsNumber: true,
+                  validate: value => (!isNaN(value) && value > 0) || 'Initial balance must be a positive number'
+                })}
                 placeholder="10000"
                 style={{
                   padding: '8px 12px',
                   borderRadius: '6px',
-                  border: '1px solid var(--border)',
+                  border: errorsCreate.balance ? '1px solid #f85149' : '1px solid var(--border)',
                   background: 'var(--bg3)',
                   color: 'var(--text)',
                   fontSize: '13px',
                   outline: 'none'
                 }}
               />
+              {errorsCreate.balance && (
+                <span style={{ fontSize: '11px', color: '#f85149', marginTop: '2px' }}>
+                  {errorsCreate.balance.message}
+                </span>
+              )}
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '8px' }}>
               <button
+                type="button"
                 disabled={isCreatingAccount}
                 onClick={() => setIsCreateModalOpen(false)}
                 style={{
@@ -1811,8 +1881,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                 Cancel
               </button>
               <button
+                type="submit"
                 disabled={isCreatingAccount}
-                onClick={handleModalSubmit}
                 style={{
                   padding: '8px 16px',
                   borderRadius: '6px',
@@ -1839,7 +1909,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                 ) : 'Create Account'}
               </button>
             </div>
-          </div>
+          </form>
         </div>
       )}
       {/* Delete Account Confirmation Modal */}
@@ -1935,6 +2005,140 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Edit Account Modal */}
+      {isEditModalOpen && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          backgroundColor: 'rgba(0, 0, 0, 0.6)',
+          backdropFilter: 'blur(4px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999
+        }}>
+          <form onSubmit={handleSubmitEdit(handleEditSubmit)} style={{
+            background: 'var(--bg2)',
+            border: '1px solid var(--border)',
+            borderRadius: '8px',
+            padding: '24px',
+            width: '380px',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '16px'
+          }}>
+            <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: 'var(--text)' }}>Edit Account Details</h3>
+            
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-dim)' }}>Account Name</label>
+              <input
+                type="text"
+                {...registerEdit('name', {
+                  required: 'Account name is required',
+                  validate: value => value.trim() !== '' || 'Account name cannot be empty'
+                })}
+                style={{
+                  padding: '8px 12px',
+                  borderRadius: '6px',
+                  border: errorsEdit.name ? '1px solid #f85149' : '1px solid var(--border)',
+                  background: 'var(--bg3)',
+                  color: 'var(--text)',
+                  fontSize: '13px',
+                  outline: 'none'
+                }}
+              />
+              {errorsEdit.name && (
+                <span style={{ fontSize: '11px', color: '#f85149', marginTop: '2px' }}>
+                  {errorsEdit.name.message}
+                </span>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-dim)' }}>Balance ($)</label>
+              <input
+                type="number"
+                {...registerEdit('balance', {
+                  required: 'Balance is required',
+                  valueAsNumber: true,
+                  validate: value => (!isNaN(value) && value > 0) || 'Balance must be a positive number'
+                })}
+                style={{
+                  padding: '8px 12px',
+                  borderRadius: '6px',
+                  border: errorsEdit.balance ? '1px solid #f85149' : '1px solid var(--border)',
+                  background: 'var(--bg3)',
+                  color: 'var(--text)',
+                  fontSize: '13px',
+                  outline: 'none'
+                }}
+              />
+              {errorsEdit.balance && (
+                <span style={{ fontSize: '11px', color: '#f85149', marginTop: '2px' }}>
+                  {errorsEdit.balance.message}
+                </span>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '8px' }}>
+              <button
+                type="button"
+                disabled={isSavingAccount}
+                onClick={() => {
+                  setIsEditModalOpen(false);
+                  resetEdit();
+                }}
+                style={{
+                  padding: '8px 16px',
+                  borderRadius: '6px',
+                  border: '1px solid var(--border)',
+                  background: 'transparent',
+                  color: 'var(--text)',
+                  cursor: isSavingAccount ? 'not-allowed' : 'pointer',
+                  fontSize: '13px',
+                  fontWeight: 500,
+                  opacity: isSavingAccount ? 0.6 : 1
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={isSavingAccount}
+                style={{
+                  padding: '8px 16px',
+                  borderRadius: '6px',
+                  border: 'none',
+                  background: '#0969da',
+                  color: '#ffffff',
+                  cursor: isSavingAccount ? 'not-allowed' : 'pointer',
+                  fontSize: '13px',
+                  fontWeight: 500,
+                  opacity: isSavingAccount ? 0.8 : 1,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '8px'
+                }}
+              >
+                {isSavingAccount ? (
+                  <>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" style={{ animation: 'spin 0.8s linear infinite' }}>
+                      <circle cx="12" cy="12" r="10" stroke="rgba(255, 255, 255, 0.25)" />
+                      <path d="M12 2a10 10 0 0 1 10 10" stroke="#ffffff" />
+                    </svg>
+                    Saving...
+                  </>
+                ) : 'Save Changes'}
+              </button>
+            </div>
+          </form>
         </div>
       )}
     </div>

@@ -446,7 +446,14 @@ On first spot price arrival, `backfillMargins` queries all `active_positions` fr
 
 ### 2. Custom React Modals
 - **Create Account Modal**:
-  - collects Name and Initial Balance.
+  - Collects Name and Initial Balance.
+  - Utilizes `react-hook-form` for input validation and error feedback.
+  - Validations:
+    - Account Name: Required, trimmed input must be non-empty.
+    - Initial Balance: Required, must be a positive number.
+  - Visual Indicators:
+    - Invalid inputs are styled with a red border (`border: 1px solid #f85149`).
+    - Validation error messages are rendered in red text directly beneath the corresponding invalid fields.
   - State: `isCreatingAccount` tracks loading state.
   - Buttons: Cancel and Create are disabled when `isCreatingAccount` is true. An inline spinning SVG is rendered inside the Create button.
 - **Delete Account Modal**:
@@ -454,5 +461,20 @@ On first spot price arrival, `backfillMargins` queries all `active_positions` fr
   - Checks if the account has open positions; if yes, displays a prominent warning that positions will be cascaded.
   - Refreshes state instantly by invoking `await fetchAccounts()` immediately post-deletion to avoid stale lists.
   - Buttons: Cancel and Delete are locked during execution with a spinning SVG loader inline.
-- **Renaming Account**:
-  - Executes optimistic update on `accounts` state locally before calling the update query, followed by a direct DB list refresh to guarantee visual snappy feedback.
+- **Renaming & Updating Account Balance (Edit Account Modal)**:
+  - Triggered by clicking a pencil icon next to the active account details (Name and Balance displayed in a compact visual pill container).
+  - Opens a custom styled React modal allowing the user to update both Account Name and Balance in a single transaction.
+  - The modal inputs are pre-populated with the active account's current values.
+  - Utilizes `react-hook-form` for input validation and error feedback.
+  - Validations:
+    - Account Name: Required, trimmed input must be non-empty.
+    - Balance: Required, must be a positive number.
+  - Visual Indicators:
+    - Invalid inputs are styled with a red border (`border: 1px solid #f85149`).
+    - Validation error messages are rendered in red text directly beneath the corresponding invalid fields.
+  - On submit:
+    - Locks input and action buttons (Cancel/Save) by toggling `isSavingAccount`.
+    - Renders a spinning inline SVG loader inside the Save button.
+    - Performs an optimistic local state update to `accounts` for immediate visual responsiveness.
+    - Updates both name and balance in a single database update query against `paper_trading_accounts`.
+    - Refreshes account list using `fetchAccounts()` to sync changes globally, then closes the modal.
