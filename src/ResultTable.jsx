@@ -212,6 +212,7 @@ export default function ResultTable({
                     sellQty: adjustedSellQty,
                     originalSellQty: totalSellQty,
                     originalLotSize: lotSize,
+                    naturalSellQty: r.sellQty,
                     isRatioChanged,
                     netPremium: Number(rawNetPremium).toFixed(2),
                     buyIntrinsic,
@@ -304,7 +305,10 @@ export default function ResultTable({
                           </div>
                           {bestRow.originalSellQty !== undefined && bestRow.originalLotSize !== undefined && (
                             <div style={{ fontSize: '9px', color: bestRow.isRatioChanged ? 'var(--accent)' : 'var(--text)', fontWeight: 'normal', marginTop: 2 }}>
-                              (1:{(Math.round((bestRow.originalSellQty / bestRow.originalLotSize) * 4) / 4).toFixed(2)})
+                              {bestRow.isRatioChanged
+                                ? `(1:${(Math.round((bestRow.naturalSellQty / bestRow.originalLotSize) * 4) / 4).toFixed(2)} → 1:${(Math.round((bestRow.originalSellQty / bestRow.originalLotSize) * 4) / 4).toFixed(2)})`
+                                : `(1:${(Math.round((bestRow.originalSellQty / bestRow.originalLotSize) * 4) / 4).toFixed(2)})`
+                              }
                             </div>
                           )}
                         </td>
@@ -381,7 +385,10 @@ export default function ResultTable({
                               </div>
                               {r.originalSellQty !== undefined && r.originalLotSize !== undefined && (
                                 <div style={{ fontSize: '9px', color: r.isRatioChanged ? 'var(--accent)' : 'var(--text)', fontWeight: 'normal', marginTop: 2 }}>
-                                  (1:{(Math.round((r.originalSellQty / r.originalLotSize) * 4) / 4).toFixed(2)})
+                                  {r.isRatioChanged
+                                    ? `(1:${(Math.round((r.naturalSellQty / r.originalLotSize) * 4) / 4).toFixed(2)} → 1:${(Math.round((r.originalSellQty / r.originalLotSize) * 4) / 4).toFixed(2)})`
+                                    : `(1:${(Math.round((r.originalSellQty / r.originalLotSize) * 4) / 4).toFixed(2)})`
+                                  }
                                 </div>
                               )}
                             </td>
