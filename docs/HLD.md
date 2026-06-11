@@ -32,7 +32,9 @@ Browser (React + Vite Dashboard)
 - `PaperTrading.jsx` no longer runs automated logic; they are read-only views showing live database state and a ticking server `engine_heartbeat` countdown.
 - All three modules are always mounted (via `display: none/block`) to preserve state during navigation.
 - Theme toggle is shared across modules.
-- **Synchronization**: Core configuration parameters (`underlying`, `atmRatioScaling`, `atmRatioDistanceCall`, `atmRatioDistancePut`) are synchronized across tabs via `BroadcastChannel` and persisted to Supabase for cross-device consistency, while other filters and expiry selections remain independent.
+- **Multi-Account Selector**: Features a styled, theme-friendly dropdown selector on both the dashboard and scanner headers to instantly switch the active account.
+- **Themed Modals**: Features custom React modals for creating and deleting accounts (complete with safety warnings on deleting active accounts). Styled with active theme CSS variables (`--bg2`, `--bg3`, `--text`, `--text-dim`) with inline loading spinner SVGs during DB operations.
+- **Synchronization**: Core configuration parameters (`underlying`, `atmRatioScaling`, `atmRatioDistanceCall`, `atmRatioDistancePut`) and the current accounts list (`ACCOUNTS_SYNC`) are synchronized across tabs via `BroadcastChannel` and persisted to Supabase for cross-device consistency, while other filters and expiry selections remain independent.
 
 ### 2) Market Data & Connectivity Layer
 
@@ -47,7 +49,8 @@ Browser (React + Vite Dashboard)
 
 - **Charting Engine (UI)** uses imperative refs and always-mounted chart components for smooth updates.
 - **Scanner Engine (UI)** processes option chains for valid ratio candidates using configurable thresholds. Enforces directional filtering (Calls ≥ ATM, Puts ≤ ATM).
-- **Paper Trading Engine (Node.js)** A headless script (`paperTradingEngine.js`) that runs 24/7 on a VPS. Reuses scanner-style candidate selection to simulate positions. Filters candidates by projected ATM P&L >= $50 and sorts them by ROI descending to select the best candidate per buy strike. Enforces a hard cap of 3 positions per option type. Evaluates exit rules (ATM, expiry, rotations) every second to minimize slippage, while running full scans for entries on 1-minute boundaries to optimize DB load. Tracks Bid/Ask-specific IVs. Tolerates up to 120s spot price staleness. Synchronizes with Supabase.
+- **Multi-Account Paper Trading Supervisor (Node.js)**: The headless process (`paperTradingEngine.js`) runs a supervisor manager that queries `paper_trading_accounts` and spawns isolated, parallel engine execution loops (`startSingleAccountEngine`) for each account. The supervisor listens to Supabase database events (INSERT, UPDATE, DELETE) on the `paper_trading_accounts` table to dynamically start, stop, or hot-reload single account engine threads in real-time without process restarts.
+- **Single Account Engine**: Each loop executes the trading strategy independently, scoped by its specific account ID. Reuses scanner-style candidate selection to simulate positions. Filters candidates by projected ATM P&L >= $50 and sorts them by ROI descending. Enforces account-specific position limits (max 3 positions per option type), independent balance/margin checks, IV tracking, and Supabase synchronization.
 
 ---
 

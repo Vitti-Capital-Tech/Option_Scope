@@ -27,6 +27,19 @@ const safeParseLeg = (value) => {
 };
 
 export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
+  const [accounts, setAccounts] = useState([]);
+  const [activeAccountId, setActiveAccountId] = useState(null);
+  const [configDbId, setConfigDbId] = useState(null);
+
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [modalAccountName, setModalAccountName] = useState('');
+  const [modalAccountBalance, setModalAccountBalance] = useState('10000');
+  const [isCreatingAccount, setIsCreatingAccount] = useState(false);
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
+
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [accountToDeleteId, setAccountToDeleteId] = useState(null);
+
   const [config, setConfig] = useState(() => ({
     underlying: 'BTC',
     expiry: '',
@@ -138,11 +151,165 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     return () => clearInterval(interval);
   }, [refreshProducts]);
 
+  // ── Load accounts ──────────────────────────────────────────────────────
+  const fetchAccounts = useCallback(async () => {
+    try {
+      const { data, error } = await supabase
+        .from('paper_trading_accounts')
+        .select('*')
+        .order('created_at', { ascending: true });
+      if (data && !error) {
+        setAccounts(data);
+        if (data.length > 0) {
+          setActiveAccountId(prev => {
+            if (prev && data.some(a => a.id === prev)) return prev;
+            return data[0].id;
+          });
+        }
+        try {
+          const ch = new BroadcastChannel('option-scope-sync');
+          ch.postMessage({ type: 'ACCOUNTS_SYNC', payload: { accounts: data }, senderId: 'paper-trading-dashboard', timestamp: Date.now() });
+          ch.close();
+        } catch (e) { }
+      }
+    } catch (e) { console.error('Failed to fetch accounts:', e); }
+  }, []);
+
+  useEffect(() => {
+    fetchAccounts();
+
+    const accountsChannel = supabase
+      .channel('accounts_changes_ui')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'paper_trading_accounts' },
+        () => { fetchAccounts(); }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(accountsChannel);
+    };
+  }, [fetchAccounts]);
+
+  const handleModalSubmit = async () => {
+    const trimmedName = modalAccountName.trim();
+    if (!trimmedName) {
+      alert("Account name cannot be empty.");
+      return;
+    }
+    const balance = parseFloat(modalAccountBalance);
+    if (isNaN(balance) || balance <= 0) {
+      alert("Invalid balance. Please enter a positive number.");
+      return;
+    }
+
+    setIsCreatingAccount(true);
+    try {
+      const { data: accList, error: accErr } = await supabase
+        .from('paper_trading_accounts')
+        .insert([{ name: trimmedName, balance }])
+        .select('*');
+      
+      if (accErr) {
+        console.error('Failed to create account:', accErr);
+        alert(`Failed to create account: ${accErr.message}`);
+        setIsCreatingAccount(false);
+        return;
+      }
+      
+      const accData = accList?.[0];
+      if (accData) {
+        await supabase.from('paper_trading_config').insert([{
+          id: accData.id,
+          account_id: accData.id,
+          underlying: 'BTC',
+          min_strike_diff: 800,
+          min_iv_diff: 5,
+          max_ratio_deviation: 0.25,
+          min_sell_premium: 10,
+          max_net_premium: 20,
+          min_long_dist: 500,
+          max_sell_qty: 10,
+          atm_ratio_scaling: false,
+          atm_ratio_distance_call: 1,
+          atm_ratio_distance_put: 1,
+        }]);
+
+        // Manually fetch accounts first to update state instantly!
+        await fetchAccounts();
+
+        setActiveAccountId(accData.id);
+        setIsCreateModalOpen(false);
+      } else {
+        alert("Account was created, but details could not be retrieved. Please check if Row Level Security (RLS) is blocking the query.");
+      }
+    } catch (e) {
+      console.error('Create account exception:', e);
+    } finally {
+      setIsCreatingAccount(false);
+    }
+  };
+
+  const handleRenameAccount = async (accountId, name) => {
+    if (!name.trim()) return;
+    try {
+      setAccounts(prev => prev.map(a => a.id === accountId ? { ...a, name: name.trim() } : a));
+      await supabase
+        .from('paper_trading_accounts')
+        .update({ name: name.trim() })
+        .eq('id', accountId);
+      await fetchAccounts();
+    } catch (e) {
+      console.error('Rename account error:', e);
+    }
+  };
+
+  const triggerDeleteAccount = (accountId) => {
+    setAccountToDeleteId(accountId);
+    setIsDeleteModalOpen(true);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!accountToDeleteId) return;
+    setIsDeletingAccount(true);
+    try {
+      await supabase
+        .from('paper_trading_accounts')
+        .delete()
+        .eq('id', accountToDeleteId);
+      
+      await fetchAccounts();
+      setIsDeleteModalOpen(false);
+      setAccountToDeleteId(null);
+    } catch (e) {
+      console.error('Delete account error:', e);
+    } finally {
+      setIsDeletingAccount(false);
+    }
+  };
+
+  const handleUpdateBalance = async (newVal) => {
+    if (!activeAccountId) return;
+    const parsed = parseFloat(newVal);
+    if (isNaN(parsed) || parsed < 0) return;
+    try {
+      await supabase
+        .from('paper_trading_accounts')
+        .update({ balance: parsed })
+        .eq('id', activeAccountId);
+    } catch (e) {
+      console.error('Update balance error:', e);
+    }
+  };
+
   // ── Config ────────────────────────────────────────────────────────────
   const saveSupabaseConfig = useCallback(async (newCfg) => {
+    if (!activeAccountId || !configDbId) return;
     try {
       await supabase.from('paper_trading_config').upsert({
-        id: 'global',
+        id: configDbId,
+        account_id: activeAccountId,
         underlying: newCfg.underlying,
         expiry: newCfg.expiry,
         min_strike_diff: newCfg.minStrikeDiff,
@@ -158,7 +325,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         updated_at: new Date().toISOString()
       });
     } catch (e) { }
-  }, []);
+  }, [activeAccountId, configDbId]);
 
   const updateConfig = (keyOrObj, value) => {
     setConfig(c => {
@@ -171,9 +338,38 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   };
 
   const fetchSupabaseConfig = useCallback(async () => {
+    if (!activeAccountId) return;
     try {
-      const { data, error } = await supabase
-        .from('paper_trading_config').select('*').eq('id', 'global').single();
+      let { data, error } = await supabase
+        .from('paper_trading_config').select('*').eq('account_id', activeAccountId).single();
+      
+      if (error && error.code === 'PGRST116') {
+        const defaultRow = {
+          account_id: activeAccountId,
+          underlying: 'BTC',
+          min_strike_diff: 800,
+          min_iv_diff: 5,
+          max_ratio_deviation: 0.25,
+          min_sell_premium: 10,
+          max_net_premium: 20,
+          min_long_dist: 500,
+          max_sell_qty: 10,
+          atm_ratio_scaling: false,
+          atm_ratio_distance_call: 1,
+          atm_ratio_distance_put: 1,
+          updated_at: new Date().toISOString()
+        };
+        const { data: inserted, error: insertErr } = await supabase
+          .from('paper_trading_config')
+          .insert([defaultRow])
+          .select('*')
+          .single();
+        if (inserted && !insertErr) {
+          data = inserted;
+          error = null;
+        }
+      }
+
       if (data && !error) {
         setConfig({
           underlying: data.underlying || 'BTC',
@@ -189,18 +385,21 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           atmRatioDistanceCall: data.atm_ratio_distance_call ?? 1,
           atmRatioDistancePut: data.atm_ratio_distance_put ?? 1,
         });
+        setConfigDbId(data.id);
         setIsConfigLoaded(true);
       }
     } catch (e) { }
-  }, []);
+  }, [activeAccountId]);
 
   // ── Supabase reads ────────────────────────────────────────────────────
   const fetchSupabaseActivePositions = useCallback(async () => {
+    if (!activeAccountId) return;
     try {
       if (Date.now() - lastDbWriteRef.current < 3000) return;
       const { data, error } = await supabase
         .from('active_positions')
         .select('*')
+        .eq('account_id', activeAccountId)
         .order('entry_time', { ascending: true });
 
       if (error) { console.error('Error fetching active positions:', error); return; }
@@ -245,13 +444,15 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         setPositions([]);
       }
     } catch (e) { console.error('Fetch Active Error:', e); }
-  }, []);
+  }, [activeAccountId]);
 
   const fetchSupabaseTradeHistory = useCallback(async () => {
+    if (!activeAccountId) return;
     try {
       const { data, error } = await supabase
         .from('trade_history')
         .select('*')
+        .eq('account_id', activeAccountId)
         .eq('underlying', underlying)
         .order('exit_time', { ascending: false });
 
@@ -281,28 +482,30 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         setTradeHistory(mapped);
       }
     } catch (e) { }
-  }, [underlying]);
+  }, [activeAccountId, underlying]);
 
   // ── Initial data load + Realtime subscription ─────────────────────────
   useEffect(() => {
+    if (!activeAccountId) return;
+
     fetchSupabaseActivePositions();
     fetchSupabaseTradeHistory();
     fetchSupabaseConfig();
 
     const realtimeChannel = supabase
-      .channel('active_positions_changes')
+      .channel(`active_positions_changes_${activeAccountId}`)
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'active_positions' },
+        { event: '*', schema: 'public', table: 'active_positions', filter: `account_id=eq.${activeAccountId}` },
         () => { fetchSupabaseActivePositions(); }
       )
       .subscribe();
 
     const historyChannel = supabase
-      .channel('trade_history_changes')
+      .channel(`trade_history_changes_${activeAccountId}`)
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'trade_history' },
+        { event: 'INSERT', schema: 'public', table: 'trade_history', filter: `account_id=eq.${activeAccountId}` },
         () => { fetchSupabaseTradeHistory(); }
       )
       .subscribe();
@@ -321,34 +524,35 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       supabase.removeChannel(historyChannel);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [fetchSupabaseActivePositions, fetchSupabaseTradeHistory, fetchSupabaseConfig]);
+  }, [fetchSupabaseActivePositions, fetchSupabaseTradeHistory, fetchSupabaseConfig, activeAccountId]);
 
   // ── Engine heartbeat ──────────────────────────────────────────────────
   const fetchHeartbeat = useCallback(async () => {
+    if (!activeAccountId) return;
     try {
       const { data, error } = await supabase
         .from('engine_heartbeat')
         .select('*')
-        .eq('id', 'paper_trading')
-        .single();
+        .eq('id', `paper_trading_${activeAccountId}`);
 
-      if (error || !data) {
+      if (error || !data || data.length === 0) {
         setEngineStatus({ status: 'offline', lastHeartbeat: null, data: null });
         return;
       }
 
-      const age = Date.now() - new Date(data.last_heartbeat).getTime();
+      const row = data[0];
+      const age = Date.now() - new Date(row.last_heartbeat).getTime();
       const status = age < HEARTBEAT_ONLINE_THRESHOLD ? 'online'
         : age < HEARTBEAT_STALE_THRESHOLD ? 'stale' : 'offline';
 
-      setEngineStatus({ status, lastHeartbeat: new Date(data.last_heartbeat), data: data.payload });
+      setEngineStatus({ status, lastHeartbeat: new Date(row.last_heartbeat), data: row.payload });
 
       // Use server's last evaluation time for the UI timestamp
-      if (data.last_heartbeat) {
-        setLastEvaluated(new Date(data.last_heartbeat).getTime());
+      if (row.last_heartbeat) {
+        setLastEvaluated(new Date(row.last_heartbeat).getTime());
       }
     } catch (e) { }
-  }, []);
+  }, [activeAccountId]);
 
   useEffect(() => {
     let interval = null;
@@ -619,6 +823,17 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           });
         }
       }
+    },
+    ACCOUNTS_SYNC: (payload) => {
+      if (payload.accounts) {
+        setAccounts(payload.accounts);
+        if (payload.accounts.length > 0) {
+          setActiveAccountId(prev => {
+            if (prev && payload.accounts.some(a => a.id === prev)) return prev;
+            return payload.accounts[0].id;
+          });
+        }
+      }
     }
   });
 
@@ -852,6 +1067,92 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       </nav>
 
       <div className="body" style={{ flexDirection: 'column', overflowY: 'auto' }}>
+        {/* Account Selector Dropdown strip */}
+        <div className="account-selector-strip" style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          padding: '12px 20px',
+          background: 'var(--bg2)',
+          borderBottom: '1px solid var(--border)',
+          overflowX: 'auto',
+          whiteSpace: 'nowrap'
+        }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Account:</span>
+          
+          <select
+            value={activeAccountId || ''}
+            onChange={e => setActiveAccountId(e.target.value)}
+            style={{
+              padding: '6px 12px',
+              borderRadius: 6,
+              background: 'var(--bg3)',
+              border: '1px solid var(--border)',
+              color: 'var(--text)',
+              fontSize: 13,
+              fontWeight: 500,
+              cursor: 'pointer',
+              outline: 'none',
+              width: '180px'
+            }}
+          >
+            {accounts.map(acc => (
+              <option key={acc.id} value={acc.id} style={{ background: 'var(--bg3)', color: 'var(--text)' }}>
+                {acc.name} (${acc.balance})
+              </option>
+            ))}
+          </select>
+
+          <button
+            onClick={() => {
+              setModalAccountName(`Account ${accounts.length + 1}`);
+              setModalAccountBalance('10000');
+              setIsCreateModalOpen(true);
+            }}
+            style={{
+              padding: '6px 12px',
+              borderRadius: 6,
+              background: 'transparent',
+              color: 'var(--text-dim)',
+              border: '1px dashed var(--border)',
+              cursor: 'pointer',
+              fontSize: 13,
+              fontWeight: 500,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4
+            }}
+          >
+            + New Account
+          </button>
+
+          {accounts.length > 1 && (
+            <button
+              onClick={() => triggerDeleteAccount(activeAccountId)}
+              style={{
+                padding: '6px 12px',
+                borderRadius: 6,
+                background: 'transparent',
+                color: '#f85149',
+                border: '1px solid var(--border)',
+                cursor: 'pointer',
+                fontSize: 13,
+                fontWeight: 500,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4
+              }}
+              title="Delete Active Account"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <polyline points="3 6 5 6 21 6"></polyline>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+              </svg>
+              Delete
+            </button>
+          )}
+        </div>
+
         {/* ── Control Panel ───────────────────────────── */}
         <div className="pt-control-panel">
           <div className="pt-control-section">
@@ -872,6 +1173,24 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                   ? <option>Loading...</option>
                   : expiries.map(e => <option key={e} value={e}>{fmtExpiry(e)}</option>)}
               </select>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <label style={{ marginBottom: 0 }}>Account Name:</label>
+              <input
+                type="text"
+                value={accounts.find(a => a.id === activeAccountId)?.name ?? ''}
+                onChange={e => handleRenameAccount(activeAccountId, e.target.value)}
+                style={{ padding: '6px 12px', width: '130px', fontSize: '13px', background: 'var(--bg3)', border: '1px solid var(--border)', color: 'var(--text)', borderRadius: '4px' }}
+              />
+            </div>
+            <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <label style={{ marginBottom: 0 }}>Balance ($):</label>
+              <input
+                type="number"
+                value={accounts.find(a => a.id === activeAccountId)?.balance ?? 10000}
+                onChange={e => handleUpdateBalance(e.target.value)}
+                style={{ padding: '6px 12px', width: '100px', fontSize: '13px', background: 'var(--bg3)', border: '1px solid var(--border)', color: 'var(--text)', borderRadius: '4px' }}
+              />
             </div>
             <button
               className="pt-filters-toggle-btn"
@@ -1406,6 +1725,218 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           </div>
         </div>
       </div>
+
+      {/* Create Account Modal */}
+      {isCreateModalOpen && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          backgroundColor: 'rgba(0, 0, 0, 0.6)',
+          backdropFilter: 'blur(4px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999
+        }}>
+          <div style={{
+            background: 'var(--bg2)',
+            border: '1px solid var(--border)',
+            borderRadius: '8px',
+            padding: '24px',
+            width: '380px',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '16px'
+          }}>
+            <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: 'var(--text)' }}>Create New Account</h3>
+            
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-dim)' }}>Account Name</label>
+              <input
+                type="text"
+                value={modalAccountName}
+                onChange={e => setModalAccountName(e.target.value)}
+                placeholder="e.g. BTC Aggressive"
+                style={{
+                  padding: '8px 12px',
+                  borderRadius: '6px',
+                  border: '1px solid var(--border)',
+                  background: 'var(--bg3)',
+                  color: 'var(--text)',
+                  fontSize: '13px',
+                  outline: 'none'
+                }}
+              />
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-dim)' }}>Initial Balance ($)</label>
+              <input
+                type="number"
+                value={modalAccountBalance}
+                onChange={e => setModalAccountBalance(e.target.value)}
+                placeholder="10000"
+                style={{
+                  padding: '8px 12px',
+                  borderRadius: '6px',
+                  border: '1px solid var(--border)',
+                  background: 'var(--bg3)',
+                  color: 'var(--text)',
+                  fontSize: '13px',
+                  outline: 'none'
+                }}
+              />
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '8px' }}>
+              <button
+                disabled={isCreatingAccount}
+                onClick={() => setIsCreateModalOpen(false)}
+                style={{
+                  padding: '8px 16px',
+                  borderRadius: '6px',
+                  border: '1px solid var(--border)',
+                  background: 'transparent',
+                  color: 'var(--text)',
+                  cursor: isCreatingAccount ? 'not-allowed' : 'pointer',
+                  fontSize: '13px',
+                  fontWeight: 500,
+                  opacity: isCreatingAccount ? 0.6 : 1
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                disabled={isCreatingAccount}
+                onClick={handleModalSubmit}
+                style={{
+                  padding: '8px 16px',
+                  borderRadius: '6px',
+                  border: 'none',
+                  background: '#0969da',
+                  color: '#ffffff',
+                  cursor: isCreatingAccount ? 'not-allowed' : 'pointer',
+                  fontSize: '13px',
+                  fontWeight: 500,
+                  opacity: isCreatingAccount ? 0.8 : 1,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '8px'
+                }}
+              >
+                {isCreatingAccount ? (
+                  <>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" style={{ animation: 'spin 0.8s linear infinite' }}>
+                      <circle cx="12" cy="12" r="10" stroke="rgba(255, 255, 255, 0.25)" />
+                      <path d="M12 2a10 10 0 0 1 10 10" stroke="#ffffff" />
+                    </svg>
+                    Creating...
+                  </>
+                ) : 'Create Account'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Delete Account Confirmation Modal */}
+      {isDeleteModalOpen && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          backgroundColor: 'rgba(0, 0, 0, 0.6)',
+          backdropFilter: 'blur(4px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999
+        }}>
+          <div style={{
+            background: 'var(--bg2)',
+            border: '1px solid var(--border)',
+            borderRadius: '8px',
+            padding: '24px',
+            width: '400px',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '16px'
+          }}>
+            <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: '#f85149' }}>Delete Account</h3>
+            
+            <p style={{ margin: 0, fontSize: '13px', lineHeight: '1.5', color: 'var(--text)' }}>
+              {positions.length > 0 && activeAccountId === accountToDeleteId ? (
+                <span style={{ color: '#f85149', fontWeight: 600 }}>
+                  ⚠️ WARNING: "{accounts.find(a => a.id === accountToDeleteId)?.name || 'this account'}" has active open positions. Deleting this account will permanently delete all open positions for this account. Trade history will be preserved.
+                </span>
+              ) : (
+                `Are you sure you want to delete "${accounts.find(a => a.id === accountToDeleteId)?.name || 'this account'}"?`
+              )}
+            </p>
+
+            <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-dim)' }}>
+              This action is irreversible. All associated strategy configurations will also be deleted.
+            </p>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '8px' }}>
+              <button
+                disabled={isDeletingAccount}
+                onClick={() => {
+                  setIsDeleteModalOpen(false);
+                  setAccountToDeleteId(null);
+                }}
+                style={{
+                  padding: '8px 16px',
+                  borderRadius: '6px',
+                  border: '1px solid var(--border)',
+                  background: 'transparent',
+                  color: 'var(--text)',
+                  cursor: isDeletingAccount ? 'not-allowed' : 'pointer',
+                  fontSize: '13px',
+                  fontWeight: 500,
+                  opacity: isDeletingAccount ? 0.6 : 1
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                disabled={isDeletingAccount}
+                onClick={handleConfirmDelete}
+                style={{
+                  padding: '8px 16px',
+                  borderRadius: '6px',
+                  border: 'none',
+                  background: '#f85149',
+                  color: '#ffffff',
+                  cursor: isDeletingAccount ? 'not-allowed' : 'pointer',
+                  fontSize: '13px',
+                  fontWeight: 500,
+                  opacity: isDeletingAccount ? 0.8 : 1,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '8px'
+                }}
+              >
+                {isDeletingAccount ? (
+                  <>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" style={{ animation: 'spin 0.8s linear infinite' }}>
+                      <circle cx="12" cy="12" r="10" stroke="rgba(255, 255, 255, 0.25)" />
+                      <path d="M12 2a10 10 0 0 1 10 10" stroke="#ffffff" />
+                    </svg>
+                    Deleting...
+                  </>
+                ) : 'Delete Account'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

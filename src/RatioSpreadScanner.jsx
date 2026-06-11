@@ -4,6 +4,7 @@ import {
   fmtExpiry, createTickerStream, getTickers
 } from './api';
 import { useTabListener } from './useTabSync';
+import { supabase } from './supabase';
 
 const UNDERLYINGS = ['BTC', 'ETH'];
 const SCANNER_TOP_KEY = 'vitti_scanner_top_spreads_v1';
@@ -27,6 +28,10 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
   const latestTickerDataRef = useRef({});
   const [expectedTickerCount, setExpectedTickerCount] = useState(0);
   const [lastRefreshed, setLastRefreshed] = useState(0);
+  const [accounts, setAccounts] = useState([]);
+  const [activeAccountId, setActiveAccountId] = useState(null);
+  const [configDbId, setConfigDbId] = useState(null);
+
   const [timeRemaining, setTimeRemaining] = useState(null);
   const [activeTableTab, setActiveTableTab] = useState('call');
   const [isFiltersCollapsed, setIsFiltersCollapsed] = useState(() => window.innerWidth <= 900);
@@ -529,16 +534,19 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
 
   const { broadcast: tabBroadcast } = useTabListener({
     SCANNER_START: (payload) => {
+      if (payload.accountId && payload.accountId !== activeAccountId) return;
       // Sync underlying + expiry first, then start
       if (payload.underlying) setUnderlying(payload.underlying);
       if (payload.expiry) setSelExpiry(payload.expiry);
       // Delay start to let state settle
       setTimeout(() => startScanRef.current(), 100);
     },
-    SCANNER_STOP: () => {
+    SCANNER_STOP: (payload) => {
+      if (payload.accountId && payload.accountId !== activeAccountId) return;
       stopScanRef.current();
     },
     CONFIG_SYNC: (payload) => {
+      if (payload.accountId && payload.accountId !== activeAccountId) return;
       if (payload.config) {
         const updates = {};
         const keys = [
@@ -558,12 +566,53 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
         }
         if (payload.config.underlying) setUnderlying(payload.config.underlying);
       }
+    },
+    ACCOUNTS_SYNC: (payload) => {
+      if (payload.accounts) {
+        setAccounts(payload.accounts);
+        if (payload.accounts.length > 0) {
+          setActiveAccountId(prev => {
+            if (prev && payload.accounts.some(a => a.id === prev)) return prev;
+            return payload.accounts[0].id;
+          });
+        }
+      }
     }
   });
 
   const fetchSupabaseConfig = useCallback(async () => {
+    if (!activeAccountId) return;
     try {
-      const { data, error } = await supabase.from('paper_trading_config').select('*').eq('id', 'scanner').single();
+      let { data, error } = await supabase.from('paper_trading_config').select('*').eq('account_id', activeAccountId).single();
+      
+      if (error && error.code === 'PGRST116') {
+        const defaultRow = {
+          id: activeAccountId,
+          account_id: activeAccountId,
+          underlying: 'BTC',
+          min_strike_diff: 800,
+          min_iv_diff: 5,
+          max_ratio_deviation: 0.25,
+          min_sell_premium: 10,
+          max_net_premium: 20,
+          min_long_dist: 500,
+          max_sell_qty: 10,
+          atm_ratio_scaling: false,
+          atm_ratio_distance_call: 1,
+          atm_ratio_distance_put: 1,
+          updated_at: new Date().toISOString()
+        };
+        const { data: inserted, error: insertErr } = await supabase
+          .from('paper_trading_config')
+          .insert([defaultRow])
+          .select('*')
+          .single();
+        if (inserted && !insertErr) {
+          data = inserted;
+          error = null;
+        }
+      }
+
       if (data && !error) {
         const newCfg = {
           minStrikeDiff: data.min_strike_diff ?? config.minStrikeDiff,
@@ -578,16 +627,19 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
           atmRatioDistancePut: data.atm_ratio_distance_put ?? config.atmRatioDistancePut,
         };
         setConfig(newCfg);
+        setConfigDbId(data.id);
         if (data.underlying && data.underlying !== underlying) setUnderlying(data.underlying);
         if (data.expiry && data.expiry !== selExpiry) setSelExpiry(data.expiry);
       }
     } catch (e) { }
-  }, [underlying, selExpiry, config]);
+  }, [activeAccountId, underlying, selExpiry]);
 
   const saveSupabaseConfig = useCallback(async (newCfg) => {
+    if (!activeAccountId || !configDbId) return;
     try {
       await supabase.from('paper_trading_config').upsert({
-        id: 'scanner',
+        id: configDbId,
+        account_id: activeAccountId,
         underlying: newCfg.underlying,
         expiry: newCfg.expiry,
         min_strike_diff: newCfg.minStrikeDiff,
@@ -603,7 +655,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
         updated_at: new Date().toISOString()
       });
     } catch (e) { }
-  }, []);
+  }, [activeAccountId, configDbId]);
 
   const updateConfig = (keyOrObj, value) => {
     setConfig(c => {
@@ -612,27 +664,65 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
       try {
         localStorage.setItem('vitti_algo_config', JSON.stringify(newConfig));
       } catch (e) { }
-      tabBroadcast('CONFIG_SYNC', { config: newConfig });
+      tabBroadcast('CONFIG_SYNC', { config: newConfig, accountId: activeAccountId });
       saveSupabaseConfig(newConfig);
       return newConfig;
     });
   };
 
+  const fetchAccounts = useCallback(async () => {
+    try {
+      const { data, error } = await supabase
+        .from('paper_trading_accounts')
+        .select('*')
+        .order('created_at', { ascending: true });
+      if (data && !error) {
+        setAccounts(data);
+        if (data.length > 0) {
+          setActiveAccountId(prev => {
+            if (prev && data.some(a => a.id === prev)) return prev;
+            return data[0].id;
+          });
+        }
+        try {
+          const ch = new BroadcastChannel('option-scope-sync');
+          ch.postMessage({ type: 'ACCOUNTS_SYNC', payload: { accounts: data }, senderId: 'scanner-tab', timestamp: Date.now() });
+          ch.close();
+        } catch (e) { }
+      }
+    } catch (e) { }
+  }, []);
+
+  useEffect(() => {
+    fetchAccounts();
+    const channel = supabase
+      .channel('accounts_changes_scanner')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'paper_trading_accounts' },
+        () => { fetchAccounts(); }
+      )
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [fetchAccounts]);
+
   useEffect(() => {
     fetchSupabaseConfig();
-  }, []);
+  }, [fetchSupabaseConfig]);
 
 
   // Wrapped start/stop that also broadcasts to other tabs
   const handleStartScan = useCallback(() => {
     startScan();
-    tabBroadcast('SCANNER_START', { underlying, expiry: selExpiry });
-  }, [startScan, tabBroadcast, underlying, selExpiry]);
+    tabBroadcast('SCANNER_START', { underlying, expiry: selExpiry, accountId: activeAccountId });
+  }, [startScan, tabBroadcast, underlying, selExpiry, activeAccountId]);
 
   const handleStopScan = useCallback(() => {
     stopScan();
-    tabBroadcast('SCANNER_STOP', {});
-  }, [stopScan, tabBroadcast]);
+    tabBroadcast('SCANNER_STOP', { accountId: activeAccountId });
+  }, [stopScan, tabBroadcast, activeAccountId]);
 
   // Cleanup on unmount
   useEffect(() => () => {
@@ -734,6 +824,46 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
       </nav>
 
       <div className="body" style={{ flexDirection: 'column' }}>
+        {/* Account Selector Dropdown strip */}
+        <div className="account-selector-strip" style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          padding: '12px 20px',
+          background: 'var(--bg2)',
+          borderBottom: '1px solid var(--border)',
+          overflowX: 'auto',
+          whiteSpace: 'nowrap'
+        }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Account:</span>
+          
+          <select
+            value={activeAccountId || ''}
+            onChange={e => {
+              setActiveAccountId(e.target.value);
+              stopScan();
+            }}
+            style={{
+              padding: '6px 12px',
+              borderRadius: 6,
+              background: 'var(--bg3)',
+              border: '1px solid var(--border)',
+              color: 'var(--text)',
+              fontSize: 13,
+              fontWeight: 500,
+              cursor: 'pointer',
+              outline: 'none',
+              width: '180px'
+            }}
+          >
+            {accounts.map(acc => (
+              <option key={acc.id} value={acc.id} style={{ background: 'var(--bg3)', color: 'var(--text)' }}>
+                {acc.name} (${acc.balance})
+              </option>
+            ))}
+          </select>
+        </div>
+
         {/* Topbar Configuration */}
         <div className="scanner-config-bar">
           <div className="scanner-config-main">

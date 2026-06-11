@@ -25,10 +25,11 @@ import {
   pickTopUniqueStrikes, log, logWarn, logError
 } from './lib/utils.js';
 
-const ENGINE_ID = 'paper_trading';
-
-export async function startPaperTradingEngine() {
+async function startSingleAccountEngine(account) {
+  let accountState = account;
+  const ENGINE_ID = 'paper_trading_' + accountState.id;
   const heartbeat = createHeartbeat(ENGINE_ID);
+  let configDbId = null;
 
   // ── Mutable engine state ──────────────────────────────────────────────
   let config = {
@@ -55,8 +56,41 @@ export async function startPaperTradingEngine() {
 
   async function fetchConfig() {
     try {
-      const { data, error } = await supabase
-        .from('paper_trading_config').select('*').eq('id', 'global').single();
+      let { data, error } = await supabase
+        .from('paper_trading_config').select('*').eq('account_id', accountState.id).single();
+      
+      if (error && error.code === 'PGRST116') {
+        // Row not found, let's create a default one
+        logWarn(`[${accountState.name}] No config row found for account_id = ${accountState.id}. Creating default...`);
+        const defaultRow = {
+          id: accountState.id,
+          account_id: accountState.id,
+          underlying: 'BTC',
+          min_strike_diff: 800,
+          min_iv_diff: 5,
+          max_ratio_deviation: 0.25,
+          min_sell_premium: 10,
+          max_net_premium: 20,
+          min_long_dist: 500,
+          max_sell_qty: 10,
+          atm_ratio_scaling: false,
+          atm_ratio_distance_call: 1,
+          atm_ratio_distance_put: 1,
+          updated_at: new Date().toISOString()
+        };
+        const { data: inserted, error: insertErr } = await supabase
+          .from('paper_trading_config')
+          .insert([defaultRow])
+          .select('*')
+          .single();
+        if (inserted && !insertErr) {
+          data = inserted;
+          error = null;
+        } else {
+          logError(`[${accountState.name}] Failed to auto-create config row:`, insertErr?.message);
+        }
+      }
+
       if (data && !error) {
         config = {
           underlying: data.underlying || 'BTC',
@@ -72,9 +106,10 @@ export async function startPaperTradingEngine() {
           atmRatioDistanceCall: data.atm_ratio_distance_call ?? 1,
           atmRatioDistancePut: data.atm_ratio_distance_put ?? 1,
         };
-        log(`Config loaded: ${config.underlying} | Expiry: ${config.expiry || 'auto'}`);
+        configDbId = data.id;
+        log(`[${accountState.name}] Config loaded: ${config.underlying} | Expiry: ${config.expiry || 'auto'}`);
       }
-    } catch (e) { logError('Config fetch error', e); }
+    } catch (e) { logError(`[${accountState.name}] Config fetch error`, e); }
   }
 
   async function fetchActivePositions() {
@@ -82,6 +117,7 @@ export async function startPaperTradingEngine() {
       if (Date.now() - lastDbWrite < 3000) return;
       const { data, error } = await supabase
         .from('active_positions').select('*')
+        .eq('account_id', accountState.id)
         .order('entry_time', { ascending: true });
 
       if (error) { logError('Fetch positions error', error); return; }
@@ -118,13 +154,15 @@ export async function startPaperTradingEngine() {
 
       if (expiries.length && (!config.expiry || !expiries.includes(config.expiry))) {
         config.expiry = expiries[0];
-        log(`Expiry auto-selected: ${config.expiry}`);
+        log(`[${accountState.name}] Expiry auto-selected: ${config.expiry}`);
         // Persist the auto-selected expiry back to Supabase
-        await supabase.from('paper_trading_config').upsert({
-          id: 'global',
-          expiry: config.expiry,
-          updated_at: new Date().toISOString()
-        });
+        if (configDbId) {
+          await supabase.from('paper_trading_config').upsert({
+            id: configDbId,
+            expiry: config.expiry,
+            updated_at: new Date().toISOString()
+          });
+        }
       }
     } catch (e) { logError('Product refresh error', e); }
   }
@@ -556,7 +594,8 @@ export async function startPaperTradingEngine() {
                 exit_fee: partialExitFee,
                 total_fees: partialTotalFees,
                 exit_reason: partialExitReason,
-                is_partial: true
+                is_partial: true,
+                account_id: accountState.id
               });
 
               entryFee = Math.max(0, entryFee - partialEntryFee);
@@ -1088,6 +1127,16 @@ export async function startPaperTradingEngine() {
           const entryBuyFee = calculateFee(entryBuyPrice, spotPrice, 1, adjustedLotSize);
           const entrySellFee = calculateFee(entrySellPrice, spotPrice, adjustedSellQty, spread.sellLeg.lotSize);
           const entryFee = entryBuyFee + entrySellFee;
+          const candidateMargin = calcMargin(entryBuyPrice, adjustedLotSize, spotPrice, adjustedSellQty, spread.sellLeg.lotSize);
+
+          // Hard margin cap check per account
+          const currentTotalMargin = remaining.reduce((sum, p) => sum + (p.margin || 0), 0);
+          const stagedTotalMargin = newEntries.reduce((sum, p) => sum + (p.margin || 0), 0);
+          if (currentTotalMargin + stagedTotalMargin + candidateMargin > (accountState.balance ?? 10000)) {
+            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Account balance margin cap exceeded. Deployed: $${(currentTotalMargin + stagedTotalMargin).toFixed(2)}, Candidate: $${candidateMargin.toFixed(2)}, Balance: $${(accountState.balance ?? 10000).toFixed(2)}`);
+            continue;
+          }
+
           const id = `T${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
           const newPos = {
@@ -1096,7 +1145,7 @@ export async function startPaperTradingEngine() {
             strikeDiff: spread.strikeDiff, entryTime: new Date(),
             entryBuyPrice, entrySellPrice, entrySpotPrice: spotPrice,
             entryFee,
-            margin: calcMargin(entryBuyPrice, adjustedLotSize, spotPrice, adjustedSellQty, spread.sellLeg.lotSize),
+            margin: candidateMargin,
           };
           newEntries.push(newPos);
         }
@@ -1127,8 +1176,9 @@ export async function startPaperTradingEngine() {
               realized_gross_pnl: t.realizedGrossPnl, realized_net_pnl: t.realizedNetPnl,
               exit_fee: t.exitFee, total_fees: t.totalFees, exit_reason: t.exitReason,
               is_partial: t._isPartial || false,
+              account_id: accountState.id,
             }]);
-            if (histError) logError('History insert error:', histError.message);
+            if (histError) logError(`[${accountState.name}] History insert error:`, histError.message);
           }
 
           // Delete from active (skip for leg swaps — they were updated in-place above)
@@ -1136,40 +1186,43 @@ export async function startPaperTradingEngine() {
             await supabase.from('active_positions').delete().eq('id', t.id);
           }
 
-          log(`📤 EXIT: ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} | ${t.exitReason} | PnL: $${t.realizedNetPnl?.toFixed(2)}`);
-        } catch (err) { logError('Exit persistence error:', err); }
+          log(`[${accountState.name}] 📤 EXIT: ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} | ${t.exitReason} | PnL: $${t.realizedNetPnl?.toFixed(2)}`);
+        } catch (err) { logError(`[${accountState.name}] Exit persistence error:`, err); }
       }
 
       // Process entries
       if (!onlyExits) {
         for (const t of newEntries) {
           try {
-            // DB-level count guard
+            // DB-level count guard per account
             const { data: activeOfType, error: countError } = await supabase
               .from('active_positions').select('id')
+              .eq('account_id', accountState.id)
               .eq('underlying', underlying).eq('type', t.type);
             if (!countError && (activeOfType?.length ?? 0) >= 3) {
-              logWarn(`DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} blocked. Active count on DB: ${activeOfType?.length ?? 0}`);
+              logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} blocked. Active count on DB: ${activeOfType?.length ?? 0}`);
               continue;
             }
 
             // DB-level diversification guard check removed
 
-            // Buy strike uniqueness
+            // Buy strike uniqueness per account
             const { data: buyConflict } = await supabase.from('active_positions').select('id')
+              .eq('account_id', accountState.id)
               .eq('underlying', underlying).eq('type', t.type)
               .eq('buy_strike', t.buyLeg.strike).limit(1);
             if (buyConflict && buyConflict.length > 0) {
-              logWarn(`DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} blocked. Buy strike conflict on DB.`);
+              logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} blocked. Buy strike conflict on DB.`);
               continue;
             }
 
-            // Sell strike uniqueness
+            // Sell strike uniqueness per account
             const { data: sellConflict } = await supabase.from('active_positions').select('id')
+              .eq('account_id', accountState.id)
               .eq('underlying', underlying).eq('type', t.type)
               .eq('sell_strike', t.sellLeg.strike).limit(1);
             if (sellConflict && sellConflict.length > 0) {
-              logWarn(`DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} blocked. Sell strike conflict on DB.`);
+              logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} blocked. Sell strike conflict on DB.`);
               continue;
             }
 
@@ -1182,6 +1235,7 @@ export async function startPaperTradingEngine() {
               entry_spot_price: t.entrySpotPrice,
               margin: t.margin, entry_fee: t.entryFee, accumulated_sell_pnl: 0,
               buy_strike: t.buyLeg.strike, sell_strike: t.sellLeg.strike,
+              account_id: accountState.id,
             }]);
 
             if (insertError) {
@@ -1222,19 +1276,26 @@ export async function startPaperTradingEngine() {
 
   function subscribeConfigChanges() {
     const channel = supabase
-      .channel('paper_config_changes')
+      .channel(`paper_config_changes_${accountState.id}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'paper_trading_config' },
-        async () => {
-          log('Config change detected — reloading...');
+        async (payload) => {
+          const newRecord = payload.new;
+          const oldRecord = payload.old;
+          const relevantRecord = newRecord || oldRecord;
+          if (relevantRecord && relevantRecord.account_id !== accountState.id) {
+            return;
+          }
+
+          log(`[${accountState.name}] Config change detected — reloading...`);
           const oldUnderlying = config.underlying;
           const oldExpiry = config.expiry;
           await fetchConfig();
 
           // If underlying or expiry changed, restart WS and refresh products
           if (config.underlying !== oldUnderlying || config.expiry !== oldExpiry) {
-            log(`Config changed: ${oldUnderlying}/${oldExpiry} → ${config.underlying}/${config.expiry}`);
+            log(`[${accountState.name}] Config changed: ${oldUnderlying}/${oldExpiry} → ${config.underlying}/${config.expiry}`);
             await refreshProducts();
             await fetchActivePositions();
             tickerData = {};
@@ -1250,9 +1311,9 @@ export async function startPaperTradingEngine() {
 
   // ── Main startup sequence ─────────────────────────────────────────────
 
-  log('═══════════════════════════════════════════');
-  log('Paper Trading Engine starting...');
-  log('═══════════════════════════════════════════');
+  log(`[${accountState.name}] ═══════════════════════════════════════════`);
+  log(`[${accountState.name}] Paper Trading Engine starting...`);
+  log(`[${accountState.name}] ═══════════════════════════════════════════`);
 
   // 1. Load config
   await fetchConfig();
@@ -1262,16 +1323,16 @@ export async function startPaperTradingEngine() {
 
   // 3. Fetch spot price
   await fetchSpot();
-  if (spotPrice) log(`Spot price: $${spotPrice.toFixed(2)}`);
+  if (spotPrice) log(`[${accountState.name}] Spot price: $${spotPrice.toFixed(2)}`);
 
   // 4. Fetch existing positions
   await fetchActivePositions();
-  log(`Active positions loaded: ${positions.length}`);
+  log(`[${accountState.name}] Active positions loaded: ${positions.length}`);
 
   // 5. Build symbol map and backfill tickers via REST
   symbolMeta = buildSymbolMeta(products, config.expiry, config.underlying, positions);
   tickerData = await backfillTickers(config.underlying, symbolMeta, tickerData);
-  log(`Ticker backfill complete: ${Object.keys(tickerData).length} symbols`);
+  log(`[${accountState.name}] Ticker backfill complete: ${Object.keys(tickerData).length} symbols`);
 
   // 6. Start WebSocket
   startWebSocket();
@@ -1324,12 +1385,12 @@ export async function startPaperTradingEngine() {
   // Active positions refresh — every 30 seconds (fallback sync)
   const positionsTimer = setInterval(fetchActivePositions, 30000);
 
-  log('Paper Trading Engine is LIVE');
+  log(`[${accountState.name}] Paper Trading Engine is LIVE`);
 
   // ── Return cleanup function ───────────────────────────────────────────
   return {
     async stop() {
-      log('Paper Trading Engine shutting down...');
+      log(`[${accountState.name}] Paper Trading Engine shutting down...`);
       clearInterval(evalTimer);
       clearInterval(spotTimer);
       clearInterval(productTimer);
@@ -1337,7 +1398,101 @@ export async function startPaperTradingEngine() {
       if (wsHandle) { wsHandle.close(); wsHandle = null; }
       supabase.removeChannel(configChannel);
       await heartbeat.stop();
-      log('Paper Trading Engine stopped.');
+      log(`[${accountState.name}] Paper Trading Engine stopped.`);
+    },
+    updateAccount(newAccount) {
+      accountState = newAccount;
+      log(`[${accountState.name}] Account state updated (new balance: $${accountState.balance})`);
+    }
+  };
+}
+
+// ── Multi-Account Engine Manager ──────────────────────────────────────
+
+export async function startPaperTradingEngine() {
+  const runningEngines = {}; // accountId -> engineHandle
+
+  async function startAccountEngine(account) {
+    const accountId = account.id;
+    if (runningEngines[accountId]) {
+      logWarn(`Account engine ${accountId} (${account.name}) is already running.`);
+      return;
+    }
+    log(`Starting engine for account ${accountId} (${account.name})...`);
+    try {
+      const handle = await startSingleAccountEngine(account);
+      runningEngines[accountId] = handle;
+    } catch (e) {
+      logError(`Failed to start engine for account ${accountId}:`, e);
+    }
+  }
+
+  async function stopAccountEngine(accountId) {
+    const handle = runningEngines[accountId];
+    if (handle) {
+      log(`Stopping engine for account ${accountId}...`);
+      try {
+        await handle.stop();
+      } catch (e) {
+        logError(`Error stopping engine for account ${accountId}:`, e);
+      }
+      delete runningEngines[accountId];
+    }
+  }
+
+  // Fetch all active accounts
+  const { data: accounts, error } = await supabase
+    .from('paper_trading_accounts')
+    .select('*')
+    .eq('is_active', true);
+
+  if (error) {
+    logError('Failed to fetch paper trading accounts:', error.message);
+  } else if (accounts) {
+    for (const acc of accounts) {
+      await startAccountEngine(acc);
+    }
+  }
+
+  // Subscribe to paper_trading_accounts changes
+  const accountsChannel = supabase
+    .channel('paper_trading_accounts_changes')
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'paper_trading_accounts' },
+      async (payload) => {
+        const { eventType, new: newRecord, old: oldRecord } = payload;
+        log(`Account change event detected: ${eventType}`);
+
+        if (eventType === 'INSERT') {
+          if (newRecord.is_active) {
+            await startAccountEngine(newRecord);
+          }
+        } else if (eventType === 'DELETE') {
+          await stopAccountEngine(oldRecord.id);
+        } else if (eventType === 'UPDATE') {
+          if (!newRecord.is_active) {
+            await stopAccountEngine(newRecord.id);
+          } else {
+            if (!runningEngines[newRecord.id]) {
+              await startAccountEngine(newRecord);
+            } else {
+              runningEngines[newRecord.id].updateAccount(newRecord);
+            }
+          }
+        }
+      }
+    )
+    .subscribe();
+
+  return {
+    async stop() {
+      log('Shutting down all running account engines...');
+      supabase.removeChannel(accountsChannel);
+      for (const accountId of Object.keys(runningEngines)) {
+        await stopAccountEngine(accountId);
+      }
+      log('All account engines shut down.');
     }
   };
 }

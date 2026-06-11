@@ -110,6 +110,7 @@ The workspace uses a single `BroadcastChannel` named `option-scope-sync` to sync
 | `THEME_CHANGE` | Any tab → All | `{ theme }` | Applies light/dark theme to all tabs |
 | `SCANNER_TOP_SPREADS_SYNC` | Scanner → PaperTrading | `{ underlying, expiry, callTop3, putTop3, timestamp }` | Delivers live scanner results to the Paper Trading engine |
 | `CONFIG_SYNC` | PaperTrading → Scanner | `{ underlying, expiry, config }` | Propagates filter/expiry changes from Paper Trading to Scanner |
+| `ACCOUNTS_SYNC` | Any tab → All | `{ accounts }` | Syncs the updated accounts list instantly to keep all dropdown selectors updated |
 
 ### `localStorage` Persistence
 
@@ -215,6 +216,17 @@ Applied at entry in both engines and dynamically in the frontend UI:
 ---
 
 ## 7) Paper Trading Engine (`engine/paperTradingEngine.js`)
+
+### Multi-Account Supervisor Loop
+
+The engine file (`paperTradingEngine.js`) executes a top-level **Supervisor Manager** (`startPaperTradingEngine`) upon start:
+1. **Initial Bootstrap**: Fetches all existing accounts from the `paper_trading_accounts` table.
+2. **Parallel Isolation**: For each account, it spawns an independent, self-contained running instance of the strategy engine (`startSingleAccountEngine(account)`). Each account loop executes on its own 1-second interval cadence (`setInterval`).
+3. **Database-Driven Hot-Reloading**: Subscribes to Supabase realtime database changes on the `paper_trading_accounts` table:
+   - **INSERT**: Automatically triggers creation of a new isolated engine loop for the newly added account ID.
+   - **DELETE**: Clears the evaluation intervals for the deleted account, stopping its execution loops immediately.
+   - **UPDATE**: Updates the balance and active metadata values in the running account engine context.
+4. **Scoped State & Constraints**: Every query, mutation (exits, entries), duplicate position guard, and margin cap check evaluates scoped strictly by `account_id` so that accounts remain completely isolated.
 
 ### Evaluation Loop & Execution Decoupling
 
@@ -418,3 +430,29 @@ All ATM price lookups go through `getTickerPrice(strike, optType, priceField, ex
 ### Margin Backfill on Load
 
 On first spot price arrival, `backfillMargins` queries all `active_positions` from Supabase and recalculates each position's margin using the latest spot price and the current leverage tier. This corrects any stale margin values persisted from a prior session.
+
+---
+
+## 10) Multi-Account Management & UI Modals
+
+### 1. Account Dropdown Selectors
+- **Location**: Mounted in the navigation headers of both `PaperTrading.jsx` and `RatioSpreadScanner.jsx`.
+- **Implementation**: Switches `activeAccountId` state locally. When switched on the scanner tab, it automatically halts the current scan process via `stopScan()` to avoid configuration leaks across accounts.
+- **Theme-Friendly Styling**: Bound to responsive theme properties:
+  - Background: `var(--bg3)`
+  - Border: `1px solid var(--border)`
+  - Font Color: `var(--text)`
+  - Option items: Explicit styling overrides `style={{ background: 'var(--bg3)', color: 'var(--text)' }}` to guarantee clean contrast on various browsers.
+
+### 2. Custom React Modals
+- **Create Account Modal**:
+  - collects Name and Initial Balance.
+  - State: `isCreatingAccount` tracks loading state.
+  - Buttons: Cancel and Create are disabled when `isCreatingAccount` is true. An inline spinning SVG is rendered inside the Create button.
+- **Delete Account Modal**:
+  - State: `isDeletingAccount` tracks loading state.
+  - Checks if the account has open positions; if yes, displays a prominent warning that positions will be cascaded.
+  - Refreshes state instantly by invoking `await fetchAccounts()` immediately post-deletion to avoid stale lists.
+  - Buttons: Cancel and Delete are locked during execution with a spinning SVG loader inline.
+- **Renaming Account**:
+  - Executes optimistic update on `accounts` state locally before calling the update query, followed by a direct DB list refresh to guarantee visual snappy feedback.

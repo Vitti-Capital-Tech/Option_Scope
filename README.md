@@ -13,7 +13,9 @@ The app is built around four workflows:
 
 ## Key Features
 
-- **Live Multi-Page Trading UI**: `Charts`, `Ratio Spread`, `Paper Trading`, and `ATM Exit` modules with shared underlying/expiry flows.
+- **Live Multi-Page Trading UI**: `Charts`, `Ratio Spread`, and `Paper Trading` modules with shared underlying/expiry flows. Includes a unified **Multi-Account Selector Dropdown** allowing users to switch active trading accounts instantly on both the scanner and dashboard screens.
+- **Themed Create & Delete Modals**: Fully custom React-based modals for creating and deleting accounts (complete with warning warnings when deleting accounts with open positions), replacing legacy browser alerts. Integrates inline spinning SVG loaders, double-submission blocks, and styled with active theme CSS variables (`--bg2`, `--bg3`, `--text`, `--text-dim`) for seamless light/dark mode compatibility.
+- **Cross-Tab Account Synchronization**: Broadcasts account modifications instantly across all active browser tab sessions via `BroadcastChannel` (`ACCOUNTS_SYNC`), keeping dropdown lists updated in real-time without database replication lag.
 - **Data Hub + Auto-Correction**: WebSocket for low-latency updates plus periodic REST correction for candle accuracy.
 - **Advanced Chart Tools**: SMA(20), drawing mode for S/R lines, zoom/scroll controls, and theme toggle.
 - **Watchlist and Alerts**: Track multiple strategies, monitor live + 1h high/low, and trigger toast/notification alerts.
