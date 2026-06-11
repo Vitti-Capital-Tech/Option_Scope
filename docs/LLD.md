@@ -347,8 +347,9 @@ A UI-layer only feature — the Supabase database always stores original base va
 - **Toggle**: `extraCreditMode` boolean.
 - **Inputs**: Separate `extraCreditAmountCall` and `extraCreditAmountPut` dollar amounts, rendered dynamically as Call (`C:$`) and Put (`P:$`) inputs in their respective green (`var(--call)`) and red (`var(--put)`) theme colors when the mode is toggled.
 - **Simulated Sell Qty**: `extraLots = extraCredit / entrySellPrice`, where `extraCredit` is resolved per position or trade depending on its option type (`type === 'call' ? extraCreditAmountCall : extraCreditAmountPut`), rounded to 0.25. The extra quantity is added to the base sell quantity.
-- **Recalculated Metrics**: Unrealized PnL, Realized PnL, ratios, and KPIs all reflect the type-specific simulated quantity in real-time across the entire dashboard.
-- **CSV Export**: When simulation is active, the exported CSV includes the simulated values based on the respective Call/Put extra credit amount.
+- **Leverage Scaling**: If the total simulated short value exposure exceeds $200,000, both the simulated Buy Qty (lot size) and Sell Qty are scaled down proportionally (`scale = 200000 / shortValue`) to respect the 200X leverage cap.
+- **Recalculated Metrics**: Unrealized PnL, Realized PnL, ratios, margins, and KPIs all reflect the type-specific simulated quantity and leverage-scaled sizes in real-time across the entire dashboard.
+- **CSV Export**: When simulation is active, the exported CSV includes the simulated values based on the respective Call/Put extra credit amount and leverage-scaled sizes.
 
 ### I. KPIs & History
 

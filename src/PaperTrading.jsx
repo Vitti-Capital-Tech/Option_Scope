@@ -624,18 +624,28 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       let sellQty = t.sellQty;
       let grossPnl = t.realizedGrossPnl || 0;
       let netPnl = t.realizedNetPnl || 0;
+      let buyLot = t.buyLeg?.lotSize || 1;
+      let scale = 1;
       if (extraCreditMode && t.entrySellPrice > 0) {
         const extraCredit = t.type === 'call' ? extraCreditAmountCall : extraCreditAmountPut;
         const extraQty = Math.round((extraCredit / t.entrySellPrice) / 0.25) * 0.25;
         const extraPnl = extraQty * (t.entrySellPrice - (t.exitSellPrice || t.entrySellPrice));
-        sellQty += extraQty;
-        grossPnl += extraPnl;
-        netPnl += extraPnl;
+        
+        const totalSellQty = sellQty + extraQty;
+        const spot = t.entrySpotPrice || 0;
+        const sellLot = t.sellLeg?.lotSize || 1;
+        const rawShortValue = spot * totalSellQty * sellLot;
+        if (rawShortValue > 200000) {
+          scale = 200000 / rawShortValue;
+        }
+        sellQty = totalSellQty * scale;
+        buyLot = buyLot * scale;
+        grossPnl = (grossPnl + extraPnl) * scale;
+        netPnl = (netPnl + extraPnl) * scale;
       }
       let margin = t.margin || 0;
       if (extraCreditMode && t.entrySellPrice > 0) {
         const buyPrice = t.entryBuyPrice || 0;
-        const buyLot = t.buyLeg?.lotSize || 1;
         const sellLot = t.sellLeg?.lotSize || 1;
         const spot = t.entrySpotPrice || 0;
         const longMargin = buyPrice * buyLot;
@@ -645,8 +655,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       }
       return [
         formatDateTime(t.entryTime), formatDateTime(t.exitTime), fmtExpiry(t.expiry),
-        t.type.toUpperCase(), `${t.buyLeg.lotSize.toFixed(2)}:${sellQty.toFixed(2)}`,
-        `${(t.buyLeg?.originalLotSize || t.buyLeg.lotSize).toFixed(2)}:${(t.buyLeg?.originalSellQty || sellQty).toFixed(2)}`,
+        t.type.toUpperCase(), `${buyLot.toFixed(2)}:${sellQty.toFixed(2)}`,
+        `${((t.buyLeg?.originalLotSize || t.buyLeg.lotSize) * scale).toFixed(2)}:${((t.buyLeg?.originalSellQty || t.sellQty) * scale).toFixed(2)}`,
         t.buyLeg.strike, t.sellLeg.strike,
         t.entryBuyPrice || '', t.entrySellPrice || '',
         t.exitBuyPrice || '', t.exitSellPrice || '',
@@ -686,22 +696,40 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     .filter(p => p.underlying === underlying)
     .reduce((s, p) => {
       let val = includeFees ? (p.unrealizedNetPnl || 0) : (p.unrealizedGrossPnl || 0);
+      let scale = 1;
       if (extraCreditMode && p.entrySellPrice > 0) {
         const extraCredit = p.type === 'call' ? extraCreditAmountCall : extraCreditAmountPut;
         const extraQty = Math.round((extraCredit / p.entrySellPrice) / 0.25) * 0.25;
         val += extraQty * (p.entrySellPrice - (p.currentSellPrice || p.currentSellPrice));
+
+        const totalSellQty = p.sellQty + extraQty;
+        const spot = spotPrice || p.entrySpotPrice || 0;
+        const sellLot = p.sellLeg?.lotSize || 1;
+        const rawShortValue = spot * totalSellQty * sellLot;
+        if (rawShortValue > 200000) {
+          scale = 200000 / rawShortValue;
+        }
       }
-      return s + val;
+      return s + (val * scale);
     }, 0);
 
   const totalRealizedPnl = tradeHistory.reduce((s, t) => {
     let val = includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || 0);
+    let scale = 1;
     if (extraCreditMode && t.entrySellPrice > 0) {
       const extraCredit = t.type === 'call' ? extraCreditAmountCall : extraCreditAmountPut;
       const extraQty = Math.round((extraCredit / t.entrySellPrice) / 0.25) * 0.25;
-      val += extraQty * (t.entrySellPrice - (t.exitSellPrice || t.entrySellPrice));
+      val += extraQty * (t.entrySellPrice - (t.exitSellPrice || t.exitSellPrice));
+
+      const totalSellQty = t.sellQty + extraQty;
+      const spot = t.entrySpotPrice || 0;
+      const sellLot = t.sellLeg?.lotSize || 1;
+      const rawShortValue = spot * totalSellQty * sellLot;
+      if (rawShortValue > 200000) {
+        scale = 200000 / rawShortValue;
+      }
     }
-    return s + val;
+    return s + (val * scale);
   }, 0);
 
   const totalPnl = totalRealizedPnl + totalUnrealizedPnl;
@@ -717,12 +745,21 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       dTrade.setUTCHours(dTrade.getUTCHours() + 12);
       if (dTrade.toISOString().split('T')[0] !== todayUtc) return s;
       let val = includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || 0);
+      let scale = 1;
       if (extraCreditMode && t.entrySellPrice > 0) {
         const extraCredit = t.type === 'call' ? extraCreditAmountCall : extraCreditAmountPut;
         const extraQty = Math.round((extraCredit / t.entrySellPrice) / 0.25) * 0.25;
-        val += extraQty * (t.entrySellPrice - (t.exitSellPrice || t.entrySellPrice));
+        val += extraQty * (t.entrySellPrice - (t.exitSellPrice || t.exitSellPrice));
+
+        const totalSellQty = t.sellQty + extraQty;
+        const spot = t.entrySpotPrice || 0;
+        const sellLot = t.sellLeg?.lotSize || 1;
+        const rawShortValue = spot * totalSellQty * sellLot;
+        if (rawShortValue > 200000) {
+          scale = 200000 / rawShortValue;
+        }
       }
-      return s + val;
+      return s + (val * scale);
     }, 0);
   }, [tradeHistory, includeFees, extraCreditMode, extraCreditAmountCall, extraCreditAmountPut]);
 
@@ -738,11 +775,21 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     const sellLot = p.sellLeg?.lotSize || 1;
     const spot = spotPrice || p.entrySpotPrice || 0;
     let sellQty = p.sellQty;
+    let adjustedBuyLot = buyLot;
     if (isExtraMode && p.entrySellPrice > 0) {
       const extraCredit = p.type === 'call' ? extraCreditAmountCall : extraCreditAmountPut;
-      sellQty += Math.round((extraCredit / p.entrySellPrice) / 0.25) * 0.25;
+      const extraQty = Math.round((extraCredit / p.entrySellPrice) / 0.25) * 0.25;
+      const totalSellQty = sellQty + extraQty;
+      const rawShortValue = spot * totalSellQty * sellLot;
+      if (rawShortValue > 200000) {
+        const scale = 200000 / rawShortValue;
+        sellQty = totalSellQty * scale;
+        adjustedBuyLot = buyLot * scale;
+      } else {
+        sellQty = totalSellQty;
+      }
     }
-    const longMargin = buyPrice * buyLot;
+    const longMargin = buyPrice * adjustedBuyLot;
     const shortValue = Math.min(200000, spot * sellQty * sellLot);
     const leverage = 200;
     return longMargin + (shortValue / leverage);
@@ -1146,14 +1193,24 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                     {positions.filter(p => p.underlying === underlying).map(p => {
                       const pnlBase = includeFees ? p.unrealizedNetPnl : p.unrealizedGrossPnl;
                       const extraCredit = p.type === 'call' ? extraCreditAmountCall : extraCreditAmountPut;
-                      const extraAdj = extraCreditMode && p.entrySellPrice > 0
-                        ? (Math.round((extraCredit / p.entrySellPrice) / 0.25) * 0.25) * (p.entrySellPrice - (p.currentSellPrice || p.entrySellPrice))
+                      const extraQty = extraCreditMode && p.entrySellPrice > 0
+                        ? (Math.round((extraCredit / p.entrySellPrice) / 0.25) * 0.25)
                         : 0;
-                      const pnlValue = (pnlBase || 0) + extraAdj;
+                      const extraAdj = extraQty * (p.entrySellPrice - (p.currentSellPrice || p.entrySellPrice));
+                      
+                      const totalSellQty = p.sellQty + extraQty;
+                      const spot = spotPrice || p.entrySpotPrice || 0;
+                      const sellLot = p.sellLeg?.lotSize || 1;
+                      const rawShortValue = spot * totalSellQty * sellLot;
+                      let scale = 1;
+                      if (extraCreditMode && rawShortValue > 200000) {
+                        scale = 200000 / rawShortValue;
+                      }
+
+                      const displayBuyQty = p.buyLeg.lotSize * scale;
+                      const displaySellQty = totalSellQty * scale;
+                      const pnlValue = ((pnlBase || 0) + extraAdj) * scale;
                       const pnlClass = pnlValue > 0 ? 'positive' : pnlValue < 0 ? 'negative' : 'zero';
-                      const displaySellQty = extraCreditMode && p.entrySellPrice > 0
-                        ? p.sellQty + (Math.round((extraCredit / p.entrySellPrice) / 0.25) * 0.25)
-                        : p.sellQty;
 
                       const origLot = p.buyLeg?.originalLotSize || p.buyLeg?.lotSize || 1;
                       const rawOrigSellQty = p.buyLeg?.originalSellQty !== undefined
@@ -1171,7 +1228,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                               <span className={`pt-type-badge ${p.type}`}>{p.type.toUpperCase()}</span>
                               <span style={{ fontSize: '10px', color: extraCreditMode ? 'var(--accent)' : 'var(--text-dim)', fontWeight: 600 }}>
-                                {p.buyLeg.lotSize.toFixed(2)}:{displaySellQty.toFixed(2)}
+                                {displayBuyQty.toFixed(2)}:{displaySellQty.toFixed(2)}
                               </span>
                               <span style={{ fontSize: '9px', color: 'var(--text-dim)', opacity: 0.8 }}>
                                 (Orig 1:{displayOrigSellQty.toFixed(2)})
@@ -1339,15 +1396,34 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                     {filteredTradeHistory.map((t, i) => {
                       const pnlBase = includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || 0);
                       const extraCredit = t.type === 'call' ? extraCreditAmountCall : extraCreditAmountPut;
-                      const extraAdj = extraCreditMode && t.entrySellPrice > 0
-                        ? (Math.round((extraCredit / t.entrySellPrice) / 0.25) * 0.25) * (t.entrySellPrice - (t.exitSellPrice || t.entrySellPrice))
+                      const extraQty = extraCreditMode && t.entrySellPrice > 0
+                        ? (Math.round((extraCredit / t.entrySellPrice) / 0.25) * 0.25)
                         : 0;
-                      const pnlValue = pnlBase + extraAdj;
+                      const extraAdj = extraQty * (t.entrySellPrice - (t.exitSellPrice || t.exitSellPrice));
+
+                      const totalSellQty = t.sellQty + extraQty;
+                      const spot = t.entrySpotPrice || 0;
+                      const sellLot = t.sellLeg?.lotSize || 1;
+                      const rawShortValue = spot * totalSellQty * sellLot;
+                      let scale = 1;
+                      if (extraCreditMode && rawShortValue > 200000) {
+                        scale = 200000 / rawShortValue;
+                      }
+
+                      const displayBuyQty = t.buyLeg.lotSize * scale;
+                      const displaySellQty = totalSellQty * scale;
+                      const pnlValue = (pnlBase + extraAdj) * scale;
                       const pnlClass = pnlValue > 0 ? 'positive' : pnlValue < 0 ? 'negative' : 'zero';
                       const durationMs = t.exitTime && t.entryTime ? (t.exitTime - t.entryTime) : 0;
-                      const displaySellQty = extraCreditMode && t.entrySellPrice > 0
-                        ? t.sellQty + (Math.round((extraCredit / t.entrySellPrice) / 0.25) * 0.25)
-                        : t.sellQty;
+
+                      let displayMargin = t.margin || 0;
+                      if (extraCreditMode && t.entrySellPrice > 0) {
+                        const buyPrice = t.entryBuyPrice || 0;
+                        const longMargin = buyPrice * displayBuyQty;
+                        const shortValue = Math.min(200000, spot * displaySellQty * sellLot);
+                        const leverage = 200;
+                        displayMargin = longMargin + (shortValue / leverage);
+                      }
 
                       const origLot = t.buyLeg?.originalLotSize || t.buyLeg?.lotSize || 1;
                       const rawOrigSellQty = t.buyLeg?.originalSellQty !== undefined
@@ -1461,7 +1537,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                               <span className={`pt-pnl ${pnlClass}`}>
                                 {pnlValue > 0 ? '+' : ''}{pnlValue.toFixed(2)}
                               </span>
-                              <span style={{ fontSize: '10px', color: 'var(--text-dim)' }}>Margin: ${t.margin?.toFixed(0)}</span>
+                              <span style={{ fontSize: '10px', color: 'var(--text-dim)' }}>Margin: ${displayMargin.toFixed(0)}</span>
                             </div>
                           </td>
                           <td><span className={`pt-exit-badge ${exitBadgeClass(t.exitReason)}`}>{t.exitReason}</span></td>
