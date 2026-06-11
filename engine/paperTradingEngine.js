@@ -394,15 +394,24 @@ export async function startPaperTradingEngine() {
         // Dynamic ATM ratio-based scaling
         if (atmStrike !== null) {
           // Initialize missing fields for older positions
-          if (pos.buyLeg && (pos.buyLeg.originalLotSize === undefined || pos.buyLeg.originalSellQty === undefined)) {
+          if (pos.buyLeg && (pos.buyLeg.originalLotSize === undefined || pos.buyLeg.originalSellQty === undefined || pos.buyLeg.initialScaledLotSize === undefined)) {
             pos.buyLeg.originalLotSize = pos.buyLeg.originalLotSize ?? (pos.buyLeg.lotSize || 1);
             pos.buyLeg.originalSellQty = pos.buyLeg.originalSellQty ?? (pos.sellQty || 0);
+            if (pos.buyLeg.initialScaledLotSize === undefined) {
+              const origLot = pos.buyLeg.originalLotSize;
+              const origSell = pos.buyLeg.originalSellQty;
+              if (origSell > 0 && pos.sellQty > 0) {
+                pos.buyLeg.initialScaledLotSize = Number((pos.sellQty * (origLot / origSell)).toFixed(2));
+              } else {
+                pos.buyLeg.initialScaledLotSize = pos.buyLeg.lotSize || origLot;
+              }
+            }
             try {
               await supabase.from('active_positions').update({
                 buy_leg: JSON.stringify(pos.buyLeg)
               }).eq('id', pos.id);
             } catch (e) {
-              logError(`Failed to initialize originalLotSize/originalSellQty for position ${pos.id}:`, e);
+              logError(`Failed to initialize originalLotSize/originalSellQty/initialScaledLotSize for position ${pos.id}:`, e);
             }
           }
 
@@ -413,8 +422,13 @@ export async function startPaperTradingEngine() {
           if (pos.buyLeg && pos.buyLeg.originalLotSize !== undefined && buyIntrinsic != null && sellIntrinsic != null && sellIntrinsic > 0) {
             const liveAtmRatio = parseFloat((Math.round((buyIntrinsic / sellIntrinsic) / 0.25) * 0.25).toFixed(2));
             const originalLotSize = pos.buyLeg.originalLotSize || pos.buyLeg.lotSize || 1;
-            const deltaBuyQty = Number((originalLotSize * 0.25).toFixed(2));
-            const floorLimit = 0.5;
+            const initialScaledLotSize = pos.buyLeg.initialScaledLotSize !== undefined
+              ? pos.buyLeg.initialScaledLotSize
+              : (pos.buyLeg.originalSellQty && pos.buyLeg.originalSellQty > 0
+                  ? Number((pos.sellQty * (originalLotSize / pos.buyLeg.originalSellQty)).toFixed(2))
+                  : originalLotSize);
+            const deltaBuyQty = Number((initialScaledLotSize * 0.25).toFixed(2));
+            const floorLimit = Number((initialScaledLotSize * 0.5).toFixed(2));
             let currentLotSize = pos.buyLeg.lotSize;
             let hypotheticalLotSize = Number((currentLotSize - deltaBuyQty).toFixed(2));
             let recalculatedRatio = hypotheticalLotSize > 0
@@ -923,7 +937,8 @@ export async function startPaperTradingEngine() {
               entrySellAtmPrice,
               maxAtmRatio: newEntryAtmRatio,
               originalLotSize: target.buyLeg.lotSize || 1,
-              originalSellQty: target.sellQty
+              originalSellQty: target.sellQty,
+              initialScaledLotSize: adjustedTargetLotSize
             };
 
             const swappedPos = {
@@ -1053,7 +1068,8 @@ export async function startPaperTradingEngine() {
             entrySellAtmPrice: sellIntrinsic,
             maxAtmRatio: entryAtmRatio,
             originalLotSize: spread.buyLeg.lotSize || 1,
-            originalSellQty: spread.sellQty
+            originalSellQty: spread.sellQty,
+            initialScaledLotSize: adjustedLotSize
           };
           const sellLegWithIv = { ...spread.sellLeg, entryIv: entrySellIv };
 
