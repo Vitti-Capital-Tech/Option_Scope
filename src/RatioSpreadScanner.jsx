@@ -23,9 +23,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
   const [resultsPut, setResultsPut] = useState([]);
   const [globalAtmStrike, setGlobalAtmStrike] = useState(null);
   const [tickerData, setTickerData] = useState({});
-  const [extraCreditMode, setExtraCreditMode] = useState(false);
-  const [extraCreditAmountCall, setExtraCreditAmountCall] = useState(15);
-  const [extraCreditAmountPut, setExtraCreditAmountPut] = useState(10);
+
   const latestTickerDataRef = useRef({});
   const [expectedTickerCount, setExpectedTickerCount] = useState(0);
   const [lastRefreshed, setLastRefreshed] = useState(0);
@@ -765,32 +763,6 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
                 {scanning ? '■ STOP SCAN' : '▶ START SCAN'}
               </button>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', borderLeft: '1px solid var(--border)', paddingLeft: '12px', marginLeft: '8px' }}>
-              <div className="pt-fee-toggle-container">
-                <span className={`pt-fee-toggle-label ${!extraCreditMode ? 'active' : ''}`} onClick={() => setExtraCreditMode(false)}>Base</span>
-                <label className="pt-switch">
-                  <input type="checkbox" checked={extraCreditMode} onChange={(e) => setExtraCreditMode(e.target.checked)} />
-                  <span className="pt-slider round"></span>
-                </label>
-                <span className={`pt-fee-toggle-label ${extraCreditMode ? 'active' : ''}`} onClick={() => setExtraCreditMode(true)}>Extra</span>
-              </div>
-              {extraCreditMode && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: '4px', padding: '2px 6px' }}>
-                    <span style={{ fontSize: '10px', color: 'var(--call)', fontWeight: 'bold', marginRight: '4px' }}>C:$</span>
-                    <input type="number" value={extraCreditAmountCall}
-                      onChange={(e) => setExtraCreditAmountCall(Number(e.target.value))}
-                      style={{ width: '40px', background: 'transparent', border: 'none', color: 'var(--call)', fontSize: '12px', fontWeight: 'bold', outline: 'none', padding: 0 }} />
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: '4px', padding: '2px 6px' }}>
-                    <span style={{ fontSize: '10px', color: 'var(--put)', fontWeight: 'bold', marginRight: '4px' }}>P:$</span>
-                    <input type="number" value={extraCreditAmountPut}
-                      onChange={(e) => setExtraCreditAmountPut(Number(e.target.value))}
-                      style={{ width: '40px', background: 'transparent', border: 'none', color: 'var(--put)', fontSize: '12px', fontWeight: 'bold', outline: 'none', padding: 0 }} />
-                  </div>
-                </div>
-              )}
-            </div>
             <button
               className="scanner-filters-toggle-btn"
               onClick={() => setIsFiltersCollapsed(!isFiltersCollapsed)}
@@ -907,9 +879,6 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             lastRefreshed={lastRefreshed}
             trueAtmStrike={globalAtmStrike}
             tickerData={tickerData}
-            extraCreditMode={extraCreditMode}
-            extraCreditAmountCall={extraCreditAmountCall}
-            extraCreditAmountPut={extraCreditAmountPut}
           />
           <ResultTable
             title="PUT SPREAD"
@@ -926,9 +895,6 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             lastRefreshed={lastRefreshed}
             trueAtmStrike={globalAtmStrike}
             tickerData={tickerData}
-            extraCreditMode={extraCreditMode}
-            extraCreditAmountCall={extraCreditAmountCall}
-            extraCreditAmountPut={extraCreditAmountPut}
           />
         </main>
       </div>

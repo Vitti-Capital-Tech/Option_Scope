@@ -14,10 +14,7 @@ export default function ResultTable({
   spotPrice,
   lastRefreshed,
   trueAtmStrike,
-  tickerData,
-  extraCreditMode,
-  extraCreditAmountCall,
-  extraCreditAmountPut
+  tickerData
 }) {
   const [expandedStrikes, setExpandedStrikes] = useState({});
 
@@ -162,11 +159,20 @@ export default function ResultTable({
                   // Margin calculation matching paper trading leverage tiers
                   const sellLotSize = r.sellLeg.lotSize || lotSize;
 
-                  const extraCredit = type.toLowerCase() === 'call' ? extraCreditAmountCall : extraCreditAmountPut;
-                  const extraQty = extraCreditMode && r.sellPrice > 0
-                    ? (Math.round((extraCredit / r.sellPrice) / 0.25) * 0.25)
-                    : 0;
-                  const totalSellQty = r.sellQty + extraQty;
+                  const { atmRatioScaling, atmRatioDistanceCall, atmRatioDistancePut } = config || {};
+
+                  const atmRatio = (buyIntrinsic != null && sellIntrinsic != null && sellIntrinsic > 0)
+                    ? (buyIntrinsic / sellIntrinsic)
+                    : null;
+                  const roundedAtmRatio = atmRatio != null
+                    ? (Math.round(atmRatio / 0.25) * 0.25).toFixed(2)
+                    : '—';
+
+                  let totalSellQty = r.sellQty;
+                  if (atmRatioScaling && atmRatio != null) {
+                    const dist = type.toLowerCase() === 'call' ? atmRatioDistanceCall : atmRatioDistancePut;
+                    totalSellQty = Math.max(r.sellQty, (Math.round(atmRatio / 0.25) * 0.25) - dist);
+                  }
 
                   let shortValue = currentSpot * totalSellQty * sellLotSize;
 
@@ -190,18 +196,12 @@ export default function ResultTable({
 
                   const margin = (r.buyPrice * adjustedLotSize) + (shortValue / leverage);
                   const roi = (atAtmPnl != null && margin > 0) ? (atAtmPnl / margin) * 100 : null;
-                  const atmRatio = (buyIntrinsic != null && sellIntrinsic != null && sellIntrinsic > 0)
-                    ? (buyIntrinsic / sellIntrinsic)
-                    : null;
-                  const roundedAtmRatio = atmRatio != null
-                    ? (Math.round(atmRatio / 0.25) * 0.25).toFixed(2)
-                    : '—';
 
-                  const rawNetPremium = extraCreditMode 
+                  const rawNetPremium = atmRatioScaling 
                     ? ((r.sellPrice * totalSellQty) - r.buyPrice) * scale
                     : r.netPremium;
 
-                  const isRatioChanged = extraCreditMode && extraQty > 0;
+                  const isRatioChanged = atmRatioScaling && totalSellQty !== r.sellQty;
 
                   return {
                     ...r,
