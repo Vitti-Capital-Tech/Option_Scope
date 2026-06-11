@@ -184,7 +184,7 @@ After every scan, `publishTopSpreads` packages the top-3 calls and puts into a p
 | Table | Engine | Key Fields | Notes |
 |---|---|---|---|
 | `paper_trading_config` | PaperTrading | `underlying`, `expiry`, all filter thresholds | Single `global` row, upserted on config change |
-| `active_positions` | PaperTrading | `id`, `buy_strike`, `sell_strike`, `buy_leg` (JSON), `sell_leg` (JSON), `accumulated_sell_pnl`, `margin` | Unique DB constraint on `(buy_strike, sell_strike)` prevents duplicate inserts |
+| `active_positions` | PaperTrading | `id`, `buy_strike`, `sell_strike`, `buy_leg` (JSON), `sell_leg` (JSON), `accumulated_sell_pnl`, `margin` | Unique DB constraints `unique_buy_strike_per_type` and `unique_sell_strike_per_type` scoped by `(account_id, underlying, type, strike)` prevent duplicate inserts |
 | `trade_history` | PaperTrading | `trade_id`, `realized_net_pnl`, `exit_reason`, `is_partial`, `exit_time`, `total_fees` | `trade_id` pre-checked before insert to prevent duplicates |
 
 
@@ -196,9 +196,28 @@ After every scan, `publishTopSpreads` packages the top-3 calls and puts into a p
 
 **DB-Level Count Guard (pre-insert)**: Before inserting any new position, the engine queries `active_positions` for the current `(underlying, type)` pair. If the live count is `>= 3`, the insert is aborted. Uses plain `.select('id')` (not `{ head: true }`) to ensure non-null response data.
 
-**DB-Level Strike Uniqueness (pre-insert)**: After the count check, the engine queries active positions for duplicate `buy_strike` (`buyConflict`) and `sell_strike` (`sellConflict`) values for the same `(underlying, type)`. If any conflict is found, the insert is aborted with a console warning.
+**DB-Level Strike Uniqueness (pre-insert)**: After the count check, the engine queries active positions for duplicate `buy_strike` (`buyConflict`) and `sell_strike` (`sellConflict`) values for the same `(underlying, type)` and `account_id`. If any conflict is found, the insert is aborted with a console warning.
 
-**DB Unique Constraint Fallback**: A PostgreSQL unique constraint on `(buy_strike, sell_strike)` is the final safety net. Error code `23505` is caught and logged but does not crash the engine.
+**DB Unique Constraint Fallback**: PostgreSQL unique constraints `unique_buy_strike_per_type` and `unique_sell_strike_per_type` (scoped by `account_id`) act as the final safety net. Error code `23505` is caught and logged but does not crash the engine.
+
+### DB Migration: Scoping Strike Constraints by Account
+To prevent strike conflicts between different accounts, the database constraints must be dropped and recreated to include `account_id`:
+```sql
+-- Drop old global constraints
+ALTER TABLE active_positions DROP CONSTRAINT IF EXISTS unique_buy_strike_per_type;
+ALTER TABLE active_positions DROP CONSTRAINT IF EXISTS unique_sell_strike_per_type;
+
+-- Drop underlying indexes if they exist as separate relations
+DROP INDEX IF EXISTS unique_buy_strike_per_type;
+DROP INDEX IF EXISTS unique_sell_strike_per_type;
+
+-- Create new account-scoped constraints
+ALTER TABLE active_positions
+  ADD CONSTRAINT unique_buy_strike_per_type UNIQUE (account_id, underlying, type, buy_strike);
+
+ALTER TABLE active_positions
+  ADD CONSTRAINT unique_sell_strike_per_type UNIQUE (account_id, underlying, type, sell_strike);
+```
 
 **Write Throttle (`lastDbWriteRef`)**: Tracks Unix timestamp of the last local database write. The Supabase Realtime subscription skips updates if a local write occurred within the last **3 seconds** to prevent a just-written position from being overwritten by a stale re-fetch before the DB has finished committing. (Previously 10 seconds — reduced to minimize the staleness window.)
 
