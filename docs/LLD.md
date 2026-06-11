@@ -12,9 +12,7 @@ This document is the authoritative implementation reference for every module, en
 | `App.jsx` | Interactive charts, greeks tracking, alert manager, SMA overlay, and support/resistance drawing tools. |
 | `RatioSpreadScanner.jsx` | Standalone option-chain scanner. Computes premium-to-delta-notional ratio deviation pairs, publishes top-3 results via `BroadcastChannel` and `localStorage`. |
 | `PaperTrading.jsx` | React UI Dashboard for Paper Trading. Reads `active_positions`, `trade_history`, and heartbeat from Supabase. |
-| `ATMExitTrading.jsx` | React UI Dashboard for ATM Exit Trading. Reads bucketed analytics and heartbeat from Supabase. |
 | `engine/paperTradingEngine.js` | Headless Node.js engine. Handles entries, full ATM exits, rotation, IV tracking, fee calculations, and Supabase persistence. |
-| `engine/atmExitEngine.js` | Headless Node.js engine. Self-contained scanner, single ATM exit rule, bucketed analytics aggregation, and separate Supabase tables. |
 | `ResultTable.jsx` | Reusable grouped table renderer for ratio spread candidates. |
 | `api.js` | Network abstraction: Delta REST calls, `createTickerStream` (WS with auto-reconnect), `createWS` (raw WS), `getTickers` (REST backfill). |
 | `scannerUtils.js` | Shared helpers: `normalizeIv`, `toFiniteNumber`, `matchesOptionType`, `formatTime`, `formatDateTime`. |
@@ -31,7 +29,7 @@ This document is the authoritative implementation reference for every module, en
 
 ### WebSocket Telemetry & Auto-Reconnect Engine (`createTickerStream`)
 
-Used by `RatioSpreadScanner`, `PaperTrading`, and `ATMExitTrading`. Subscribes to the Delta Exchange `v2/ticker` channel and self-heals on unexpected drops.
+Used by `RatioSpreadScanner` and `PaperTrading`. Subscribes to the Delta Exchange `v2/ticker` channel and self-heals on unexpected drops.
 
 **Reconnect Lifecycle:**
 
@@ -54,7 +52,7 @@ Incoming frames are filtered to only process `type === 'v2/ticker'`. All other m
 ### Spot Price Streaming & Redundancy
 
 To ensure zero-latency spot prices:
-1. **WebSocket Ticker Subscription**: The frontend UI (`PaperTrading.jsx`) and backend engines (`paperTradingEngine.js` and `atmExitEngine.js`) subscribe to the underlying perpetual future contract (e.g., `BTCUSD` or `ETHUSD`) directly over the WebSocket ticker stream. Spot price ticks are processed immediately upon receipt, updating the UI and engine states with zero latency.
+1. **WebSocket Ticker Subscription**: The frontend UI (`PaperTrading.jsx`) and backend engine (`paperTradingEngine.js`) subscribe to the underlying perpetual future contract (e.g., `BTCUSD` or `ETHUSD`) directly over the WebSocket ticker stream. Spot price ticks are processed immediately upon receipt, updating the UI and engine states with zero latency.
 2. **REST Polling & Tab Visibility Pause**: Spot price REST polling continues every **10 seconds** via `setInterval` as a safety net. To minimize egress, tab visibility listeners pause this interval when the tab goes to the background, performing a single update check when the tab is focused again.
 
 ---
@@ -168,7 +166,7 @@ Greedy selection algorithm ensuring each buy strike appears at most once in the 
 - **Initial**: Scan runs immediately when ticker data arrives (fast-track: 2 seconds after first data).
 - **Normal**: Aligned to clock-minute boundary via `currentMinute > lastMinute` check.
 - **Manual**: Refresh button triggers `computeSpreads(true)` immediately.
-- **Product Refresh**: Dedicated background `useEffect` interval runs every 5 minutes in all active modules (`RatioSpreadScanner`, `PaperTrading`, `ATMExitTrading`) independently of trading or scanning status. If the currently selected expiry is no longer present in the active list (e.g., daily rollover occurs), the engine automatically switches to the nearest active expiry, updates the configuration, and syncs/saves the new state to the database.
+- **Product Refresh**: Dedicated background `useEffect` interval runs every 5 minutes in all active modules (`RatioSpreadScanner`, `PaperTrading`) independently of trading or scanning status. If the currently selected expiry is no longer present in the active list (e.g., daily rollover occurs), the engine automatically switches to the nearest active expiry, updates the configuration, and syncs/saves the new state to the database.
 
 ### Publishing Results
 
@@ -187,13 +185,7 @@ After every scan, `publishTopSpreads` packages the top-3 calls and puts into a p
 | `paper_trading_config` | PaperTrading | `underlying`, `expiry`, all filter thresholds | Single `global` row, upserted on config change |
 | `active_positions` | PaperTrading | `id`, `buy_strike`, `sell_strike`, `buy_leg` (JSON), `sell_leg` (JSON), `accumulated_sell_pnl`, `margin` | Unique DB constraint on `(buy_strike, sell_strike)` prevents duplicate inserts |
 | `trade_history` | PaperTrading | `trade_id`, `realized_net_pnl`, `exit_reason`, `is_partial`, `exit_time`, `total_fees` | `trade_id` pre-checked before insert to prevent duplicates |
-| `atm_exit_config` | ATMExitTrading | `underlying`, `expiry`, `min_long_dist`, `min_sell_premium`, `max_ratio_deviation` | Isolated from PaperTrading config |
-| `atm_exit_active_positions` | ATMExitTrading | `id`, `buy_strike`, `sell_strike`, `sell_qty`, `accumulated_sell_pnl`, `margin` | Separate runtime state for ATM Exit engine |
-| `atm_exit_trade_history` | ATMExitTrading | `trade_id`, `realized_net_pnl`, `exit_reason`, `exit_time`, `exit_spot_price` | Permanent historical record |
-| `atm_exit_qty_0_2_5` | ATMExitTrading | `strike_diff`, `underlying`, `type`, `trade_count`, `avg_margin`, `avg_pnl`, `avg_net_premium`, `avg_fees` | Bucket for sellQty <= 2.5 |
-| `atm_exit_qty_2_5_5` | ATMExitTrading | same | Bucket for sellQty <= 5.0 |
-| `atm_exit_qty_5_7_5` | ATMExitTrading | same | Bucket for sellQty <= 7.5 |
-| `atm_exit_qty_7_5_10` | ATMExitTrading | same | Bucket for sellQty > 7.5 |
+
 
 ### Concurrency Safety Guards
 
@@ -327,8 +319,7 @@ New entries are opened from `uniqueTopSpreads` (the deduplicated, ROI-ranked can
 1. **Expiry Buffer Guard**: Skip if `minutesToExpiry < 5`.
 2. **Strike Uniqueness**: Block if buy or sell strike already active in `remaining` or `newEntries` (same type/underlying).
 3. **Portfolio Cap**: Block if `remaining + newEntries count >= 3` for this type.
-4. **Strike Diversification Guard (ATM Exit Trading)**: In the ATM Exit Trading engine, new buy strikes must be `>= 400 pts` from all existing buy strikes of the same type. (This guard has been removed from Paper Trading).
-5. **Execution**: `entryBuyPrice = spread.ask`, `entrySellPrice = spread.bid`. Entry IVs captured: `entryBuyIv = ticker.askIv`, `entrySellIv = ticker.bidIv`. Baseline ATM ratio (`entryAtmRatio`) and unscaled lot size (`originalLotSize`) are computed and stored inside the `buy_leg` JSON metadata at entry.
+4. **Execution**: `entryBuyPrice = spread.ask`, `entrySellPrice = spread.bid`. Entry IVs captured: `entryBuyIv = ticker.askIv`, `entrySellIv = ticker.bidIv`. Baseline ATM ratio (`entryAtmRatio`) and unscaled lot size (`originalLotSize`) are computed and stored inside the `buy_leg` JSON metadata at entry.
 6. **Supabase Insert (with three DB-level guards)**:
    - Count guard: `SELECT id WHERE underlying AND type` — abort if count `>= 3`.
    - Buy strike uniqueness: `SELECT id WHERE buy_strike = X` — abort if exists (`buyConflict`).
@@ -361,51 +352,13 @@ A UI-layer only feature — the Supabase database always stores original base va
 - **Date Navigation**: Prev/Next/Today buttons adjust `historyFilterDate` (UTC-aligned ISO string). All-history mode clears the filter.
 - **CSV Export**: Exports all visible history rows with entry/exit prices, IVs, fees, PnL, and exit reason.
 
----
 
-## 8) ATM Exit Trading Engine (`engine/atmExitEngine.js`)
 
-### Key Differences from PaperTrading
-
-| Feature | PaperTrading | ATMExitTrading |
-|---|---|---|
-| Exit logic | Dynamic ATM ratio-based scaling (25% of original qty partial exits) + rotation | 100% at ATM only |
-| Scanner source | Self-contained local scan (headless, no BroadcastChannel) | Fully self-contained local scan only |
-| Start/Stop | Manual toggle | Always-on (auto-starts on product load) |
-| Analytics | None | Bucketed `avg_pnl`, `avg_margin` per strike diff / sell qty range |
-| Supabase tables | `active_positions`, `trade_history` | `atm_exit_*` prefix tables (isolated) |
-| Leg swap | Yes (same sell strike, better buy strike) | No |
-
-### Evaluation Loop
-
-Uses the identical decoupled execution strategy: checks ATM and rotation exits every second (`evaluateStrategy(true)`), while scanning and entering new positions at clock-minute boundaries (`evaluateStrategy(false)`). Tolerates up to 120 seconds of spot price staleness.
-
-### Scanner (`scanTickers` internal)
-
-Identical filtering algorithm to PaperTrading's `scanTickers`. Filters by ATM strike, enforces all thresholds, and sorts by ATM proximity. Config is stored in and loaded from `atm_exit_config` Supabase table.
-
-### Exit Priority
-
-1. **Expiry (2 min early)** — same as PaperTrading.
-2. **ATM Exit**: `spotPrice >= buyStrike` (calls) or `spotPrice <= buyStrike` (puts) → 100% close. No stages.
-3. **Rotation**: Same worst-first, 1-for-1 reservation system. Same 0.5% spot scaling and 400pt diversification guards. Capped at 3 rotations per cycle.
-
-### Bucketed Analytics (`upsertAnalytics`)
-
-After every trade exit, the engine upserts a running-average record:
-
-1. **Table selection**: Based on `sellQty` range (0–2.5, 2.5–5, 5–7.5, 7.5–10).
-2. **Strike diff rounding**: `Math.round(strikeDiff / 100) * 100` for clean bucketing.
-3. **Running average formula**: If record `(strike_diff, underlying, type)` exists: `avgNew = (avgOld × (N-1) + valueCurrent) / N`. Otherwise inserts a new seed record.
-4. **Tracked metrics**: `trade_count`, `avg_margin`, `avg_pnl` (net), `avg_net_premium`, `avg_fees`.
-
----
-
-## 9) Robustness & Error-Handling Systems
+## 8) Robustness & Error-Handling Systems
 
 ### React Date Parsing Crash Guard
 
-Both `PaperTrading.jsx` and `ATMExitTrading.jsx` guard all date filtering logic:
+`PaperTrading.jsx` guards all date filtering logic:
 
 - **Threat**: `new Date(invalidString)` creates an `Invalid Date`. Calling `.toISOString()` on it throws `RangeError: Invalid time value`, crashing the entire React component tree.
 - **Solution**: `if (isNaN(d.getTime())) return false;` is checked immediately after parsing any `exitTime` from the database before any offset or formatting logic.
@@ -426,7 +379,7 @@ Both `PaperTrading.jsx` and `ATMExitTrading.jsx` guard all date filtering logic:
 
 ---
 
-## 10) ATM Projections in ResultTable (`ResultTable.jsx`)
+## 9) ATM Projections in ResultTable (`ResultTable.jsx`)
 
 To visualize potential outcomes, the Result Table projects the value of each scanned spread to the At-The-Money (ATM) boundary. This uses direct, live option chain lookups via `tickerData` instead of Greeks (Delta/Gamma) or theoretical calculations:
 

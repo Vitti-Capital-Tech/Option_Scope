@@ -2,11 +2,10 @@
 
 ## What The System Does
 
-OptionScope is a client-side trading workstation for Delta Exchange options. It has four top-level modules:
+OptionScope is a client-side trading workstation for Delta Exchange options. It has three top-level modules:
 - **Charts**: Real-time call/put/combined premium monitoring with Greeks and alerts.
 - **Ratio Spread Scanner**: Live discovery of ratio spreads based on premium-to-delta-notional alignment.
 - **Paper Trading**: Fully automated simulation of spread entry, live PnL, full ATM exits, standard portfolio rotation, IV tracking, and expiry settlement.
-- **ATM Exit Trading**: A simplified, always-on trading variant with a single exit rule (100% at ATM), built-in scanner, bucketed analytics, and no partial exits.
 
 The user selects underlying and expiry, then the system streams option telemetry and updates UI decisions in near real-time.
 
@@ -18,12 +17,11 @@ The user selects underlying and expiry, then the system streams option telemetry
 Headless Backend Engine (Node.js VPS)
   |
   |-- paperTradingEngine.js (Continuous execution, IV tracking, Supabase syncing)
-  |-- atmExitEngine.js (Always-on ATM single-exit, Bucketed analytics)
   |-- WebSocket adapter ---> Delta WS (Auto-reconnect + heartbeats)
 
 Browser (React + Vite Dashboard)
   |
-  |-- Navigation Shell (Charts / Scanner / Paper Trading / ATM Exit)
+  |-- Navigation Shell (Charts / Scanner / Paper Trading)
   |-- WebSocket adapter (UI local tickers, greeks) ---> Delta WS
   |-- Persistence & Sync Hub (Supabase Realtime + BroadcastChannel)
 ```
@@ -31,8 +29,8 @@ Browser (React + Vite Dashboard)
 ### 1) UI Layer (Dashboard)
 
 - React components are route-like modules switched inside the app shell via `main.jsx`.
-- `PaperTrading.jsx` and `ATMExitTrading.jsx` no longer run automated logic; they are read-only views showing live database state and a ticking server `engine_heartbeat` countdown.
-- All four modules are always mounted (via `display: none/block`) to preserve state during navigation.
+- `PaperTrading.jsx` no longer runs automated logic; they are read-only views showing live database state and a ticking server `engine_heartbeat` countdown.
+- All three modules are always mounted (via `display: none/block`) to preserve state during navigation.
 - Theme toggle is shared across modules.
 - **Synchronization**: State (underlying, expiry, filters) is synchronized across tabs via `BroadcastChannel` and persisted to Supabase for cross-device consistency.
 
@@ -40,8 +38,7 @@ Browser (React + Vite Dashboard)
 
 - **REST** handles product metadata, initial candle history, and correction backfills.
 - **WebSocket** handles low-latency live fields (`v2/ticker`, `mark_price`, trades, order book updates).
-  - `createTickerStream` uses an **auto-reconnect loop**: if the WebSocket closes unexpectedly, it re-establishes the connection after a 3-second delay. This is critical for unattended VPS operation.
-  - `createWS` (used by the Charts module) delegates reconnect decisions to the caller.
+- **Auto-Reconnect**: `createTickerStream` (used by Scanner and Paper Trading) automatically reconnects after 3 seconds if the WebSocket drops. This is critical for unattended VPS operation.
 - **Supabase** (PostgreSQL) stores algorithm configuration, active trading positions, realized trade history, and bucketed analytics.
 - **Supabase Realtime**: A `postgres_changes` subscription on `active_positions` delivers INSERT/UPDATE/DELETE events to all connected browser sessions instantly (< 1s). This replaces the previous 10-second polling loop, eliminating the delay between when the VPS engine writes a trade and when other browser views reflect it. Paired with tab visibility guards, standard REST polling fallbacks are completely removed to optimize network egress and database load.
 - Proxy rewrites keep the architecture serverless while handling CORS.
@@ -51,7 +48,6 @@ Browser (React + Vite Dashboard)
 - **Charting Engine (UI)** uses imperative refs and always-mounted chart components for smooth updates.
 - **Scanner Engine (UI)** processes option chains for valid ratio candidates using configurable thresholds. Enforces directional filtering (Calls ≥ ATM, Puts ≤ ATM).
 - **Paper Trading Engine (Node.js)** A headless script (`paperTradingEngine.js`) that runs 24/7 on a VPS. Reuses scanner-style candidate selection to simulate positions. Filters candidates by projected ATM P&L >= $50 and sorts them by ROI descending to select the best candidate per buy strike. Enforces a hard cap of 3 positions per option type. Evaluates exit rules (ATM, expiry, rotations) every second to minimize slippage, while running full scans for entries on 1-minute boundaries to optimize DB load. Tracks Bid/Ask-specific IVs. Tolerates up to 120s spot price staleness. Synchronizes with Supabase.
-- **ATM Exit Engine (Node.js)** A headless script (`atmExitEngine.js`). Runs an independent, self-contained scanner and evaluation loop. Evaluates exit rules every second, while running full scans for entries on 1-minute boundaries. Uses the same entry guards (0.5% spot scaling, 400pt diversification) but a simpler exit strategy: 100% close at ATM. Persists to separate Supabase tables (`atm_exit_*`) and aggregates bucketed running trade analytics. Tolerates up to 120s spot price staleness.
 
 ---
 
@@ -73,7 +69,7 @@ Browser (React + Vite Dashboard)
 
 ### Ticker Subscription (Shared Infrastructure)
 - **Restart Optimization**: `lastWsSymbolsRef` hashes the symbol list to prevent redundant WebSocket restarts during periodic product refreshes, avoiding the "WebSocket is closed before established" error.
-- **Auto-Reconnect**: `createTickerStream` (used by Scanner, Paper Trading, and ATM Exit) automatically reconnects after 3 seconds if the WebSocket drops. This eliminates the need for manual restarts during unattended VPS operation.
+- **Auto-Reconnect**: `createTickerStream` (used by Scanner and Paper Trading) automatically reconnects after 3 seconds if the WebSocket drops. This eliminates the need for manual restarts during unattended VPS operation.
 - **Auto-Refresh**: Products and expiries are re-queried from Delta every 5 minutes; if the currently selected expiry disappears (e.g. daily rollover), the UI automatically shifts to the next available date.
 - **Buffered Flush**: 50ms ticker batching reduces render pressure under high-volatility data bursts.
 - **Defensive Backfill**: A manual UI refresh triggers a targeted `/v2/tickers` REST request. This intelligently merges live prices without overwriting existing data with missing/zeroed fields, guaranteeing immediate price accuracy even if the WebSocket stream is temporarily silent.
@@ -98,7 +94,7 @@ Browser (React + Vite Dashboard)
     - **Liquidation-Based PnL**: Unrealized PnL is calculated based on immediate exit prices: long positions are valued at the current Bid (selling back) and short positions at the current Ask (buying back).
 3. **Scaling & Uniqueness Guards**: 
    - **Directional Spot Scaling**: Enforces a 0.5% price gap (rounded to 100) between entries for mean-reversion scaling.
-   - **Buy Strike Uniqueness**: Ensures new buy strikes are unique in the database for the same underlying and type via a DB-level exact-match check (`buyConflict`), preventing duplicate entries under race conditions.
+   - **Buy Strike Uniqueness**: Ensures new buy strikes are unique in the database for the same underlying and type via a DB-level check (`buyConflict`), preventing duplicate entries under race conditions.
    - **Active Position Dynamic Scaling**: Evaluates active positions inside the exit loop. Scaling triggers when three conditions are met: (1) the position is **profitable** (`currentGrossPnl > 0`), preventing false triggers at entry when PnL is zero, (2) the PnL **is at or above the trailing threshold** (`currentGrossPnl >= checkpointAtmPnl * 0.25 + checkpointPnl`), and (3) under a hypothetical reduction of the buy leg quantity by **25% of the position's fixed initial scaled lot size (`pos.buyLeg.initialScaledLotSize`)**, the recalculated position ratio (`pos.sellQty / hypotheticalLotSize`) has a difference of at least **1** relative to the live ATM ratio (`liveAtmRatio >= recalculatedRatio + 1`), where the hypothetical lot size must be at or above the dynamic floor of 50% of the position's fixed initial scaled lot size (`pos.buyLeg.initialScaledLotSize * 0.5`). Only when all conditions are met, the long leg quantity (`buyLeg.lotSize`) is reduced by **25% of the position's fixed initial scaled lot size**, while the short quantity (`sellQty`) remains fully intact. After each step, `maxAtmRatio` in metadata is updated to reflect the new recalculated ratio of the position, and checkpoint values are saved. `entryAtmRatio` is never modified (it is a historical value). Each reduction is recorded in the `trade_history` table as a **partial exit** record, realizing the proportional entry fee and exit price P&L for the buy portion closed. The `exit_reason` for the partial exit is recorded in a concise format containing the exact initial and live ATM buy/sell prices, live and recalculated ratios, and original net debit/credit at entry of the position. The remaining position's margin is recalculated using `calcMargin` and saved to the database. This scaling can recur down to the dynamic floor limit (50% of initial scaled lot size).
    - **Baseline Calculations**: Calculates the entry ATM ratio (`entryAtmRatio`) and records it along with `originalLotSize` in the `buy_leg` JSON metadata at entry.
 4. **IV Tracking**:
@@ -125,18 +121,7 @@ Browser (React + Vite Dashboard)
 11. Sync all entries and exits to Supabase. Full `positions` array replacement only happens when rows are added/removed, not on routine PnL updates.
 12. **Instant Cross-Device Sync**: Supabase Realtime pushes `active_positions` change events to all connected sessions within < 1s of a write. The `lastDbWriteRef` post-write blackout is reduced from 10s to 3s to minimize the window where a just-written position could be overwritten by a stale Supabase re-fetch. Standard REST polling fallbacks are completely removed to minimize network egress, and tab visibility listeners pause all active intervals (spot price, heartbeat) when in the background.
 
-### ATM Exit Trading (Simplified Automated Lifecycle)
-
-1. **Self-Contained Scanner**: Runs its own `scanTickers` function internally — does not rely on the external `RatioSpreadScanner` broadcast. Uses identical filtering logic (strike diff, IV diff, premium, ratio deviation, ATM directional filtering).
-2. **Entry Guards**: Same as Paper Trading — 0.5% directional spot scaling, 400-point strike diversification, max 3 positions per type, DB-level count guard.
-3. **Exit Strategy**: Single rule — **100% exit at ATM** (spot crosses buy strike). No partial exits or multi-stage scale-out.
-4. **Rotation**: Lost Top 3 displacement with the same worst-first, conflict-aware, 1-for-1 reservation system. Capped at 3 rotations per cycle.
-5. **Expiry Settlement**: Automatic close 2 minutes before expiry.
-6. **Analytics Aggregation**: On every trade exit, running averages are upserted into bucketed Supabase tables (`atm_exit_qty_0_2_5`, `atm_exit_qty_2_5_5`, `atm_exit_qty_5_7_5`, `atm_exit_qty_7_5_10`) grouped by sell quantity range, strike diff, underlying, and type. Tracks: trade count, average margin, average P&L, average net premium, average fees.
-7. **Always-On**: The algo starts automatically when products and expiry are loaded. The Start/Stop button has been replaced with a static "LIVE ALGO" indicator.
-8. **Separate Persistence**: Uses distinct Supabase tables (`atm_exit_config`, `atm_exit_active_positions`, `atm_exit_trade_history`) to avoid any interference with the Paper Trading engine.
-
-### Performance Monitoring & History (Both Engines)
+### Performance Monitoring & History
 - **Dual KPIs**: Tracks **Today's P&L** (Today's Realized + Current Open) using UTC+12h settlement offset, and **All-Time P&L** (Total Realized + Total Open).
 - **Settlement-Aware Date Filtering**: Trade history uses a 12-hour UTC offset to align with Delta Exchange's settlement cycle. Date navigation with prev/next/today/all controls.
 - **Supabase Persistence**: Automated logging of every entry, partial exit, and full closure for historical auditing.

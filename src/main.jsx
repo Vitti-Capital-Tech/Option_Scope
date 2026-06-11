@@ -4,13 +4,12 @@ import './index.css'
 import App from './App.jsx'
 import RatioSpreadScanner from './RatioSpreadScanner.jsx'
 import PaperTrading from './PaperTrading.jsx'
-import ATMExitTrading from './ATMExitTrading.jsx'
 import { useTabSync } from './useTabSync.js'
 
 function Root() {
   const [page, setPage] = useState(() => {
     const path = window.location.pathname.replace(/^\//, '') || 'charts';
-    return ['charts', 'scanner', 'trading', 'atm-exit'].includes(path) ? path : 'charts';
+    return ['charts', 'scanner', 'trading'].includes(path) ? path : 'charts';
   });
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
 
@@ -29,7 +28,7 @@ function Root() {
   useEffect(() => {
     const handlePopState = () => {
       const path = window.location.pathname.replace(/^\//, '') || 'charts';
-      const validPages = ['charts', 'scanner', 'trading', 'atm-exit'];
+      const validPages = ['charts', 'scanner', 'trading'];
       if (validPages.includes(path)) {
         setPage(path);
       } else {
@@ -61,9 +60,6 @@ function Root() {
       </div>
       <div style={{ display: page === 'trading' ? 'block' : 'none', height: '100%', width: '100%' }}>
         <PaperTrading onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} broadcast={broadcast} />
-      </div>
-      <div style={{ display: page === 'atm-exit' ? 'block' : 'none', height: '100%', width: '100%' }}>
-        <ATMExitTrading onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} broadcast={broadcast} />
       </div>
     </>
   );
