@@ -37,6 +37,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     maxNetPremium: 20,
     minLongDist: 500,
     maxSellQty: 10,
+    atmRatioScaling: false,
+    atmRatioDistanceCall: 1,
+    atmRatioDistancePut: 1,
   }));
   const [isConfigLoaded, setIsConfigLoaded] = useState(false);
   const [isFiltersCollapsed, setIsFiltersCollapsed] = useState(() => window.innerWidth <= 900);
@@ -151,6 +154,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         max_net_premium: newCfg.maxNetPremium,
         min_long_dist: newCfg.minLongDist,
         max_sell_qty: newCfg.maxSellQty,
+        atm_ratio_scaling: newCfg.atmRatioScaling,
+        atm_ratio_distance_call: newCfg.atmRatioDistanceCall,
+        atm_ratio_distance_put: newCfg.atmRatioDistancePut,
         updated_at: new Date().toISOString()
       });
     } catch (e) { }
@@ -181,6 +187,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           maxNetPremium: data.max_net_premium,
           minLongDist: data.min_long_dist || 500,
           maxSellQty: data.max_sell_qty || 10,
+          atmRatioScaling: data.atm_ratio_scaling ?? false,
+          atmRatioDistanceCall: data.atm_ratio_distance_call ?? 1,
+          atmRatioDistancePut: data.atm_ratio_distance_put ?? 1,
         });
         setIsConfigLoaded(true);
       }
@@ -597,10 +606,20 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     CONFIG_SYNC: (payload) => {
       if (payload.config) {
         const updates = {};
-        if (payload.config.underlying !== undefined) updates.underlying = payload.config.underlying;
-        if (payload.config.expiry !== undefined) updates.expiry = payload.config.expiry;
+        const keys = [
+          'underlying', 'expiry', 'minStrikeDiff', 'minIvDiff', 'maxRatioDeviation',
+          'minSellPremium', 'maxNetPremium', 'minLongDist', 'maxSellQty',
+          'atmRatioScaling', 'atmRatioDistanceCall', 'atmRatioDistancePut'
+        ];
+        keys.forEach(k => {
+          if (payload.config[k] !== undefined) updates[k] = payload.config[k];
+        });
         if (Object.keys(updates).length > 0) {
-          setConfig(prev => ({ ...prev, ...updates }));
+          setConfig(prev => {
+            const newCfg = { ...prev, ...updates };
+            saveSupabaseConfig(newCfg);
+            return newCfg;
+          });
         }
       }
     }
@@ -982,6 +1001,27 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                   style={{ width, padding: '4px 8px', fontSize: '13px' }} />
               </div>
             ))}
+            <div key="atmRatioScaling" className="form-group" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <input type="checkbox" id="atmRatioScaling" checked={config.atmRatioScaling ?? false}
+                onChange={e => updateConfig('atmRatioScaling', e.target.checked)} />
+              <label htmlFor="atmRatioScaling" style={{ marginBottom: 0, cursor: 'pointer' }}>ATM Ratio Entry</label>
+            </div>
+            {config.atmRatioScaling && (
+              <>
+                <div key="atmRatioDistanceCall" className="form-group">
+                  <label style={{ marginBottom: 0 }}>Call ATM Dist (pt):</label>
+                  <input type="number" step="0.25" value={config.atmRatioDistanceCall ?? 1}
+                    onChange={e => updateConfig('atmRatioDistanceCall', Number(e.target.value))}
+                    style={{ width: 50, padding: '4px 8px', fontSize: '13px' }} />
+                </div>
+                <div key="atmRatioDistancePut" className="form-group">
+                  <label style={{ marginBottom: 0 }}>Put ATM Dist (pt):</label>
+                  <input type="number" step="0.25" value={config.atmRatioDistancePut ?? 1}
+                    onChange={e => updateConfig('atmRatioDistancePut', Number(e.target.value))}
+                    style={{ width: 50, padding: '4px 8px', fontSize: '13px' }} />
+                </div>
+              </>
+            )}
           </div>
         </div>
         <div className='flex justify-between mt-3! px-10!'>

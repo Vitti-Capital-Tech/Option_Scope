@@ -35,6 +35,9 @@ export async function startPaperTradingEngine() {
     underlying: 'BTC', expiry: '',
     minStrikeDiff: 800, minIvDiff: 5, maxRatioDeviation: 0.25,
     minSellPremium: 10, maxNetPremium: 20, minLongDist: 500, maxSellQty: 10,
+    atmRatioScaling: false,
+    atmRatioDistanceCall: 1,
+    atmRatioDistancePut: 1,
   };
   let products = [];
   let expiries = [];
@@ -65,6 +68,9 @@ export async function startPaperTradingEngine() {
           maxNetPremium: data.max_net_premium,
           minLongDist: data.min_long_dist || 500,
           maxSellQty: data.max_sell_qty || 10,
+          atmRatioScaling: data.atm_ratio_scaling ?? false,
+          atmRatioDistanceCall: data.atm_ratio_distance_call ?? 1,
+          atmRatioDistancePut: data.atm_ratio_distance_put ?? 1,
         };
         log(`Config loaded: ${config.underlying} | Expiry: ${config.expiry || 'auto'}`);
       }
@@ -1043,19 +1049,25 @@ export async function startPaperTradingEngine() {
             ? parseFloat((Math.round((buyIntrinsic / sellIntrinsic) / 0.25) * 0.25).toFixed(2))
             : null;
 
+          let ratioToUse = spread.sellQty;
+          if (config.atmRatioScaling && entryAtmRatio != null) {
+            const dist = spreadType === 'call' ? config.atmRatioDistanceCall : config.atmRatioDistancePut;
+            ratioToUse = Math.max(spread.sellQty, entryAtmRatio - dist);
+          }
+
           const originalLotSize = spread.buyLeg.lotSize || 1;
 
           const sellLotSize = spread.sellLeg.lotSize || originalLotSize;
-          let shortValue = spotPrice * spread.sellQty * sellLotSize;
+          let shortValue = spotPrice * ratioToUse * sellLotSize;
 
           let adjustedLotSize = originalLotSize;
-          let adjustedSellQty = spread.sellQty;
+          let adjustedSellQty = ratioToUse;
           let scale = 1;
 
           if (shortValue >= 200000) {
             scale = 200000 / shortValue;
             adjustedLotSize = Number((originalLotSize * scale).toFixed(2));
-            adjustedSellQty = Number((spread.sellQty * scale).toFixed(2));
+            adjustedSellQty = Number((ratioToUse * scale).toFixed(2));
             shortValue = 200000;
           }
 
@@ -1068,7 +1080,7 @@ export async function startPaperTradingEngine() {
             entrySellAtmPrice: sellIntrinsic,
             maxAtmRatio: entryAtmRatio,
             originalLotSize: spread.buyLeg.lotSize || 1,
-            originalSellQty: spread.sellQty,
+            originalSellQty: ratioToUse,
             initialScaledLotSize: adjustedLotSize
           };
           const sellLegWithIv = { ...spread.sellLeg, entryIv: entrySellIv };

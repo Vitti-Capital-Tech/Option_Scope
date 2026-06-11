@@ -319,7 +319,9 @@ New entries are opened from `uniqueTopSpreads` (the deduplicated, ROI-ranked can
 1. **Expiry Buffer Guard**: Skip if `minutesToExpiry < 5`.
 2. **Strike Uniqueness**: Block if buy or sell strike already active in `remaining` or `newEntries` (same type/underlying).
 3. **Portfolio Cap**: Block if `remaining + newEntries count >= 3` for this type.
-4. **Execution**: `entryBuyPrice = spread.ask`, `entrySellPrice = spread.bid`. Entry IVs captured: `entryBuyIv = ticker.askIv`, `entrySellIv = ticker.bidIv`. Baseline ATM ratio (`entryAtmRatio`) and unscaled lot size (`originalLotSize`) are computed and stored inside the `buy_leg` JSON metadata at entry.
+4. **Execution**: `entryBuyPrice = spread.ask`, `entrySellPrice = spread.bid`. Entry IVs captured: `entryBuyIv = ticker.askIv`, `entrySellIv = ticker.bidIv`. Baseline ATM ratio (`entryAtmRatio`) and unscaled lot size (`originalLotSize`) are computed.
+   - **ATM Ratio Distance Entry**: If `atmRatioScaling` is enabled, the target ratio is computed as `targetRatio = entryAtmRatio - atmRatioDistance` (resolved separately for Call/Put). The entry ratio to use is `ratioToUse = Math.max(spread.sellQty, targetRatio)`. Both long lot size and short quantity are scaled under the 200X leverage limit ($200k cap) using this `ratioToUse`.
+   - The final scaled values are written to `buy_leg` JSON metadata and stored inside Supabase `active_positions`.
 6. **Supabase Insert (with three DB-level guards)**:
    - Count guard: `SELECT id WHERE underlying AND type` — abort if count `>= 3`.
    - Buy strike uniqueness: `SELECT id WHERE buy_strike = X` — abort if exists (`buyConflict`).

@@ -49,7 +49,10 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
       minSellPremium: 10,
       maxNetPremium: 20,
       minLongDist: 500,
-      maxSellQty: 10
+      maxSellQty: 10,
+      atmRatioScaling: false,
+      atmRatioDistanceCall: 1,
+      atmRatioDistancePut: 1
     };
 
     if (saved) {
@@ -539,7 +542,23 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
     },
     CONFIG_SYNC: (payload) => {
       if (payload.config) {
-        // Only extract underlying and expiry from sync to avoid overwriting scanner filters
+        const updates = {};
+        const keys = [
+          'underlying', 'expiry', 'minStrikeDiff', 'minIvDiff', 'maxRatioDeviation',
+          'minSellPremium', 'maxNetPremium', 'minLongDist', 'maxSellQty',
+          'atmRatioScaling', 'atmRatioDistanceCall', 'atmRatioDistancePut'
+        ];
+        keys.forEach(k => {
+          if (payload.config[k] !== undefined) updates[k] = payload.config[k];
+        });
+        if (Object.keys(updates).length > 0) {
+          setConfig(prev => {
+            const newCfg = { ...prev, ...updates };
+            try { localStorage.setItem('vitti_algo_config', JSON.stringify(newCfg)); } catch (e) {}
+            saveSupabaseConfig(newCfg);
+            return newCfg;
+          });
+        }
         if (payload.config.underlying) setUnderlying(payload.config.underlying);
         if (payload.config.expiry) setSelExpiry(payload.config.expiry);
       }
@@ -557,7 +576,10 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
           minSellPremium: data.min_sell_premium ?? config.minSellPremium,
           maxNetPremium: data.max_net_premium ?? config.maxNetPremium,
           minLongDist: data.min_long_dist ?? config.minLongDist,
-          maxSellQty: data.max_sell_qty ?? config.maxSellQty
+          maxSellQty: data.max_sell_qty ?? config.maxSellQty,
+          atmRatioScaling: data.atm_ratio_scaling ?? config.atmRatioScaling,
+          atmRatioDistanceCall: data.atm_ratio_distance_call ?? config.atmRatioDistanceCall,
+          atmRatioDistancePut: data.atm_ratio_distance_put ?? config.atmRatioDistancePut,
         };
         setConfig(newCfg);
         if (data.underlying && data.underlying !== underlying) setUnderlying(data.underlying);
@@ -579,6 +601,9 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
         max_net_premium: newCfg.maxNetPremium,
         min_long_dist: newCfg.minLongDist,
         max_sell_qty: newCfg.maxSellQty,
+        atm_ratio_scaling: newCfg.atmRatioScaling,
+        atm_ratio_distance_call: newCfg.atmRatioDistanceCall,
+        atm_ratio_distance_put: newCfg.atmRatioDistancePut,
         updated_at: new Date().toISOString()
       });
     } catch (e) { }
@@ -839,6 +864,27 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
                 onChange={e => updateConfig('maxSellQty', Number(e.target.value))}
               />
             </div>
+            <div key="atmRatioScaling" className="form-group row-inline" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <input type="checkbox" id="atmRatioScaling" checked={config.atmRatioScaling ?? false}
+                onChange={e => updateConfig('atmRatioScaling', e.target.checked)} />
+              <label htmlFor="atmRatioScaling" style={{ cursor: 'pointer', userSelect: 'none' }}>ATM Ratio Entry</label>
+            </div>
+            {config.atmRatioScaling && (
+              <>
+                <div key="atmRatioDistanceCall" className="form-group row-inline">
+                  <label>Call ATM Dist (pt):</label>
+                  <input type="number" step="0.25" value={config.atmRatioDistanceCall ?? 1}
+                    onChange={e => updateConfig('atmRatioDistanceCall', Number(e.target.value))}
+                  />
+                </div>
+                <div key="atmRatioDistancePut" className="form-group row-inline">
+                  <label>Put ATM Dist (pt):</label>
+                  <input type="number" step="0.25" value={config.atmRatioDistancePut ?? 1}
+                    onChange={e => updateConfig('atmRatioDistancePut', Number(e.target.value))}
+                  />
+                </div>
+              </>
+            )}
           </div>
         </div>
 
