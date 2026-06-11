@@ -344,12 +344,13 @@ New entries are opened from `uniqueTopSpreads` (the deduplicated, ROI-ranked can
 
 A UI-layer only feature — the Supabase database always stores original base values.
 
+- **Scope**: Supported in both the **Paper Trading Dashboard** (`PaperTrading.jsx` active/closed tables and KPIs) and the **Ratio Spread Scanner** (`RatioSpreadScanner.jsx` and `ResultTable.jsx` columns).
 - **Toggle**: `extraCreditMode` boolean.
 - **Inputs**: Separate `extraCreditAmountCall` and `extraCreditAmountPut` dollar amounts, rendered dynamically as Call (`C:$`) and Put (`P:$`) inputs in their respective green (`var(--call)`) and red (`var(--put)`) theme colors when the mode is toggled.
-- **Simulated Sell Qty**: `extraLots = extraCredit / entrySellPrice`, where `extraCredit` is resolved per position or trade depending on its option type (`type === 'call' ? extraCreditAmountCall : extraCreditAmountPut`), rounded to 0.25. The extra quantity is added to the base sell quantity.
+- **Simulated Sell Qty**: `extraLots = extraCredit / entrySellPrice` (or `r.sellPrice`), where `extraCredit` is resolved per position, trade, or candidate spread depending on its option type (`type.toLowerCase() === 'call' ? extraCreditAmountCall : extraCreditAmountPut`), rounded to 0.25. The extra quantity is added to the base sell quantity.
 - **Leverage Scaling**: If the total simulated short value exposure exceeds $200,000, both the simulated Buy Qty (lot size) and Sell Qty are scaled down proportionally (`scale = 200000 / shortValue`) to respect the 200X leverage cap.
-- **Recalculated Metrics**: Unrealized PnL, Realized PnL, ratios, margins, and KPIs all reflect the type-specific simulated quantity and leverage-scaled sizes in real-time across the entire dashboard.
-- **CSV Export**: When simulation is active, the exported CSV includes the simulated values based on the respective Call/Put extra credit amount and leverage-scaled sizes.
+- **Recalculated Metrics**: P&L, ratios, margins, net premiums, and KPIs all reflect the type-specific simulated quantity and leverage-scaled sizes in real-time.
+- **CSV Export / Table Display**: When simulation is active, the exported CSV and the UI tables render the leverage-scaled values.
 
 ### I. KPIs & History
 

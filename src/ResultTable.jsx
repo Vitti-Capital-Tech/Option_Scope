@@ -14,7 +14,10 @@ export default function ResultTable({
   spotPrice,
   lastRefreshed,
   trueAtmStrike,
-  tickerData
+  tickerData,
+  extraCreditMode,
+  extraCreditAmountCall,
+  extraCreditAmountPut
 }) {
   const [expandedStrikes, setExpandedStrikes] = useState({});
 
@@ -158,16 +161,23 @@ export default function ResultTable({
 
                   // Margin calculation matching paper trading leverage tiers
                   const sellLotSize = r.sellLeg.lotSize || lotSize;
-                  let shortValue = currentSpot * r.sellQty * sellLotSize;
+
+                  const extraCredit = type.toLowerCase() === 'call' ? extraCreditAmountCall : extraCreditAmountPut;
+                  const extraQty = extraCreditMode && r.sellPrice > 0
+                    ? (Math.round((extraCredit / r.sellPrice) / 0.25) * 0.25)
+                    : 0;
+                  const totalSellQty = r.sellQty + extraQty;
+
+                  let shortValue = currentSpot * totalSellQty * sellLotSize;
 
                   let adjustedLotSize = lotSize;
-                  let adjustedSellQty = r.sellQty;
+                  let adjustedSellQty = totalSellQty;
                   let scale = 1;
 
                   if (shortValue >= 200000) {
                     scale = 200000 / shortValue;
                     adjustedLotSize = Number((lotSize * scale).toFixed(2));
-                    adjustedSellQty = Number((r.sellQty * scale).toFixed(2));
+                    adjustedSellQty = Number((totalSellQty * scale).toFixed(2));
                     shortValue = 200000;
                   }
 
@@ -175,7 +185,7 @@ export default function ResultTable({
 
                   // Compute P&L scaled to the adjusted lot size
                   const atAtmPnl = hasAtmData
-                    ? ((buyIntrinsic - r.buyPrice) + (r.sellPrice - sellIntrinsic) * r.sellQty) * adjustedLotSize
+                    ? ((buyIntrinsic - r.buyPrice) + (r.sellPrice - sellIntrinsic) * totalSellQty) * adjustedLotSize
                     : null;
 
                   const margin = (r.buyPrice * adjustedLotSize) + (shortValue / leverage);
@@ -187,6 +197,10 @@ export default function ResultTable({
                     ? (Math.round(atmRatio / 0.25) * 0.25).toFixed(2)
                     : '—';
 
+                  const rawNetPremium = extraCreditMode 
+                    ? ((r.sellPrice * totalSellQty) - r.buyPrice) * scale
+                    : r.netPremium;
+
                   return {
                     ...r,
                     buyLeg: {
@@ -196,7 +210,7 @@ export default function ResultTable({
                     sellQty: adjustedSellQty,
                     originalSellQty: r.sellQty,
                     originalLotSize: lotSize,
-                    netPremium: Number(r.netPremium).toFixed(2),
+                    netPremium: Number(rawNetPremium).toFixed(2),
                     buyIntrinsic,
                     sellIntrinsic,
                     atAtmPnl,
@@ -282,8 +296,8 @@ export default function ResultTable({
                         </td>
                         <td style={{ fontWeight: 700 }}>
                           <div>
-                            <span className='scanner-buy'>{bestRow.buyLeg.lotSize}</span>/
-                            <span className='scanner-sell'>{bestRow.sellQty}</span>
+                            <span className='scanner-buy'>{bestRow.buyLeg.lotSize.toFixed(2)}</span>/
+                            <span className='scanner-sell'>{bestRow.sellQty.toFixed(2)}</span>
                           </div>
                           {bestRow.originalSellQty !== undefined && bestRow.originalLotSize !== undefined && (
                             <div style={{ fontSize: '9px', color: 'var(--text-muted)', fontWeight: 'normal', marginTop: 2 }}>
@@ -359,8 +373,8 @@ export default function ResultTable({
                             </td>
                             <td style={{ fontWeight: 700 }}>
                               <div>
-                                <span className='scanner-buy'>{r.buyLeg.lotSize}</span>/
-                                <span className='scanner-sell'>{r.sellQty}</span>
+                                <span className='scanner-buy'>{r.buyLeg.lotSize.toFixed(2)}</span>/
+                                <span className='scanner-sell'>{r.sellQty.toFixed(2)}</span>
                               </div>
                               {r.originalSellQty !== undefined && r.originalLotSize !== undefined && (
                                 <div style={{ fontSize: '9px', color: 'var(--text-muted)', fontWeight: 'normal', marginTop: 2 }}>
