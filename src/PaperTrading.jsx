@@ -1452,7 +1452,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                                 )}
                               </span>
                               <span style={{ fontSize: '10px', color: extraCreditMode ? 'var(--accent)' : 'var(--text-dim)', fontWeight: 600 }}>
-                                {t.buyLeg.lotSize.toFixed(2)}:{displaySellQty.toFixed(2)}
+                                {displayBuyQty.toFixed(2)}:{displaySellQty.toFixed(2)}
                               </span>
                               <span style={{ fontSize: '9px', color: 'var(--text-dim)', opacity: 0.8 }}>
                                 (Orig 1:{displayOrigSellQty.toFixed(2)})
