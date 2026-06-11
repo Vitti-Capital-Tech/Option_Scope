@@ -201,6 +201,8 @@ export default function ResultTable({
                     ? ((r.sellPrice * totalSellQty) - r.buyPrice) * scale
                     : r.netPremium;
 
+                  const isRatioChanged = extraCreditMode && extraQty > 0;
+
                   return {
                     ...r,
                     buyLeg: {
@@ -208,8 +210,9 @@ export default function ResultTable({
                       lotSize: adjustedLotSize
                     },
                     sellQty: adjustedSellQty,
-                    originalSellQty: r.sellQty,
+                    originalSellQty: totalSellQty,
                     originalLotSize: lotSize,
+                    isRatioChanged,
                     netPremium: Number(rawNetPremium).toFixed(2),
                     buyIntrinsic,
                     sellIntrinsic,
@@ -300,7 +303,7 @@ export default function ResultTable({
                             <span className='scanner-sell'>{bestRow.sellQty.toFixed(2)}</span>
                           </div>
                           {bestRow.originalSellQty !== undefined && bestRow.originalLotSize !== undefined && (
-                            <div style={{ fontSize: '9px', color: 'var(--text-muted)', fontWeight: 'normal', marginTop: 2 }}>
+                            <div style={{ fontSize: '9px', color: bestRow.isRatioChanged ? 'var(--accent)' : 'var(--text)', fontWeight: 'normal', marginTop: 2 }}>
                               (1:{(Math.round((bestRow.originalSellQty / bestRow.originalLotSize) * 4) / 4).toFixed(2)})
                             </div>
                           )}
@@ -377,7 +380,7 @@ export default function ResultTable({
                                 <span className='scanner-sell'>{r.sellQty.toFixed(2)}</span>
                               </div>
                               {r.originalSellQty !== undefined && r.originalLotSize !== undefined && (
-                                <div style={{ fontSize: '9px', color: 'var(--text-muted)', fontWeight: 'normal', marginTop: 2 }}>
+                                <div style={{ fontSize: '9px', color: r.isRatioChanged ? 'var(--accent)' : 'var(--text)', fontWeight: 'normal', marginTop: 2 }}>
                                   (1:{(Math.round((r.originalSellQty / r.originalLotSize) * 4) / 4).toFixed(2)})
                                 </div>
                               )}
