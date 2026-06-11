@@ -109,7 +109,7 @@ Browser (React + Vite Dashboard)
    - Captures the exact ATM option prices (`buyIntrinsic`, `sellIntrinsic`) and their ratio (`entryAtmRatio`/`exitAtmRatio`) at entry and exit (full/partial).
    - Stored in the `buyLeg` JSON metadata within the `active_positions` and `trade_history` tables.
    - Dedicated Trade History columns: **Entry ATM Ratio (Prices)** and **Exit ATM Ratio (Prices)**.
-6. **Visual Simulation Mode**: A "What-If" dashboard layer that allows users to simulate the impact of adding custom premium/credit to their strategy visually (including P&L and ratio recalculation) without affecting the database.
+6. **Visual Simulation Mode**: A "What-If" dashboard layer that allows users to simulate the impact of adding custom premium/credit to their strategy visually (including P&L and ratio recalculation) without affecting the database. Toggling "Extra" credit mode displays separate inputs for Call (`C:$`) and Put (`P:$`) extra credits, allowing users to simulate call and put extra premium credits independently.
 7. **Full Portfolio Rotation**: Standard rotation that executes a full exit of the existing position and opens a new position with the improved strike, minimizing complexity and keeping the position architecture fully balanced.
 8. **Expiry**: exit 2 minutes early for stable settlement prices.
 9. **Dynamic Portfolio Rotation**:

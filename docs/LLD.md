@@ -344,10 +344,11 @@ New entries are opened from `uniqueTopSpreads` (the deduplicated, ROI-ranked can
 
 A UI-layer only feature — the Supabase database always stores original base values.
 
-- **Toggle**: `extraCreditMode` boolean. `extraCreditAmount` is a dollar amount.
-- **Simulated Sell Qty**: `extraLots = extraCreditAmount / entrySellPrice`, rounded to 0.25. Added to base sell qty.
-- **Recalculated Metrics**: Unrealized PnL, Realized PnL, ratios, and KPIs all reflect the simulated qty in real-time across the entire dashboard.
-- **CSV Export**: When simulation is active, exported CSV includes simulated values.
+- **Toggle**: `extraCreditMode` boolean.
+- **Inputs**: Separate `extraCreditAmountCall` and `extraCreditAmountPut` dollar amounts, rendered dynamically as Call (`C:$`) and Put (`P:$`) inputs in their respective green (`var(--call)`) and red (`var(--put)`) theme colors when the mode is toggled.
+- **Simulated Sell Qty**: `extraLots = extraCredit / entrySellPrice`, where `extraCredit` is resolved per position or trade depending on its option type (`type === 'call' ? extraCreditAmountCall : extraCreditAmountPut`), rounded to 0.25. The extra quantity is added to the base sell quantity.
+- **Recalculated Metrics**: Unrealized PnL, Realized PnL, ratios, and KPIs all reflect the type-specific simulated quantity in real-time across the entire dashboard.
+- **CSV Export**: When simulation is active, the exported CSV includes the simulated values based on the respective Call/Put extra credit amount.
 
 ### I. KPIs & History
 
