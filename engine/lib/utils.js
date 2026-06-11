@@ -1,6 +1,6 @@
 /**
  * Shared utility functions for the server-side trading engine.
- * Extracted from scannerUtils.js, PaperTrading.jsx, and ATMExitTrading.jsx.
+ * Extracted from scannerUtils.js and PaperTrading.jsx.
  * No browser/React dependencies.
  */
 
@@ -68,7 +68,7 @@ export function pickTopUniqueStrikes(spreads, limit = 3) {
 
 /**
  * O(N²) pair scanner for ratio spread candidates.
- * Identical logic to PaperTrading.jsx scanTickers / ATMExitTrading.jsx scanTickers.
+ * Identical logic to PaperTrading.jsx scanTickers.
  */
 export function scanTickers(tickers, config, spotPrice) {
   const sorted = [...tickers].sort((a, b) => a.strike - b.strike);

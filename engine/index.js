@@ -1,43 +1,30 @@
 /**
  * OptionScope Trading Engine — Main Entry Point
  *
- * Runs both Paper Trading and ATM Exit engines in parallel.
+ * Runs the Paper Trading engine.
  * Handles graceful shutdown on SIGINT/SIGTERM.
  *
  * Usage:
- *   node index.js           # Run both engines
- *   node index.js paper     # Run only Paper Trading engine
- *   node index.js atm       # Run only ATM Exit engine
+ *   node index.js
  */
 import 'dotenv/config';
 import { startPaperTradingEngine } from './paperTradingEngine.js';
-import { startAtmExitEngine } from './atmExitEngine.js';
 import { log, logError } from './lib/utils.js';
-
-const mode = process.argv[2] || 'both';
 
 log('╔═══════════════════════════════════════════════════╗');
 log('║   OptionScope Server-Side Trading Engine          ║');
 log('║   Running 24/7 — No browser required              ║');
-log(`║   Mode: ${mode.toUpperCase().padEnd(42)}║`);
 log('╚═══════════════════════════════════════════════════╝');
 log('');
 
 let paperEngine = null;
-let atmEngine = null;
 
 async function start() {
   try {
-    if (mode === 'both' || mode === 'paper') {
-      paperEngine = await startPaperTradingEngine();
-    }
-
-    if (mode === 'both' || mode === 'atm') {
-      atmEngine = await startAtmExitEngine();
-    }
+    paperEngine = await startPaperTradingEngine();
 
     log('');
-    log('All engines started successfully. Press Ctrl+C to stop.');
+    log('Paper Trading engine started successfully. Press Ctrl+C to stop.');
   } catch (e) {
     logError('Fatal startup error:', e);
     process.exit(1);
@@ -50,7 +37,6 @@ async function shutdown() {
 
   try {
     if (paperEngine) await paperEngine.stop();
-    if (atmEngine) await atmEngine.stop();
   } catch (e) {
     logError('Error during shutdown:', e);
   }
