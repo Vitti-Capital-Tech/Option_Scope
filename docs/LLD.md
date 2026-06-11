@@ -333,17 +333,14 @@ New entries are opened from `uniqueTopSpreads` (the deduplicated, ROI-ranked can
 - **Structural changes** (exits or entries): `setPositions(finalPositions)` — full array replacement.
 - **PnL-only updates** (no exits or entries at minute boundary): `setPositions(prev => prev.map(p => byId.get(p.id) ?? p))` — in-place functional update to prevent table re-mount flash.
 
-### H. Visual Simulation Mode (Extra Credit)
+### H. Visual Simulation Mode (ATM Ratio Scaling)
 
-A UI-layer only feature — the Supabase database always stores original base values.
+The manual, dollar-based visual "Base/Extra" credit simulation has been completely removed from both the scanner and paper trading screens. 
 
-- **Scope**: Supported in both the **Paper Trading Dashboard** (`PaperTrading.jsx` active/closed tables and KPIs) and the **Ratio Spread Scanner** (`RatioSpreadScanner.jsx` and `ResultTable.jsx` columns).
-- **Toggle**: `extraCreditMode` boolean.
-- **Inputs**: Separate `extraCreditAmountCall` and `extraCreditAmountPut` dollar amounts, rendered dynamically as Call (`C:$`) and Put (`P:$`) inputs in their respective green (`var(--call)`) and red (`var(--put)`) theme colors when the mode is toggled.
-- **Simulated Sell Qty**: `extraLots = extraCredit / entrySellPrice` (or `r.sellPrice`), where `extraCredit` is resolved per position, trade, or candidate spread depending on its option type (`type.toLowerCase() === 'call' ? extraCreditAmountCall : extraCreditAmountPut`), rounded to 0.25. The extra quantity is added to the base sell quantity.
-- **Leverage Scaling**: If the total simulated short value exposure exceeds $200,000, both the simulated Buy Qty (lot size) and Sell Qty are scaled down proportionally (`scale = 200000 / shortValue`) to respect the 200X leverage cap.
-- **Recalculated Metrics**: P&L, ratios, margins, net premiums, and KPIs all reflect the type-specific simulated quantity and leverage-scaled sizes in real-time.
-- **CSV Export / Table Display**: When simulation is active, the exported CSV and the UI tables render the leverage-scaled values.
+- **Ratio Spread Scanner Simulation**: Driven directly by the configuration-level ATM Ratio Entry settings (`atmRatioScaling` toggle and `atmRatioDistanceCall` / `atmRatioDistancePut` offsets). When enabled:
+  - The visual scanner (`ResultTable.jsx`) recalculates candidate quantities, margins, net premiums, and projected ATM P&Ls in real-time under the 200X leverage limit ($200k portfolio cap).
+  - Ratios that differ from their default baseline values due to scaling are highlighted in golden text (`var(--accent)`).
+- **Paper Trading Interface**: Does not perform local client-side visual simulation; it renders active position metrics (`sellQty`, `lotSize`, `margin`, `PnL`) as-is from the database. The scaled quantity values are computed and locked directly in Supabase by the backend engine at entry-time.
 
 ### I. KPIs & History
 

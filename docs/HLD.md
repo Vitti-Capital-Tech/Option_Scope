@@ -32,7 +32,7 @@ Browser (React + Vite Dashboard)
 - `PaperTrading.jsx` no longer runs automated logic; they are read-only views showing live database state and a ticking server `engine_heartbeat` countdown.
 - All three modules are always mounted (via `display: none/block`) to preserve state during navigation.
 - Theme toggle is shared across modules.
-- **Synchronization**: State (underlying, expiry, filters) is synchronized across tabs via `BroadcastChannel` and persisted to Supabase for cross-device consistency.
+- **Synchronization**: Core configuration parameters (`underlying`, `atmRatioScaling`, `atmRatioDistanceCall`, `atmRatioDistancePut`) are synchronized across tabs via `BroadcastChannel` and persisted to Supabase for cross-device consistency, while other filters and expiry selections remain independent.
 
 ### 2) Market Data & Connectivity Layer
 
@@ -105,7 +105,7 @@ Browser (React + Vite Dashboard)
    - Captures the exact ATM option prices (`buyIntrinsic`, `sellIntrinsic`) and their ratio (`entryAtmRatio`/`exitAtmRatio`) at entry and exit (full/partial).
    - Stored in the `buyLeg` JSON metadata within the `active_positions` and `trade_history` tables.
    - Dedicated Trade History columns: **Entry ATM Ratio (Prices)** and **Exit ATM Ratio (Prices)**.
-6. **Visual Simulation Mode**: A "What-If" dashboard layer that allows users to simulate the impact of adding custom premium/credit to their strategy visually (including P&L, ratio, and margin recalculations) without affecting the database. Applies to active/closed paper trading positions as well as scanner opportunities. Toggling "Extra" credit mode displays separate inputs for Call (`C:$`) and Put (`P:$`) extra credits. If the simulated short value exposure exceeds $200,000, both the simulated Buy Qty (lot size) and Sell Qty are scaled down proportionally to respect the 200X leverage limit, dynamically recalculating P&L and margins.
+6. **Visual Simulation Mode**: Driven directly by the configuration-level ATM Ratio Entry settings (`atmRatioScaling` toggle and `atmRatioDistanceCall` / `atmRatioDistancePut` offsets). When enabled, the visual scanner (`ResultTable.jsx`) dynamically simulates quantities, margins, net premiums, and projected PnLs under the 200X leverage limit ($200k portfolio cap) in real-time, highlighting shifted candidate ratios in golden text. The manual dollar-based visual "Base/Extra" toggle has been completely removed from both scanner and paper trading screens; Paper Trading renders database metrics as-is.
 7. **Full Portfolio Rotation**: Standard rotation that executes a full exit of the existing position and opens a new position with the improved strike, minimizing complexity and keeping the position architecture fully balanced.
 8. **Expiry**: exit 2 minutes early for stable settlement prices.
 9. **Dynamic Portfolio Rotation**:
