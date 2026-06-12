@@ -584,9 +584,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
   // ── Config ────────────────────────────────────────────────────────────
   const saveSupabaseConfig = useCallback(async (newCfg) => {
-    if (!activeAccountId || !configDbId) return;
+    console.log('[saveSupabaseConfig] triggered with newCfg:', newCfg, 'activeAccountId:', activeAccountId, 'configDbId:', configDbId);
+    if (!activeAccountId || !configDbId) {
+      console.warn('[saveSupabaseConfig] missing activeAccountId or configDbId', { activeAccountId, configDbId });
+      return;
+    }
     try {
-      await supabase.from('paper_trading_config').upsert({
+      const { data, error } = await supabase.from('paper_trading_config').upsert({
         id: configDbId,
         account_id: activeAccountId,
         underlying: newCfg.underlying,
@@ -603,8 +607,15 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         atm_ratio_distance_put: newCfg.atmRatioPctPut,
         days_to_expiry: newCfg.daysToExpiry,
         updated_at: new Date().toISOString()
-      });
-    } catch (e) { }
+      }).select();
+      if (error) {
+        console.error('[saveSupabaseConfig] supabase error:', error);
+      } else {
+        console.log('[saveSupabaseConfig] success:', data);
+      }
+    } catch (e) {
+      console.error('[saveSupabaseConfig] exception:', e);
+    }
   }, [activeAccountId, configDbId]);
 
   const FILTER_KEYS = [
@@ -622,13 +633,18 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   ];
 
   const updateConfig = (keyOrObj, value) => {
+    const updates = typeof keyOrObj === 'object' ? keyOrObj : { [keyOrObj]: value };
     setConfig(c => {
-      const updates = typeof keyOrObj === 'object' ? keyOrObj : { [keyOrObj]: value };
       const newConfig = { ...c, ...updates };
-      tabBroadcast('CONFIG_SYNC', { config: newConfig });
-      saveSupabaseConfig(newConfig);
-      setDraftConfig(dc => dc ? { ...dc, ...updates } : newConfig);
+      setTimeout(() => {
+        tabBroadcast('CONFIG_SYNC', { config: newConfig });
+        saveSupabaseConfig(newConfig);
+      }, 0);
       return newConfig;
+    });
+    setDraftConfig(dc => {
+      if (dc) return { ...dc, ...updates };
+      return { ...config, ...updates };
     });
   };
 
@@ -672,11 +688,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const handleResetFilters = () => {
     setConfig(c => {
       const resetConfig = { ...c, ...DEFAULT_FILTERS };
-      setDraftConfig(resetConfig);
-      saveSupabaseConfig(resetConfig);
-      tabBroadcast('CONFIG_SYNC', { config: resetConfig });
+      setTimeout(() => {
+        saveSupabaseConfig(resetConfig);
+        tabBroadcast('CONFIG_SYNC', { config: resetConfig });
+      }, 0);
       return resetConfig;
     });
+    setDraftConfig(prev => prev ? { ...prev, ...DEFAULT_FILTERS } : { ...config, ...DEFAULT_FILTERS });
   };
 
   const fetchSupabaseConfig = useCallback(async () => {
@@ -1153,29 +1171,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const { broadcast: tabBroadcast } = useTabListener({
     CONFIG_SYNC: (payload) => {
       if (payload.config) {
-        const updates = {};
-        const keys = [
-          'underlying',
-          'atmRatioScaling', 'atmRatioPctCall', 'atmRatioPctPut'
-        ];
-        keys.forEach(k => {
-          if (payload.config[k] !== undefined) updates[k] = payload.config[k];
-        });
-        if (Object.keys(updates).length > 0) {
-          setConfig(prev => {
-            const newCfg = { ...prev, ...updates };
-            saveSupabaseConfig(newCfg);
-            setDraftConfig(dc => {
-              if (!dc) return newCfg;
-              const newDc = { ...dc };
-              Object.keys(updates).forEach(k => {
-                newDc[k] = updates[k];
-              });
-              return newDc;
-            });
-            return newCfg;
-          });
-        }
+        setConfig(payload.config);
+        setDraftConfig(payload.config);
       }
     },
     ACCOUNTS_SYNC: (payload) => {
