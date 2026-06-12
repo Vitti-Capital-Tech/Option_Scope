@@ -328,6 +328,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const flushTimerRef = useRef(null);
   const lastDbWriteRef = useRef(0);
   const latestSpotPriceRef = useRef(null);
+  const lastDaysToExpiryRef = useRef(null);
 
   const flushTickerBuffer = useCallback(() => {
     flushTimerRef.current = null;
@@ -345,44 +346,31 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       setProducts(prods);
       const exps = getExpiries(prods);
       setExpiries(exps);
-      if (isConfigLoaded && exps.length) {
-        let isExpiryInvalid = !selExpiry || !exps.includes(selExpiry);
-        if (!isExpiryInvalid && selExpiry) {
-          const daysRemaining = (new Date(selExpiry).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
-          if (daysRemaining < (config.daysToExpiry || 0)) {
-            isExpiryInvalid = true;
-          }
-        }
-        if (isExpiryInvalid) {
-          let selectedExpiry = null;
-          for (const exp of exps) {
-            const daysRemaining = (new Date(exp).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
-            if (daysRemaining >= (config.daysToExpiry || 0)) {
-              selectedExpiry = exp;
-              break;
-            }
-          }
-          if (!selectedExpiry) {
-            selectedExpiry = exps[0];
-          }
-          updateConfig('expiry', selectedExpiry);
-        }
-      }
     } catch (e) { console.error('Failed to load products:', e); }
-  }, [underlying, selExpiry, isConfigLoaded, config.daysToExpiry]);
+  }, [underlying]);
 
   // Validate expiry when config and products are loaded
   useEffect(() => {
     if (isConfigLoaded && products.length > 0) {
       const exps = getExpiries(products);
       if (exps.length) {
+        // Did daysToExpiry filter actually change?
+        const daysFilterChanged = lastDaysToExpiryRef.current !== null && lastDaysToExpiryRef.current !== config.daysToExpiry;
+        lastDaysToExpiryRef.current = config.daysToExpiry;
+
         let isExpiryInvalid = !selExpiry || !exps.includes(selExpiry);
-        if (!isExpiryInvalid && selExpiry) {
+        
+        // If the daysToExpiry filter changed, we ALWAYS want to select the nearest matching expiry
+        if (daysFilterChanged) {
+          isExpiryInvalid = true;
+        } else if (!isExpiryInvalid && selExpiry) {
+          // If the filter did not change, we only invalidate the expiry if it violates the minimum days requirement
           const daysRemaining = (new Date(selExpiry).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
           if (daysRemaining < (config.daysToExpiry || 0)) {
             isExpiryInvalid = true;
           }
         }
+
         if (isExpiryInvalid) {
           let selectedExpiry = null;
           for (const exp of exps) {
@@ -395,9 +383,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           if (!selectedExpiry) {
             selectedExpiry = exps[0];
           }
-          updateConfig('expiry', selectedExpiry);
+          if (selectedExpiry !== selExpiry) {
+            updateConfig('expiry', selectedExpiry);
+          }
         }
       }
+    } else if (isConfigLoaded) {
+      lastDaysToExpiryRef.current = config.daysToExpiry;
     }
   }, [isConfigLoaded, products, selExpiry, config.daysToExpiry]);
 
