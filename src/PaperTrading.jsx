@@ -461,11 +461,31 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       ? data.ownerId
       : (session?.user?.id ?? null);
 
+    const defaultConfigVal = {
+      minStrikeDiff: data.minStrikeDiff,
+      minIvDiff: data.minIvDiff,
+      maxRatioDeviation: data.maxRatioDeviation,
+      minSellPremium: data.minSellPremium,
+      maxNetPremium: data.maxNetPremium,
+      minLongDist: data.minLongDist,
+      maxSellQty: data.maxSellQty,
+      atmRatioScaling: data.atmRatioScaling,
+      atmRatioPctCall: data.atmRatioPctCall,
+      atmRatioPctPut: data.atmRatioPctPut,
+      daysToExpiry: data.daysToExpiry,
+    };
+
     setIsCreatingAccount(true);
     try {
       const { data: accList, error: accErr } = await supabase
         .from('paper_trading_accounts')
-        .insert([{ name: trimmedName, balance, is_active: true, user_id: ownerUserId }])
+        .insert([{
+          name: trimmedName,
+          balance,
+          is_active: true,
+          user_id: ownerUserId,
+          default_config: defaultConfigVal
+        }])
         .select('*');
       
       if (accErr) {
@@ -676,24 +696,33 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     });
   };
 
-  const DEFAULT_FILTERS = {
-    minStrikeDiff: 800,
-    minIvDiff: 5,
-    maxRatioDeviation: 0.25,
-    minSellPremium: 10,
-    maxNetPremium: 20,
-    minLongDist: 500,
-    maxSellQty: 10,
-    atmRatioScaling: false,
-    atmRatioPctCall: 50,
-    atmRatioPctPut: 50,
-    daysToExpiry: 0,
-  };
+  const activeAccount = React.useMemo(() => {
+    return accounts.find(a => a.id === activeAccountId) || null;
+  }, [accounts, activeAccountId]);
+
+  const DEFAULT_FILTERS = React.useMemo(() => {
+    if (activeAccount && activeAccount.default_config) {
+      return activeAccount.default_config;
+    }
+    return {
+      minStrikeDiff: 800,
+      minIvDiff: 5,
+      maxRatioDeviation: 0.25,
+      minSellPremium: 10,
+      maxNetPremium: 20,
+      minLongDist: 500,
+      maxSellQty: 10,
+      atmRatioScaling: false,
+      atmRatioPctCall: 50,
+      atmRatioPctPut: 50,
+      daysToExpiry: 0,
+    };
+  }, [activeAccount]);
 
   const isDefaultConfig = React.useMemo(() => {
     if (!config) return true;
     return Object.keys(DEFAULT_FILTERS).every(k => config[k] === DEFAULT_FILTERS[k]);
-  }, [config]);
+  }, [config, DEFAULT_FILTERS]);
 
   const isFiltersDirty = React.useMemo(() => {
     if (!draftConfig || !config) return false;

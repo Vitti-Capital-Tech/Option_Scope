@@ -507,9 +507,10 @@ When you change filters in the UI and click **Apply**:
 
 When you click **Reset**:
 
-1. The UI computes factory defaults (merged with the current asset/expiry)
-2. Immediately upserts those defaults to Supabase
-3. The same Realtime listener picks it up and reloads the config
+1. The UI loads the account-specific defaults stored in the active account's `default_config` JSONB column. (If the account is a legacy account without custom defaults, it falls back to system factory defaults).
+2. It merges these default parameters with the current asset/expiry.
+3. Immediately upserts those defaults to Supabase.
+4. The same Realtime listener picks it up and reloads the config.
 
 ### Tab Synchronization
 - Changes are synchronized across browser tabs in real-time using a local broadcast channel (`CONFIG_SYNC` event).
