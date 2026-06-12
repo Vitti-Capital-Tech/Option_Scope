@@ -54,15 +54,15 @@ Each account runs in complete isolation — its own WebSocket, its own positions
 
 ## Engine Startup
 
-**File**: [paperTradingEngine.js:L1314-L1390](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L1314-L1390)
+**File**: [paperTradingEngine.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js)
 
 When an engine starts for an account, it runs these steps in order:
 
 | Step | What Happens | Why |
 |------|-------------|-----|
-| 1 | **Load config** from `paper_trading_config` table | Gets filter settings (min strike diff, IV diff, etc.) |
+| 1 | **Load config** from `paper_trading_config` table (with retries) | Gets filter settings. Retries up to 10 times (500ms delay) to avoid database duplicate key race conditions during concurrent frontend config inserts. |
 | 2 | **Load products** from Delta Exchange API | Gets the list of all available option contracts |
-| 3 | **Auto-select expiry** if not set or expired | Picks the nearest valid expiry date |
+| 3 | **Auto-select expiry** if not set or expired | Picks the nearest valid expiry date meeting the `daysToExpiry` threshold |
 | 4 | **Fetch spot price** | Gets current BTC/ETH price |
 | 5 | **Load active positions** from Supabase | Restores any positions from a previous run |
 | 6 | **Backfill tickers** via REST API | Pre-loads option prices so we don't start with empty data |
@@ -71,15 +71,15 @@ When an engine starts for an account, it runs these steps in order:
 | 9 | **Subscribe to config changes** | Listens for when you change filters in the UI |
 
 > [!NOTE]
-> If no config row exists for this account, the engine **auto-creates one** with default values (BTC, min strike diff 800, etc.).
+> If no config row exists for this account after the 10-retry loop, the engine **auto-creates one** with default values (BTC, min strike diff 800, etc.).
 
 ---
 
 ## The Heartbeat (1-Second Loop)
 
-**File**: [paperTradingEngine.js:L1356-L1388](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L1356-L1388)
+**File**: [paperTradingEngine.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js)
 
-After startup, four timers run continuously:
+After startup, four timers run continuously, all wrapped inside **try-catch** blocks to prevent a failure in one timer from blocking subsequent ticks or other accounts:
 
 | Timer | Interval | Purpose |
 |-------|----------|---------|
@@ -99,14 +99,16 @@ This means:
 - **Exits** are checked every **1 second** (fast reaction to price moves)
 - **New entries** are checked every **1 minute** (no need to rush entries)
 
-### Pre-Flight Checks
+### Pre-Flight Checks & Auto-Healing
 
 Before any evaluation runs, these guards must pass:
 
-1. **`isEvaluating` flag** — prevents overlapping evaluations (if the previous one hasn't finished, skip)
-2. **Spot price exists** — can't evaluate without knowing the underlying price
-3. **Spot not stale** — if the spot price hasn't been updated in **120 seconds**, skip entirely (the data might be unreliable)
-4. **Tickers exist** — at least one option price must be in the cache
+1. **`isEvaluating` mutex check** — prevents overlapping evaluations. If the previous run is still active, it skips.
+   - *Hang Timeout Guard*: If `isEvaluating` has been active for more than **60 seconds** (e.g. database query is hung indefinitely), the engine logs a fatal error and crashes the process (`process.exit(1)`). This allows PM2 to auto-restart the engine container cleanly.
+2. **Spot price exists** — can't evaluate without knowing the underlying price.
+3. **Spot not stale** — if the spot price hasn't been updated in **120 seconds**, the evaluation is skipped.
+   - *Stale WebSocket Auto-Healing*: When the spot price remains stale for >120 seconds, the engine automatically forces a WebSocket reconnection (`startWebSocket()`) to heal silent TCP drops common on VPS nodes.
+4. **Tickers exist** — at least one option price must be in the cache.
 
 ---
 
@@ -147,6 +149,7 @@ Every candidate pair must pass **all** of these filters to be considered:
 | 6 | **Ratio Deviation** | `maxRatioDeviation` (default: 0.25) | The premium ratio and delta notional ratio must not deviate by more than 25% |
 | 7 | **Max Sell Qty** | `maxSellQty` (default: 10) | The sell quantity (ratio) must not exceed 10 |
 | 8 | **Max Net Premium** | `maxNetPremium` (default: $20) | The net premium debit cannot exceed $20 (i.e., `sellQty × sellPrice - buyPrice ≥ -$20`) |
+| 9 | **Days to Expiry** | `daysToExpiry` (default: 0) | The option expiry date must be at least this many days away from the current time. Options closer to expiry are rejected. |
 
 ### How the Sell Quantity (Ratio) Is Calculated
 
@@ -177,7 +180,7 @@ This simulates: _What's the profit if spot moves to the buy strike?_ Only spread
 
 ## How Entries Are Placed
 
-**File**: [paperTradingEngine.js:L1024-L1256](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L1024-L1256)
+**File**: [paperTradingEngine.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js)
 
 Once we have the filtered, ranked list of candidate spreads (`uniqueTopSpreads`), the engine tries to open new positions. Each candidate must pass these checks **in order**:
 
@@ -187,25 +190,31 @@ If less than 5 minutes until expiry → SKIP
 ```
 No point entering a trade that's about to expire.
 
-### Guard 2: Buy Strike Conflict (Local)
+### Guard 2: Days to Expiry Guard
+```
+If daysRemaining < daysToExpiry → SKIP
+```
+Requires the option's expiry to be at least `daysToExpiry` days away from the current time.
+
+### Guard 3: Buy Strike Conflict (Local)
 ```
 If any existing or newly-staged position already has this buy strike → SKIP
 ```
 Prevents duplicate buy strikes within the same option type.
 
-### Guard 3: Sell Strike Conflict (Local)
+### Guard 4: Sell Strike Conflict (Local)
 ```
 If any existing or newly-staged position already has this sell strike → SKIP
 ```
 Prevents duplicate sell strikes within the same option type.
 
-### Guard 4: Portfolio Cap (Local)
+### Guard 5: Portfolio Cap (Local)
 ```
 If there are already 3 positions of this type (call/put) → SKIP
 ```
 Maximum **3 calls + 3 puts** per account.
 
-### Guard 5: ATM Ratio Scaling (Optional)
+### Guard 6: ATM Ratio Scaling (Optional)
 If `atmRatioScaling` is enabled in config:
 ```
 liveAtmRatio = ATM buy price / ATM sell price
@@ -214,40 +223,40 @@ adjustedRatio = baseRatio + (pct% × diff)
 ```
 This lets you capture a percentage (e.g. 50%) of the extra ratio available at ATM strikes.
 
-### Guard 6: $200K Short Value Cap
+### Guard 7: $200K Short Value Cap
 ```
 shortValue = spotPrice × sellQty × sellLotSize
 If shortValue ≥ $200,000 → scale down both lot size and sell qty proportionally
 ```
 Ensures no single position has more than $200K notional exposure on the short side.
 
-### Guard 7: Margin Cap
+### Guard 8: Margin Cap
 ```
 If totalDeployedMargin + candidateMargin > accountBalance → SKIP
 ```
 Can't exceed your account balance.
 
-### Guard 8: DB-Level Count Guard
+### Guard 9: DB-Level Count Guard
 ```
 Query: SELECT count(*) FROM active_positions WHERE type = X AND account_id = Y
 If count ≥ 3 → BLOCK
 ```
 Double-check against the **database** (not just local memory) to prevent race conditions.
 
-### Guard 9: DB-Level Buy Strike Uniqueness
+### Guard 10: DB-Level Buy Strike Uniqueness
 ```
 Query: SELECT * FROM active_positions WHERE buy_strike = X AND type = Y AND account_id = Z
 If exists → BLOCK
 ```
 
-### Guard 10: DB-Level Sell Strike Uniqueness
+### Guard 11: DB-Level Sell Strike Uniqueness
 ```
 Query: SELECT * FROM active_positions WHERE sell_strike = X AND type = Y AND account_id = Z
 If exists → BLOCK
 ```
 
 > [!IMPORTANT]
-> Guards 8-10 are **database-level guards** that act as a second safety net. Even if the in-memory checks pass, the DB checks can still block an entry. This prevents duplicate positions if two evaluation cycles overlap or if the engine restarts.
+> Guards 9-11 are **database-level guards** that act as a second safety net. Even if the in-memory checks pass, the DB checks can still block an entry. This prevents duplicate positions if two evaluation cycles overlap or if the engine restarts.
 
 ### Entry Pricing
 
@@ -346,7 +355,7 @@ STOP:   Can't go below 0.50 (50% floor of initial scaled lot size)
 1. A **partial exit trade** is recorded in `trade_history` with `is_partial = true`
 2. The buy leg's `lotSize` is reduced by `deltaBuyQty` (25% of initial)
 3. The `checkpointPnl` and `checkpointAtmPnl` are **reset** to current values (this raises the bar for the next scaling step)
-4. Fees are apportioned proportionally
+4. **Consistent Fee Calculations**: Fees are calculated using standard parameter order where the long leg's scaled quantity/lots are passed as the 3rd parameter (`qty`) and the contract's unit lot size is passed as the 4th parameter (`lotSize`) of `calculateFee()`.
 5. The process **repeats in a while loop** — multiple scaling steps can happen in a single evaluation if the price moved a lot
 
 ### Key Fields
@@ -446,31 +455,36 @@ Here's every safety guard in one table:
 
 | Guard | Where | Purpose |
 |-------|-------|---------|
-| `isEvaluating` mutex | L239 | Prevents overlapping evaluation cycles |
-| Spot staleness (120s) | L243 | Skips evaluation if spot price is stale |
-| Quote freshness (120s) | utils.js L98-102 | Rejects spread candidates with stale WS quotes |
-| Backfill rejection (timestamp = 0) | utils.js L100 | Rejects REST-backfilled data that has no real timestamp |
-| Min strike diff | utils.js L90 | Minimum distance between buy and sell strikes |
-| Min IV diff | utils.js L108 | Minimum implied volatility gap |
-| Min long distance | utils.js L111 | Buy leg must be far enough from spot |
-| Min sell premium | utils.js L113 | Sell leg must have meaningful premium |
-| Ratio deviation | utils.js L122 | Premium ratio must roughly match delta notional ratio |
-| Max sell qty | utils.js L126 | Caps the short side quantity |
-| Max net premium debit | utils.js L130 | Limits how much net debit is acceptable |
-| ATM PnL ≥ $50 | L353 | Only enters spreads that would profit $50+ at ATM |
-| Portfolio cap (3 per type) | L1067 | Max 3 call + 3 put positions per account |
-| $200K short value cap | L265-270, L1108 | Scales down lot sizes if short notional ≥ $200K |
-| Margin cap | L1137 | Can't exceed account balance |
-| DB count guard | L1200-1207 | Database-level check: max 3 per type |
-| DB buy strike uniqueness | L1212-1218 | Database-level: no duplicate buy strikes |
-| DB sell strike uniqueness | L1222-1228 | Database-level: no duplicate sell strikes |
-| Expiry buffer (5 min) | L1036 | Won't enter if less than 5 minutes to expiry |
-| Scaling floor (50%) | L475 | Buy lot size can never go below 50% of initial |
-| Scaling ATM ratio guard | L513 | Live ATM ratio must justify the lot reduction |
-| Leg swap no-debit | L730 | Leg swaps that cost money are rejected |
-| Spot step (0.5%) | L738-746 | Rotation/swap requires spot to have moved ≥ 0.5% |
-| Rotation budget (3/cycle) | L406, L837 | Max 3 rotations per type per evaluation cycle |
-| `lastDbWrite` cooldown (3s) | L117 | Skips position refetch for 3s after a DB write |
+| `isEvaluating` mutex | `paperTradingEngine.js` | Prevents overlapping evaluation cycles |
+| Spot staleness (120s) | `paperTradingEngine.js` | Skips evaluation if spot price is stale |
+| WebSocket stale spot reconnect | `paperTradingEngine.js` | Automatically forces WebSocket reconnect (`startWebSocket()`) if spot remains stale > 120s |
+| Evaluation hang guard (60s) | `paperTradingEngine.js` | Logs fatal error and crashes process (`exit(1)`) if evaluation is hung > 60s, triggering PM2 container recovery |
+| Config fetch retry loop (10x) | `paperTradingEngine.js` | Retries config load up to 10 times with 500ms delay to prevent duplicate key database insert collisions |
+| Quote freshness (120s) | `utils.js` | Rejects spread candidates with stale WS quotes |
+| Backfill rejection (timestamp = 0) | `utils.js` | Rejects REST-backfilled data that has no real timestamp |
+| Min strike diff | `utils.js` | Minimum distance between buy and sell strikes |
+| Min IV diff | `utils.js` | Minimum implied volatility gap |
+| Min long distance | `utils.js` | Buy leg must be far enough from spot |
+| Min sell premium | `utils.js` | Sell leg must have meaningful premium |
+| Ratio deviation | `utils.js` | Premium ratio must roughly match delta notional ratio |
+| Max sell qty | `utils.js` | Caps the short side quantity |
+| Max net premium debit | `utils.js` | Limits how much net debit is acceptable |
+| ATM PnL ≥ $50 | `paperTradingEngine.js` | Only enters spreads that would profit $50+ at ATM |
+| Days to Expiry | `paperTradingEngine.js` | Rejects candidates whose expiry is fewer than `daysToExpiry` days away |
+| Portfolio cap (3 per type) | `paperTradingEngine.js` | Max 3 call + 3 put positions per account |
+| $200K short value cap | `paperTradingEngine.js` | Scales down lot sizes if short notional ≥ $200K |
+| Margin cap | `paperTradingEngine.js` | Can't exceed account balance |
+| DB count guard | `paperTradingEngine.js` | Database-level check: max 3 per type |
+| DB buy strike uniqueness | `paperTradingEngine.js` | Database-level: no duplicate buy strikes |
+| DB sell strike uniqueness | `paperTradingEngine.js` | Database-level: no duplicate sell strikes |
+| Expiry buffer (5 min) | `paperTradingEngine.js` | Won't enter if less than 5 minutes to expiry |
+| Scaling floor (50%) | `paperTradingEngine.js` | Buy lot size can never go below 50% of initial |
+| Scaling ATM ratio guard | `paperTradingEngine.js` | Live ATM ratio must justify the lot reduction |
+| Leg swap no-debit | `paperTradingEngine.js` | Leg swaps that cost money are rejected |
+| Spot step (0.5%) | `paperTradingEngine.js` | Rotation/swap requires spot to have moved ≥ 0.5% |
+| Rotation budget (3/cycle) | `paperTradingEngine.js` | Max 3 rotations per type per evaluation cycle |
+| `lastDbWrite` cooldown (3s) | `paperTradingEngine.js` | Skips position refetch for 3s after a DB write |
+| Heartbeat timer delete | `paperTradingEngine.js` / `heartbeat.js` | Clears interval timer and deletes the DB row on account deletion to prevent zombie row resurrection |
 
 ---
 
@@ -496,6 +510,10 @@ When you click **Reset**:
 1. The UI computes factory defaults (merged with the current asset/expiry)
 2. Immediately upserts those defaults to Supabase
 3. The same Realtime listener picks it up and reloads the config
+
+### Tab Synchronization
+- Changes are synchronized across browser tabs in real-time using a local broadcast channel (`CONFIG_SYNC` event).
+- To prevent database write loop collisions, receiving tabs update only their local React state buffers and do **not** trigger redundant database writes, preserving the correct, newly applied configuration.
 
 ---
 
@@ -580,3 +598,5 @@ flowchart TD
 | Spot step threshold | 0.5% | Min spot movement for rotation/swap |
 | ATM strike tolerance (BTC) | 500 points | Fallback tolerance for finding ATM prices |
 | ATM strike tolerance (ETH) | 50 points | Fallback tolerance for finding ATM prices |
+| Evaluation hang limit | 60 seconds | Max duration evaluation can run before process is restarted |
+| Days to Expiry | User configured | Minimum days to expiry required for new spreads |
