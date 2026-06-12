@@ -72,6 +72,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     atmRatioPctCall: 50,
     atmRatioPctPut: 50,
   }));
+  const [draftConfig, setDraftConfig] = useState(() => ({ ...config }));
   const [isConfigLoaded, setIsConfigLoaded] = useState(false);
   const [isFiltersCollapsed, setIsFiltersCollapsed] = useState(() => window.innerWidth <= 900);
 
@@ -361,13 +362,73 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     } catch (e) { }
   }, [activeAccountId, configDbId]);
 
+  const FILTER_KEYS = [
+    'minStrikeDiff',
+    'minIvDiff',
+    'maxRatioDeviation',
+    'minSellPremium',
+    'maxNetPremium',
+    'minLongDist',
+    'maxSellQty',
+    'atmRatioScaling',
+    'atmRatioPctCall',
+    'atmRatioPctPut'
+  ];
+
   const updateConfig = (keyOrObj, value) => {
     setConfig(c => {
       const updates = typeof keyOrObj === 'object' ? keyOrObj : { [keyOrObj]: value };
       const newConfig = { ...c, ...updates };
       tabBroadcast('CONFIG_SYNC', { config: newConfig });
       saveSupabaseConfig(newConfig);
+      setDraftConfig(dc => dc ? { ...dc, ...updates } : newConfig);
       return newConfig;
+    });
+  };
+
+  const updateDraftConfig = (keyOrObj, value) => {
+    setDraftConfig(dc => {
+      const updates = typeof keyOrObj === 'object' ? keyOrObj : { [keyOrObj]: value };
+      return { ...dc, ...updates };
+    });
+  };
+
+  const DEFAULT_FILTERS = {
+    minStrikeDiff: 800,
+    minIvDiff: 5,
+    maxRatioDeviation: 0.25,
+    minSellPremium: 10,
+    maxNetPremium: 20,
+    minLongDist: 500,
+    maxSellQty: 10,
+    atmRatioScaling: false,
+    atmRatioPctCall: 50,
+    atmRatioPctPut: 50,
+  };
+
+  const isDefaultConfig = React.useMemo(() => {
+    if (!config) return true;
+    return Object.keys(DEFAULT_FILTERS).every(k => config[k] === DEFAULT_FILTERS[k]);
+  }, [config]);
+
+  const isFiltersDirty = React.useMemo(() => {
+    if (!draftConfig || !config) return false;
+    return FILTER_KEYS.some(k => draftConfig[k] !== config[k]);
+  }, [draftConfig, config]);
+
+  const handleApplyFilters = () => {
+    if (draftConfig) {
+      updateConfig(draftConfig);
+    }
+  };
+
+  const handleResetFilters = () => {
+    setConfig(c => {
+      const resetConfig = { ...c, ...DEFAULT_FILTERS };
+      setDraftConfig(resetConfig);
+      saveSupabaseConfig(resetConfig);
+      tabBroadcast('CONFIG_SYNC', { config: resetConfig });
+      return resetConfig;
     });
   };
 
@@ -405,7 +466,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       }
 
       if (data && !error) {
-        setConfig({
+        const loadedConfig = {
           underlying: data.underlying || 'BTC',
           expiry: data.expiry || '',
           minStrikeDiff: data.min_strike_diff,
@@ -418,7 +479,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           atmRatioScaling: data.atm_ratio_scaling ?? false,
           atmRatioPctCall: data.atm_ratio_distance_call ?? 50,
           atmRatioPctPut: data.atm_ratio_distance_put ?? 50,
-        });
+        };
+        setConfig(loadedConfig);
+        setDraftConfig(loadedConfig);
         setConfigDbId(data.id);
         setIsConfigLoaded(true);
       }
@@ -853,6 +916,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           setConfig(prev => {
             const newCfg = { ...prev, ...updates };
             saveSupabaseConfig(newCfg);
+            setDraftConfig(dc => {
+              if (!dc) return newCfg;
+              const newDc = { ...dc };
+              Object.keys(updates).forEach(k => {
+                newDc[k] = updates[k];
+              });
+              return newDc;
+            });
             return newCfg;
           });
         }
@@ -1269,32 +1340,52 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             ].map(({ label, key, width, step }) => (
               <div key={key} className="form-group">
                 <label style={{ marginBottom: 0 }}>{label}</label>
-                <input type="number" step={step} value={config[key] ?? ''}
-                  onChange={e => updateConfig(key, Number(e.target.value))}
+                <input type="number" step={step} value={draftConfig?.[key] ?? ''}
+                  onChange={e => updateDraftConfig(key, Number(e.target.value))}
                   style={{ width, padding: '4px 8px', fontSize: '13px' }} />
               </div>
             ))}
             <div key="atmRatioScaling" className="form-group" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <input type="checkbox" id="atmRatioScaling" checked={config.atmRatioScaling ?? false}
-                onChange={e => updateConfig('atmRatioScaling', e.target.checked)} />
+              <input type="checkbox" id="atmRatioScaling" checked={draftConfig?.atmRatioScaling ?? false}
+                onChange={e => updateDraftConfig('atmRatioScaling', e.target.checked)} />
               <label htmlFor="atmRatioScaling" style={{ marginBottom: 0, cursor: 'pointer' }}>ATM Ratio Entry</label>
             </div>
-            {config.atmRatioScaling && (
+            {draftConfig?.atmRatioScaling && (
               <>
                 <div key="atmRatioPctCall" className="form-group">
                   <label style={{ marginBottom: 0 }}>Call ATM Pct (%):</label>
-                  <input type="number" step="1" value={config.atmRatioPctCall ?? 50}
-                    onChange={e => updateConfig('atmRatioPctCall', Number(e.target.value))}
+                  <input type="number" step="1" value={draftConfig.atmRatioPctCall ?? 50}
+                    onChange={e => updateDraftConfig('atmRatioPctCall', Number(e.target.value))}
                     style={{ width: 50, padding: '4px 8px', fontSize: '13px' }} />
                 </div>
                 <div key="atmRatioPctPut" className="form-group">
                   <label style={{ marginBottom: 0 }}>Put ATM Pct (%):</label>
-                  <input type="number" step="1" value={config.atmRatioPctPut ?? 50}
-                    onChange={e => updateConfig('atmRatioPctPut', Number(e.target.value))}
+                  <input type="number" step="1" value={draftConfig.atmRatioPctPut ?? 50}
+                    onChange={e => updateDraftConfig('atmRatioPctPut', Number(e.target.value))}
                     style={{ width: 50, padding: '4px 8px', fontSize: '13px' }} />
                 </div>
               </>
             )}
+            
+            {/* Apply & Reset Buttons */}
+            <div className="pt-filter-actions">
+              <button 
+                type="button"
+                className={`pt-btn-filter pt-btn-apply ${isFiltersDirty ? 'active' : ''}`}
+                onClick={handleApplyFilters} 
+                disabled={!isFiltersDirty}
+              >
+                Apply
+              </button>
+              <button 
+                type="button"
+                className="pt-btn-filter pt-btn-reset"
+                onClick={handleResetFilters} 
+                disabled={isDefaultConfig}
+              >
+                Reset
+              </button>
+            </div>
           </div>
         </div>
         <div className='flex justify-between mt-3! px-10!'>

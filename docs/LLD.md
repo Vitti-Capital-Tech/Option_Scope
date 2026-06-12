@@ -10,8 +10,8 @@ This document is the authoritative implementation reference for every module, en
 |---|---|
 | `main.jsx` | Root bootstrap and routing shell. Mounts all 4 modules simultaneously using `display: none/block` to preserve state across navigation. Owns the shared `page` and `theme` state and the `BroadcastChannel` sync instance. |
 | `App.jsx` | Interactive charts, greeks tracking, alert manager, SMA overlay, and support/resistance drawing tools. |
-| `RatioSpreadScanner.jsx` | Standalone option-chain scanner. Computes premium-to-delta-notional ratio deviation pairs, publishes top-3 results via `BroadcastChannel` and `localStorage`. |
-| `PaperTrading.jsx` | React UI Dashboard for Paper Trading. Reads `active_positions`, `trade_history`, and heartbeat from Supabase. |
+| `RatioSpreadScanner.jsx` | Standalone option-chain scanner. Computes premium-to-delta-notional ratio deviation pairs, publishes top-3 results via `BroadcastChannel` and `localStorage`. Configuration is managed locally in `localStorage` independent of Paper Trading accounts. |
+| `PaperTrading.jsx` | React UI Dashboard for Paper Trading. Reads `active_positions`, `trade_history`, and heartbeat from Supabase. Connects to multi-account creation/management modals and controls configuration updates via a local draft buffer (Apply/Reset buttons). |
 | `engine/paperTradingEngine.js` | Headless Node.js engine. Handles entries, full ATM exits, rotation, IV tracking, fee calculations, and Supabase persistence. |
 | `ResultTable.jsx` | Reusable grouped table renderer for ratio spread candidates. |
 | `api.js` | Network abstraction: Delta REST calls, `createTickerStream` (WS with auto-reconnect), `createWS` (raw WS), `getTickers` (REST backfill). |
@@ -109,7 +109,7 @@ The workspace uses a single `BroadcastChannel` named `option-scope-sync` to sync
 |---|---|---|---|
 | `THEME_CHANGE` | Any tab → All | `{ theme }` | Applies light/dark theme to all tabs |
 | `SCANNER_TOP_SPREADS_SYNC` | Scanner → PaperTrading | `{ underlying, expiry, callTop3, putTop3, timestamp }` | Delivers live scanner results to the Paper Trading engine |
-| `CONFIG_SYNC` | PaperTrading → Scanner | `{ underlying, expiry, config }` | Propagates filter/expiry changes from Paper Trading to Scanner |
+| `CONFIG_SYNC` | PaperTrading → Scanner | `{ underlying, expiry, config }` | Propagates filter/expiry changes (such as underlying, expiry, `atmRatioScaling`, `atmRatioPctCall`, `atmRatioPctPut`) from Paper Trading to Scanner |
 | `ACCOUNTS_SYNC` | Any tab → All | `{ accounts }` | Syncs the updated accounts list instantly to keep all dropdown selectors updated |
 
 ### `localStorage` Persistence
@@ -131,6 +131,9 @@ The Scanner also writes the top-3 results to `localStorage` under the key `vitti
 | `maxNetPremium` | 20 | Maximum net premium (debit cap): spreads with `netPremium > maxNetPremium` are filtered out |
 | `minLongDist` | 500 | Minimum spot distance (pts) the buy strike must be from current spot |
 | `maxSellQty` | 10 | Maximum allowed sell quantity (ratio cap) |
+| `atmRatioScaling` | `false` | Whether to scale quantity based on ATM ratio |
+| `atmRatioPctCall` | `50` | Scale percentage for Call option scaling |
+| `atmRatioPctPut` | `50` | Scale percentage for Put option scaling |
 
 ### Market Ingestion Flow
 
@@ -351,7 +354,7 @@ New entries are opened from `uniqueTopSpreads` (the deduplicated, ROI-ranked can
 2. **Strike Uniqueness**: Block if buy or sell strike already active in `remaining` or `newEntries` (same type/underlying).
 3. **Portfolio Cap**: Block if `remaining + newEntries count >= 3` for this type.
 4. **Execution**: `entryBuyPrice = spread.ask`, `entrySellPrice = spread.bid`. Entry IVs captured: `entryBuyIv = ticker.askIv`, `entrySellIv = ticker.bidIv`. Baseline ATM ratio (`entryAtmRatio`) and unscaled lot size (`originalLotSize`) are computed.
-   - **ATM Ratio Distance Entry**: If `atmRatioScaling` is enabled, the target ratio is computed as `targetRatio = entryAtmRatio - atmRatioDistance` (resolved separately for Call/Put). The entry ratio to use is `ratioToUse = Math.max(spread.sellQty, targetRatio)`. Both long lot size and short quantity are scaled under the 200X leverage limit ($200k cap) using this `ratioToUse`.
+   - **ATM Ratio Entry Scaling**: If `atmRatioScaling` is enabled, the target ratio is scaled using a percentage offset: `targetRatio = originalRatio + (pct / 100) * (atmRatioVal - originalRatio)`, where `pct` is `atmRatioPctCall`/`atmRatioPctPut` and `atmRatioVal` is the live ATM ratio rounded to 0.25. The entry ratio to use is `ratioToUse = Math.max(spread.sellQty, Math.round(targetRatio / 0.25) * 0.25)`. Both long lot size and short quantity are scaled under the 200X leverage limit ($200k cap) using this `ratioToUse`.
    - The final scaled values are written to `buy_leg` JSON metadata and stored inside Supabase `active_positions`.
 6. **Supabase Insert (with three DB-level guards)**:
    - Count guard: `SELECT id WHERE underlying AND type` — abort if count `>= 3`.
@@ -368,7 +371,7 @@ New entries are opened from `uniqueTopSpreads` (the deduplicated, ROI-ranked can
 
 The manual, dollar-based visual "Base/Extra" credit simulation has been completely removed from both the scanner and paper trading screens. 
 
-- **Ratio Spread Scanner Simulation**: Driven directly by the configuration-level ATM Ratio Entry settings (`atmRatioScaling` toggle and `atmRatioDistanceCall` / `atmRatioDistancePut` offsets). When enabled:
+- **Ratio Spread Scanner Simulation**: Driven directly by the configuration-level ATM Ratio Entry settings (`atmRatioScaling` toggle and `atmRatioPctCall` / `atmRatioPctPut` offsets). When enabled:
   - The visual scanner (`ResultTable.jsx`) recalculates candidate quantities, margins, net premiums, and projected ATM P&Ls in real-time under the 200X leverage limit ($200k portfolio cap).
   - Ratios that differ from their default baseline values due to scaling are highlighted in golden text (`var(--accent)`).
 - **Paper Trading Interface**: Does not perform local client-side visual simulation; it renders active position metrics (`sellQty`, `lotSize`, `margin`, `PnL`) as-is from the database. The scaled quantity values are computed and locked directly in Supabase by the backend engine at entry-time.
@@ -497,3 +500,22 @@ On first spot price arrival, `backfillMargins` queries all `active_positions` fr
     - Performs an optimistic local state update to `accounts` for immediate visual responsiveness.
     - Updates both name and balance in a single database update query against `paper_trading_accounts`.
     - Refreshes account list using `fetchAccounts()` to sync changes globally, then closes the modal.
+
+---
+
+## 11) Paper Trading Filter State Buffering (Apply & Reset)
+
+To prevent continuous writes to Supabase during filter updates, editing filter values in `PaperTrading.jsx` is buffered in a local React draft state.
+
+### 1. State Management
+- `draftConfig`: A copy of the configuration currently active in the UI inputs.
+- `updateDraftConfig(keyOrObj, value)`: Modifies the `draftConfig` object without changing `config`.
+- `FILTER_KEYS`: List of filter properties that are buffered (`minStrikeDiff`, `minIvDiff`, `maxRatioDeviation`, `minSellPremium`, `maxNetPremium`, `minLongDist`, `maxSellQty`, `atmRatioScaling`, `atmRatioPctCall`, `atmRatioPctPut`).
+
+### 2. Button Enablement & Actions
+- **Apply Button**:
+  - Bound to `isFiltersDirty` selector which checks if any properties in `FILTER_KEYS` differ between `draftConfig` and `config`.
+  - When clicked, calls `handleApplyFilters` which updates `config` state, writes the configuration to Supabase, and broadcasts `CONFIG_SYNC` to synchronize tabs.
+- **Reset Button**:
+  - Bound to `isDefaultConfig` selector which checks if all properties in `DEFAULT_FILTERS` match the active `config`.
+  - When clicked, calls `handleResetFilters` which restores filters in the state to system defaults, saves them to Supabase immediately, and broadcasts `CONFIG_SYNC` across tabs.
