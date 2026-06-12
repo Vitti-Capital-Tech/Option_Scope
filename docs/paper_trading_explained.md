@@ -1,0 +1,582 @@
+# Paper Trading Engine — Complete Logic Explained
+
+This document explains **every** logic and condition in the Paper Trading engine in the simplest terms possible, from startup to shutdown.
+
+---
+
+## Table of Contents
+
+1. [The Big Picture](#the-big-picture)
+2. [Multi-Account Supervisor](#multi-account-supervisor)
+3. [Engine Startup (Boot Sequence)](#engine-startup)
+4. [The Heartbeat (1-Second Loop)](#the-heartbeat)
+5. [How Spreads Are Found (Scanning)](#how-spreads-are-found)
+6. [Entry Filters (What Makes a Good Spread)](#entry-filters)
+7. [How Entries Are Placed](#how-entries-are-placed)
+8. [Exit Priority Tree](#exit-priority-tree)
+9. [Partial Exit / Scaling Logic](#partial-exit--scaling-logic)
+10. [Leg Swap (In-Place Upgrade)](#leg-swap)
+11. [Standard Rotation (Full Replacement)](#standard-rotation)
+12. [Safety Guards Summary](#safety-guards-summary)
+13. [Config Synchronization](#config-synchronization)
+
+---
+
+## The Big Picture
+
+Think of the engine as a **robot trader** that runs 24/7 on a server. It:
+
+1. Watches live Bitcoin/Ethereum option prices via WebSocket
+2. Every **1 second**, checks if any existing positions need to be exited or scaled
+3. Every **1 minute**, also looks for new positions to enter
+4. Writes everything to a Supabase database so the UI dashboard can display it in real time
+
+The strategy is a **ratio spread** — you buy 1 option (the long/buy leg) and sell multiple options at a different strike (the short/sell leg). The goal is to collect more premium from selling than you pay for buying.
+
+---
+
+## Multi-Account Supervisor
+
+**File**: [paperTradingEngine.js:L1414-L1500](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L1414-L1500)
+
+The entry point is `startPaperTradingEngine()`. It acts like a **manager** that:
+
+1. Fetches all active accounts from `paper_trading_accounts` table
+2. Starts an **independent engine loop** for each account
+3. Listens for account changes in real-time:
+   - **New account added** → starts a new engine
+   - **Account deactivated** → stops its engine
+   - **Account updated** (e.g. balance change) → updates the running engine's state
+
+Each account runs in complete isolation — its own WebSocket, its own positions, its own config.
+
+---
+
+## Engine Startup
+
+**File**: [paperTradingEngine.js:L1314-L1390](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L1314-L1390)
+
+When an engine starts for an account, it runs these steps in order:
+
+| Step | What Happens | Why |
+|------|-------------|-----|
+| 1 | **Load config** from `paper_trading_config` table | Gets filter settings (min strike diff, IV diff, etc.) |
+| 2 | **Load products** from Delta Exchange API | Gets the list of all available option contracts |
+| 3 | **Auto-select expiry** if not set or expired | Picks the nearest valid expiry date |
+| 4 | **Fetch spot price** | Gets current BTC/ETH price |
+| 5 | **Load active positions** from Supabase | Restores any positions from a previous run |
+| 6 | **Backfill tickers** via REST API | Pre-loads option prices so we don't start with empty data |
+| 7 | **Start WebSocket** | Connects to Delta Exchange for real-time price streaming |
+| 8 | **Start heartbeat** | Writes a "I'm alive" signal to the DB every few seconds |
+| 9 | **Subscribe to config changes** | Listens for when you change filters in the UI |
+
+> [!NOTE]
+> If no config row exists for this account, the engine **auto-creates one** with default values (BTC, min strike diff 800, etc.).
+
+---
+
+## The Heartbeat (1-Second Loop)
+
+**File**: [paperTradingEngine.js:L1356-L1388](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L1356-L1388)
+
+After startup, four timers run continuously:
+
+| Timer | Interval | Purpose |
+|-------|----------|---------|
+| **Evaluation loop** | Every 1 second | The core brain — evaluates exits and entries |
+| **Spot price poll** | Every 10 seconds | Updates BTC/ETH spot price via REST API |
+| **Product refresh** | Every 5 minutes | Refreshes the list of available option contracts |
+| **Positions sync** | Every 30 seconds | Re-fetches positions from DB as a safety fallback |
+
+### The Evaluation Loop Decision
+
+Every 1 second, the engine asks: **"Has a new minute started since my last full evaluation?"**
+
+- **Yes** → Run a **full evaluation** (check exits + scan for new entries)
+- **No** → Run an **exit-only evaluation** (only check exits, no new entries)
+
+This means:
+- **Exits** are checked every **1 second** (fast reaction to price moves)
+- **New entries** are checked every **1 minute** (no need to rush entries)
+
+### Pre-Flight Checks
+
+Before any evaluation runs, these guards must pass:
+
+1. **`isEvaluating` flag** — prevents overlapping evaluations (if the previous one hasn't finished, skip)
+2. **Spot price exists** — can't evaluate without knowing the underlying price
+3. **Spot not stale** — if the spot price hasn't been updated in **120 seconds**, skip entirely (the data might be unreliable)
+4. **Tickers exist** — at least one option price must be in the cache
+
+---
+
+## How Spreads Are Found (Scanning)
+
+**File**: [utils.js:L73-L147](file:///c:/Users/ASUS/Documents/Option_Scope/engine/lib/utils.js#L73-L147)
+
+The `scanTickers()` function is the **spread finder**. It works like this:
+
+### Step 1: Split options into calls and puts
+
+- **Call tickers** = all calls with strikes **at or above** ATM (At The Money)
+- **Put tickers** = all puts with strikes **at or below** ATM
+
+> [!TIP]
+> ATM = the strike price closest to the current spot price. If BTC is at $105,000, the ATM strike might be $105,000.
+
+### Step 2: O(N²) pair scan
+
+For each option type, the scanner tries **every possible pair** of options and checks if they form a valid spread. It sorts all tickers by strike price, then pairs each one with every other one.
+
+For **calls**: the lower-strike option is the buy leg, the higher-strike is the sell leg.
+For **puts**: the higher-strike option is the buy leg, the lower-strike is the sell leg.
+
+---
+
+## Entry Filters (What Makes a Good Spread)
+
+Every candidate pair must pass **all** of these filters to be considered:
+
+| # | Filter | Config Key | What It Means |
+|---|--------|-----------|---------------|
+| 1 | **Strike Difference** | `minStrikeDiff` (default: 800) | The two strikes must be at least 800 points apart |
+| 2 | **Fresh Quotes** | — (hardcoded 120s) | Both the buy Ask and sell Bid prices must have been updated via WebSocket within the last **120 seconds**. REST-backfilled data (timestamp = 0) is rejected |
+| 3 | **IV Difference** | `minIvDiff` (default: 5) | The implied volatility difference between the two options must be ≥ 5% |
+| 4 | **Min Long Distance** | `minLongDist` (default: 500) | The buy leg's strike must be at least 500 points away from spot price |
+| 5 | **Min Sell Premium** | `minSellPremium` (default: $10) | The sell leg's bid price must be at least $10 |
+| 6 | **Ratio Deviation** | `maxRatioDeviation` (default: 0.25) | The premium ratio and delta notional ratio must not deviate by more than 25% |
+| 7 | **Max Sell Qty** | `maxSellQty` (default: 10) | The sell quantity (ratio) must not exceed 10 |
+| 8 | **Max Net Premium** | `maxNetPremium` (default: $20) | The net premium debit cannot exceed $20 (i.e., `sellQty × sellPrice - buyPrice ≥ -$20`) |
+
+### How the Sell Quantity (Ratio) Is Calculated
+
+```
+rawQty = buyDeltaNotional / sellDeltaNotional
+sellQty = round to nearest 0.25, minimum 1
+```
+
+This gives a **delta-neutral** ratio. If the buy leg has 3× the delta notional of the sell leg, you'd sell ~3 contracts.
+
+### After Scanning: ATM PnL Filter
+
+**File**: [paperTradingEngine.js:L315-L360](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L315-L360)
+
+After `scanTickers` produces candidates, each one gets an **ATM PnL check**:
+
+> "If we entered this spread now and the price immediately moved to ATM, would we make at least $50?"
+
+This simulates: _What's the profit if spot moves to the buy strike?_ Only spreads with ATM PnL ≥ $50 survive.
+
+### Deduplication & Ranking
+
+1. Group by buy strike — if multiple spreads share the same buy strike, keep only the one with the **highest ROI**
+2. Sort by **distance to ATM** (closest first)
+3. Take top **10 calls + 10 puts** maximum
+
+---
+
+## How Entries Are Placed
+
+**File**: [paperTradingEngine.js:L1024-L1256](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L1024-L1256)
+
+Once we have the filtered, ranked list of candidate spreads (`uniqueTopSpreads`), the engine tries to open new positions. Each candidate must pass these checks **in order**:
+
+### Guard 1: Expiry Buffer
+```
+If less than 5 minutes until expiry → SKIP
+```
+No point entering a trade that's about to expire.
+
+### Guard 2: Buy Strike Conflict (Local)
+```
+If any existing or newly-staged position already has this buy strike → SKIP
+```
+Prevents duplicate buy strikes within the same option type.
+
+### Guard 3: Sell Strike Conflict (Local)
+```
+If any existing or newly-staged position already has this sell strike → SKIP
+```
+Prevents duplicate sell strikes within the same option type.
+
+### Guard 4: Portfolio Cap (Local)
+```
+If there are already 3 positions of this type (call/put) → SKIP
+```
+Maximum **3 calls + 3 puts** per account.
+
+### Guard 5: ATM Ratio Scaling (Optional)
+If `atmRatioScaling` is enabled in config:
+```
+liveAtmRatio = ATM buy price / ATM sell price
+diff = max(0, liveAtmRatio - baseRatio)
+adjustedRatio = baseRatio + (pct% × diff)
+```
+This lets you capture a percentage (e.g. 50%) of the extra ratio available at ATM strikes.
+
+### Guard 6: $200K Short Value Cap
+```
+shortValue = spotPrice × sellQty × sellLotSize
+If shortValue ≥ $200,000 → scale down both lot size and sell qty proportionally
+```
+Ensures no single position has more than $200K notional exposure on the short side.
+
+### Guard 7: Margin Cap
+```
+If totalDeployedMargin + candidateMargin > accountBalance → SKIP
+```
+Can't exceed your account balance.
+
+### Guard 8: DB-Level Count Guard
+```
+Query: SELECT count(*) FROM active_positions WHERE type = X AND account_id = Y
+If count ≥ 3 → BLOCK
+```
+Double-check against the **database** (not just local memory) to prevent race conditions.
+
+### Guard 9: DB-Level Buy Strike Uniqueness
+```
+Query: SELECT * FROM active_positions WHERE buy_strike = X AND type = Y AND account_id = Z
+If exists → BLOCK
+```
+
+### Guard 10: DB-Level Sell Strike Uniqueness
+```
+Query: SELECT * FROM active_positions WHERE sell_strike = X AND type = Y AND account_id = Z
+If exists → BLOCK
+```
+
+> [!IMPORTANT]
+> Guards 8-10 are **database-level guards** that act as a second safety net. Even if the in-memory checks pass, the DB checks can still block an entry. This prevents duplicate positions if two evaluation cycles overlap or if the engine restarts.
+
+### Entry Pricing
+
+- **Buy price** = the live **Ask** (you're buying, so you pay the asking price)
+- **Sell price** = the live **Bid** (you're selling, so you receive the bid price)
+
+This is **execution-realistic** — no cheating with mid-prices.
+
+---
+
+## Exit Priority Tree
+
+**File**: [paperTradingEngine.js:L420-L1022](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L420-L1022)
+
+When evaluating exits, positions are processed in a specific order: **worst-first** (farthest from ATM). This ensures we exit the least valuable positions before the best ones.
+
+For each position, the engine walks through this **priority tree** from top to bottom. The first matching condition triggers the exit:
+
+```
+┌─────────────────────────────────────────────┐
+│         For each position (worst-first):     │
+│                                              │
+│  1. Data gap? (no live quotes)               │
+│     → SKIP (keep position, can't evaluate)   │
+│                                              │
+│  2. Partial Exit / Scaling?                  │
+│     → Scale down buy leg if profitable       │
+│     (does NOT exit the position)             │
+│                                              │
+│  3. PRIORITY 2: Expiry?                      │
+│     → EXIT if ≤ 2 minutes to expiry          │
+│                                              │
+│  4. PRIORITY 4: Leg Swap available?          │
+│     → EXIT + re-enter with better buy leg    │
+│                                              │
+│  5. PRIORITY 4: Standard Rotation?           │
+│     → EXIT if not in Top 3 + better exists   │
+│                                              │
+│  6. PRIORITY 3: ATM reached?                 │
+│     → EXIT if spot crosses buy strike        │
+│                                              │
+│  7. None of the above                        │
+│     → HOLD (keep position)                   │
+└─────────────────────────────────────────────┘
+```
+
+> [!NOTE]
+> The priority numbering (2, 3, 4) comes from the code comments. Priority 1 was removed (time-based exit). The check order in code is: Scaling → Expiry → Rotation/LegSwap → ATM.
+
+### Exit: Expiry Settlement
+
+```
+If current time ≥ expiry time - 2 minutes → EXIT
+```
+
+We exit **2 minutes early** to avoid settlement mechanics. If a position somehow wasn't exited and it's been more than **10 minutes past expiry**, it's treated as a "zombie" and force-exited with the expiry time as the recorded exit time.
+
+### Exit: ATM Reached
+
+```
+For CALLS: if spotPrice ≥ buyStrike → EXIT
+For PUTS:  if spotPrice ≤ buyStrike → EXIT
+```
+
+When the spot price reaches or crosses your buy leg's strike, the position has hit its maximum theoretical profit zone. Time to lock it in.
+
+---
+
+## Partial Exit / Scaling Logic
+
+**File**: [paperTradingEngine.js:L439-L661](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L439-L661)
+
+This is the most complex part. Think of it as **gradually taking profit** by reducing the buy leg's lot size in steps while keeping the short leg untouched.
+
+### The Concept
+
+Imagine you entered with a lot size of 1.0 on the buy leg. As the position becomes more profitable, the engine **shaves off 25% of the initial lot size** at each step:
+
+```
+Start:  lotSize = 1.00
+Step 1: lotSize = 0.75  (shaved off 0.25)
+Step 2: lotSize = 0.50  (shaved off another 0.25)
+STOP:   Can't go below 0.50 (50% floor of initial scaled lot size)
+```
+
+### Three Conditions Must ALL Be True to Scale
+
+| Condition | Formula | Meaning |
+|-----------|---------|---------|
+| **PnL threshold** | `currentGrossPnl ≥ checkpointPnl + (checkpointAtmPnl × 25%)` | The position's gross profit must exceed the last checkpoint plus 25% of the ATM P&L |
+| **Floor limit** | `hypotheticalLotSize ≥ floorLimit (50% of initial)` | Can't reduce below 50% of the initial scaled lot size |
+| **ATM ratio guard** | `liveAtmRatio ≥ recalculatedRatio + 1` | The live ATM ratio must be at least 1 higher than what the ratio would become after scaling |
+
+### What Happens When It Scales
+
+1. A **partial exit trade** is recorded in `trade_history` with `is_partial = true`
+2. The buy leg's `lotSize` is reduced by `deltaBuyQty` (25% of initial)
+3. The `checkpointPnl` and `checkpointAtmPnl` are **reset** to current values (this raises the bar for the next scaling step)
+4. Fees are apportioned proportionally
+5. The process **repeats in a while loop** — multiple scaling steps can happen in a single evaluation if the price moved a lot
+
+### Key Fields
+
+| Field | Meaning |
+|-------|---------|
+| `originalLotSize` | The lot size before any `$200K` cap scaling was applied |
+| `initialScaledLotSize` | The lot size after the `$200K` cap at entry (this is the "100%" baseline) |
+| `lastCheckpointPnl` | The gross PnL at the last scaling event |
+| `lastCheckpointAtmPnl` | The ATM PnL at the last scaling event |
+| `accumulatedSellPnl` | ⚠️ Misleading DB column name — actually stores accumulated **buy leg** partial exit PnL |
+
+---
+
+## Leg Swap
+
+**File**: [paperTradingEngine.js:L708-L763](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L708-L763)
+
+A leg swap is an **in-place upgrade** of the buy leg while keeping the sell leg the same.
+
+### When Does It Happen?
+
+A leg swap fires when a **better buy strike** is available at the **same sell strike**:
+
+```
+Current position: BUY 108000 / SELL 110000 (Call)
+Better candidate: BUY 106000 / SELL 110000 (Call)  ← closer to ATM = better
+→ Leg Swap: replace buy 108000 with buy 106000
+```
+
+### Leg Swap Conditions (ALL must pass)
+
+| # | Condition | Meaning |
+|---|-----------|---------|
+| 1 | Same sell strike | The candidate's sell leg must match the existing position's sell strike exactly |
+| 2 | Better buy strike | For calls: new strike < old strike. For puts: new strike > old strike (closer to ATM) |
+| 3 | No conflicts | New buy strike isn't used by any other active position |
+| 4 | **No net debit** | `netPremiumSwap ≥ 0` — the swap must not cost money. Formula: `(deltaQty × sellPrice) - (newBuyPrice - oldBuyBid)` |
+| 5 | **Spot step valid** | Spot must have moved at least 0.5% from the entry spot price (rounded to nearest 100) |
+
+### What "No Net Debit" Means
+
+```
+netPremiumSwap = (change in sell qty × sell price) - (new buy ask - current buy bid)
+```
+
+- If positive → you **receive** money in the swap (good)
+- If zero → break-even swap (acceptable)
+- If negative → you **pay** money to swap (REJECTED)
+
+### Leg Swap Execution
+
+When a leg swap fires:
+
+1. The **old buy leg** is "exited" → recorded in `trade_history` (PnL is only the buy leg's profit)
+2. The **sell leg stays untouched** (no exit fee on the sell side)
+3. The position is **updated in-place** in `active_positions` with the new buy leg
+4. If the sell quantity changes (due to different delta notional ratios), the sell entry price is **weighted-averaged**
+
+---
+
+## Standard Rotation
+
+**File**: [paperTradingEngine.js:L764-L820](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L764-L820)
+
+A standard rotation is a **full replacement** — both legs are exited and a new spread is entered.
+
+### When Does It Happen?
+
+Only when **all** of these are true:
+
+1. The position is **NOT in the Top 3** ranked spreads for its type
+2. A better target exists (closer to ATM, no strike conflicts)
+3. **Rotation budget available**: at least 3 active positions of this type exist, and fewer than 3 rotations have happened this cycle
+4. The spot step guard passes (0.5% movement from entry)
+5. If the target happens to share the same sell strike, the net premium swap must be ≥ 0
+
+### Rotation Budget
+
+```
+MAX_ROTATIONS_PER_CYCLE = 3
+
+Can rotate? = (active positions of this type ≥ 3) AND (rotations this cycle < 3)
+```
+
+This prevents the engine from churning through all positions in a single minute. At most **3 calls and 3 puts** can rotate per evaluation cycle.
+
+### What "Not in Top 3" Means
+
+After scanning and ranking all candidate spreads by distance-to-ATM, the engine takes the **top 3 by type** (3 calls, 3 puts). If a position's buy strike appears in this top-3 list, it's **protected** from rotation. If not, it's eligible to be replaced.
+
+---
+
+## Safety Guards Summary
+
+Here's every safety guard in one table:
+
+| Guard | Where | Purpose |
+|-------|-------|---------|
+| `isEvaluating` mutex | L239 | Prevents overlapping evaluation cycles |
+| Spot staleness (120s) | L243 | Skips evaluation if spot price is stale |
+| Quote freshness (120s) | utils.js L98-102 | Rejects spread candidates with stale WS quotes |
+| Backfill rejection (timestamp = 0) | utils.js L100 | Rejects REST-backfilled data that has no real timestamp |
+| Min strike diff | utils.js L90 | Minimum distance between buy and sell strikes |
+| Min IV diff | utils.js L108 | Minimum implied volatility gap |
+| Min long distance | utils.js L111 | Buy leg must be far enough from spot |
+| Min sell premium | utils.js L113 | Sell leg must have meaningful premium |
+| Ratio deviation | utils.js L122 | Premium ratio must roughly match delta notional ratio |
+| Max sell qty | utils.js L126 | Caps the short side quantity |
+| Max net premium debit | utils.js L130 | Limits how much net debit is acceptable |
+| ATM PnL ≥ $50 | L353 | Only enters spreads that would profit $50+ at ATM |
+| Portfolio cap (3 per type) | L1067 | Max 3 call + 3 put positions per account |
+| $200K short value cap | L265-270, L1108 | Scales down lot sizes if short notional ≥ $200K |
+| Margin cap | L1137 | Can't exceed account balance |
+| DB count guard | L1200-1207 | Database-level check: max 3 per type |
+| DB buy strike uniqueness | L1212-1218 | Database-level: no duplicate buy strikes |
+| DB sell strike uniqueness | L1222-1228 | Database-level: no duplicate sell strikes |
+| Expiry buffer (5 min) | L1036 | Won't enter if less than 5 minutes to expiry |
+| Scaling floor (50%) | L475 | Buy lot size can never go below 50% of initial |
+| Scaling ATM ratio guard | L513 | Live ATM ratio must justify the lot reduction |
+| Leg swap no-debit | L730 | Leg swaps that cost money are rejected |
+| Spot step (0.5%) | L738-746 | Rotation/swap requires spot to have moved ≥ 0.5% |
+| Rotation budget (3/cycle) | L406, L837 | Max 3 rotations per type per evaluation cycle |
+| `lastDbWrite` cooldown (3s) | L117 | Skips position refetch for 3s after a DB write |
+
+---
+
+## Config Synchronization
+
+**File**: [paperTradingEngine.js:L1279-L1312](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L1279-L1312)
+
+When you change filters in the UI and click **Apply**:
+
+1. The UI writes the new config to `paper_trading_config` in Supabase
+2. Supabase Realtime fires a `postgres_changes` event
+3. The engine's `subscribeConfigChanges` listener catches it
+4. It re-reads the config from the DB
+5. If the **underlying or expiry changed**, it also:
+   - Refreshes products
+   - Re-fetches positions
+   - Clears the ticker cache
+   - Restarts the WebSocket with new symbols
+   - Backfills tickers for the new symbols
+
+When you click **Reset**:
+
+1. The UI computes factory defaults (merged with the current asset/expiry)
+2. Immediately upserts those defaults to Supabase
+3. The same Realtime listener picks it up and reloads the config
+
+---
+
+## Lifecycle Flow Diagram
+
+```mermaid
+flowchart TD
+    A["Supervisor starts"] --> B["Fetch all active accounts"]
+    B --> C["For each account: start engine"]
+    C --> D["Load config from DB"]
+    D --> E["Load products & auto-select expiry"]
+    E --> F["Fetch spot price"]
+    F --> G["Load active positions"]
+    G --> H["Backfill tickers via REST"]
+    H --> I["Start WebSocket"]
+    I --> J["Start heartbeat"]
+    J --> K["Subscribe to config changes"]
+    K --> L["1-second evaluation loop begins"]
+    
+    L --> M{"New minute?"}
+    M -->|Yes| N["Full eval: exits + entries"]
+    M -->|No| O["Exit-only eval"]
+    
+    N --> P["Scan & filter spreads"]
+    P --> Q["ATM PnL filter >= $50"]
+    Q --> R["Deduplicate & rank"]
+    R --> S["Process positions worst-first"]
+    
+    O --> S
+    
+    S --> T{"Scaling conditions met?"}
+    T -->|Yes| U["Partial exit: reduce buy lot 25%"]
+    T -->|No| V{"Expiry <= 2 min?"}
+    
+    V -->|Yes| W["EXIT: Expiry settlement"]
+    V -->|No| X{"Leg swap available?"}
+    
+    X -->|Yes| Y["EXIT + re-enter with new buy leg"]
+    X -->|No| Z{"Lost Top 3 + better target?"}
+    
+    Z -->|Yes| AA{"Rotation budget available?"}
+    AA -->|Yes| AB["EXIT: Standard rotation"]
+    AA -->|No| AC["HOLD"]
+    Z -->|No| AD{"Spot >= buy strike?"}
+    
+    AD -->|Yes| AE["EXIT: ATM reached"]
+    AD -->|No| AC
+    
+    W --> AF["Write to trade_history + delete from active_positions"]
+    AB --> AF
+    AE --> AF
+    Y --> AG["Write to trade_history + update active_positions in-place"]
+    
+    AF --> AH["Process new entries with all guards"]
+    AG --> AH
+    AC --> AH
+    AH --> AI["Update heartbeat"]
+    AI --> L
+```
+
+---
+
+## Quick Reference: Key Numbers
+
+| Constant | Value | Meaning |
+|----------|-------|---------|
+| Evaluation interval | 1 second | How often the main loop runs |
+| Entry scan interval | 1 minute | How often new entries are considered |
+| Spot poll interval | 10 seconds | How often spot price is fetched via REST |
+| Product refresh | 5 minutes | How often the option chain is refreshed |
+| Position sync | 30 seconds | How often positions are re-fetched from DB |
+| Spot staleness limit | 120 seconds | Max age of spot price before skipping eval |
+| Quote freshness limit | 120 seconds | Max age of option quotes for entry |
+| Expiry exit buffer | 2 minutes | How early before expiry to force-exit |
+| Zombie threshold | 10 minutes | Past expiry, use expiry time as exit time |
+| Max positions per type | 3 | Max calls or puts per account |
+| Max rotations per cycle | 3 | Max rotations per type per eval cycle |
+| $200K cap | $200,000 | Max short notional value |
+| Scaling step | 25% | Lot size reduction per scaling event |
+| Scaling floor | 50% | Minimum lot size as % of initial |
+| ATM PnL minimum | $50 | Min simulated ATM profit for entry |
+| Spot step threshold | 0.5% | Min spot movement for rotation/swap |
+| ATM strike tolerance (BTC) | 500 points | Fallback tolerance for finding ATM prices |
+| ATM strike tolerance (ETH) | 50 points | Fallback tolerance for finding ATM prices |

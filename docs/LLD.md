@@ -252,7 +252,14 @@ The engine file (`paperTradingEngine.js`) executes a top-level **Supervisor Mana
 
 ### Evaluation Loop & Execution Decoupling
 
-Called every second by `setInterval`. Uses the `isEvaluating` mutex to prevent re-entrant execution.
+Called every second by `setInterval`. Uses the `isEvaluating` mutex to prevent re-entrant execution. Four background timers run in parallel:
+
+| Timer | Interval | Purpose |
+|-------|----------|---------|
+| **Evaluation loop** | 1 second | Core brain — exits every tick, entries on minute boundaries |
+| **Spot price poll** | 10 seconds | REST-based fallback spot price update |
+| **Product refresh** | 5 minutes | Refreshes available option contracts from Delta Exchange |
+| **Positions fallback sync** | 30 seconds | Re-fetches active positions from Supabase as a safety net against missed Realtime events |
 
 * **Exit Evaluation (every 1 second)**: The engine runs `evaluateStrategy(true)` (Exit-Only) on intermediate seconds. It iterates over active positions, calculates real-time liquidation value P&L and fees, and checks exit triggers (ATM, expiry, rotations) against streaming WebSocket ticker quotes and polled spot prices. If no exits occur, it does not query or write to Supabase.
 * **Full Evaluation (every minute boundary)**: The engine runs `evaluateStrategy(false)` (Full Run) when a new clock-minute crosses (`currentMinute > lastMinute` or on startup). In addition to checking exits, it scans for new spread candidates, filters them by ATM P&L >= $50, sorts them to pick the best ROI candidate per buy strike, checks DB-level count/strike restrictions, and inserts new positions into Supabase.
@@ -287,7 +294,9 @@ For each active position, before evaluating its full exit triggers (such as expi
    - Save checkpoint values: `pos.buyLeg.lastCheckpointPnl = currentGrossPnl` and `pos.buyLeg.lastCheckpointAtmPnl = liveAtmPnl`.
    - **`sellQty` remains unchanged**.
    - Recalculate checkpoints, threshold, `currentGrossPnl`, `hypotheticalLotSize`, and `recalculatedRatio` for the next iteration check of the loop.
-6. **State Persistence**: After the loop completes, if any scaling occurred, recalculate remaining position margin using `calcMargin` and update columns (`buy_leg`, `entry_fee`, `margin`) in the `active_positions` table.
+6. **State Persistence**: After the loop completes, if any scaling occurred, recalculate remaining position margin using `calcMargin` and update columns (`buy_leg`, `entry_fee`, `margin`, `accumulated_sell_pnl`) in the `active_positions` table.
+
+> ⚠️ **Misleading DB Column Name**: The `accumulated_sell_pnl` column in `active_positions` does **not** track sell-leg PnL. It actually stores the accumulated **buy leg** partial exit gross PnL. This naming is a legacy artifact — the column tracks the total buy-side profit realized through partial exits so that the remaining position's live PnL calculation remains correct.
 
 ### C. Exit Priority Tree
 
@@ -299,7 +308,7 @@ Each position is evaluated in strict priority order:
 **Priority 2 — Expiry Settlement (Hard Exit):**
 - Condition: `Date.now() >= expiryTs - 120,000ms` (2 minutes before expiry).
 - Action: 100% exit, `exitReason = 'Expiry Reached (2min Early)'`.
-- **Zombie guard**: If the position is more than 10 minutes past expiry, its `exit_time` is back-dated to the exact expiry timestamp for accurate reporting.
+- **Zombie guard**: If the position is more than **10 minutes** past expiry (`Date.now() > expiryTs + 600,000ms`), its `exit_time` is back-dated to the exact expiry timestamp (`new Date(expiryTs).toISOString()`) for accurate reporting — ensuring trade history records reflect the true expiry moment rather than when the engine discovered the stale position.
 - **Bypasses all other guards.**
 
 **Priority 3 — ATM Exit:**
@@ -333,11 +342,23 @@ Rotations are gated by the portfolio depth requirement:
 - Puts can only rotate if `activePutsCount >= 3`.
 - Maximum `MAX_ROTATIONS_PER_CYCLE = 3` total rotations per evaluation cycle.
 
-### D. Full Portfolio Rotation
+### D. Leg Swap Execution Details
+
+When a leg swap is executed, the engine performs a specialized partial exit:
+
+1. **Buy Leg Exit**: The old buy leg is exited and recorded in `trade_history`. PnL is calculated on the **buy leg only** (`(latestBuy - entryBuyPrice) × buyLotSize`). Exit fee is only charged on the buy leg.
+2. **Entry Fee Apportionment**: The original entry fee is split proportionally between buy and sell legs: `longEntryFee = entryFee × (buyLotSize / (buyLotSize + sellQty × sellLotSize))`.
+3. **Sell Quantity Adjustment**: If the new target has a different sell quantity (due to different delta notional ratios):
+   - **Increase** (`deltaQty > 0`): The sell entry price is **weighted-averaged**: `newEntryPrice = (oldQty × oldPrice + deltaQty × livePrice) / newQty`.
+   - **Decrease** (`deltaQty < 0`): The excess short quantity is bought back, and the realized PnL is added to `accumulatedSellPnl`.
+4. **In-Place Update**: The `active_positions` row is **updated** (not deleted+inserted) with the new buy leg, adjusted sell qty, recalculated margin, and new entry time/spot price.
+5. **$200K Cap Scaling**: The target spread's lot size and sell quantity are scaled down if the short notional value exceeds $200,000, same as regular entries.
+
+### E. Full Portfolio Rotation
 
 When a standard rotation is executed, the engine performs a full exit (both legs) of the active position and deletes it from Supabase, allowing a new position to be opened during the subsequent entries scan on the minute boundary.
 
-### E. ATM P&L & ROI Candidate Filtering
+### F. ATM P&L & ROI Candidate Filtering
 
 Spreads scanned from the options chain are evaluated for their potential At-The-Money payout:
 1. **getTickerPrice**: Sourced using live quotes (bid for long leg, ask for short leg) with nearest-strike fallbacks.
@@ -346,28 +367,61 @@ Spreads scanned from the options chain are evaluated for their potential At-The-
 4. **Gauntlet Filter**: Candidates with `ATM P&L < $50` are discarded.
 5. **Selection**: For each unique buy strike, candidates are sorted by ROI descending, and the one with the highest ROI is chosen.
 
-### F. Entry Logic
+### G. Entry Logic
 
 New entries are opened from `uniqueTopSpreads` (the deduplicated, ROI-ranked candidate list) after the exit pass:
 
 1. **Expiry Buffer Guard**: Skip if `minutesToExpiry < 5`.
-2. **Strike Uniqueness**: Block if buy or sell strike already active in `remaining` or `newEntries` (same type/underlying).
-3. **Portfolio Cap**: Block if `remaining + newEntries count >= 3` for this type.
+2. **Strike Uniqueness (Local)**: Block if buy or sell strike already active in `remaining` or `newEntries` (same type/underlying).
+3. **Portfolio Cap (Local)**: Block if `remaining + newEntries count >= 3` for this type.
 4. **Execution**: `entryBuyPrice = spread.ask`, `entrySellPrice = spread.bid`. Entry IVs captured: `entryBuyIv = ticker.askIv`, `entrySellIv = ticker.bidIv`. Baseline ATM ratio (`entryAtmRatio`) and unscaled lot size (`originalLotSize`) are computed.
    - **ATM Ratio Entry Scaling**: If `atmRatioScaling` is enabled, the target ratio is scaled using a percentage offset: `targetRatio = originalRatio + (pct / 100) * (atmRatioVal - originalRatio)`, where `pct` is `atmRatioPctCall`/`atmRatioPctPut` and `atmRatioVal` is the live ATM ratio rounded to 0.25. The entry ratio to use is `ratioToUse = Math.max(spread.sellQty, Math.round(targetRatio / 0.25) * 0.25)`. Both long lot size and short quantity are scaled under the 200X leverage limit ($200k cap) using this `ratioToUse`.
    - The final scaled values are written to `buy_leg` JSON metadata and stored inside Supabase `active_positions`.
-6. **Supabase Insert (with three DB-level guards)**:
-   - Count guard: `SELECT id WHERE underlying AND type` — abort if count `>= 3`.
-   - Buy strike uniqueness: `SELECT id WHERE buy_strike = X` — abort if exists (`buyConflict`).
-   - Sell strike uniqueness: `SELECT id WHERE sell_strike = Y` — abort if exists.
+5. **$200K Short Value Cap**: If `spotPrice × sellQty × sellLotSize >= $200,000`, both lot size and sell qty are scaled down proportionally to bring the short notional to exactly $200K.
+6. **Account Margin Cap**: The total margin of all remaining positions + staged new entries + this candidate's margin must not exceed the account's balance (`accountState.balance`). If it does, the entry is skipped.
+7. **Supabase Insert (with three DB-level guards)**:
+   - Count guard: `SELECT id WHERE underlying AND type AND account_id` — abort if count `>= 3`.
+   - Buy strike uniqueness: `SELECT id WHERE buy_strike = X AND account_id` — abort if exists (`buyConflict`).
+   - Sell strike uniqueness: `SELECT id WHERE sell_strike = Y AND account_id` — abort if exists (`sellConflict`).
    - Unique constraint `23505` is the final net.
 
-### G. State Update Strategy
+### H. State Update Strategy
 
 - **Structural changes** (exits or entries): `setPositions(finalPositions)` — full array replacement.
 - **PnL-only updates** (no exits or entries at minute boundary): `setPositions(prev => prev.map(p => byId.get(p.id) ?? p))` — in-place functional update to prevent table re-mount flash.
 
-### H. Visual Simulation Mode (ATM Ratio Scaling)
+### I. Config Auto-Creation
+
+When the engine starts for a new account and no `paper_trading_config` row exists (Supabase returns error code `PGRST116`), it **auto-creates** a default configuration row:
+
+| Field | Default Value |
+|-------|---------------|
+| `underlying` | `BTC` |
+| `min_strike_diff` | 800 |
+| `min_iv_diff` | 5 |
+| `max_ratio_deviation` | 0.25 |
+| `min_sell_premium` | 10 |
+| `max_net_premium` | 20 |
+| `min_long_dist` | 500 |
+| `max_sell_qty` | 10 |
+| `atm_ratio_scaling` | `false` |
+| `atm_ratio_distance_call` | 50 |
+| `atm_ratio_distance_put` | 50 |
+
+### J. Config Hot-Reload via Supabase Realtime
+
+Each account engine subscribes to `postgres_changes` events on the `paper_trading_config` table (filtered by `account_id`). When a config change is detected (e.g., user clicks **Apply** or **Reset** in the UI):
+
+1. The engine re-reads the full config row from the database.
+2. If the **underlying** or **expiry** has changed from the previous config:
+   - Products are re-fetched from the Delta Exchange API.
+   - Active positions are re-loaded from Supabase.
+   - The ticker cache is cleared (`tickerData = {}`).
+   - The WebSocket is torn down and restarted with the new symbol set.
+   - Tickers are backfilled via REST for the new symbols.
+3. If only filter parameters changed (e.g., `minStrikeDiff`, `minIvDiff`), the new values are applied in-memory immediately and take effect on the next evaluation cycle — no WS restart needed.
+
+### K. Visual Simulation Mode (ATM Ratio Scaling)
 
 The manual, dollar-based visual "Base/Extra" credit simulation has been completely removed from both the scanner and paper trading screens. 
 
@@ -376,7 +430,7 @@ The manual, dollar-based visual "Base/Extra" credit simulation has been complete
   - Ratios that differ from their default baseline values due to scaling are highlighted in golden text (`var(--accent)`).
 - **Paper Trading Interface**: Does not perform local client-side visual simulation; it renders active position metrics (`sellQty`, `lotSize`, `margin`, `PnL`) as-is from the database. The scaled quantity values are computed and locked directly in Supabase by the backend engine at entry-time.
 
-### I. KPIs & History
+### L. KPIs & History
 
 - **Today's Realized P&L**: Filters `tradeHistory` where `exitTime` (offset by +12h UTC) matches today's settlement-aligned date string. Invalid dates (`isNaN(d.getTime())`) are safely skipped.
 - **Today's P&L**: `todayRealizedPnl + totalUnrealizedPnl`.
@@ -384,6 +438,7 @@ The manual, dollar-based visual "Base/Extra" credit simulation has been complete
 - **Win Rate**: Closed trades where net PnL > 0 / total trades.
 - **Date Navigation**: Prev/Next/Today buttons adjust `historyFilterDate` (UTC-aligned ISO string). All-history mode clears the filter.
 - **CSV Export**: Exports all visible history rows with entry/exit prices, IVs, fees, PnL, and exit reason.
+
 
 
 
