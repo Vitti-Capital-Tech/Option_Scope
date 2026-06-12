@@ -50,11 +50,11 @@ process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 process.on('uncaughtException', (err) => {
   logError('Uncaught exception:', err);
-  // Don't exit — let the engine continue running
+  process.exit(1);
 });
 process.on('unhandledRejection', (reason) => {
   logError('Unhandled rejection:', reason);
-  // Don't exit — let the engine continue running
+  process.exit(1);
 });
 
 start();

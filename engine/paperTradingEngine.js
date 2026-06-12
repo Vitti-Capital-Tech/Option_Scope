@@ -51,6 +51,8 @@ async function startSingleAccountEngine(account) {
   let symbolMeta = {};
   let lastEvaluated = 0;
   let isEvaluating = false;
+  let evaluationStart = 0;
+  let lastWsReconnectTime = 0;
   let lastDbWrite = 0;
 
   // ── Supabase data fetchers ────────────────────────────────────────────
@@ -274,16 +276,36 @@ async function startSingleAccountEngine(account) {
   // ── Core strategy evaluation (Phase 2) ────────────────────────────────
 
   async function evaluateStrategy(onlyExits = false) {
-    if (isEvaluating || !spotPrice) return;
+    if (isEvaluating) {
+      const evalDuration = Date.now() - evaluationStart;
+      if (evaluationStart > 0 && evalDuration > 60000) {
+        logError(`[${accountState.name}] Strategy evaluation has been hung for ${Math.round(evalDuration / 1000)}s. Crashing process for PM2 recovery.`);
+        process.exit(1);
+      }
+      return;
+    }
+    if (!spotPrice) return;
 
     // Spot staleness guard
     const spotAge = Date.now() - lastSpotUpdate;
     if (lastSpotUpdate > 0 && spotAge > 120000) {
-      logWarn(`Spot stale (${Math.round(spotAge / 1000)}s). Skipping evaluation.`);
+      logWarn(`[${accountState.name}] Spot stale (${Math.round(spotAge / 1000)}s). Skipping evaluation.`);
+      
+      const now = Date.now();
+      if (now - lastWsReconnectTime > 60000) {
+        logWarn(`[${accountState.name}] Forcing WebSocket reconnect due to stale spot...`);
+        lastWsReconnectTime = now;
+        try {
+          startWebSocket();
+        } catch (e) {
+          logError(`[${accountState.name}] Failed to force WS reconnect:`, e);
+        }
+      }
       return;
     }
 
     isEvaluating = true;
+    evaluationStart = Date.now();
     try {
       const allTickers = Object.values(tickerData);
       if (allTickers.length === 0) {
@@ -1311,8 +1333,11 @@ async function startSingleAccountEngine(account) {
         expiry: config.expiry,
       });
 
+    } catch (e) {
+      logError(`[${accountState.name}] Strategy evaluation error:`, e);
     } finally {
       isEvaluating = false;
+      evaluationStart = 0;
       if (!onlyExits) {
         lastEvaluated = Date.now();
       }
@@ -1395,42 +1420,61 @@ async function startSingleAccountEngine(account) {
 
   // 8. Subscribe to config changes
   const configChannel = subscribeConfigChanges();
-
   // ── Timers ────────────────────────────────────────────────────────────
 
   // Main evaluation loop — every 1 second (exits run every second, entries run at minute boundaries)
   const evalTimer = setInterval(async () => {
-    if (!spotPrice || !config.expiry) return;
+    try {
+      if (!spotPrice || !config.expiry) return;
 
-    const now = Date.now();
-    const currentMinute = Math.floor(now / 60000);
-    const lastMinute = Math.floor(lastEvaluated / 60000);
+      const now = Date.now();
+      const currentMinute = Math.floor(now / 60000);
+      const lastMinute = Math.floor(lastEvaluated / 60000);
 
-    if (currentMinute > lastMinute || lastEvaluated === 0) {
-      await evaluateStrategy(false); // Full evaluation (exits + entries)
-    } else {
-      await evaluateStrategy(true);  // Exit-only evaluation
+      if (currentMinute > lastMinute || lastEvaluated === 0) {
+        await evaluateStrategy(false); // Full evaluation (exits + entries)
+      } else {
+        await evaluateStrategy(true);  // Exit-only evaluation
+      }
+    } catch (e) {
+      logError(`[${accountState.name}] Error in evalTimer:`, e);
     }
   }, 1000);
 
   // Spot price polling — every 10 seconds
-  const spotTimer = setInterval(fetchSpot, 10000);
+  const spotTimer = setInterval(async () => {
+    try {
+      await fetchSpot();
+    } catch (e) {
+      logError(`[${accountState.name}] Error in spotTimer:`, e);
+    }
+  }, 10000);
 
   // Product refresh — every 5 minutes
   const productTimer = setInterval(async () => {
-    await refreshProducts();
-    // Rebuild symbol meta and restart WS if needed
-    const newMeta = buildSymbolMeta(products, config.expiry, config.underlying, positions);
-    const newSymbols = Object.keys(newMeta).sort().join(',');
-    const oldSymbols = Object.keys(symbolMeta).sort().join(',');
-    if (newSymbols !== oldSymbols) {
-      symbolMeta = newMeta;
-      startWebSocket();
+    try {
+      await refreshProducts();
+      // Rebuild symbol meta and restart WS if needed
+      const newMeta = buildSymbolMeta(products, config.expiry, config.underlying, positions);
+      const newSymbols = Object.keys(newMeta).sort().join(',');
+      const oldSymbols = Object.keys(symbolMeta).sort().join(',');
+      if (newSymbols !== oldSymbols) {
+        symbolMeta = newMeta;
+        startWebSocket();
+      }
+    } catch (e) {
+      logError(`[${accountState.name}] Error in productTimer:`, e);
     }
   }, 5 * 60 * 1000);
 
   // Active positions refresh — every 30 seconds (fallback sync)
-  const positionsTimer = setInterval(fetchActivePositions, 30000);
+  const positionsTimer = setInterval(async () => {
+    try {
+      await fetchActivePositions();
+    } catch (e) {
+      logError(`[${accountState.name}] Error in positionsTimer:`, e);
+    }
+  }, 30000);
 
   log(`[${accountState.name}] Paper Trading Engine is LIVE`);
 
