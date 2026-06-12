@@ -49,15 +49,24 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
       minLongDist: 500,
       maxSellQty: 10,
       atmRatioScaling: false,
-      atmRatioDistanceCall: 1,
-      atmRatioDistancePut: 1
+      atmRatioPctCall: 50,
+      atmRatioPctPut: 50
     };
 
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        return { ...base, ...parsed };
-      } catch (e) { }
+        const migrated = { ...base, ...parsed };
+        if (parsed.atmRatioDistanceCall !== undefined && parsed.atmRatioPctCall === undefined) {
+          migrated.atmRatioPctCall = parsed.atmRatioDistanceCall > 5 ? parsed.atmRatioDistanceCall : 50;
+        }
+        if (parsed.atmRatioDistancePut !== undefined && parsed.atmRatioPctPut === undefined) {
+          migrated.atmRatioPctPut = parsed.atmRatioDistancePut > 5 ? parsed.atmRatioDistancePut : 50;
+        }
+        return migrated;
+      } catch (err) {
+        console.error('Failed to parse saved scanner config:', err);
+      }
     }
     return base;
   });
@@ -752,16 +761,16 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             </div>
             {config.atmRatioScaling && (
               <>
-                <div key="atmRatioDistanceCall" className="form-group row-inline">
-                  <label>Call ATM Dist (pt):</label>
-                  <input type="number" step="0.25" value={config.atmRatioDistanceCall ?? 1}
-                    onChange={e => updateConfig('atmRatioDistanceCall', Number(e.target.value))}
+                <div key="atmRatioPctCall" className="form-group row-inline">
+                  <label>Call ATM Pct (%):</label>
+                  <input type="number" step="1" value={config.atmRatioPctCall ?? 50}
+                    onChange={e => updateConfig('atmRatioPctCall', Number(e.target.value))}
                   />
                 </div>
-                <div key="atmRatioDistancePut" className="form-group row-inline">
-                  <label>Put ATM Dist (pt):</label>
-                  <input type="number" step="0.25" value={config.atmRatioDistancePut ?? 1}
-                    onChange={e => updateConfig('atmRatioDistancePut', Number(e.target.value))}
+                <div key="atmRatioPctPut" className="form-group row-inline">
+                  <label>Put ATM Pct (%):</label>
+                  <input type="number" step="1" value={config.atmRatioPctPut ?? 50}
+                    onChange={e => updateConfig('atmRatioPctPut', Number(e.target.value))}
                   />
                 </div>
               </>

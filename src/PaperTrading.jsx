@@ -69,8 +69,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     minLongDist: 500,
     maxSellQty: 10,
     atmRatioScaling: false,
-    atmRatioDistanceCall: 1,
-    atmRatioDistancePut: 1,
+    atmRatioPctCall: 50,
+    atmRatioPctPut: 50,
   }));
   const [isConfigLoaded, setIsConfigLoaded] = useState(false);
   const [isFiltersCollapsed, setIsFiltersCollapsed] = useState(() => window.innerWidth <= 900);
@@ -354,8 +354,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         min_long_dist: newCfg.minLongDist,
         max_sell_qty: newCfg.maxSellQty,
         atm_ratio_scaling: newCfg.atmRatioScaling,
-        atm_ratio_distance_call: newCfg.atmRatioDistanceCall,
-        atm_ratio_distance_put: newCfg.atmRatioDistancePut,
+        atm_ratio_distance_call: newCfg.atmRatioPctCall,
+        atm_ratio_distance_put: newCfg.atmRatioPctPut,
         updated_at: new Date().toISOString()
       });
     } catch (e) { }
@@ -389,8 +389,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           min_long_dist: 500,
           max_sell_qty: 10,
           atm_ratio_scaling: false,
-          atm_ratio_distance_call: 1,
-          atm_ratio_distance_put: 1,
+          atm_ratio_distance_call: 50,
+          atm_ratio_distance_put: 50,
           updated_at: new Date().toISOString()
         };
         const { data: inserted, error: insertErr } = await supabase
@@ -416,8 +416,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           minLongDist: data.min_long_dist || 500,
           maxSellQty: data.max_sell_qty || 10,
           atmRatioScaling: data.atm_ratio_scaling ?? false,
-          atmRatioDistanceCall: data.atm_ratio_distance_call ?? 1,
-          atmRatioDistancePut: data.atm_ratio_distance_put ?? 1,
+          atmRatioPctCall: data.atm_ratio_distance_call ?? 50,
+          atmRatioPctPut: data.atm_ratio_distance_put ?? 50,
         });
         setConfigDbId(data.id);
         setIsConfigLoaded(true);
@@ -844,7 +844,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         const updates = {};
         const keys = [
           'underlying',
-          'atmRatioScaling', 'atmRatioDistanceCall', 'atmRatioDistancePut'
+          'atmRatioScaling', 'atmRatioPctCall', 'atmRatioPctPut'
         ];
         keys.forEach(k => {
           if (payload.config[k] !== undefined) updates[k] = payload.config[k];
@@ -1281,16 +1281,16 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             </div>
             {config.atmRatioScaling && (
               <>
-                <div key="atmRatioDistanceCall" className="form-group">
-                  <label style={{ marginBottom: 0 }}>Call ATM Dist (pt):</label>
-                  <input type="number" step="0.25" value={config.atmRatioDistanceCall ?? 1}
-                    onChange={e => updateConfig('atmRatioDistanceCall', Number(e.target.value))}
+                <div key="atmRatioPctCall" className="form-group">
+                  <label style={{ marginBottom: 0 }}>Call ATM Pct (%):</label>
+                  <input type="number" step="1" value={config.atmRatioPctCall ?? 50}
+                    onChange={e => updateConfig('atmRatioPctCall', Number(e.target.value))}
                     style={{ width: 50, padding: '4px 8px', fontSize: '13px' }} />
                 </div>
-                <div key="atmRatioDistancePut" className="form-group">
-                  <label style={{ marginBottom: 0 }}>Put ATM Dist (pt):</label>
-                  <input type="number" step="0.25" value={config.atmRatioDistancePut ?? 1}
-                    onChange={e => updateConfig('atmRatioDistancePut', Number(e.target.value))}
+                <div key="atmRatioPctPut" className="form-group">
+                  <label style={{ marginBottom: 0 }}>Put ATM Pct (%):</label>
+                  <input type="number" step="1" value={config.atmRatioPctPut ?? 50}
+                    onChange={e => updateConfig('atmRatioPctPut', Number(e.target.value))}
                     style={{ width: 50, padding: '4px 8px', fontSize: '13px' }} />
                 </div>
               </>

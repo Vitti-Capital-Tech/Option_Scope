@@ -159,7 +159,7 @@ export default function ResultTable({
                   // Margin calculation matching paper trading leverage tiers
                   const sellLotSize = r.sellLeg.lotSize || lotSize;
 
-                  const { atmRatioScaling, atmRatioDistanceCall, atmRatioDistancePut } = config || {};
+                  const { atmRatioScaling, atmRatioPctCall, atmRatioPctPut } = config || {};
 
                   const atmRatio = (buyIntrinsic != null && sellIntrinsic != null && sellIntrinsic > 0)
                     ? (buyIntrinsic / sellIntrinsic)
@@ -170,8 +170,11 @@ export default function ResultTable({
 
                   let totalSellQty = r.sellQty;
                   if (atmRatioScaling && atmRatio != null) {
-                    const dist = type.toLowerCase() === 'call' ? atmRatioDistanceCall : atmRatioDistancePut;
-                    totalSellQty = Math.max(r.sellQty, (Math.round(atmRatio / 0.25) * 0.25) - dist);
+                    const pct = type.toLowerCase() === 'call' ? atmRatioPctCall : atmRatioPctPut;
+                    const originalRatio = r.sellQty;
+                    const atmRatioVal = Math.round(atmRatio / 0.25) * 0.25;
+                    const diff = Math.max(0, atmRatioVal - originalRatio);
+                    totalSellQty = Math.max(originalRatio, Math.round((originalRatio + (pct / 100) * diff) / 0.25) * 0.25);
                   }
 
                   let shortValue = currentSpot * totalSellQty * sellLotSize;

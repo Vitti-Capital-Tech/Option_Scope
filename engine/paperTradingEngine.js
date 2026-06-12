@@ -37,8 +37,8 @@ async function startSingleAccountEngine(account) {
     minStrikeDiff: 800, minIvDiff: 5, maxRatioDeviation: 0.25,
     minSellPremium: 10, maxNetPremium: 20, minLongDist: 500, maxSellQty: 10,
     atmRatioScaling: false,
-    atmRatioDistanceCall: 1,
-    atmRatioDistancePut: 1,
+    atmRatioPctCall: 50,
+    atmRatioPctPut: 50,
   };
   let products = [];
   let expiries = [];
@@ -74,8 +74,8 @@ async function startSingleAccountEngine(account) {
           min_long_dist: 500,
           max_sell_qty: 10,
           atm_ratio_scaling: false,
-          atm_ratio_distance_call: 1,
-          atm_ratio_distance_put: 1,
+          atm_ratio_distance_call: 50,
+          atm_ratio_distance_put: 50,
           updated_at: new Date().toISOString()
         };
         const { data: inserted, error: insertErr } = await supabase
@@ -103,8 +103,8 @@ async function startSingleAccountEngine(account) {
           minLongDist: data.min_long_dist || 500,
           maxSellQty: data.max_sell_qty || 10,
           atmRatioScaling: data.atm_ratio_scaling ?? false,
-          atmRatioDistanceCall: data.atm_ratio_distance_call ?? 1,
-          atmRatioDistancePut: data.atm_ratio_distance_put ?? 1,
+          atmRatioPctCall: data.atm_ratio_distance_call ?? 50,
+          atmRatioPctPut: data.atm_ratio_distance_put ?? 50,
         };
         configDbId = data.id;
         log(`[${accountState.name}] Config loaded: ${config.underlying} | Expiry: ${config.expiry || 'auto'}`);
@@ -1090,8 +1090,10 @@ async function startSingleAccountEngine(account) {
 
           let ratioToUse = spread.sellQty;
           if (config.atmRatioScaling && entryAtmRatio != null) {
-            const dist = spreadType === 'call' ? config.atmRatioDistanceCall : config.atmRatioDistancePut;
-            ratioToUse = Math.max(spread.sellQty, entryAtmRatio - dist);
+            const pct = spreadType === 'call' ? config.atmRatioPctCall : config.atmRatioPctPut;
+            const originalRatio = spread.sellQty;
+            const diff = Math.max(0, entryAtmRatio - originalRatio);
+            ratioToUse = Math.max(originalRatio, Math.round((originalRatio + (pct / 100) * diff) / 0.25) * 0.25);
           }
 
           const originalLotSize = spread.buyLeg.lotSize || 1;
