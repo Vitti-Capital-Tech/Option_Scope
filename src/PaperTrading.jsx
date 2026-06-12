@@ -219,7 +219,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     try {
       const { data: accList, error: accErr } = await supabase
         .from('paper_trading_accounts')
-        .insert([{ name: trimmedName, balance }])
+        .insert([{ name: trimmedName, balance, is_active: true }])
         .select('*');
       
       if (accErr) {

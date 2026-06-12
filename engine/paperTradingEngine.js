@@ -55,13 +55,37 @@ async function startSingleAccountEngine(account) {
   // ── Supabase data fetchers ────────────────────────────────────────────
 
   async function fetchConfig() {
+    let retries = 10;
+    let data = null;
+    let error = null;
+
+    while (retries > 0) {
+      try {
+        const res = await supabase
+          .from('paper_trading_config')
+          .select('*')
+          .eq('account_id', accountState.id)
+          .single();
+        data = res.data;
+        error = res.error;
+
+        if (data && !error) {
+          break;
+        }
+      } catch (e) {
+        error = e;
+      }
+
+      retries--;
+      if (retries > 0) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    }
+
     try {
-      let { data, error } = await supabase
-        .from('paper_trading_config').select('*').eq('account_id', accountState.id).single();
-      
       if (error && error.code === 'PGRST116') {
         // Row not found, let's create a default one
-        logWarn(`[${accountState.name}] No config row found for account_id = ${accountState.id}. Creating default...`);
+        logWarn(`[${accountState.name}] No config row found after retries for account_id = ${accountState.id}. Creating default...`);
         const defaultRow = {
           id: accountState.id,
           account_id: accountState.id,
@@ -1487,9 +1511,48 @@ export async function startPaperTradingEngine() {
     )
     .subscribe();
 
+  // Periodic sync check — every 30 seconds as fallback for missed Realtime events
+  const syncTimer = setInterval(async () => {
+    try {
+      const { data: currentAccounts, error: syncError } = await supabase
+        .from('paper_trading_accounts')
+        .select('*');
+      
+      if (syncError || !currentAccounts) {
+        logError('Fallback sync: failed to fetch accounts:', syncError?.message);
+        return;
+      }
+
+      const activeAccounts = currentAccounts.filter(a => a.is_active);
+      const activeIds = new Set(activeAccounts.map(a => a.id));
+
+      // 1. Stop engines that are no longer active or have been deleted
+      for (const accountId of Object.keys(runningEngines)) {
+        if (!activeIds.has(accountId)) {
+          log(`Fallback sync: Account ${accountId} is no longer active or deleted. Stopping engine.`);
+          await stopAccountEngine(accountId);
+        }
+      }
+
+      // 2. Start engines for active accounts that are not running, and update state for running ones
+      for (const acc of activeAccounts) {
+        const running = runningEngines[acc.id];
+        if (!running) {
+          log(`Fallback sync: Account ${acc.id} (${acc.name}) is active but not running. Starting engine.`);
+          await startAccountEngine(acc);
+        } else {
+          running.updateAccount(acc);
+        }
+      }
+    } catch (e) {
+      logError('Fallback sync exception:', e);
+    }
+  }, 30000);
+
   return {
     async stop() {
       log('Shutting down all running account engines...');
+      clearInterval(syncTimer);
       supabase.removeChannel(accountsChannel);
       for (const accountId of Object.keys(runningEngines)) {
         await stopAccountEngine(accountId);
