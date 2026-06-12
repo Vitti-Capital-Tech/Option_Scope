@@ -1159,7 +1159,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             ? (buyPnl * pos.buyLeg.lotSize) + (sellPnl * pos.sellLeg.lotSize) + (pos.accumulatedSellPnl || 0)
             : pos.unrealizedGrossPnl;
           const exitFee = hasBothPrices
-            ? calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize) + calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize)
+            ? calculateFee(latestBuy, spotPrice, pos.buyLeg.lotSize, pos.buyLeg.originalLotSize || 1) + calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize)
             : pos.currentExitFee;
           const totalFees = hasBothPrices ? ((pos.entryFee || 0) + exitFee) : pos.currentTotalFees;
 

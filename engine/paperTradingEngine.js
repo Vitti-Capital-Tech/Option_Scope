@@ -556,7 +556,7 @@ async function startSingleAccountEngine(account) {
 
               // Proportional entry fee: use local (decremented) entryFee and currentLotSize
               const partialEntryFee = entryFee * (deltaBuyQty / currentLotSize);
-              const partialExitFee = calculateFee(liveExitBuy, spotPrice, 1, deltaBuyQty);
+              const partialExitFee = calculateFee(liveExitBuy, spotPrice, deltaBuyQty, pos.buyLeg.originalLotSize || 1);
               const partialTotalFees = partialEntryFee + partialExitFee;
               const partialNetPnl = partialGrossPnl - partialTotalFees;
 
@@ -578,7 +578,7 @@ async function startSingleAccountEngine(account) {
                 + (sellPriceDiff * pos.sellQty * (pos.sellLeg.lotSize || 1))
                 + (accumulatedPartialBuyPnl - partialGrossPnl);
 
-              const remainingExitFee = calculateFee(liveExitBuy, spotPrice, 1, hypotheticalLotSize)
+              const remainingExitFee = calculateFee(liveExitBuy, spotPrice, hypotheticalLotSize, pos.buyLeg.originalLotSize || 1)
                 + calculateFee(liveExitSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize || 1);
               const remainingEntryFee = Math.max(0, entryFee - partialEntryFee);
               const remainingNetPnl = remainingGrossPnl - (remainingEntryFee + remainingExitFee);
@@ -722,7 +722,7 @@ async function startSingleAccountEngine(account) {
         const buyPriceDiff = (latestBuy != null && pos.entryBuyPrice != null) ? (latestBuy - pos.entryBuyPrice) : 0;
         const sellPriceDiff = (latestSell != null && pos.entrySellPrice != null) ? (pos.entrySellPrice - latestSell) : 0;
         const grossPnl = (buyPriceDiff * pos.buyLeg.lotSize) + (sellPriceDiff * pos.sellQty * pos.sellLeg.lotSize);
-        const exitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize) +
+        const exitFee = calculateFee(latestBuy, spotPrice, pos.buyLeg.lotSize, pos.buyLeg.originalLotSize || 1) +
           calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
         const totalFees = (pos.entryFee || 0) + exitFee;
 
@@ -906,7 +906,7 @@ async function startSingleAccountEngine(account) {
             // Gross PNL based on change in buyQty (only long leg)
             finalGrossPnl = (latestBuy - pos.entryBuyPrice) * pos.buyLeg.lotSize;
             // Exit fee based on long leg exit only
-            finalExitFee = calculateFee(latestBuy, spotPrice, 1, pos.buyLeg.lotSize);
+            finalExitFee = calculateFee(latestBuy, spotPrice, pos.buyLeg.lotSize, pos.buyLeg.originalLotSize || 1);
             // Entry fee apportioned to long leg
             const longEntryFee = (pos.entryFee || 0) * (pos.buyLeg.lotSize / (pos.buyLeg.lotSize + (pos.sellQty * (pos.sellLeg.lotSize || 1))));
             finalEntryFee = longEntryFee;
@@ -995,7 +995,7 @@ async function startSingleAccountEngine(account) {
               shortAdjustmentPnl = (pos.entrySellPrice - latestSell) * Math.abs(deltaQty) * (pos.sellLeg.lotSize || 1);
             }
 
-            const newLongEntryFee = calculateFee(target.buyPrice, spotPrice, 1, adjustedTargetLotSize);
+            const newLongEntryFee = calculateFee(target.buyPrice, spotPrice, adjustedTargetLotSize, target.buyLeg.lotSize || 1);
             const newActiveEntryFee = (pos.entryFee || 0) - longEntryFee + newLongEntryFee + shortAdjustmentFee;
 
             let newEntryAtmRatio = null;
@@ -1171,7 +1171,7 @@ async function startSingleAccountEngine(account) {
           };
           const sellLegWithIv = { ...spread.sellLeg, entryIv: entrySellIv };
 
-          const entryBuyFee = calculateFee(entryBuyPrice, spotPrice, 1, adjustedLotSize);
+          const entryBuyFee = calculateFee(entryBuyPrice, spotPrice, adjustedLotSize, spread.buyLeg.lotSize || 1);
           const entrySellFee = calculateFee(entrySellPrice, spotPrice, adjustedSellQty, spread.sellLeg.lotSize);
           const entryFee = entryBuyFee + entrySellFee;
           const candidateMargin = calcMargin(entryBuyPrice, adjustedLotSize, spotPrice, adjustedSellQty, spread.sellLeg.lotSize);
