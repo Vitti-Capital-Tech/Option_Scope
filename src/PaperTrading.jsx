@@ -112,6 +112,17 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const [products, setProducts] = useState([]);
   const [expiries, setExpiries] = useState([]);
   const [spotPrice, setSpotPrice] = useState(null);
+
+  const filteredExpiries = React.useMemo(() => {
+    if (!expiries || expiries.length === 0) return [];
+    const minDays = config?.daysToExpiry || 0;
+    const filtered = expiries.filter(exp => {
+      const daysRemaining = (new Date(exp).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
+      return daysRemaining >= minDays;
+    });
+    return filtered.length > 0 ? filtered : expiries;
+  }, [expiries, config?.daysToExpiry]);
+
   const [engineStatus, setEngineStatus] = useState({ status: 'offline', lastHeartbeat: null, data: null });
 
   const [includeFees, setIncludeFees] = useState(true);
@@ -334,19 +345,28 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       setProducts(prods);
       const exps = getExpiries(prods);
       setExpiries(exps);
-      if (isConfigLoaded && exps.length && (!selExpiry || !exps.includes(selExpiry))) {
-        let selectedExpiry = null;
-        for (const exp of exps) {
-          const daysRemaining = (new Date(exp).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
-          if (daysRemaining >= (config.daysToExpiry || 0)) {
-            selectedExpiry = exp;
-            break;
+      if (isConfigLoaded && exps.length) {
+        let isExpiryInvalid = !selExpiry || !exps.includes(selExpiry);
+        if (!isExpiryInvalid && selExpiry) {
+          const daysRemaining = (new Date(selExpiry).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
+          if (daysRemaining < (config.daysToExpiry || 0)) {
+            isExpiryInvalid = true;
           }
         }
-        if (!selectedExpiry) {
-          selectedExpiry = exps[0];
+        if (isExpiryInvalid) {
+          let selectedExpiry = null;
+          for (const exp of exps) {
+            const daysRemaining = (new Date(exp).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
+            if (daysRemaining >= (config.daysToExpiry || 0)) {
+              selectedExpiry = exp;
+              break;
+            }
+          }
+          if (!selectedExpiry) {
+            selectedExpiry = exps[0];
+          }
+          updateConfig('expiry', selectedExpiry);
         }
-        updateConfig('expiry', selectedExpiry);
       }
     } catch (e) { console.error('Failed to load products:', e); }
   }, [underlying, selExpiry, isConfigLoaded, config.daysToExpiry]);
@@ -355,19 +375,28 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   useEffect(() => {
     if (isConfigLoaded && products.length > 0) {
       const exps = getExpiries(products);
-      if (exps.length && (!selExpiry || !exps.includes(selExpiry))) {
-        let selectedExpiry = null;
-        for (const exp of exps) {
-          const daysRemaining = (new Date(exp).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
-          if (daysRemaining >= (config.daysToExpiry || 0)) {
-            selectedExpiry = exp;
-            break;
+      if (exps.length) {
+        let isExpiryInvalid = !selExpiry || !exps.includes(selExpiry);
+        if (!isExpiryInvalid && selExpiry) {
+          const daysRemaining = (new Date(selExpiry).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
+          if (daysRemaining < (config.daysToExpiry || 0)) {
+            isExpiryInvalid = true;
           }
         }
-        if (!selectedExpiry) {
-          selectedExpiry = exps[0];
+        if (isExpiryInvalid) {
+          let selectedExpiry = null;
+          for (const exp of exps) {
+            const daysRemaining = (new Date(exp).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
+            if (daysRemaining >= (config.daysToExpiry || 0)) {
+              selectedExpiry = exp;
+              break;
+            }
+          }
+          if (!selectedExpiry) {
+            selectedExpiry = exps[0];
+          }
+          updateConfig('expiry', selectedExpiry);
         }
-        updateConfig('expiry', selectedExpiry);
       }
     }
   }, [isConfigLoaded, products, selExpiry, config.daysToExpiry]);
@@ -2018,11 +2047,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
               <label style={{ marginBottom: 0 }}>Expiry:</label>
               <select value={selExpiry} onChange={e => updateConfig('expiry', e.target.value)}
-                disabled={!expiries.length}
+                disabled={!filteredExpiries.length}
                 style={{ padding: '6px 12px', width: '160px', fontSize: '13px' }}>
-                {!expiries.length
+                {!filteredExpiries.length
                   ? <option>Loading...</option>
-                  : expiries.map(e => <option key={e} value={e}>{fmtExpiry(e)}</option>)}
+                  : filteredExpiries.map(e => <option key={e} value={e}>{fmtExpiry(e)}</option>)}
               </select>
             </div>
             {activeAccountId && (
