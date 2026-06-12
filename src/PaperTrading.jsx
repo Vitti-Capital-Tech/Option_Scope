@@ -32,6 +32,16 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const [activeAccountId, setActiveAccountId] = useState(null);
   const [configDbId, setConfigDbId] = useState(null);
 
+  // Authentication & RBAC States
+  const [session, setSession] = useState(null);
+  const [userProfile, setUserProfile] = useState(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [authEmail, setAuthEmail] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [isAuthenticating, setIsAuthenticating] = useState(false);
+  const [profiles, setProfiles] = useState([]); // Loaded only for admin users
+  const [isAccountsLoaded, setIsAccountsLoaded] = useState(false);
+
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isCreatingAccount, setIsCreatingAccount] = useState(false);
   const [isDeletingAccount, setIsDeletingAccount] = useState(false);
@@ -52,6 +62,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     defaultValues: {
       name: '',
       balance: 10000,
+      ownerId: '',
       underlying: 'BTC',
       minStrikeDiff: 800,
       minIvDiff: 5,
@@ -120,6 +131,167 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
+
+  // ── Authentication & Profiles Hooks ─────────────────────────────────
+  useEffect(() => {
+    // Check initial session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      if (!session) {
+        setIsAuthLoading(false);
+      }
+    });
+
+    // Listen to changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      if (!session) {
+        setIsAuthLoading(false);
+        setUserProfile(null);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!session) return;
+
+    const fetchProfile = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', session.user.id)
+          .single();
+        
+        if (data) {
+          setUserProfile(data);
+        } else if (error && error.code === 'PGRST116') {
+          // Fallback: profile not created yet, let's create it on the fly
+          const { data: newProfile, error: createError } = await supabase
+            .from('profiles')
+            .insert([{ id: session.user.id, email: session.user.email, role: 'client' }])
+            .select('*')
+            .single();
+          if (newProfile && !createError) {
+            setUserProfile(newProfile);
+          } else {
+            console.error('Failed to auto-create profile:', createError);
+          }
+        }
+      } catch (err) {
+        console.error('Error fetching profile:', err);
+      } finally {
+        setIsAuthLoading(false);
+      }
+    };
+
+    fetchProfile();
+  }, [session]);
+
+  useEffect(() => {
+    if (userProfile?.role === 'admin') {
+      const fetchAllProfiles = async () => {
+        const { data } = await supabase
+          .from('profiles')
+          .select('id, email')
+          .order('email', { ascending: true });
+        if (data) {
+          setProfiles(data);
+        }
+      };
+      fetchAllProfiles();
+    } else {
+      setProfiles([]);
+    }
+  }, [userProfile]);
+
+  const handleLogout = async () => {
+    try {
+      await supabase.auth.signOut();
+      setIsAccountsLoaded(false);
+      setAccounts([]);
+    } catch (e) {
+      console.error('Logout error:', e);
+    }
+  };
+
+  const handleAuthSubmit = async (e) => {
+    e.preventDefault();
+    setAuthError('');
+    setIsAuthenticating(true);
+
+    const email = authEmail.trim().toLowerCase();
+    if (!email) {
+      setAuthError('Please enter a valid email address.');
+      setIsAuthenticating(false);
+      return;
+    }
+
+    // Deterministically derive a secure password based on the email
+    const cleanEmail = email.replace(/[^a-z0-9]/g, '');
+    const derivedPassword = `OptionScope_${cleanEmail}_Secure123!`;
+
+    try {
+      // 1. Try to sign up first
+      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+        email,
+        password: derivedPassword,
+      });
+
+      if (signUpError) {
+        // If user already exists, try to log in
+        if (signUpError.message.includes('already exists') || signUpError.code === 'user_already_exists') {
+          const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+            email,
+            password: derivedPassword,
+          });
+
+          if (signInError) {
+            if (signInError.message.includes('confirm') || signInError.code === 'email_not_confirmed') {
+              setAuthError('Email needs to be confirmed or email confirmation should be disabled in Supabase settings.');
+            } else {
+              setAuthError(signInError.message);
+            }
+          }
+        } else if (signUpError.message.includes('confirm') || signUpError.code === 'email_not_confirmed') {
+          setAuthError('Email needs to be confirmed or email confirmation should be disabled in Supabase settings.');
+        } else {
+          setAuthError(signUpError.message);
+        }
+      } else if (signUpData?.user) {
+        // Auto-create local profile
+        try {
+          await supabase
+            .from('profiles')
+            .insert([{ id: signUpData.user.id, email: signUpData.user.email, role: 'client' }]);
+        } catch (pe) {
+          console.error('Local profile insert error:', pe);
+        }
+
+        // If a session was not started automatically, log in
+        if (!signUpData.session) {
+          const { error: retryError } = await supabase.auth.signInWithPassword({
+            email,
+            password: derivedPassword,
+          });
+          if (retryError) {
+            if (retryError.message.includes('confirm') || retryError.code === 'email_not_confirmed') {
+              setAuthError('Email needs to be confirmed or email confirmation should be disabled in Supabase settings.');
+            } else {
+              setAuthError(retryError.message);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      setAuthError('An unexpected authentication error occurred.');
+      console.error(err);
+    } finally {
+      setIsAuthenticating(false);
+    }
+  };
 
   const adjustFilterDay = (offset) => {
     if (!historyFilterDate) return;
@@ -213,11 +385,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
   // ── Load accounts ──────────────────────────────────────────────────────
   const fetchAccounts = useCallback(async () => {
+    if (!userProfile) return;
     try {
-      const { data, error } = await supabase
-        .from('paper_trading_accounts')
-        .select('*')
-        .order('created_at', { ascending: true });
+      let query = supabase.from('paper_trading_accounts').select('*');
+      if (userProfile.role === 'client') {
+        query = query.eq('user_id', session?.user?.id);
+      }
+      const { data, error } = await query.order('created_at', { ascending: true });
       if (data && !error) {
         setAccounts(data);
         if (data.length > 0) {
@@ -225,6 +399,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             if (prev && data.some(a => a.id === prev)) return prev;
             return data[0].id;
           });
+        } else {
+          setActiveAccountId(null);
         }
         try {
           const ch = new BroadcastChannel('option-scope-sync');
@@ -233,7 +409,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         } catch (e) { }
       }
     } catch (e) { console.error('Failed to fetch accounts:', e); }
-  }, []);
+    finally {
+      setIsAccountsLoaded(true);
+    }
+  }, [userProfile, session]);
 
   useEffect(() => {
     fetchAccounts();
@@ -254,13 +433,18 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
   const handleModalSubmit = async (data) => {
     const trimmedName = data.name.trim();
-    const balance = data.balance;
+    const balance = data.balance ?? 10000;
+
+    // Determine the owner: admin can pick any profile, client defaults to self
+    const ownerUserId = userProfile?.role === 'admin' && data.ownerId
+      ? data.ownerId
+      : (session?.user?.id ?? null);
 
     setIsCreatingAccount(true);
     try {
       const { data: accList, error: accErr } = await supabase
         .from('paper_trading_accounts')
-        .insert([{ name: trimmedName, balance, is_active: true }])
+        .insert([{ name: trimmedName, balance, is_active: true, user_id: ownerUserId }])
         .select('*');
       
       if (accErr) {
@@ -1154,6 +1338,22 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       : '#f85149';
 
   // ── Render ────────────────────────────────────────────────────────────
+
+  // Show loading spinner while auth state is resolving
+  if (isAuthLoading) {
+    return (
+      <div className="app" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2.5" style={{ animation: 'spin 0.9s linear infinite' }}>
+            <circle cx="12" cy="12" r="10" stroke="rgba(240,185,11,0.15)" />
+            <path d="M12 2a10 10 0 0 1 10 10" />
+          </svg>
+          <span style={{ fontSize: 13, color: 'var(--text-dim)' }}>Loading...</span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="app">
       <nav className="navbar">
@@ -1231,7 +1431,449 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       </nav>
 
       <div className="body" style={{ flexDirection: 'column', overflowY: 'auto' }}>
-        {/* Account Selector Dropdown strip */}
+        {!session ? (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 'calc(100vh - 120px)', width: '100%', background: 'var(--bg)' }}>
+            <div style={{
+              width: '100%',
+              maxWidth: 420,
+              background: 'var(--bg2)',
+              border: '1px solid var(--border)',
+              borderRadius: 16,
+              padding: '40px 36px',
+              boxShadow: '0 24px 64px rgba(0,0,0,0.5)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 28
+            }}>
+              {/* Logo */}
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+                <svg width="48" height="48" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <rect width="32" height="32" rx="8" fill="#0d1117" />
+                  <rect x="5" y="14" width="4" height="8" rx="1" fill="#3fb950" />
+                  <line x1="7" y1="10" x2="7" y2="14" stroke="#3fb950" strokeWidth="1.5" />
+                  <line x1="7" y1="22" x2="7" y2="26" stroke="#3fb950" strokeWidth="1.5" />
+                  <rect x="13" y="10" width="4" height="10" rx="1" fill="#f85149" />
+                  <line x1="15" y1="6" x2="15" y2="10" stroke="#f85149" strokeWidth="1.5" />
+                  <line x1="15" y1="20" x2="15" y2="25" stroke="#f85149" strokeWidth="1.5" />
+                  <rect x="21" y="12" width="4" height="9" rx="1" fill="#e3b341" />
+                  <line x1="23" y1="8" x2="23" y2="12" stroke="#e3b341" strokeWidth="1.5" />
+                  <line x1="23" y1="21" x2="23" y2="26" stroke="#e3b341" strokeWidth="1.5" />
+                  <rect x="5" y="29" width="22" height="1.5" rx="0.75" fill="#00d9a3" opacity="0.8" />
+                </svg>
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ fontWeight: 800, fontSize: 20, letterSpacing: '0.04em', color: 'var(--text)' }}>
+                    VITTI OPTION<span style={{ color: 'var(--accent)' }}>SCOPE</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 4, letterSpacing: '0.08em', textTransform: 'uppercase' }}>Paper Trading Workstation</div>
+                </div>
+              </div>
+
+              {/* Form */}
+              <form onSubmit={handleAuthSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)', letterSpacing: '0.04em' }}>EMAIL ADDRESS</label>
+                  <input
+                    id="auth-email"
+                    type="email"
+                    value={authEmail}
+                    onChange={e => setAuthEmail(e.target.value)}
+                    placeholder="you@example.com"
+                    required
+                    autoComplete="email"
+                    style={{
+                      padding: '10px 14px',
+                      borderRadius: 8,
+                      border: '1px solid var(--border)',
+                      background: 'var(--bg3)',
+                      color: 'var(--text)',
+                      fontSize: 14,
+                      outline: 'none',
+                      transition: 'border-color 0.2s'
+                    }}
+                    onFocus={e => e.target.style.borderColor = 'var(--accent)'}
+                    onBlur={e => e.target.style.borderColor = 'var(--border)'}
+                  />
+                </div>
+
+                {authError && (
+                  <div style={{
+                    padding: '10px 14px',
+                    borderRadius: 8,
+                    background: 'rgba(248, 81, 73, 0.1)',
+                    border: '1px solid rgba(248, 81, 73, 0.3)',
+                    color: '#f85149',
+                    fontSize: 13,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8
+                  }}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                    {authError}
+                  </div>
+                )}
+
+                <button
+                  id="auth-submit-btn"
+                  type="submit"
+                  disabled={isAuthenticating}
+                  style={{
+                    padding: '12px 0',
+                    borderRadius: 8,
+                    border: 'none',
+                    background: 'var(--accent)',
+                    color: '#000',
+                    fontWeight: 700,
+                    fontSize: 14,
+                    cursor: isAuthenticating ? 'not-allowed' : 'pointer',
+                    opacity: isAuthenticating ? 0.75 : 1,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 8,
+                    transition: 'opacity 0.2s'
+                  }}
+                >
+                  {isAuthenticating ? (
+                    <>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" style={{ animation: 'spin 0.8s linear infinite' }}>
+                        <circle cx="12" cy="12" r="10" stroke="rgba(0,0,0,0.2)" />
+                        <path d="M12 2a10 10 0 0 1 10 10" />
+                      </svg>
+                      Logging In...
+                    </>
+                  ) : (
+                    'Log In'
+                  )}
+                </button>
+              </form>
+            </div>
+        </div>
+      ) : (isAccountsLoaded && accounts.length === 0) ? (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 'calc(100vh - 120px)', width: '100%', background: 'var(--bg)', padding: '24px 0' }}>
+          <div style={{
+            width: '100%',
+            maxWidth: 760,
+            background: 'var(--bg2)',
+            border: '1px solid var(--border)',
+            borderRadius: 16,
+            padding: '40px 36px',
+            boxShadow: '0 24px 64px rgba(0,0,0,0.5)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 24
+          }}>
+            <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+              <div style={{
+                width: 56,
+                height: 56,
+                borderRadius: '50%',
+                background: 'rgba(240, 185, 11, 0.1)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: 'var(--accent)'
+              }}>
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                  <line x1="12" y1="8" x2="12" y2="16"></line>
+                  <line x1="8" y1="12" x2="16" y2="12"></line>
+                </svg>
+              </div>
+              <h3 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: 'var(--text)' }}>Create Your First Account</h3>
+              <p style={{ margin: 0, fontSize: 13, color: 'var(--text-dim)', lineHeight: '1.5', maxWidth: 520 }}>
+                To start paper trading, you must create a trading account first. Set up your account name and default strategy filters below.
+              </p>
+            </div>
+
+            <form onSubmit={handleSubmitCreate(handleModalSubmit)} style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+              <div style={{ display: 'flex', gap: '24px' }}>
+                {/* Left Column: Account Info */}
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  <h4 style={{ margin: 0, fontSize: '13px', fontWeight: 600, color: 'var(--text)', borderBottom: '1px dashed var(--border)', paddingBottom: '4px' }}>Account Info</h4>
+                  
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)', letterSpacing: '0.04em' }}>ACCOUNT NAME</label>
+                    <input
+                      type="text"
+                      {...registerCreate('name', {
+                        required: 'Account name is required',
+                        validate: value => value.trim() !== '' || 'Account name cannot be empty'
+                      })}
+                      placeholder="e.g. My First Account"
+                      style={{
+                        padding: '10px 14px',
+                        borderRadius: 8,
+                        border: errorsCreate.name ? '1px solid #f85149' : '1px solid var(--border)',
+                        background: 'var(--bg3)',
+                        color: 'var(--text)',
+                        fontSize: 13,
+                        outline: 'none'
+                      }}
+                    />
+                    {errorsCreate.name && (
+                      <span style={{ fontSize: 11, color: '#f85149', marginTop: 2 }}>
+                        {errorsCreate.name.message}
+                      </span>
+                    )}
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '16px' }}>
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Underlying</label>
+                      <select
+                        {...registerCreate('underlying')}
+                        style={{
+                          padding: '10px 14px',
+                          borderRadius: 8,
+                          border: '1px solid var(--border)',
+                          background: 'var(--bg3)',
+                          color: 'var(--text)',
+                          fontSize: 13,
+                          outline: 'none',
+                          width: '100%'
+                        }}
+                      >
+                        <option value="BTC">BTC</option>
+                        <option value="ETH">ETH</option>
+                      </select>
+                    </div>
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Days to Expiry</label>
+                      <input
+                        type="number"
+                        {...registerCreate('daysToExpiry', { valueAsNumber: true })}
+                        style={{
+                          padding: '10px 14px',
+                          borderRadius: 8,
+                          border: '1px solid var(--border)',
+                          background: 'var(--bg3)',
+                          color: 'var(--text)',
+                          fontSize: 13,
+                          outline: 'none'
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingTop: '8px' }}>
+                    <input
+                      type="checkbox"
+                      id="firstAtmRatioScaling"
+                      {...registerCreate('atmRatioScaling')}
+                      style={{ cursor: 'pointer' }}
+                    />
+                    <label htmlFor="firstAtmRatioScaling" style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text)', cursor: 'pointer', marginBottom: 0 }}>
+                      ATM Ratio Entry
+                    </label>
+                  </div>
+
+                  {watchCreateAtmRatioScaling && (
+                    <div style={{ display: 'flex', gap: '16px' }}>
+                      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Call ATM Pct (%)</label>
+                        <input
+                          type="number"
+                          {...registerCreate('atmRatioPctCall', { valueAsNumber: true })}
+                          style={{
+                            padding: '10px 14px',
+                            borderRadius: 8,
+                            border: '1px solid var(--border)',
+                            background: 'var(--bg3)',
+                            color: 'var(--text)',
+                            fontSize: 13,
+                            outline: 'none'
+                          }}
+                        />
+                      </div>
+                      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Put ATM Pct (%)</label>
+                        <input
+                          type="number"
+                          {...registerCreate('atmRatioPctPut', { valueAsNumber: true })}
+                          style={{
+                            padding: '10px 14px',
+                            borderRadius: 8,
+                            border: '1px solid var(--border)',
+                            background: 'var(--bg3)',
+                            color: 'var(--text)',
+                            fontSize: 13,
+                            outline: 'none'
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Right Column: Default Strategy Filters */}
+                <div style={{ flex: 1.2, display: 'flex', flexDirection: 'column', gap: '16px', borderLeft: '1px solid var(--border)', paddingLeft: '24px' }}>
+                  <h4 style={{ margin: 0, fontSize: '13px', fontWeight: 600, color: 'var(--text)', borderBottom: '1px dashed var(--border)', paddingBottom: '4px' }}>Default Strategy Filters</h4>
+                  
+                  <div style={{ display: 'flex', gap: '16px' }}>
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Min Strike Diff ($)</label>
+                      <input
+                        type="number"
+                        {...registerCreate('minStrikeDiff', { valueAsNumber: true })}
+                        style={{
+                          padding: '10px 14px',
+                          borderRadius: 8,
+                          border: '1px solid var(--border)',
+                          background: 'var(--bg3)',
+                          color: 'var(--text)',
+                          fontSize: 13,
+                          outline: 'none'
+                        }}
+                      />
+                    </div>
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Min IV Diff (%)</label>
+                      <input
+                        type="number"
+                        {...registerCreate('minIvDiff', { valueAsNumber: true })}
+                        style={{
+                          padding: '10px 14px',
+                          borderRadius: 8,
+                          border: '1px solid var(--border)',
+                          background: 'var(--bg3)',
+                          color: 'var(--text)',
+                          fontSize: 13,
+                          outline: 'none'
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '16px' }}>
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Max Ratio Dev</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        {...registerCreate('maxRatioDeviation', { valueAsNumber: true })}
+                        style={{
+                          padding: '10px 14px',
+                          borderRadius: 8,
+                          border: '1px solid var(--border)',
+                          background: 'var(--bg3)',
+                          color: 'var(--text)',
+                          fontSize: 13,
+                          outline: 'none'
+                        }}
+                      />
+                    </div>
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Min Sell Premium ($)</label>
+                      <input
+                        type="number"
+                        {...registerCreate('minSellPremium', { valueAsNumber: true })}
+                        style={{
+                          padding: '10px 14px',
+                          borderRadius: 8,
+                          border: '1px solid var(--border)',
+                          background: 'var(--bg3)',
+                          color: 'var(--text)',
+                          fontSize: 13,
+                          outline: 'none'
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '16px' }}>
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Max Debit ($)</label>
+                      <input
+                        type="number"
+                        {...registerCreate('maxNetPremium', { valueAsNumber: true })}
+                        style={{
+                          padding: '10px 14px',
+                          borderRadius: 8,
+                          border: '1px solid var(--border)',
+                          background: 'var(--bg3)',
+                          color: 'var(--text)',
+                          fontSize: 13,
+                          outline: 'none'
+                        }}
+                      />
+                    </div>
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Min Long Dist</label>
+                      <input
+                        type="number"
+                        {...registerCreate('minLongDist', { valueAsNumber: true })}
+                        style={{
+                          padding: '10px 14px',
+                          borderRadius: 8,
+                          border: '1px solid var(--border)',
+                          background: 'var(--bg3)',
+                          color: 'var(--text)',
+                          fontSize: 13,
+                          outline: 'none'
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Max Ratio (1:X)</label>
+                    <input
+                      type="number"
+                      step="0.25"
+                      {...registerCreate('maxSellQty', { valueAsNumber: true })}
+                      style={{
+                        padding: '10px 14px',
+                        borderRadius: 8,
+                        border: '1px solid var(--border)',
+                        background: 'var(--bg3)',
+                        color: 'var(--text)',
+                        fontSize: 13,
+                        outline: 'none',
+                        width: '100%'
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={isCreatingAccount}
+                style={{
+                  padding: '12px 0',
+                  borderRadius: 8,
+                  border: 'none',
+                  background: 'var(--accent)',
+                  color: '#000',
+                  fontWeight: 700,
+                  fontSize: 14,
+                  cursor: isCreatingAccount ? 'not-allowed' : 'pointer',
+                  opacity: isCreatingAccount ? 0.75 : 1,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 8,
+                  marginTop: 8
+                }}
+              >
+                {isCreatingAccount ? (
+                  <>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" style={{ animation: 'spin 0.8s linear infinite' }}>
+                      <circle cx="12" cy="12" r="10" stroke="rgba(0,0,0,0.2)" />
+                      <path d="M12 2a10 10 0 0 1 10 10" />
+                    </svg>
+                    Creating Account...
+                  </>
+                ) : (
+                  'Create Trading Account'
+                )}
+              </button>
+            </form>
+          </div>
+        </div>
+      ) : (
+        <>
+          {/* Account Selector Dropdown strip */}
         <div className="account-selector-strip" style={{
           display: 'flex',
           alignItems: 'center',
@@ -1310,6 +1952,52 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               </svg>
               Delete
             </button>
+          )}
+
+          {/* User profile & Logout Button (Aligned to the Right) */}
+          {userProfile && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginLeft: 'auto' }}>
+              <span style={{ fontSize: 12, color: 'var(--text-dim)', opacity: 0.8, display: 'inline-flex', alignItems: 'center' }}>
+                {session?.user?.email} 
+                {userProfile.role === 'admin' && (
+                  <span style={{ 
+                    padding: '2px 6px', 
+                    borderRadius: '4px', 
+                    fontSize: '10px', 
+                    fontWeight: 600, 
+                    background: 'rgba(9, 105, 218, 0.15)', 
+                    color: '#0969da', 
+                    border: '1px solid rgba(9, 105, 218, 0.25)',
+                    marginLeft: 8 
+                  }}>
+                    ADMIN
+                  </span>
+                )}
+              </span>
+              <button
+                onClick={handleLogout}
+                style={{
+                  padding: '6px 12px',
+                  borderRadius: 6,
+                  background: 'transparent',
+                  color: 'var(--text-dim)',
+                  border: '1px solid var(--border)',
+                  cursor: 'pointer',
+                  fontSize: 13,
+                  fontWeight: 500,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4
+                }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                  <polyline points="16 17 21 12 16 7"></polyline>
+                  <line x1="21" y1="12" x2="9" y2="12"></line>
+                </svg>
+                Logout
+              </button>
+            </div>
           )}
         </div>
 
@@ -1929,7 +2617,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             )}
           </div>
         </div>
-      </div>
+      </>
+    )}
+  </div>
 
       {/* Create Account Modal */}
       {isCreateModalOpen && (
@@ -1963,7 +2653,37 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               {/* Left Column: Account Details */}
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '16px' }}>
                 <h4 style={{ margin: 0, fontSize: '13px', fontWeight: 600, color: 'var(--text)', borderBottom: '1px dashed var(--border)', paddingBottom: '4px' }}>Account Info</h4>
-                
+
+                {/* Admin-only: Owner Selector */}
+                {userProfile?.role === 'admin' && profiles.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-dim)' }}>
+                      Owner (Client)
+                      <span style={{ marginLeft: 6, padding: '2px 6px', borderRadius: 4, fontSize: 10, fontWeight: 700, background: 'rgba(9,105,218,0.15)', color: '#0969da', border: '1px solid rgba(9,105,218,0.25)' }}>ADMIN</span>
+                    </label>
+                    <select
+                      {...registerCreate('ownerId')}
+                      defaultValue={session?.user?.id ?? ''}
+                      style={{
+                        padding: '8px 12px',
+                        borderRadius: '6px',
+                        border: '1px solid var(--border)',
+                        background: 'var(--bg3)',
+                        color: 'var(--text)',
+                        fontSize: '13px',
+                        outline: 'none',
+                        width: '100%'
+                      }}
+                    >
+                      {profiles.map(p => (
+                        <option key={p.id} value={p.id} style={{ background: 'var(--bg3)', color: 'var(--text)' }}>
+                          {p.email}{p.id === session?.user?.id ? ' (you)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                   <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-dim)' }}>Account Name</label>
                   <input
@@ -1986,33 +2706,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                   {errorsCreate.name && (
                     <span style={{ fontSize: '11px', color: '#f85149', marginTop: '2px' }}>
                       {errorsCreate.name.message}
-                    </span>
-                  )}
-                </div>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-dim)' }}>Initial Balance ($)</label>
-                  <input
-                    type="number"
-                    {...registerCreate('balance', {
-                      required: 'Initial balance is required',
-                      valueAsNumber: true,
-                      validate: value => (!isNaN(value) && value > 0) || 'Initial balance must be a positive number'
-                    })}
-                    placeholder="10000"
-                    style={{
-                      padding: '8px 12px',
-                      borderRadius: '6px',
-                      border: errorsCreate.balance ? '1px solid #f85149' : '1px solid var(--border)',
-                      background: 'var(--bg3)',
-                      color: 'var(--text)',
-                      fontSize: '13px',
-                      outline: 'none'
-                    }}
-                  />
-                  {errorsCreate.balance && (
-                    <span style={{ fontSize: '11px', color: '#f85149', marginTop: '2px' }}>
-                      {errorsCreate.balance.message}
                     </span>
                   )}
                 </div>
