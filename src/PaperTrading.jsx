@@ -555,6 +555,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     if (!accountToDeleteId) return;
     setIsDeletingAccount(true);
     try {
+      // Clean up associated heartbeat row first to avoid leftovers
+      await supabase
+        .from('engine_heartbeat')
+        .delete()
+        .eq('id', `paper_trading_${accountToDeleteId}`);
+
       const { error } = await supabase
         .from('paper_trading_accounts')
         .delete()

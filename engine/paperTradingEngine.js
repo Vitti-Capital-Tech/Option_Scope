@@ -1436,15 +1436,29 @@ async function startSingleAccountEngine(account) {
 
   // ── Return cleanup function ───────────────────────────────────────────
   return {
-    async stop() {
-      log(`[${accountState.name}] Paper Trading Engine shutting down...`);
+    async stop(isDeleted = false) {
+      log(`[${accountState.name}] Paper Trading Engine shutting down... (isDeleted: ${isDeleted})`);
       clearInterval(evalTimer);
       clearInterval(spotTimer);
       clearInterval(productTimer);
       clearInterval(positionsTimer);
       if (wsHandle) { wsHandle.close(); wsHandle = null; }
       supabase.removeChannel(configChannel);
-      await heartbeat.stop();
+      
+      if (isDeleted) {
+        try {
+          await supabase
+            .from('engine_heartbeat')
+            .delete()
+            .eq('id', ENGINE_ID);
+          log(`[${accountState.name}] Cleaned up heartbeat row for deleted account.`);
+        } catch (err) {
+          logError(`[${accountState.name}] Failed to clean up heartbeat on delete:`, err);
+        }
+      } else {
+        await heartbeat.stop();
+      }
+      
       log(`[${accountState.name}] Paper Trading Engine stopped.`);
     },
     updateAccount(newAccount) {
@@ -1474,12 +1488,12 @@ export async function startPaperTradingEngine() {
     }
   }
 
-  async function stopAccountEngine(accountId) {
+  async function stopAccountEngine(accountId, isDeleted = false) {
     const handle = runningEngines[accountId];
     if (handle) {
-      log(`Stopping engine for account ${accountId}...`);
+      log(`Stopping engine for account ${accountId}... (isDeleted: ${isDeleted})`);
       try {
-        await handle.stop();
+        await handle.stop(isDeleted);
       } catch (e) {
         logError(`Error stopping engine for account ${accountId}:`, e);
       }
@@ -1516,7 +1530,7 @@ export async function startPaperTradingEngine() {
             await startAccountEngine(newRecord);
           }
         } else if (eventType === 'DELETE') {
-          await stopAccountEngine(oldRecord.id);
+          await stopAccountEngine(oldRecord.id, true);
         } else if (eventType === 'UPDATE') {
           if (!newRecord.is_active) {
             await stopAccountEngine(newRecord.id);
@@ -1550,8 +1564,9 @@ export async function startPaperTradingEngine() {
       // 1. Stop engines that are no longer active or have been deleted
       for (const accountId of Object.keys(runningEngines)) {
         if (!activeIds.has(accountId)) {
+          const stillExists = currentAccounts.some(a => a.id === accountId);
           log(`Fallback sync: Account ${accountId} is no longer active or deleted. Stopping engine.`);
-          await stopAccountEngine(accountId);
+          await stopAccountEngine(accountId, !stillExists);
         }
       }
 
