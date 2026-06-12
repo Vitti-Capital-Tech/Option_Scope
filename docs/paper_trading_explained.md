@@ -427,11 +427,13 @@ A standard rotation is a **full replacement** — both legs are exited and a new
 
 Only when **all** of these are true:
 
-1. The position is **NOT in the Top 3** ranked spreads for its type
-2. A better target exists (closer to ATM, no strike conflicts)
-3. **Rotation budget available**: at least 3 active positions of this type exist, and fewer than 3 rotations have happened this cycle
-4. The spot step guard passes (0.5% movement from entry)
-5. If the target happens to share the same sell strike, the net premium swap must be ≥ 0
+1. **Full Evaluation Cycle**: The current run is a full evaluation cycle (`onlyExits = false`), ensuring the entry code runs in the same tick and processes the replacement immediately.
+2. The position is **NOT in the Top 3** ranked spreads for its type.
+3. A better target exists (closer to ATM, no strike conflicts).
+4. **Rotation budget available**: at least 3 active positions of this type exist, and fewer than 3 rotations have happened this cycle.
+5. The spot step guard passes (0.5% movement from entry).
+6. If the target happens to share the same sell strike, the net premium swap must be ≥ 0.
+7. **No DB Strike Conflicts**: A pre-exit query checks Supabase to ensure the replacement target's strikes do not conflict with existing active positions. If a conflict is found, the exit is aborted.
 
 ### Rotation Budget
 

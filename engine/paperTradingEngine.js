@@ -821,8 +821,8 @@ async function startSingleAccountEngine(account) {
             exitReason = `Leg Swap: Buy ${currentStrike} -> ${targetStrike} | Old Buy: $${latestBuy.toFixed(2)} | New Buy: $${bestSwapTarget.buyPrice.toFixed(2)} | Old Sell Qty: ${pos.sellQty} | New Sell Qty: ${getScaledSellQty(bestSwapTarget)} | Sell Price: $${latestSell.toFixed(2)} | Net Premium Swap: $${netPremiumSwap.toFixed(2)}`;
             reservedTargets.add(targetStrike);
             reservedSellTargets.add(targetSellStrike);
-          } else if (!inTop3) {
-            // 2. Fallback to standard rotation (only for positions not in Top 3)
+          } else if (!onlyExits && !inTop3) {
+            // 2. Fallback to standard rotation (only for positions not in Top 3 during a full cycle)
             const bestTarget = uniqueTopSpreads.filter(s => s.buyLeg.type === pos.type).find(s => {
               const bS = Number(s.buyLeg.strike);
               const sS = Number(s.sellLeg.strike);
@@ -869,12 +869,37 @@ async function startSingleAccountEngine(account) {
                   const deltaQty = getScaledSellQty(bestTarget) - pos.sellQty;
                   const netPremiumSwap = (deltaQty * latestSell) - (bestTarget.buyPrice - latestBuy);
                   exitReason = `Leg Swap: Buy ${currentStrike} -> ${targetStrike} | Old Buy: $${latestBuy.toFixed(2)} | New Buy: $${bestTarget.buyPrice.toFixed(2)} | Old Sell Qty: ${pos.sellQty} | New Sell Qty: ${getScaledSellQty(bestTarget)} | Sell Price: $${latestSell.toFixed(2)} | Net Premium Swap: $${netPremiumSwap.toFixed(2)}`;
+                  reservedTargets.add(targetStrike);
+                  reservedSellTargets.add(targetSellStrike);
                 } else {
-                  shouldExit = true;
-                  exitReason = `Lost Top 3 and Rank 1 better target available (${targetStrike})`;
+                  // Standard rotation: Verify DB-level uniqueness checks before exiting
+                  let hasConflict = false;
+                  try {
+                    const { data: dbBuyConflict } = await supabase.from('active_positions').select('id')
+                      .eq('account_id', accountState.id)
+                      .eq('underlying', underlying).eq('type', pos.type)
+                      .eq('buy_strike', targetStrike).limit(1);
+                    const { data: dbSellConflict } = await supabase.from('active_positions').select('id')
+                      .eq('account_id', accountState.id)
+                      .eq('underlying', underlying).eq('type', pos.type)
+                      .eq('sell_strike', targetSellStrike).limit(1);
+
+                    if ((dbBuyConflict && dbBuyConflict.length > 0) || (dbSellConflict && dbSellConflict.length > 0)) {
+                      hasConflict = true;
+                      log(`[${accountState.name}] Rotation target ${bestTarget.buyLeg.type.toUpperCase()} ${targetStrike}/${targetSellStrike} skipped: DB strike conflict exists.`);
+                    }
+                  } catch (dbErr) {
+                    hasConflict = true;
+                    logError(`[${accountState.name}] Failed to verify DB strike conflict for rotation:`, dbErr);
+                  }
+
+                  if (!hasConflict) {
+                    shouldExit = true;
+                    exitReason = `Lost Top 3 and Rank 1 better target available (${targetStrike})`;
+                    reservedTargets.add(targetStrike);
+                    reservedSellTargets.add(targetSellStrike);
+                  }
                 }
-                reservedTargets.add(targetStrike);
-                reservedSellTargets.add(targetSellStrike);
               }
             }
           }
