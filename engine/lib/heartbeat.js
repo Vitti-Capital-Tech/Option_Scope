@@ -55,14 +55,30 @@ export function createHeartbeat(engineId) {
     },
 
     /** Stop the heartbeat timer and mark engine as stopped. */
-    async stop() {
+    async stop(isDeleted = false) {
       if (intervalTimer) {
         clearInterval(intervalTimer);
         intervalTimer = null;
       }
-      state.status = 'error';
-      await write();
-      log(`Heartbeat stopped for ${engineId}`);
+      if (isDeleted) {
+        try {
+          const { error } = await supabase
+            .from('engine_heartbeat')
+            .delete()
+            .eq('id', engineId);
+          if (error) {
+            logError(`Heartbeat delete error (${engineId}):`, error.message);
+          } else {
+            log(`Heartbeat deleted for ${engineId}`);
+          }
+        } catch (e) {
+          logError(`Heartbeat delete exception (${engineId}):`, e.message);
+        }
+      } else {
+        state.status = 'error';
+        await write();
+        log(`Heartbeat stopped for ${engineId}`);
+      }
     },
 
     /** Force a heartbeat write now. */

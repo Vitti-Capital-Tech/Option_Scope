@@ -1489,19 +1489,7 @@ async function startSingleAccountEngine(account) {
       if (wsHandle) { wsHandle.close(); wsHandle = null; }
       supabase.removeChannel(configChannel);
       
-      if (isDeleted) {
-        try {
-          await supabase
-            .from('engine_heartbeat')
-            .delete()
-            .eq('id', ENGINE_ID);
-          log(`[${accountState.name}] Cleaned up heartbeat row for deleted account.`);
-        } catch (err) {
-          logError(`[${accountState.name}] Failed to clean up heartbeat on delete:`, err);
-        }
-      } else {
-        await heartbeat.stop();
-      }
+      await heartbeat.stop(isDeleted);
       
       log(`[${accountState.name}] Paper Trading Engine stopped.`);
     },
