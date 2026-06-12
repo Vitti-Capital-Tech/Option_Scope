@@ -39,6 +39,7 @@ async function startSingleAccountEngine(account) {
     atmRatioScaling: false,
     atmRatioPctCall: 50,
     atmRatioPctPut: 50,
+    daysToExpiry: 0,
   };
   let products = [];
   let expiries = [];
@@ -100,6 +101,7 @@ async function startSingleAccountEngine(account) {
           atm_ratio_scaling: false,
           atm_ratio_distance_call: 50,
           atm_ratio_distance_put: 50,
+          days_to_expiry: 0,
           updated_at: new Date().toISOString()
         };
         const { data: inserted, error: insertErr } = await supabase
@@ -129,6 +131,7 @@ async function startSingleAccountEngine(account) {
           atmRatioScaling: data.atm_ratio_scaling ?? false,
           atmRatioPctCall: data.atm_ratio_distance_call ?? 50,
           atmRatioPctPut: data.atm_ratio_distance_put ?? 50,
+          daysToExpiry: data.days_to_expiry ?? 0,
         };
         configDbId = data.id;
         log(`[${accountState.name}] Config loaded: ${config.underlying} | Expiry: ${config.expiry || 'auto'}`);
@@ -177,7 +180,18 @@ async function startSingleAccountEngine(account) {
       expiries = getExpiries(prods);
 
       if (expiries.length && (!config.expiry || !expiries.includes(config.expiry))) {
-        config.expiry = expiries[0];
+        let selectedExpiry = null;
+        for (const exp of expiries) {
+          const daysRemaining = (new Date(exp).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
+          if (daysRemaining >= (config.daysToExpiry || 0)) {
+            selectedExpiry = exp;
+            break;
+          }
+        }
+        if (!selectedExpiry) {
+          selectedExpiry = expiries[0];
+        }
+        config.expiry = selectedExpiry;
         log(`[${accountState.name}] Expiry auto-selected: ${config.expiry}`);
         // Persist the auto-selected expiry back to Supabase
         if (configDbId) {
@@ -1059,6 +1073,13 @@ async function startSingleAccountEngine(account) {
           const expiryCheck = (new Date(config.expiry).getTime() - Date.now()) / 60000;
           if (expiryCheck < 5) {
             logWarn(`Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: too close to expiry (${expiryCheck.toFixed(1)} mins remaining)`);
+            continue;
+          }
+
+          // Days to expiry guard
+          const daysRemaining = (new Date(config.expiry).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
+          if (daysRemaining < (config.daysToExpiry || 0)) {
+            logWarn(`Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: days to expiry (${daysRemaining.toFixed(2)}) is less than min required (${config.daysToExpiry})`);
             continue;
           }
 

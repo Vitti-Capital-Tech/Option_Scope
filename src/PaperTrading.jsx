@@ -46,10 +46,28 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     register: registerCreate,
     handleSubmit: handleSubmitCreate,
     formState: { errors: errorsCreate },
-    reset: resetCreate
+    reset: resetCreate,
+    watch: watchCreate
   } = useForm({
-    defaultValues: { name: '', balance: 10000 }
+    defaultValues: {
+      name: '',
+      balance: 10000,
+      underlying: 'BTC',
+      minStrikeDiff: 800,
+      minIvDiff: 5,
+      maxRatioDeviation: 0.25,
+      minSellPremium: 10,
+      maxNetPremium: 20,
+      minLongDist: 500,
+      maxSellQty: 10,
+      atmRatioScaling: false,
+      atmRatioPctCall: 50,
+      atmRatioPctPut: 50,
+      daysToExpiry: 0,
+    }
   });
+
+  const watchCreateAtmRatioScaling = watchCreate('atmRatioScaling');
 
   const {
     register: registerEdit,
@@ -71,6 +89,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     atmRatioScaling: false,
     atmRatioPctCall: 50,
     atmRatioPctPut: 50,
+    daysToExpiry: 0,
   }));
   const [draftConfig, setDraftConfig] = useState(() => ({ ...config }));
   const [isConfigLoaded, setIsConfigLoaded] = useState(false);
@@ -144,20 +163,42 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       const exps = getExpiries(prods);
       setExpiries(exps);
       if (isConfigLoaded && exps.length && (!selExpiry || !exps.includes(selExpiry))) {
-        updateConfig('expiry', exps[0]);
+        let selectedExpiry = null;
+        for (const exp of exps) {
+          const daysRemaining = (new Date(exp).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
+          if (daysRemaining >= (config.daysToExpiry || 0)) {
+            selectedExpiry = exp;
+            break;
+          }
+        }
+        if (!selectedExpiry) {
+          selectedExpiry = exps[0];
+        }
+        updateConfig('expiry', selectedExpiry);
       }
     } catch (e) { console.error('Failed to load products:', e); }
-  }, [underlying, selExpiry, isConfigLoaded]);
+  }, [underlying, selExpiry, isConfigLoaded, config.daysToExpiry]);
 
   // Validate expiry when config and products are loaded
   useEffect(() => {
     if (isConfigLoaded && products.length > 0) {
       const exps = getExpiries(products);
       if (exps.length && (!selExpiry || !exps.includes(selExpiry))) {
-        updateConfig('expiry', exps[0]);
+        let selectedExpiry = null;
+        for (const exp of exps) {
+          const daysRemaining = (new Date(exp).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
+          if (daysRemaining >= (config.daysToExpiry || 0)) {
+            selectedExpiry = exp;
+            break;
+          }
+        }
+        if (!selectedExpiry) {
+          selectedExpiry = exps[0];
+        }
+        updateConfig('expiry', selectedExpiry);
       }
     }
-  }, [isConfigLoaded, products, selExpiry]);
+  }, [isConfigLoaded, products, selExpiry, config.daysToExpiry]);
 
   useEffect(() => {
     setExpiries([]);
@@ -234,17 +275,18 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         await supabase.from('paper_trading_config').insert([{
           id: accData.id,
           account_id: accData.id,
-          underlying: 'BTC',
-          min_strike_diff: 800,
-          min_iv_diff: 5,
-          max_ratio_deviation: 0.25,
-          min_sell_premium: 10,
-          max_net_premium: 20,
-          min_long_dist: 500,
-          max_sell_qty: 10,
-          atm_ratio_scaling: false,
-          atm_ratio_distance_call: 1,
-          atm_ratio_distance_put: 1,
+          underlying: data.underlying,
+          min_strike_diff: data.minStrikeDiff,
+          min_iv_diff: data.minIvDiff,
+          max_ratio_deviation: data.maxRatioDeviation,
+          min_sell_premium: data.minSellPremium,
+          max_net_premium: data.maxNetPremium,
+          min_long_dist: data.minLongDist,
+          max_sell_qty: data.maxSellQty,
+          atm_ratio_scaling: data.atmRatioScaling,
+          atm_ratio_distance_call: data.atmRatioPctCall,
+          atm_ratio_distance_put: data.atmRatioPctPut,
+          days_to_expiry: data.daysToExpiry,
         }]);
 
         // Manually fetch accounts first to update state instantly!
@@ -266,7 +308,19 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const triggerCreateAccount = () => {
     resetCreate({
       name: `Account ${accounts.length + 1}`,
-      balance: 10000
+      balance: 10000,
+      underlying: config.underlying,
+      minStrikeDiff: config.minStrikeDiff,
+      minIvDiff: config.minIvDiff,
+      maxRatioDeviation: config.maxRatioDeviation,
+      minSellPremium: config.minSellPremium,
+      maxNetPremium: config.maxNetPremium,
+      minLongDist: config.minLongDist,
+      maxSellQty: config.maxSellQty,
+      atmRatioScaling: config.atmRatioScaling,
+      atmRatioPctCall: config.atmRatioPctCall,
+      atmRatioPctPut: config.atmRatioPctPut,
+      daysToExpiry: config.daysToExpiry,
     });
     setIsCreateModalOpen(true);
   };
@@ -357,6 +411,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         atm_ratio_scaling: newCfg.atmRatioScaling,
         atm_ratio_distance_call: newCfg.atmRatioPctCall,
         atm_ratio_distance_put: newCfg.atmRatioPctPut,
+        days_to_expiry: newCfg.daysToExpiry,
         updated_at: new Date().toISOString()
       });
     } catch (e) { }
@@ -372,7 +427,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     'maxSellQty',
     'atmRatioScaling',
     'atmRatioPctCall',
-    'atmRatioPctPut'
+    'atmRatioPctPut',
+    'daysToExpiry'
   ];
 
   const updateConfig = (keyOrObj, value) => {
@@ -404,6 +460,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     atmRatioScaling: false,
     atmRatioPctCall: 50,
     atmRatioPctPut: 50,
+    daysToExpiry: 0,
   };
 
   const isDefaultConfig = React.useMemo(() => {
@@ -452,6 +509,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           atm_ratio_scaling: false,
           atm_ratio_distance_call: 50,
           atm_ratio_distance_put: 50,
+          days_to_expiry: 0,
           updated_at: new Date().toISOString()
         };
         const { data: inserted, error: insertErr } = await supabase
@@ -479,6 +537,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           atmRatioScaling: data.atm_ratio_scaling ?? false,
           atmRatioPctCall: data.atm_ratio_distance_call ?? 50,
           atmRatioPctPut: data.atm_ratio_distance_put ?? 50,
+          daysToExpiry: data.days_to_expiry ?? 0,
         };
         setConfig(loadedConfig);
         setDraftConfig(loadedConfig);
@@ -1337,6 +1396,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               { label: 'Max Debit ($):', key: 'maxNetPremium', width: 60 },
               { label: 'Min Long Dist:', key: 'minLongDist', width: 60 },
               { label: 'Max Ratio (1:X):', key: 'maxSellQty', width: 65, step: '0.25' },
+              { label: 'Days to Expiry:', key: 'daysToExpiry', width: 50 },
             ].map(({ label, key, width, step }) => (
               <div key={key} className="form-group">
                 <label style={{ marginBottom: 0 }}>{label}</label>
@@ -1891,68 +1951,298 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             border: '1px solid var(--border)',
             borderRadius: '8px',
             padding: '24px',
-            width: '380px',
+            width: '720px',
             boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
             display: 'flex',
             flexDirection: 'column',
             gap: '16px'
           }}>
-            <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: 'var(--text)' }}>Create New Account</h3>
+            <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: 'var(--text)', borderBottom: '1px solid var(--border)', paddingBottom: '10px' }}>Create New Account</h3>
             
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-dim)' }}>Account Name</label>
-              <input
-                type="text"
-                {...registerCreate('name', {
-                  required: 'Account name is required',
-                  validate: value => value.trim() !== '' || 'Account name cannot be empty'
-                })}
-                placeholder="e.g. BTC Aggressive"
-                style={{
-                  padding: '8px 12px',
-                  borderRadius: '6px',
-                  border: errorsCreate.name ? '1px solid #f85149' : '1px solid var(--border)',
-                  background: 'var(--bg3)',
-                  color: 'var(--text)',
-                  fontSize: '13px',
-                  outline: 'none'
-                }}
-              />
-              {errorsCreate.name && (
-                <span style={{ fontSize: '11px', color: '#f85149', marginTop: '2px' }}>
-                  {errorsCreate.name.message}
-                </span>
-              )}
+            <div style={{ display: 'flex', gap: '24px' }}>
+              {/* Left Column: Account Details */}
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                <h4 style={{ margin: 0, fontSize: '13px', fontWeight: 600, color: 'var(--text)', borderBottom: '1px dashed var(--border)', paddingBottom: '4px' }}>Account Info</h4>
+                
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-dim)' }}>Account Name</label>
+                  <input
+                    type="text"
+                    {...registerCreate('name', {
+                      required: 'Account name is required',
+                      validate: value => value.trim() !== '' || 'Account name cannot be empty'
+                    })}
+                    placeholder="e.g. BTC Aggressive"
+                    style={{
+                      padding: '8px 12px',
+                      borderRadius: '6px',
+                      border: errorsCreate.name ? '1px solid #f85149' : '1px solid var(--border)',
+                      background: 'var(--bg3)',
+                      color: 'var(--text)',
+                      fontSize: '13px',
+                      outline: 'none'
+                    }}
+                  />
+                  {errorsCreate.name && (
+                    <span style={{ fontSize: '11px', color: '#f85149', marginTop: '2px' }}>
+                      {errorsCreate.name.message}
+                    </span>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-dim)' }}>Initial Balance ($)</label>
+                  <input
+                    type="number"
+                    {...registerCreate('balance', {
+                      required: 'Initial balance is required',
+                      valueAsNumber: true,
+                      validate: value => (!isNaN(value) && value > 0) || 'Initial balance must be a positive number'
+                    })}
+                    placeholder="10000"
+                    style={{
+                      padding: '8px 12px',
+                      borderRadius: '6px',
+                      border: errorsCreate.balance ? '1px solid #f85149' : '1px solid var(--border)',
+                      background: 'var(--bg3)',
+                      color: 'var(--text)',
+                      fontSize: '13px',
+                      outline: 'none'
+                    }}
+                  />
+                  {errorsCreate.balance && (
+                    <span style={{ fontSize: '11px', color: '#f85149', marginTop: '2px' }}>
+                      {errorsCreate.balance.message}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Right Column: Default Filters */}
+              <div style={{ flex: 1.5, display: 'flex', flexDirection: 'column', gap: '16px', borderLeft: '1px solid var(--border)', paddingLeft: '24px' }}>
+                <h4 style={{ margin: 0, fontSize: '13px', fontWeight: 600, color: 'var(--text)', borderBottom: '1px dashed var(--border)', paddingBottom: '4px' }}>Default Strategy Filters</h4>
+                
+                {/* Row 1: Underlying & Days to Expiry */}
+                <div style={{ display: 'flex', gap: '16px' }}>
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-dim)' }}>Underlying</label>
+                    <select
+                      {...registerCreate('underlying')}
+                      style={{
+                        padding: '8px 12px',
+                        borderRadius: '6px',
+                        border: '1px solid var(--border)',
+                        background: 'var(--bg3)',
+                        color: 'var(--text)',
+                        fontSize: '13px',
+                        outline: 'none',
+                        width: '100%'
+                      }}
+                    >
+                      <option value="BTC" style={{ background: 'var(--bg3)', color: 'var(--text)' }}>BTC</option>
+                      <option value="ETH" style={{ background: 'var(--bg3)', color: 'var(--text)' }}>ETH</option>
+                    </select>
+                  </div>
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-dim)' }}>Days to Expiry</label>
+                    <input
+                      type="number"
+                      {...registerCreate('daysToExpiry', { valueAsNumber: true })}
+                      style={{
+                        padding: '8px 12px',
+                        borderRadius: '6px',
+                        border: '1px solid var(--border)',
+                        background: 'var(--bg3)',
+                        color: 'var(--text)',
+                        fontSize: '13px',
+                        outline: 'none'
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {/* Row 2: Min Strike Diff & Min IV Diff */}
+                <div style={{ display: 'flex', gap: '16px' }}>
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-dim)' }}>Min Strike Diff ($)</label>
+                    <input
+                      type="number"
+                      {...registerCreate('minStrikeDiff', { valueAsNumber: true })}
+                      style={{
+                        padding: '8px 12px',
+                        borderRadius: '6px',
+                        border: '1px solid var(--border)',
+                        background: 'var(--bg3)',
+                        color: 'var(--text)',
+                        fontSize: '13px',
+                        outline: 'none'
+                      }}
+                    />
+                  </div>
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-dim)' }}>Min IV Diff (%)</label>
+                    <input
+                      type="number"
+                      {...registerCreate('minIvDiff', { valueAsNumber: true })}
+                      style={{
+                        padding: '8px 12px',
+                        borderRadius: '6px',
+                        border: '1px solid var(--border)',
+                        background: 'var(--bg3)',
+                        color: 'var(--text)',
+                        fontSize: '13px',
+                        outline: 'none'
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {/* Row 3: Max Ratio Deviation & Min Sell Premium */}
+                <div style={{ display: 'flex', gap: '16px' }}>
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-dim)' }}>Max Ratio Dev</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      {...registerCreate('maxRatioDeviation', { valueAsNumber: true })}
+                      style={{
+                        padding: '8px 12px',
+                        borderRadius: '6px',
+                        border: '1px solid var(--border)',
+                        background: 'var(--bg3)',
+                        color: 'var(--text)',
+                        fontSize: '13px',
+                        outline: 'none'
+                      }}
+                    />
+                  </div>
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-dim)' }}>Min Sell Premium ($)</label>
+                    <input
+                      type="number"
+                      {...registerCreate('minSellPremium', { valueAsNumber: true })}
+                      style={{
+                        padding: '8px 12px',
+                        borderRadius: '6px',
+                        border: '1px solid var(--border)',
+                        background: 'var(--bg3)',
+                        color: 'var(--text)',
+                        fontSize: '13px',
+                        outline: 'none'
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {/* Row 4: Max Debit & Min Long Distance */}
+                <div style={{ display: 'flex', gap: '16px' }}>
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-dim)' }}>Max Debit ($)</label>
+                    <input
+                      type="number"
+                      {...registerCreate('maxNetPremium', { valueAsNumber: true })}
+                      style={{
+                        padding: '8px 12px',
+                        borderRadius: '6px',
+                        border: '1px solid var(--border)',
+                        background: 'var(--bg3)',
+                        color: 'var(--text)',
+                        fontSize: '13px',
+                        outline: 'none'
+                      }}
+                    />
+                  </div>
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-dim)' }}>Min Long Dist</label>
+                    <input
+                      type="number"
+                      {...registerCreate('minLongDist', { valueAsNumber: true })}
+                      style={{
+                        padding: '8px 12px',
+                        borderRadius: '6px',
+                        border: '1px solid var(--border)',
+                        background: 'var(--bg3)',
+                        color: 'var(--text)',
+                        fontSize: '13px',
+                        outline: 'none'
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {/* Row 5: Max Sell Qty & ATM Scaling Toggle */}
+                <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-dim)' }}>Max Ratio (1:X)</label>
+                    <input
+                      type="number"
+                      step="0.25"
+                      {...registerCreate('maxSellQty', { valueAsNumber: true })}
+                      style={{
+                        padding: '8px 12px',
+                        borderRadius: '6px',
+                        border: '1px solid var(--border)',
+                        background: 'var(--bg3)',
+                        color: 'var(--text)',
+                        fontSize: '13px',
+                        outline: 'none'
+                      }}
+                    />
+                  </div>
+                  <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '8px', paddingTop: '20px' }}>
+                    <input
+                      type="checkbox"
+                      id="createAtmRatioScaling"
+                      {...registerCreate('atmRatioScaling')}
+                      style={{ cursor: 'pointer' }}
+                    />
+                    <label htmlFor="createAtmRatioScaling" style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text)', cursor: 'pointer', marginBottom: 0 }}>
+                      ATM Ratio Entry
+                    </label>
+                  </div>
+                </div>
+
+                {/* Row 6 (Conditional): ATM Pct Call & Put */}
+                {watchCreateAtmRatioScaling && (
+                  <div style={{ display: 'flex', gap: '16px' }}>
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-dim)' }}>Call ATM Pct (%)</label>
+                      <input
+                        type="number"
+                        {...registerCreate('atmRatioPctCall', { valueAsNumber: true })}
+                        style={{
+                          padding: '8px 12px',
+                          borderRadius: '6px',
+                          border: '1px solid var(--border)',
+                          background: 'var(--bg3)',
+                          color: 'var(--text)',
+                          fontSize: '13px',
+                          outline: 'none'
+                        }}
+                      />
+                    </div>
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-dim)' }}>Put ATM Pct (%)</label>
+                      <input
+                        type="number"
+                        {...registerCreate('atmRatioPctPut', { valueAsNumber: true })}
+                        style={{
+                          padding: '8px 12px',
+                          borderRadius: '6px',
+                          border: '1px solid var(--border)',
+                          background: 'var(--bg3)',
+                          color: 'var(--text)',
+                          fontSize: '13px',
+                          outline: 'none'
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-dim)' }}>Initial Balance ($)</label>
-              <input
-                type="number"
-                {...registerCreate('balance', {
-                  required: 'Initial balance is required',
-                  valueAsNumber: true,
-                  validate: value => (!isNaN(value) && value > 0) || 'Initial balance must be a positive number'
-                })}
-                placeholder="10000"
-                style={{
-                  padding: '8px 12px',
-                  borderRadius: '6px',
-                  border: errorsCreate.balance ? '1px solid #f85149' : '1px solid var(--border)',
-                  background: 'var(--bg3)',
-                  color: 'var(--text)',
-                  fontSize: '13px',
-                  outline: 'none'
-                }}
-              />
-              {errorsCreate.balance && (
-                <span style={{ fontSize: '11px', color: '#f85149', marginTop: '2px' }}>
-                  {errorsCreate.balance.message}
-                </span>
-              )}
-            </div>
-
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '8px' }}>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '16px', borderTop: '1px solid var(--border)', paddingTop: '16px' }}>
               <button
                 type="button"
                 disabled={isCreatingAccount}

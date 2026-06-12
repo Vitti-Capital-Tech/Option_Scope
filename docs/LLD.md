@@ -372,8 +372,9 @@ Spreads scanned from the options chain are evaluated for their potential At-The-
 New entries are opened from `uniqueTopSpreads` (the deduplicated, ROI-ranked candidate list) after the exit pass:
 
 1. **Expiry Buffer Guard**: Skip if `minutesToExpiry < 5`.
-2. **Strike Uniqueness (Local)**: Block if buy or sell strike already active in `remaining` or `newEntries` (same type/underlying).
-3. **Portfolio Cap (Local)**: Block if `remaining + newEntries count >= 3` for this type.
+2. **Days to Expiry Guard**: Skip if the expiry has fewer days remaining than the configured `daysToExpiry` threshold.
+3. **Strike Uniqueness (Local)**: Block if buy or sell strike already active in `remaining` or `newEntries` (same type/underlying).
+4. **Portfolio Cap (Local)**: Block if `remaining + newEntries count >= 3` for this type.
 4. **Execution**: `entryBuyPrice = spread.ask`, `entrySellPrice = spread.bid`. Entry IVs captured: `entryBuyIv = ticker.askIv`, `entrySellIv = ticker.bidIv`. Baseline ATM ratio (`entryAtmRatio`) and unscaled lot size (`originalLotSize`) are computed.
    - **ATM Ratio Entry Scaling**: If `atmRatioScaling` is enabled, the target ratio is scaled using a percentage offset: `targetRatio = originalRatio + (pct / 100) * (atmRatioVal - originalRatio)`, where `pct` is `atmRatioPctCall`/`atmRatioPctPut` and `atmRatioVal` is the live ATM ratio rounded to 0.25. The entry ratio to use is `ratioToUse = Math.max(spread.sellQty, Math.round(targetRatio / 0.25) * 0.25)`. Both long lot size and short quantity are scaled under the 200X leverage limit ($200k cap) using this `ratioToUse`.
    - The final scaled values are written to `buy_leg` JSON metadata and stored inside Supabase `active_positions`.
@@ -407,6 +408,7 @@ When the engine starts for a new account and no `paper_trading_config` row exist
 | `atm_ratio_scaling` | `false` |
 | `atm_ratio_distance_call` | 50 |
 | `atm_ratio_distance_put` | 50 |
+| `days_to_expiry` | 0 |
 
 ### J. Config Hot-Reload via Supabase Realtime
 
@@ -523,7 +525,8 @@ On first spot price arrival, `backfillMargins` queries all `active_positions` fr
 
 ### 2. Custom React Modals
 - **Create Account Modal**:
-  - Collects Name and Initial Balance.
+  - Collects Name, Initial Balance, and initial Strategy Filters (Underlying, Days to Expiry, Min Strike Diff, Min IV Diff, Max Ratio Dev, Min Sell Premium, Max Debit, Min Long Dist, Max Sell Qty, and ATM Ratio Scaling with Call/Put ATM percentages).
+  - Pre-fills all strategy filters with the current active filters on the screen as convenient defaults.
   - Utilizes `react-hook-form` for input validation and error feedback.
   - Validations:
     - Account Name: Required, trimmed input must be non-empty.
