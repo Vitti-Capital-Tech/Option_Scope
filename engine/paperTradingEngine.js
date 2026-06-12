@@ -724,12 +724,12 @@ async function startSingleAccountEngine(account) {
             const isBetter = isPut ? (bS > currentStrike) : (bS < currentStrike);
             if (!isBetter) return false;
 
-            // Swap PnL guard: net premium swap cost (sell - buy) must be at least -10 (i.e. max 10 debit)
+            // Swap PnL guard: net premium swap cost (sell - buy) must be at least 0 (i.e. no debit)
             const deltaQty = getScaledSellQty(s) - pos.sellQty;
             const netPremiumSwap = (deltaQty * latestSell) - (s.buyPrice - latestBuy);
-            if (netPremiumSwap < -10) {
+            if (netPremiumSwap < 0) {
               if (!onlyExits) {
-                log(`  Leg Swap candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: net premium swap cost too high ($${netPremiumSwap.toFixed(2)} < -$10.00 credit/debit)`);
+                log(`  Leg Swap candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: net premium swap cost too high ($${netPremiumSwap.toFixed(2)} < $0.00 credit/debit)`);
               }
               return false;
             }
@@ -775,7 +775,7 @@ async function startSingleAccountEngine(account) {
               if (sS === Number(pos.sellLeg.strike)) {
                 const deltaQty = getScaledSellQty(s) - pos.sellQty;
                 const netPremiumSwap = (deltaQty * latestSell) - (s.buyPrice - latestBuy);
-                if (netPremiumSwap < -10) return false;
+                if (netPremiumSwap < 0) return false;
               }
 
               const oldSpotBase = pos.entrySpotPrice || pos.entryBuyPrice || spotPrice;
