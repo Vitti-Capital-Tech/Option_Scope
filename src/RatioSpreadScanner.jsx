@@ -576,7 +576,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
         badgeDotClassName={scanning ? 'live' : ''}
       />
 
-      <div className="body" style={{ flexDirection: 'column' }}>
+      <div className="body scanner-body" style={{ flexDirection: 'column' }}>
 
 
         {/* Topbar Configuration */}

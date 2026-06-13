@@ -1430,7 +1430,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         badgeColor={engineStatusColor}
       />
 
-      <div className="body" style={{ flexDirection: 'column', overflowY: 'auto' }}>
+      <div className="body trading-body" style={{ flexDirection: 'column', overflowY: 'auto' }}>
         {!session ? (
           <LoginCard
             authEmail={authEmail}

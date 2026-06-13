@@ -16,19 +16,7 @@ export default function DeleteAccountModal({
   const hasActivePositions = positions.length > 0 && activeAccountId === accountToDeleteId;
 
   return (
-    <div style={{
-      position: 'fixed',
-      top: 0,
-      left: 0,
-      width: '100%',
-      height: '100%',
-      backgroundColor: 'rgba(0, 0, 0, 0.6)',
-      backdropFilter: 'blur(4px)',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      zIndex: 9999
-    }}>
+    <div className="modal-overlay-wrapper">
       <div className="modal-container-delete">
         <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: '#f85149', display: 'flex', alignItems: 'center', gap: '8px' }}>
           Delete Account
