@@ -1407,7 +1407,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   // Show loading spinner while auth state is resolving
   if (isAuthLoading) {
     return (
-      <div className="app" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh' }}>
+      <div className="app" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
           <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2.5" style={{ animation: 'spin 0.9s linear infinite' }}>
             <circle cx="12" cy="12" r="10" stroke="rgba(240,185,11,0.15)" />
