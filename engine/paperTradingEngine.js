@@ -576,8 +576,8 @@ async function startSingleAccountEngine(account) {
 
               const partialGrossPnl = buyPriceDiff * deltaBuyQty;
 
-              // Proportional entry fee: use local (decremented) entryFee and currentLotSize
-              const partialEntryFee = entryFee * (deltaBuyQty / currentLotSize);
+              // Exact entry fee of the buy leg portion being exited
+              const partialEntryFee = Math.min(entryFee, calculateFee(pos.entryBuyPrice, pos.entrySpotPrice, deltaBuyQty, pos.buyLeg.originalLotSize || 1));
               const partialExitFee = calculateFee(liveExitBuy, spotPrice, deltaBuyQty, pos.buyLeg.originalLotSize || 1);
               const partialTotalFees = partialEntryFee + partialExitFee;
               const partialNetPnl = partialGrossPnl - partialTotalFees;
@@ -954,8 +954,8 @@ async function startSingleAccountEngine(account) {
             finalGrossPnl = (latestBuy - pos.entryBuyPrice) * pos.buyLeg.lotSize;
             // Exit fee based on long leg exit only
             finalExitFee = calculateFee(latestBuy, spotPrice, pos.buyLeg.lotSize, pos.buyLeg.originalLotSize || 1);
-            // Entry fee apportioned to long leg
-            const longEntryFee = (pos.entryFee || 0) * (pos.buyLeg.lotSize / (pos.buyLeg.lotSize + (pos.sellQty * (pos.sellLeg.lotSize || 1))));
+            // Entry fee apportioned to long leg based on exact entry values
+            const longEntryFee = Math.min(pos.entryFee || 0, calculateFee(pos.entryBuyPrice, pos.entrySpotPrice, pos.buyLeg.lotSize, pos.buyLeg.originalLotSize || 1));
             finalEntryFee = longEntryFee;
             finalTotalFees = finalEntryFee + finalExitFee;
             finalNetPnl = finalGrossPnl - finalTotalFees;

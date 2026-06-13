@@ -352,11 +352,13 @@ STOP:   Can't go below 0.50 (50% floor of initial scaled lot size)
 
 ### What Happens When It Scales
 
-1. A **partial exit trade** is recorded in `trade_history` with `is_partial = true`
-2. The buy leg's `lotSize` is reduced by `deltaBuyQty` (25% of initial)
-3. The `checkpointPnl` and `checkpointAtmPnl` are **reset** to current values (this raises the bar for the next scaling step)
-4. **Consistent Fee Calculations**: Fees are calculated using standard parameter order where the long leg's scaled quantity/lots are passed as the 3rd parameter (`qty`) and the contract's unit lot size is passed as the 4th parameter (`lotSize`) of `calculateFee()`.
-5. The process **repeats in a while loop** — multiple scaling steps can happen in a single evaluation if the price moved a lot
+1. A **partial exit trade** is recorded in `trade_history` with `is_partial = true`.
+2. The buy leg's `lotSize` is reduced by `deltaBuyQty` (25% of initial).
+3. The `checkpointPnl` and `checkpointAtmPnl` are **reset** to current values (this raises the bar for the next scaling step).
+4. **Accurate & Symmetrical Fee Calculations**: 
+   - **Entry Fee (`partialEntryFee`)**: Calculated exactly for the exited buy leg portion using the entry parameters: `calculateFee(pos.entryBuyPrice, pos.entrySpotPrice, deltaBuyQty, pos.buyLeg.originalLotSize || 1)` (capped to the remaining entry fee). This avoids scaling down the total entry fee proportionally (which would incorrectly deduct a portion of the Sell Leg's entry fee while it is still open).
+   - **Exit Fee (`partialExitFee`)**: Calculated dynamically based on the current live exit price and spot: `calculateFee(liveExitBuy, spotPrice, deltaBuyQty, pos.buyLeg.originalLotSize || 1)`.
+5. The process **repeats in a while loop** — multiple scaling steps can happen in a single evaluation if the price moved a lot.
 
 ### Key Fields
 
@@ -410,10 +412,12 @@ netPremiumSwap = (change in sell qty × sell price) - (new buy ask - current buy
 
 When a leg swap fires:
 
-1. The **old buy leg** is "exited" → recorded in `trade_history` (PnL is only the buy leg's profit)
-2. The **sell leg stays untouched** (no exit fee on the sell side)
-3. The position is **updated in-place** in `active_positions` with the new buy leg
-4. If the sell quantity changes (due to different delta notional ratios), the sell entry price is **weighted-averaged**
+1. The **old buy leg** is "exited" → recorded in `trade_history` (PnL is only the buy leg's profit).
+   - **Entry Fee (`longEntryFee`)**: The entry fee allocated to the exited buy leg is calculated exactly based on its initial entry parameters: `calculateFee(pos.entryBuyPrice, pos.entrySpotPrice, pos.buyLeg.lotSize, pos.buyLeg.originalLotSize || 1)` (capped to `pos.entryFee`). This prevents allocating any of the Sell Leg's entry fee to the exited Buy Leg.
+2. The **sell leg stays untouched** (no exit fee on the sell side).
+3. The position is **updated in-place** in `active_positions` with the new buy leg.
+4. If the sell quantity changes (due to different delta notional ratios), the sell entry price is **weighted-averaged**.
+5. The new active entry fee is updated as: `(pos.entryFee - longEntryFee) + newLongEntryFee + shortAdjustmentFee`, perfectly preserving the Sell Leg's initial entry fee.
 
 ---
 
