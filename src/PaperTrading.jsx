@@ -721,10 +721,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   }, [accounts, activeAccountId]);
 
   const DEFAULT_FILTERS = React.useMemo(() => {
-    if (activeAccount && activeAccount.default_config) {
-      return activeAccount.default_config;
-    }
-    return {
+    const baseFilters = {
       minStrikeDiff: 800,
       minIvDiff: 5,
       maxRatioDeviation: 0.25,
@@ -739,6 +736,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       numberOfCalls: 3,
       numberOfPuts: 3,
     };
+    if (activeAccount && activeAccount.default_config) {
+      return { ...baseFilters, ...activeAccount.default_config };
+    }
+    return baseFilters;
   }, [activeAccount]);
 
   const isDefaultConfig = React.useMemo(() => {
