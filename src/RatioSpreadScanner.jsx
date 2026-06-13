@@ -9,6 +9,7 @@ const SCANNER_TOP_KEY = 'vitti_scanner_top_spreads_v1';
 
 import ResultTable from './ResultTable';
 import { normalizeIv, toFiniteNumber, matchesOptionType } from './scannerUtils';
+import Navbar from './components/PaperTrading/Navbar';
 
 // ── Main Scanner Component ──────────────────────────────────────────────────
 export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
@@ -566,90 +567,14 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
   return (
     <div className="app">
       {/* Navbar */}
-      <nav className="navbar">
-        <div className="logo" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <svg width="26" height="26" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: 0 }}>
-            <rect width="32" height="32" rx="7" fill="#0d1117" />
-            <rect x="5" y="14" width="4" height="8" rx="1" fill="#3fb950" />
-            <line x1="7" y1="10" x2="7" y2="14" stroke="#3fb950" strokeWidth="1.5" />
-            <line x1="7" y1="22" x2="7" y2="26" stroke="#3fb950" strokeWidth="1.5" />
-            <rect x="13" y="10" width="4" height="10" rx="1" fill="#f85149" />
-            <line x1="15" y1="6" x2="15" y2="10" stroke="#f85149" strokeWidth="1.5" />
-            <line x1="15" y1="20" x2="15" y2="25" stroke="#f85149" strokeWidth="1.5" />
-            <rect x="21" y="12" width="4" height="9" rx="1" fill="#e3b341" />
-            <line x1="23" y1="8" x2="23" y2="12" stroke="#e3b341" strokeWidth="1.5" />
-            <line x1="23" y1="21" x2="23" y2="26" stroke="#e3b341" strokeWidth="1.5" />
-            <rect x="5" y="29" width="22" height="1.5" rx="0.75" fill="#00d9a3" opacity="0.8" />
-          </svg>
-          VITTI OPTION<span>SCOPE</span>
-        </div>
-
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <button
-            className="nav-tab"
-            onClick={() => onNavigate('charts')}
-          >
-            <span className="nav-tab-icon" aria-hidden="true">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M4 20V4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                <path d="M4 20H20" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                <rect x="7" y="12" width="3" height="6" rx="0.6" fill="currentColor" />
-                <rect x="12" y="9" width="3" height="9" rx="0.6" fill="currentColor" />
-                <rect x="17" y="6" width="3" height="12" rx="0.6" fill="currentColor" />
-              </svg>
-            </span> <span className="nav-tab-text">Charts</span>
-          </button>
-          <button
-            className="nav-tab active"
-          >
-            <span className="nav-tab-icon" aria-hidden="true">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="1.8" />
-                <circle cx="12" cy="12" r="4.5" stroke="currentColor" strokeWidth="1.8" />
-                <circle cx="12" cy="12" r="1.7" fill="currentColor" />
-              </svg>
-            </span> <span className="nav-tab-text">Ratio Spread</span>
-          </button>
-          <button
-            className="nav-tab"
-            onClick={() => onNavigate('trading')}
-          >
-            <span className="nav-tab-icon" aria-hidden="true">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-                <line x1="3" y1="9" x2="21" y2="9"></line>
-                <line x1="9" y1="21" x2="9" y2="9"></line>
-              </svg>
-            </span> <span className="nav-tab-text">Paper Trading</span>
-          </button>
-        </div>
-
-        <div style={{ display: 'flex', gap: 20, alignItems: 'center' }}>
-          <button className="nav-tab" onClick={toggleTheme} title="Toggle Theme" style={{ padding: '6px' }}>
-            {theme === 'dark' ? (
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="5"></circle>
-                <line x1="12" y1="1" x2="12" y2="3"></line>
-                <line x1="12" y1="21" x2="12" y2="23"></line>
-                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
-                <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
-                <line x1="1" y1="12" x2="3" y2="12"></line>
-                <line x1="21" y1="12" x2="23" y2="12"></line>
-                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
-                <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
-              </svg>
-            ) : (
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
-              </svg>
-            )}
-          </button>
-          <div className="ws-badge">
-            <div className={`ws-dot ${scanning ? 'live' : ''}`} />
-            <span>{scanning ? `Scanning · ${tickerCount} tickers` : 'Idle'}</span>
-          </div>
-        </div>
-      </nav>
+      <Navbar
+        activeTab="scanner"
+        onNavigate={onNavigate}
+        theme={theme}
+        toggleTheme={toggleTheme}
+        badgeLabel={scanning ? `Scanning · ${tickerCount} tickers` : 'Idle'}
+        badgeDotClassName={scanning ? 'live' : ''}
+      />
 
       <div className="body" style={{ flexDirection: 'column' }}>
 
@@ -673,16 +598,6 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
                 }
               </select>
             </div>
-            <div className='form-group row-inline'>
-              <button
-                className={`btn-start ${scanning ? 'btn-stop' : ''}`}
-                onClick={scanning ? handleStopScan : handleStartScan}
-                disabled={!selExpiry}
-                style={{ padding: '6px 16px', fontSize: 13, fontWeight: 600, marginLeft: 8 }}
-              >
-                {scanning ? '■ STOP SCAN' : '▶ START SCAN'}
-              </button>
-            </div>
             <button
               className="scanner-filters-toggle-btn"
               onClick={() => setIsFiltersCollapsed(!isFiltersCollapsed)}
@@ -701,6 +616,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
                 type="number"
                 value={config.minStrikeDiff}
                 onChange={e => updateConfig('minStrikeDiff', Number(e.target.value))}
+                style={{ width: 60 }}
               />
             </div>
             <div className="form-group row-inline">
@@ -709,6 +625,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
                 type="number"
                 value={config.minIvDiff}
                 onChange={e => updateConfig('minIvDiff', Number(e.target.value))}
+                style={{ width: 50 }}
               />
             </div>
             <div className="form-group row-inline">
@@ -718,6 +635,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
                 step="0.01"
                 value={config.maxRatioDeviation}
                 onChange={e => updateConfig('maxRatioDeviation', Number(e.target.value))}
+                style={{ width: 60 }}
               />
             </div>
             <div className="form-group row-inline">
@@ -726,6 +644,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
                 type="number"
                 value={config.minSellPremium}
                 onChange={e => updateConfig('minSellPremium', Number(e.target.value))}
+                style={{ width: 60 }}
               />
             </div>
 
@@ -735,6 +654,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
                 type="number"
                 value={config.maxNetPremium}
                 onChange={e => updateConfig('maxNetPremium', Number(e.target.value))}
+                style={{ width: 60 }}
               />
             </div>
             <div className="form-group row-inline">
@@ -743,6 +663,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
                 type="number"
                 value={config.minLongDist}
                 onChange={e => updateConfig('minLongDist', Number(e.target.value))}
+                style={{ width: 60 }}
               />
             </div>
             <div className="form-group row-inline">
@@ -752,6 +673,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
                 step="0.25"
                 value={config.maxSellQty}
                 onChange={e => updateConfig('maxSellQty', Number(e.target.value))}
+                style={{ width: 65 }}
               />
             </div>
             <div key="atmRatioScaling" className="form-group row-inline" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -765,16 +687,29 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
                   <label>Call ATM Pct (%):</label>
                   <input type="number" step="1" value={config.atmRatioPctCall ?? 50}
                     onChange={e => updateConfig('atmRatioPctCall', Number(e.target.value))}
+                    style={{ width: 50 }}
                   />
                 </div>
                 <div key="atmRatioPctPut" className="form-group row-inline">
                   <label>Put ATM Pct (%):</label>
                   <input type="number" step="1" value={config.atmRatioPctPut ?? 50}
                     onChange={e => updateConfig('atmRatioPctPut', Number(e.target.value))}
+                    style={{ width: 50 }}
                   />
                 </div>
               </>
             )}
+
+            {/* Actions for Start/Stop Scan button */}
+            <div className="scanner-filter-actions">
+              <button
+                className={`btn-start ${scanning ? 'btn-stop' : ''}`}
+                onClick={scanning ? handleStopScan : handleStartScan}
+                disabled={!selExpiry}
+              >
+                {scanning ? '■ STOP SCAN' : '▶ START SCAN'}
+              </button>
+            </div>
           </div>
         </div>
 

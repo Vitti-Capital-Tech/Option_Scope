@@ -27,24 +27,12 @@ export default function CreateAccountModal({
       justifyContent: 'center',
       zIndex: 9999
     }}>
-      <form onSubmit={onSubmit} style={{
-        background: 'var(--bg2)',
-        border: '1px solid var(--border)',
-        borderRadius: '8px',
-        padding: '24px',
-        width: '760px',
-        boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '20px',
-        maxHeight: '90vh',
-        overflowY: 'auto'
-      }}>
+      <form onSubmit={onSubmit} className="modal-form-create">
         <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: 'var(--text)', borderBottom: '1px solid var(--border)', paddingBottom: '8px' }}>Create New Trading Account</h3>
         
-        <div style={{ display: 'flex', gap: '24px' }}>
+        <div className="modal-columns-create">
           {/* Left Column: Account Details */}
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <div className="modal-col-left-create">
             <h4 style={{ margin: 0, fontSize: '12px', fontWeight: 600, color: 'var(--text)', borderBottom: '1px dashed var(--border)', paddingBottom: '4px' }}>Account Info</h4>
             
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -191,7 +179,7 @@ export default function CreateAccountModal({
           </div>
 
           {/* Right Column: Default Strategy Filters */}
-          <div style={{ flex: 1.2, display: 'flex', flexDirection: 'column', gap: '16px', borderLeft: '1px solid var(--border)', paddingLeft: '24px' }}>
+          <div className="modal-col-right-create">
             <h4 style={{ margin: 0, fontSize: '12px', fontWeight: 600, color: 'var(--text)', borderBottom: '1px dashed var(--border)', paddingBottom: '4px' }}>Default Strategy Filters</h4>
             
             <div style={{ display: 'flex', gap: '16px' }}>

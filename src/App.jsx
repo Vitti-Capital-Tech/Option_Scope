@@ -10,6 +10,7 @@ import {
 } from './api';
 import { useTabListener } from './useTabSync';
 import './index.css';
+import Navbar from './components/PaperTrading/Navbar';
 
 const UNDERLYINGS = ['BTC', 'ETH'];
 const TF_LIST = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '12h', '1d', '1w'];
@@ -1513,228 +1514,161 @@ export default function App({ onNavigate, theme, toggleTheme }) {
       </div>
 
       {/* Navbar */}
-      <nav className="navbar">
-        <div className="logo" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          {/* Inline SVG icon */}
-          <svg width="26" height="26" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: 0 }}>
-            <rect width="32" height="32" rx="7" fill="#0d1117" />
-            <rect x="5" y="14" width="4" height="8" rx="1" fill="#3fb950" />
-            <line x1="7" y1="10" x2="7" y2="14" stroke="#3fb950" strokeWidth="1.5" />
-            <line x1="7" y1="22" x2="7" y2="26" stroke="#3fb950" strokeWidth="1.5" />
-            <rect x="13" y="10" width="4" height="10" rx="1" fill="#f85149" />
-            <line x1="15" y1="6" x2="15" y2="10" stroke="#f85149" strokeWidth="1.5" />
-            <line x1="15" y1="20" x2="15" y2="25" stroke="#f85149" strokeWidth="1.5" />
-            <rect x="21" y="12" width="4" height="9" rx="1" fill="#e3b341" />
-            <line x1="23" y1="8" x2="23" y2="12" stroke="#e3b341" strokeWidth="1.5" />
-            <line x1="23" y1="21" x2="23" y2="26" stroke="#e3b341" strokeWidth="1.5" />
-            <rect x="5" y="29" width="22" height="1.5" rx="0.75" fill="#00d9a3" opacity="0.8" />
-          </svg>
-          VITTI OPTION<span>SCOPE</span>
-        </div>
-
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <button className="nav-tab active">
-            <span className="nav-tab-icon" aria-hidden="true">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M4 20V4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                <path d="M4 20H20" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                <rect x="7" y="12" width="3" height="6" rx="0.6" fill="currentColor" />
-                <rect x="12" y="9" width="3" height="9" rx="0.6" fill="currentColor" />
-                <rect x="17" y="6" width="3" height="12" rx="0.6" fill="currentColor" />
-              </svg>
-            </span> <span className="nav-tab-text">Charts</span>
-          </button>
-          <button className="nav-tab" onClick={() => onNavigate('scanner')}>
-            <span className="nav-tab-icon" aria-hidden="true">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="1.8" />
-                <circle cx="12" cy="12" r="4.5" stroke="currentColor" strokeWidth="1.8" />
-                <circle cx="12" cy="12" r="1.7" fill="currentColor" />
-              </svg>
-            </span> <span className="nav-tab-text">Ratio Spread</span>
-          </button>
-          <button className="nav-tab" onClick={() => onNavigate('trading')}>
-            <span className="nav-tab-icon" aria-hidden="true">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-                <line x1="3" y1="9" x2="21" y2="9"></line>
-                <line x1="9" y1="21" x2="9" y2="9"></line>
-              </svg>
-            </span> <span className="nav-tab-text">Paper Trading</span>
-          </button>
-        </div>
-
-        <div style={{ display: 'flex', gap: 20, alignItems: 'center' }}>
-          {activeCall && (
+      <Navbar
+        activeTab="charts"
+        onNavigate={onNavigate}
+        theme={theme}
+        toggleTheme={toggleTheme}
+        badgeLabel={wsStatus === 'live' ? 'Live Feed' : wsStatus === 'error' ? 'WS Error' : 'Disconnected'}
+        badgeDotClassName={wsStatus === 'live' ? 'live' : wsStatus === 'error' ? 'offline' : 'stale'}
+        extraHeaderContent={
+          activeCall && (
             <span style={{ fontFamily: 'Inter', fontSize: 11, color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums' }}>
               {activeCall} / {activePut}
             </span>
-          )}
-          <button className="nav-tab" onClick={toggleTheme} title="Toggle Theme" style={{ padding: '6px' }}>
-            {theme === 'dark' ? (
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="5"></circle>
-                <line x1="12" y1="1" x2="12" y2="3"></line>
-                <line x1="12" y1="21" x2="12" y2="23"></line>
-                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
-                <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
-                <line x1="1" y1="12" x2="3" y2="12"></line>
-                <line x1="21" y1="12" x2="23" y2="12"></line>
-                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
-                <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
-              </svg>
-            ) : (
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
-              </svg>
-            )}
-          </button>
-          <div className="ws-badge">
-            <div className={`ws-dot ${wsStatus === 'live' ? 'live' : ''}`} />
-            <span>{wsStatus === 'live' ? 'Live Feed' : wsStatus === 'error' ? 'WS Error' : 'Disconnected'}</span>
-          </div>
-        </div>
-      </nav>
+          )
+        }
+      />
 
       <div className="body">
         {/* Sidebar */}
         <aside className="sidebar">
-          <button 
+          <button
             className="sidebar-toggle-btn"
             onClick={() => setIsConfigCollapsed(!isConfigCollapsed)}
           >
             <span>{isConfigCollapsed ? 'SHOW CONFIGURATION' : 'HIDE CONFIGURATION'}</span>
-            <svg 
-              width="14" 
-              height="14" 
-              viewBox="0 0 24 24" 
-              fill="none" 
-              stroke="currentColor" 
-              strokeWidth="2.5" 
-              strokeLinecap="round" 
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              strokeLinecap="round"
               strokeLinejoin="round"
               style={{ transform: isConfigCollapsed ? 'rotate(0deg)' : 'rotate(180deg)', transition: 'transform 0.2s' }}
             >
               <polyline points="6 9 12 15 18 9"></polyline>
             </svg>
           </button>
-          
+
           <div className={`sidebar-collapsible ${isConfigCollapsed ? '' : 'expanded'}`} style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div className="card">
               <div className="card-title">Configuration</div>
 
-            <div className="form-group">
-              <label>Underlying</label>
-              <select value={underlying} onChange={e => setUnderlying(e.target.value)}>
-                {UNDERLYINGS.map(u => <option key={u}>{u}</option>)}
-              </select>
+              <div className="form-group">
+                <label>Underlying</label>
+                <select value={underlying} onChange={e => setUnderlying(e.target.value)}>
+                  {UNDERLYINGS.map(u => <option key={u}>{u}</option>)}
+                </select>
+              </div>
+
+              <div className="form-group">
+                <label>Expiry Date</label>
+                <select value={selExpiry} onChange={e => setSelExpiry(e.target.value)} disabled={!expiries.length}>
+                  {!expiries.length
+                    ? <option>Loading...</option>
+                    : expiries.map(e => <option key={e} value={e}>{fmtExpiry(e)}</option>)
+                  }
+                </select>
+              </div>
+
+              <div className="form-group" style={{ opacity: legType === 'put' ? 0.5 : 1 }}>
+                <label>Call Strike</label>
+                <select value={selCallStrike} onChange={e => setSelCallStrike(e.target.value)} disabled={!strikes.length || legType === 'put'}>
+                  {!strikes.length
+                    ? <option>Select Expiry First</option>
+                    : strikes.map(s => <option key={s} value={s}>{Number(s).toLocaleString()}</option>)
+                  }
+                </select>
+              </div>
+
+              <div className="form-group" style={{ opacity: legType === 'call' ? 0.5 : 1 }}>
+                <label>Put Strike</label>
+                <select value={selPutStrike} onChange={e => setSelPutStrike(e.target.value)} disabled={!strikes.length || legType === 'call'}>
+                  {!strikes.length
+                    ? <option>Select Expiry First</option>
+                    : strikes.map(s => <option key={s} value={s}>{Number(s).toLocaleString()}</option>)
+                  }
+                </select>
+              </div>
+
+              <div className="form-group">
+                <label>Leg Type</label>
+                <select value={legType} onChange={e => setLegType(e.target.value)}>
+                  <option value="combined">Combined (Straddle/Strangle)</option>
+                  <option value="call">Call Premium Only</option>
+                  <option value="put">Put Premium Only</option>
+                </select>
+              </div>
+
+              <div className="form-group">
+                <label>Price Source</label>
+                <select value={priceType} onChange={e => setPriceType(e.target.value)}>
+                  <option value="mark">Mark Price</option>
+                  <option value="ltp">Last Traded Price</option>
+                </select>
+              </div>
+
+              <div className="form-group">
+                <label>Candle Interval</label>
+                <select value={tf} onChange={e => setTf(e.target.value)}>
+                  {TF_LIST.map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </div>
+
+              <button className="btn-start" disabled={(!callSym && !putSym) || (legType !== 'put' && !callSym) || (legType !== 'call' && !putSym)} onClick={addToWatchList}>
+                ADD TO WATCHLIST
+              </button>
+
+              {errMsg && <div style={{ color: '#f85149', fontSize: 11, marginTop: 8, lineHeight: 1.4 }}>{errMsg}</div>}
             </div>
 
-            <div className="form-group">
-              <label>Expiry Date</label>
-              <select value={selExpiry} onChange={e => setSelExpiry(e.target.value)} disabled={!expiries.length}>
-                {!expiries.length
-                  ? <option>Loading...</option>
-                  : expiries.map(e => <option key={e} value={e}>{fmtExpiry(e)}</option>)
-                }
-              </select>
+            <div className="card">
+              <div className="card-title">Live Prices ({priceType === 'mark' ? 'Mark' : 'LTP'})</div>
+              <div className="stat-row">
+                <span className="stat-label">CALL</span>
+                <span className="stat-val call">{callPrice ? callPrice.toFixed(2) : '—'}</span>
+              </div>
+              <div className="stat-row">
+                <span className="stat-label">PUT</span>
+                <span className="stat-val put">{putPrice ? putPrice.toFixed(2) : '—'}</span>
+              </div>
+              <div className="stat-row">
+                <span className="stat-label">COMBINED</span>
+                <span className="stat-val comb">{combPrice}</span>
+              </div>
             </div>
 
-            <div className="form-group" style={{ opacity: legType === 'put' ? 0.5 : 1 }}>
-              <label>Call Strike</label>
-              <select value={selCallStrike} onChange={e => setSelCallStrike(e.target.value)} disabled={!strikes.length || legType === 'put'}>
-                {!strikes.length
-                  ? <option>Select Expiry First</option>
-                  : strikes.map(s => <option key={s} value={s}>{Number(s).toLocaleString()}</option>)
-                }
-              </select>
-            </div>
-
-            <div className="form-group" style={{ opacity: legType === 'call' ? 0.5 : 1 }}>
-              <label>Put Strike</label>
-              <select value={selPutStrike} onChange={e => setSelPutStrike(e.target.value)} disabled={!strikes.length || legType === 'call'}>
-                {!strikes.length
-                  ? <option>Select Expiry First</option>
-                  : strikes.map(s => <option key={s} value={s}>{Number(s).toLocaleString()}</option>)
-                }
-              </select>
-            </div>
-
-            <div className="form-group">
-              <label>Leg Type</label>
-              <select value={legType} onChange={e => setLegType(e.target.value)}>
-                <option value="combined">Combined (Straddle/Strangle)</option>
-                <option value="call">Call Premium Only</option>
-                <option value="put">Put Premium Only</option>
-              </select>
-            </div>
-
-            <div className="form-group">
-              <label>Price Source</label>
-              <select value={priceType} onChange={e => setPriceType(e.target.value)}>
-                <option value="mark">Mark Price</option>
-                <option value="ltp">Last Traded Price</option>
-              </select>
-            </div>
-
-            <div className="form-group">
-              <label>Candle Interval</label>
-              <select value={tf} onChange={e => setTf(e.target.value)}>
-                {TF_LIST.map(t => <option key={t} value={t}>{t}</option>)}
-              </select>
-            </div>
-
-            <button className="btn-start" disabled={(!callSym && !putSym) || (legType !== 'put' && !callSym) || (legType !== 'call' && !putSym)} onClick={addToWatchList}>
-              ADD TO WATCHLIST
-            </button>
-
-            {errMsg && <div style={{ color: '#f85149', fontSize: 11, marginTop: 8, lineHeight: 1.4 }}>{errMsg}</div>}
-          </div>
-
-          <div className="card">
-            <div className="card-title">Live Prices ({priceType === 'mark' ? 'Mark' : 'LTP'})</div>
-            <div className="stat-row">
-              <span className="stat-label">CALL</span>
-              <span className="stat-val call">{callPrice ? callPrice.toFixed(2) : '—'}</span>
-            </div>
-            <div className="stat-row">
-              <span className="stat-label">PUT</span>
-              <span className="stat-val put">{putPrice ? putPrice.toFixed(2) : '—'}</span>
-            </div>
-            <div className="stat-row">
-              <span className="stat-label">COMBINED</span>
-              <span className="stat-val comb">{combPrice}</span>
-            </div>
-          </div>
-
-          {/* Alert History card */}
-          <div className="card" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 250 }}>
-            <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', flexShrink: 0 }}>
-              <span>Alert History</span>
-              <span onClick={() => setAlertLogs([])} style={{ fontSize: 9, cursor: 'pointer', opacity: 0.6 }}>Clear</span>
-            </div>
-            <div className="trade-list" style={{ flex: 1, overflowY: 'auto', paddingRight: 4 }}>
-              {!alertLogs.length && <div style={{ textAlign: 'center', padding: 20, color: '#484f58', fontSize: 11 }}>No alerts logged yet.</div>}
-              {alertLogs.map(log => (
-                <div key={log.id} style={{
-                  padding: '6px 0', borderBottom: '1px solid var(--border)', fontSize: 11,
-                  display: 'flex', flexDirection: 'column', gap: 2
-                }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#e3b341', fontWeight: 800, fontSize: 10 }}>
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-                        <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-                      </svg>
-                      TRIGGERED
+            {/* Alert History card */}
+            <div className="card" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 250 }}>
+              <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', flexShrink: 0 }}>
+                <span>Alert History</span>
+                <span onClick={() => setAlertLogs([])} style={{ fontSize: 9, cursor: 'pointer', opacity: 0.6 }}>Clear</span>
+              </div>
+              <div className="trade-list" style={{ flex: 1, overflowY: 'auto', paddingRight: 4 }}>
+                {!alertLogs.length && <div style={{ textAlign: 'center', padding: 20, color: '#484f58', fontSize: 11 }}>No alerts logged yet.</div>}
+                {alertLogs.map(log => (
+                  <div key={log.id} style={{
+                    padding: '6px 0', borderBottom: '1px solid var(--border)', fontSize: 11,
+                    display: 'flex', flexDirection: 'column', gap: 2
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#e3b341', fontWeight: 800, fontSize: 10 }}>
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                          <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                        </svg>
+                        TRIGGERED
+                      </div>
+                      <span style={{ color: '#7d8590', fontSize: 10 }}>{log.time}</span>
                     </div>
-                    <span style={{ color: '#7d8590', fontSize: 10 }}>{log.time}</span>
+                    <div style={{ color: theme === 'dark' ? '#e6edf3' : '#1e2329', lineHeight: 1.4 }}>{log.msg}</div>
                   </div>
-                  <div style={{ color: theme === 'dark' ? '#e6edf3' : '#1e2329', lineHeight: 1.4 }}>{log.msg}</div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
-          </div>
           </div>
         </aside>
 

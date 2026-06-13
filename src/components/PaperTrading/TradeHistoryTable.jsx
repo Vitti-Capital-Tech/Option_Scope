@@ -142,7 +142,7 @@ export default function TradeHistoryTable({
               <th>Expiry</th>
               <th>Type / Ratio</th>
               <th>Buy / Sell Strike</th>
-              <th>Spot (In / Out)</th>
+              <th className="hide-mobile">Spot (In / Out)</th>
               <th>In (Buy / Sell)</th>
               <th className="hide-mobile">IV In (B/S)</th>
               <th className="hide-mobile">Entry ATM Ratio (Prices)</th>
@@ -198,7 +198,7 @@ export default function TradeHistoryTable({
                         <span className="pt-strike-sell" style={{ fontSize: '11px', opacity: 0.8 }}>{t.sellLeg.strike.toLocaleString()}</span>
                       </div>
                     </td>
-                    <td>
+                    <td className="hide-mobile">
                       <div style={{ display: 'flex', flexDirection: 'column', fontSize: '11px' }}>
                         <span style={{ color: 'var(--text-dim)' }}>{t.entrySpotPrice ? t.entrySpotPrice.toLocaleString() : '—'}</span>
                         <span style={{ color: 'var(--text-dim)', opacity: 0.8 }}>{t.exitSpotPrice ? t.exitSpotPrice.toLocaleString() : '—'}</span>

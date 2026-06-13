@@ -187,7 +187,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           .select('*')
           .eq('id', session.user.id)
           .single();
-        
+
         if (data) {
           setUserProfile(data);
         } else if (error && error.code === 'PGRST116') {
@@ -371,7 +371,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         lastDaysToExpiryRef.current = config.daysToExpiry;
 
         let isExpiryInvalid = !selExpiry || !exps.includes(selExpiry);
-        
+
         // If the daysToExpiry filter changed, we ALWAYS want to select the nearest matching expiry
         if (daysFilterChanged) {
           isExpiryInvalid = true;
@@ -499,14 +499,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           default_config: defaultConfigVal
         }])
         .select('*');
-      
+
       if (accErr) {
         console.error('Failed to create account:', accErr);
         alert(`Failed to create account: ${accErr.message}`);
         setIsCreatingAccount(false);
         return;
       }
-      
+
       const accData = accList?.[0];
       if (accData) {
         await supabase.from('paper_trading_config').insert([{
@@ -764,7 +764,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     try {
       let { data, error } = await supabase
         .from('paper_trading_config').select('*').eq('account_id', activeAccountId).single();
-      
+
       if (error && error.code === 'PGRST116') {
         const defaultRow = {
           account_id: activeAccountId,
@@ -1422,11 +1422,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   return (
     <div className="app">
       <Navbar
+        activeTab="trading"
         onNavigate={onNavigate}
         theme={theme}
         toggleTheme={toggleTheme}
-        engineStatusColor={engineStatusColor}
-        engineStatusLabel={engineStatusLabel}
+        badgeLabel={engineStatusLabel}
+        badgeColor={engineStatusColor}
       />
 
       <div className="body" style={{ flexDirection: 'column', overflowY: 'auto' }}>
@@ -1438,94 +1439,95 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             isAuthenticating={isAuthenticating}
             handleAuthSubmit={handleAuthSubmit}
           />
-      ) : (isAccountsLoaded && accounts.length === 0) ? (
-        <FirstAccountCard
-          onSubmit={handleSubmitCreate(handleModalSubmit)}
-          register={registerCreate}
-          errors={errorsCreate}
-          isCreatingAccount={isCreatingAccount}
-          watchAtmRatioScaling={watchCreateAtmRatioScaling}
-        />
-      ) : (
-        <>
-        <AccountSelectorStrip
-          accounts={accounts}
-          activeAccountId={activeAccountId}
-          setActiveAccountId={setActiveAccountId}
-          triggerCreateAccount={triggerCreateAccount}
-          triggerDeleteAccount={triggerDeleteAccount}
-          userProfile={userProfile}
-          session={session}
-          handleLogout={handleLogout}
-        />
-
-        <ControlPanel
-          underlying={underlying}
-          updateConfig={updateConfig}
-          selExpiry={selExpiry}
-          filteredExpiries={filteredExpiries}
-          activeAccountId={activeAccountId}
-          accounts={accounts}
-          triggerEditAccount={triggerEditAccount}
-          isFiltersCollapsed={isFiltersCollapsed}
-          setIsFiltersCollapsed={setIsFiltersCollapsed}
-          draftConfig={draftConfig}
-          updateDraftConfig={updateDraftConfig}
-          isFiltersDirty={isFiltersDirty}
-          handleApplyFilters={handleApplyFilters}
-          isDefaultConfig={isDefaultConfig}
-          handleResetFilters={handleResetFilters}
-          spotPrice={spotPrice}
-        />
-
-        <KpiDashboard
-          todayPnl={todayPnl}
-          todayRealizedPnl={todayRealizedPnl}
-          totalUnrealizedPnl={totalUnrealizedPnl}
-          totalPnl={totalPnl}
-          totalRealizedPnl={totalRealizedPnl}
-          winRate={winRate}
-          wins={wins}
-          tradeHistoryLength={tradeHistory.length}
-          activePositionsCount={positions.filter(p => p.underlying === underlying).length}
-          activeCallsCount={positions.filter(p => p.type === 'call' && p.underlying === underlying).length}
-          activePutsCount={positions.filter(p => p.type === 'put' && p.underlying === underlying).length}
-          totalMargin={totalMargin}
-        />
-
-        <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 20 }}>
-          <ActivePositionsTable
-            positions={positions}
-            underlying={underlying}
-            lastEvaluated={lastEvaluated}
-            fetchSupabaseActivePositions={fetchSupabaseActivePositions}
-            fetchSupabaseTradeHistory={fetchSupabaseTradeHistory}
-            fetchHeartbeat={fetchHeartbeat}
-            now={now}
-            includeFees={includeFees}
-            setIncludeFees={setIncludeFees}
-            spotPrice={spotPrice}
-            engineStatusColor={engineStatusColor}
-            engineStatusLabel={engineStatusLabel}
-            calculatePositionMargin={calculatePositionMargin}
-            totalMargin={totalMargin}
+        ) : (isAccountsLoaded && accounts.length === 0) ? (
+          <FirstAccountCard
+            onSubmit={handleSubmitCreate(handleModalSubmit)}
+            register={registerCreate}
+            errors={errorsCreate}
+            isCreatingAccount={isCreatingAccount}
+            watchAtmRatioScaling={watchCreateAtmRatioScaling}
+            onCancel={handleLogout}
           />
+        ) : (
+          <>
+            <AccountSelectorStrip
+              accounts={accounts}
+              activeAccountId={activeAccountId}
+              setActiveAccountId={setActiveAccountId}
+              triggerCreateAccount={triggerCreateAccount}
+              triggerDeleteAccount={triggerDeleteAccount}
+              userProfile={userProfile}
+              session={session}
+              handleLogout={handleLogout}
+            />
 
-          <TradeHistoryTable
-            filteredTradeHistory={filteredTradeHistory}
-            historyFilterDate={historyFilterDate}
-            setHistoryFilterDate={setHistoryFilterDate}
-            adjustFilterDay={adjustFilterDay}
-            resetToToday={resetToToday}
-            filteredRealizedPnl={filteredRealizedPnl}
-            filteredWins={filteredWins}
-            exportCSV={exportCSV}
-            includeFees={includeFees}
-          />
-        </div>
-      </>
-    )}
-  </div>
+            <ControlPanel
+              underlying={underlying}
+              updateConfig={updateConfig}
+              selExpiry={selExpiry}
+              filteredExpiries={filteredExpiries}
+              activeAccountId={activeAccountId}
+              accounts={accounts}
+              triggerEditAccount={triggerEditAccount}
+              isFiltersCollapsed={isFiltersCollapsed}
+              setIsFiltersCollapsed={setIsFiltersCollapsed}
+              draftConfig={draftConfig}
+              updateDraftConfig={updateDraftConfig}
+              isFiltersDirty={isFiltersDirty}
+              handleApplyFilters={handleApplyFilters}
+              isDefaultConfig={isDefaultConfig}
+              handleResetFilters={handleResetFilters}
+              spotPrice={spotPrice}
+            />
+
+            <KpiDashboard
+              todayPnl={todayPnl}
+              todayRealizedPnl={todayRealizedPnl}
+              totalUnrealizedPnl={totalUnrealizedPnl}
+              totalPnl={totalPnl}
+              totalRealizedPnl={totalRealizedPnl}
+              winRate={winRate}
+              wins={wins}
+              tradeHistoryLength={tradeHistory.length}
+              activePositionsCount={positions.filter(p => p.underlying === underlying).length}
+              activeCallsCount={positions.filter(p => p.type === 'call' && p.underlying === underlying).length}
+              activePutsCount={positions.filter(p => p.type === 'put' && p.underlying === underlying).length}
+              totalMargin={totalMargin}
+            />
+
+            <div className="pt-tables-container">
+              <ActivePositionsTable
+                positions={positions}
+                underlying={underlying}
+                lastEvaluated={lastEvaluated}
+                fetchSupabaseActivePositions={fetchSupabaseActivePositions}
+                fetchSupabaseTradeHistory={fetchSupabaseTradeHistory}
+                fetchHeartbeat={fetchHeartbeat}
+                now={now}
+                includeFees={includeFees}
+                setIncludeFees={setIncludeFees}
+                spotPrice={spotPrice}
+                engineStatusColor={engineStatusColor}
+                engineStatusLabel={engineStatusLabel}
+                calculatePositionMargin={calculatePositionMargin}
+                totalMargin={totalMargin}
+              />
+
+              <TradeHistoryTable
+                filteredTradeHistory={filteredTradeHistory}
+                historyFilterDate={historyFilterDate}
+                setHistoryFilterDate={setHistoryFilterDate}
+                adjustFilterDay={adjustFilterDay}
+                resetToToday={resetToToday}
+                filteredRealizedPnl={filteredRealizedPnl}
+                filteredWins={filteredWins}
+                exportCSV={exportCSV}
+                includeFees={includeFees}
+              />
+            </div>
+          </>
+        )}
+      </div>
 
       <CreateAccountModal
         isOpen={isCreateModalOpen}

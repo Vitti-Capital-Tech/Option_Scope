@@ -24,17 +24,7 @@ export default function EditAccountModal({
       justifyContent: 'center',
       zIndex: 9999
     }}>
-      <form onSubmit={onSubmit} style={{
-        background: 'var(--bg2)',
-        border: '1px solid var(--border)',
-        borderRadius: '8px',
-        padding: '24px',
-        width: '380px',
-        boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '16px'
-      }}>
+      <form onSubmit={onSubmit} className="modal-form-edit">
         <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: 'var(--text)' }}>Edit Account Details</h3>
         
         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>

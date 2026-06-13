@@ -29,17 +29,7 @@ export default function DeleteAccountModal({
       justifyContent: 'center',
       zIndex: 9999
     }}>
-      <div style={{
-        background: 'var(--bg2)',
-        border: '1px solid var(--border)',
-        borderRadius: '8px',
-        padding: '24px',
-        width: '400px',
-        boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '16px'
-      }}>
+      <div className="modal-container-delete">
         <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: '#f85149', display: 'flex', alignItems: 'center', gap: '8px' }}>
           Delete Account
         </h3>
