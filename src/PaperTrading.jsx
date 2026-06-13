@@ -87,6 +87,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       atmRatioPctCall: 50,
       atmRatioPctPut: 50,
       daysToExpiry: 0,
+      numberOfCalls: 3,
+      numberOfPuts: 3,
     }
   });
 
@@ -113,6 +115,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     atmRatioPctCall: 50,
     atmRatioPctPut: 50,
     daysToExpiry: 0,
+    numberOfCalls: 3,
+    numberOfPuts: 3,
   }));
   const [draftConfig, setDraftConfig] = useState(() => ({ ...config }));
   const [isConfigLoaded, setIsConfigLoaded] = useState(false);
@@ -524,6 +528,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           atm_ratio_distance_call: data.atmRatioPctCall,
           atm_ratio_distance_put: data.atmRatioPctPut,
           days_to_expiry: data.daysToExpiry,
+          number_of_calls: data.numberOfCalls ?? 3,
+          number_of_puts: data.numberOfPuts ?? 3,
         }]);
 
         // Manually fetch accounts first to update state instantly!
@@ -558,6 +564,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       atmRatioPctCall: config.atmRatioPctCall,
       atmRatioPctPut: config.atmRatioPctPut,
       daysToExpiry: config.daysToExpiry,
+      numberOfCalls: config.numberOfCalls ?? 3,
+      numberOfPuts: config.numberOfPuts ?? 3,
     });
     setIsCreateModalOpen(true);
   };
@@ -659,6 +667,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         atm_ratio_distance_call: newCfg.atmRatioPctCall,
         atm_ratio_distance_put: newCfg.atmRatioPctPut,
         days_to_expiry: newCfg.daysToExpiry,
+        number_of_calls: newCfg.numberOfCalls ?? 3,
+        number_of_puts: newCfg.numberOfPuts ?? 3,
         updated_at: new Date().toISOString()
       }).select();
       if (error) {
@@ -682,7 +692,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     'atmRatioScaling',
     'atmRatioPctCall',
     'atmRatioPctPut',
-    'daysToExpiry'
+    'daysToExpiry',
+    'numberOfCalls',
+    'numberOfPuts',
   ];
 
   const updateConfig = (keyOrObj, value) => {
@@ -728,6 +740,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       atmRatioPctCall: 50,
       atmRatioPctPut: 50,
       daysToExpiry: 0,
+      numberOfCalls: 3,
+      numberOfPuts: 3,
     };
   }, [activeAccount]);
 
@@ -780,6 +794,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           atm_ratio_distance_call: 50,
           atm_ratio_distance_put: 50,
           days_to_expiry: 0,
+          number_of_calls: 3,
+          number_of_puts: 3,
           updated_at: new Date().toISOString()
         };
         const { data: inserted, error: insertErr } = await supabase
@@ -808,6 +824,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           atmRatioPctCall: data.atm_ratio_distance_call ?? 50,
           atmRatioPctPut: data.atm_ratio_distance_put ?? 50,
           daysToExpiry: data.days_to_expiry ?? 0,
+          numberOfCalls: data.number_of_calls ?? 3,
+          numberOfPuts: data.number_of_puts ?? 3,
         };
         setConfig(loadedConfig);
         setDraftConfig(loadedConfig);

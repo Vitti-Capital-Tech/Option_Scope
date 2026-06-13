@@ -210,9 +210,9 @@ Prevents duplicate sell strikes within the same option type.
 
 ### Guard 5: Portfolio Cap (Local)
 ```
-If there are already 3 positions of this type (call/put) → SKIP
+If there are already `config.numberOfCalls` (for calls) or `config.numberOfPuts` (for puts) active positions of this type → SKIP
 ```
-Maximum **3 calls + 3 puts** per account.
+Maximum **config.numberOfCalls calls + config.numberOfPuts puts** per account (defaulting to 3 each).
 
 ### Guard 6: ATM Ratio Scaling (Optional)
 If `atmRatioScaling` is enabled in config:
@@ -239,7 +239,7 @@ Can't exceed your account balance.
 ### Guard 9: DB-Level Count Guard
 ```
 Query: SELECT count(*) FROM active_positions WHERE type = X AND account_id = Y
-If count ≥ 3 → BLOCK
+If count ≥ `config.numberOfCalls` (for calls) or `config.numberOfPuts` (for puts) → BLOCK
 ```
 Double-check against the **database** (not just local memory) to prevent race conditions.
 
@@ -434,20 +434,20 @@ Only when **all** of these are true:
 1. **Full Evaluation Cycle**: The current run is a full evaluation cycle (`onlyExits = false`), ensuring the entry code runs in the same tick and processes the replacement immediately.
 2. The position is **NOT in the Top 3** ranked spreads for its type.
 3. A better target exists (closer to ATM, no strike conflicts).
-4. **Rotation budget available**: at least 3 active positions of this type exist, and fewer than 3 rotations have happened this cycle.
+4. **Rotation budget available**: at least `config.numberOfCalls` (for calls) or `config.numberOfPuts` (for puts) active positions of this type exist, and fewer than `maxCallRotations`/`maxPutRotations` rotations have happened this cycle.
 5. The spot step guard passes (0.5% movement from entry).
 6. If the target happens to share the same sell strike, the net premium swap must be ≥ 0.
 7. **No DB Strike Conflicts**: A pre-exit query checks Supabase to ensure the replacement target's strikes do not conflict with existing active positions. If a conflict is found, the exit is aborted.
 
 ### Rotation Budget
 
-```
-MAX_ROTATIONS_PER_CYCLE = 3
+The maximum number of rotations per cycle is dynamic and equals the configured portfolio cap for each option type:
+- Calls: Max rotations per cycle = `config.numberOfCalls`
+- Puts: Max rotations per cycle = `config.numberOfPuts`
 
-Can rotate? = (active positions of this type ≥ 3) AND (rotations this cycle < 3)
-```
+Can rotate? = (active positions of this type ≥ config.numberOfCalls/Puts) AND (rotations this cycle < maxCallRotations/maxPutRotations)
 
-This prevents the engine from churning through all positions in a single minute. At most **3 calls and 3 puts** can rotate per evaluation cycle.
+This prevents the engine from churning through all positions in a single minute. At most **config.numberOfCalls calls and config.numberOfPuts puts** can rotate per evaluation cycle.
 
 ### What "Not in Top 3" Means
 
@@ -477,10 +477,10 @@ Here's every safety guard in one table:
 | Max net premium debit | `utils.js` | Limits how much net debit is acceptable |
 | ATM PnL ≥ $50 | `paperTradingEngine.js` | Only enters spreads that would profit $50+ at ATM |
 | Days to Expiry | `paperTradingEngine.js` | Rejects candidates whose expiry is fewer than `daysToExpiry` days away |
-| Portfolio cap (3 per type) | `paperTradingEngine.js` | Max 3 call + 3 put positions per account |
+| Portfolio cap | `paperTradingEngine.js` | Max calls (`config.numberOfCalls`) and puts (`config.numberOfPuts`) per account |
 | $200K short value cap | `paperTradingEngine.js` | Scales down lot sizes if short notional ≥ $200K |
 | Margin cap | `paperTradingEngine.js` | Can't exceed account balance |
-| DB count guard | `paperTradingEngine.js` | Database-level check: max 3 per type |
+| DB count guard | `paperTradingEngine.js` | Database-level check: max `config.numberOfCalls` calls / `config.numberOfPuts` puts |
 | DB buy strike uniqueness | `paperTradingEngine.js` | Database-level: no duplicate buy strikes |
 | DB sell strike uniqueness | `paperTradingEngine.js` | Database-level: no duplicate sell strikes |
 | Expiry buffer (5 min) | `paperTradingEngine.js` | Won't enter if less than 5 minutes to expiry |
@@ -488,7 +488,7 @@ Here's every safety guard in one table:
 | Scaling ATM ratio guard | `paperTradingEngine.js` | Live ATM ratio must justify the lot reduction |
 | Leg swap no-debit | `paperTradingEngine.js` | Leg swaps that cost money are rejected |
 | Spot step (0.5%) | `paperTradingEngine.js` | Rotation/swap requires spot to have moved ≥ 0.5% |
-| Rotation budget (3/cycle) | `paperTradingEngine.js` | Max 3 rotations per type per evaluation cycle |
+| Rotation budget | `paperTradingEngine.js` | Max rotations per type per evaluation cycle (`config.numberOfCalls` for calls, `config.numberOfPuts` for puts) |
 | `lastDbWrite` cooldown (3s) | `paperTradingEngine.js` | Skips position refetch for 3s after a DB write |
 | Heartbeat timer delete | `paperTradingEngine.js` / `heartbeat.js` | Clears interval timer and deletes the DB row on account deletion to prevent zombie row resurrection |
 
@@ -596,8 +596,8 @@ flowchart TD
 | Quote freshness limit | 120 seconds | Max age of option quotes for entry |
 | Expiry exit buffer | 2 minutes | How early before expiry to force-exit |
 | Zombie threshold | 10 minutes | Past expiry, use expiry time as exit time |
-| Max positions per type | 3 | Max calls or puts per account |
-| Max rotations per cycle | 3 | Max rotations per type per eval cycle |
+| Max positions per type | Configurable | Max calls (`config.numberOfCalls`) or puts (`config.numberOfPuts`) per account (default: 3) |
+| Max rotations per cycle | Configurable | Max rotations per type per eval cycle (`config.numberOfCalls` for calls, `config.numberOfPuts` for puts) |
 | $200K cap | $200,000 | Max short notional value |
 | Scaling step | 25% | Lot size reduction per scaling event |
 | Scaling floor | 50% | Minimum lot size as % of initial |

@@ -40,6 +40,8 @@ async function startSingleAccountEngine(account) {
     atmRatioPctCall: 50,
     atmRatioPctPut: 50,
     daysToExpiry: 0,
+    numberOfCalls: 3,
+    numberOfPuts: 3,
   };
   let products = [];
   let expiries = [];
@@ -104,6 +106,8 @@ async function startSingleAccountEngine(account) {
           atm_ratio_distance_call: 50,
           atm_ratio_distance_put: 50,
           days_to_expiry: 0,
+          number_of_calls: 3,
+          number_of_puts: 3,
           updated_at: new Date().toISOString()
         };
         const { data: inserted, error: insertErr } = await supabase
@@ -134,6 +138,8 @@ async function startSingleAccountEngine(account) {
           atmRatioPctCall: data.atm_ratio_distance_call ?? 50,
           atmRatioPctPut: data.atm_ratio_distance_put ?? 50,
           daysToExpiry: data.days_to_expiry ?? 0,
+          numberOfCalls: data.number_of_calls ?? 3,
+          numberOfPuts: data.number_of_puts ?? 3,
         };
         configDbId = data.id;
         log(`[${accountState.name}] Config loaded: ${config.underlying} | Expiry: ${config.expiry || 'auto'}`);
@@ -463,7 +469,8 @@ async function startSingleAccountEngine(account) {
 
       let callRotationsApproved = 0;
       let putRotationsApproved = 0;
-      const MAX_ROTATIONS_PER_CYCLE = 3;
+      const maxCallRotations = config.numberOfCalls;
+      const maxPutRotations = config.numberOfPuts;
 
       const remaining = [];
       const exited = [];
@@ -919,8 +926,8 @@ async function startSingleAccountEngine(account) {
 
         // Threshold guard for rotations
         const canRotateThisType = pos.type === 'call'
-          ? (activeCallsCount >= 3 && callRotationsApproved < MAX_ROTATIONS_PER_CYCLE)
-          : (activePutsCount >= 3 && putRotationsApproved < MAX_ROTATIONS_PER_CYCLE);
+          ? (activeCallsCount >= config.numberOfCalls && callRotationsApproved < maxCallRotations)
+          : (activePutsCount >= config.numberOfPuts && putRotationsApproved < maxPutRotations);
 
         let rotationApproved = false;
         if (!canRotateThisType && exitReason.includes('Lost Top 3')) {
@@ -1156,8 +1163,9 @@ async function startSingleAccountEngine(account) {
           // Portfolio cap
           let count = remaining.filter(p => p.underlying === underlying && p.type === spreadType).length +
             newEntries.filter(p => p.underlying === underlying && p.type === spreadType).length;
-          if (count >= 3) {
-            logWarn(`Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Portfolio cap of 3 reached for type ${spreadType}`);
+          const typeCap = spreadType === 'call' ? config.numberOfCalls : config.numberOfPuts;
+          if (count >= typeCap) {
+            logWarn(`Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Portfolio cap of ${typeCap} reached for type ${spreadType}`);
             continue;
           }
 

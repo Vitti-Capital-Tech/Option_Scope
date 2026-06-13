@@ -177,6 +177,25 @@ export default function FirstAccountCard({
                   className="first-account-input"
                 />
               </div>
+
+              <div className="first-account-row">
+                <div className="first-account-form-group">
+                  <label className="first-account-label">Max Calls (#)</label>
+                  <input
+                    type="number"
+                    {...register('numberOfCalls', { valueAsNumber: true })}
+                    className="first-account-input"
+                  />
+                </div>
+                <div className="first-account-form-group">
+                  <label className="first-account-label">Max Puts (#)</label>
+                  <input
+                    type="number"
+                    {...register('numberOfPuts', { valueAsNumber: true })}
+                    className="first-account-input"
+                  />
+                </div>
+              </div>
             </div>
           </div>
 

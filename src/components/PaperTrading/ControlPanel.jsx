@@ -108,6 +108,8 @@ export default function ControlPanel({
             { label: 'Min Long Dist:', key: 'minLongDist', width: 60 },
             { label: 'Max Ratio (1:X):', key: 'maxSellQty', width: 65, step: '0.25' },
             { label: 'Days to Expiry:', key: 'daysToExpiry', width: 50 },
+            { label: 'Max Calls (#):', key: 'numberOfCalls', width: 50 },
+            { label: 'Max Puts (#):', key: 'numberOfPuts', width: 50 },
           ].map(({ label, key, width, step }) => (
             <div key={key} className="form-group">
               <label style={{ marginBottom: 0 }}>{label}</label>
