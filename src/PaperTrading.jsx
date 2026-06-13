@@ -489,6 +489,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       atmRatioPctCall: data.atmRatioPctCall,
       atmRatioPctPut: data.atmRatioPctPut,
       daysToExpiry: data.daysToExpiry,
+      numberOfCalls: data.numberOfCalls,
+      numberOfPuts: data.numberOfPuts
     };
 
     setIsCreatingAccount(true);
