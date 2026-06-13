@@ -73,7 +73,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   } = useForm({
     defaultValues: {
       name: '',
-      balance: 10000,
       ownerId: '',
       underlying: 'BTC',
       minStrikeDiff: 800,
@@ -470,7 +469,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
   const handleModalSubmit = async (data) => {
     const trimmedName = data.name.trim();
-    const balance = data.balance ?? 10000;
 
     // Determine the owner: admin can pick any profile, client defaults to self
     const ownerUserId = userProfile?.role === 'admin' && data.ownerId
@@ -499,7 +497,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         .from('paper_trading_accounts')
         .insert([{
           name: trimmedName,
-          balance,
           is_active: true,
           user_id: ownerUserId,
           default_config: defaultConfigVal
@@ -553,7 +550,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const triggerCreateAccount = () => {
     resetCreate({
       name: `Account ${accounts.length + 1}`,
-      balance: 10000,
       underlying: config.underlying,
       minStrikeDiff: config.minStrikeDiff,
       minIvDiff: config.minIvDiff,
@@ -576,22 +572,20 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     const activeAccount = accounts.find(a => a.id === activeAccountId);
     if (!activeAccount) return;
     resetEdit({
-      name: activeAccount.name,
-      balance: activeAccount.balance
+      name: activeAccount.name
     });
     setIsEditModalOpen(true);
   };
 
   const handleEditSubmit = async (data) => {
     const trimmedName = data.name.trim();
-    const balance = data.balance;
 
     setIsSavingAccount(true);
     try {
-      setAccounts(prev => prev.map(a => a.id === activeAccountId ? { ...a, name: trimmedName, balance } : a));
+      setAccounts(prev => prev.map(a => a.id === activeAccountId ? { ...a, name: trimmedName } : a));
       const { error } = await supabase
         .from('paper_trading_accounts')
-        .update({ name: trimmedName, balance })
+        .update({ name: trimmedName })
         .eq('id', activeAccountId);
 
       if (error) {

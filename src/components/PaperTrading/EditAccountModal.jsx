@@ -40,31 +40,6 @@ export default function EditAccountModal({
           )}
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-          <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-dim)' }}>Balance ($)</label>
-          <input
-            type="number"
-            {...register('balance', {
-              required: 'Balance is required',
-              valueAsNumber: true,
-              validate: value => (!isNaN(value) && value > 0) || 'Balance must be a positive number'
-            })}
-            style={{
-              padding: '8px 12px',
-              borderRadius: '6px',
-              border: errors.balance ? '1px solid #f85149' : '1px solid var(--border)',
-              background: 'var(--bg3)',
-              color: 'var(--text)',
-              fontSize: '13px',
-              outline: 'none'
-            }}
-          />
-          {errors.balance && (
-            <span style={{ fontSize: '11px', color: '#f85149', marginTop: '2px' }}>
-              {errors.balance.message}
-            </span>
-          )}
-        </div>
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '8px' }}>
           <button

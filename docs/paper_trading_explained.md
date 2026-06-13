@@ -230,11 +230,7 @@ If shortValue ≥ $200,000 → scale down both lot size and sell qty proportiona
 ```
 Ensures no single position has more than $200K notional exposure on the short side.
 
-### Guard 8: Margin Cap
-```
-If totalDeployedMargin + candidateMargin > accountBalance → SKIP
-```
-Can't exceed your account balance.
+
 
 ### Guard 9: DB-Level Count Guard
 ```
@@ -479,7 +475,6 @@ Here's every safety guard in one table:
 | Days to Expiry | `paperTradingEngine.js` | Rejects candidates whose expiry is fewer than `daysToExpiry` days away |
 | Portfolio cap | `paperTradingEngine.js` | Max calls (`config.numberOfCalls`) and puts (`config.numberOfPuts`) per account |
 | $200K short value cap | `paperTradingEngine.js` | Scales down lot sizes if short notional ≥ $200K |
-| Margin cap | `paperTradingEngine.js` | Can't exceed account balance |
 | DB count guard | `paperTradingEngine.js` | Database-level check: max `config.numberOfCalls` calls / `config.numberOfPuts` puts |
 | DB buy strike uniqueness | `paperTradingEngine.js` | Database-level: no duplicate buy strikes |
 | DB sell strike uniqueness | `paperTradingEngine.js` | Database-level: no duplicate sell strikes |

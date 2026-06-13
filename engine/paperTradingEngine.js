@@ -1231,13 +1231,7 @@ async function startSingleAccountEngine(account) {
           const entryFee = entryBuyFee + entrySellFee;
           const candidateMargin = calcMargin(entryBuyPrice, adjustedLotSize, spotPrice, adjustedSellQty, spread.sellLeg.lotSize);
 
-          // Hard margin cap check per account
-          const currentTotalMargin = remaining.reduce((sum, p) => sum + (p.margin || 0), 0);
-          const stagedTotalMargin = newEntries.reduce((sum, p) => sum + (p.margin || 0), 0);
-          if (currentTotalMargin + stagedTotalMargin + candidateMargin > (accountState.balance ?? 10000)) {
-            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Account balance margin cap exceeded. Deployed: $${(currentTotalMargin + stagedTotalMargin).toFixed(2)}, Candidate: $${candidateMargin.toFixed(2)}, Balance: $${(accountState.balance ?? 10000).toFixed(2)}`);
-            continue;
-          }
+
 
           const id = `T${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
@@ -1528,7 +1522,7 @@ async function startSingleAccountEngine(account) {
     },
     updateAccount(newAccount) {
       accountState = newAccount;
-      log(`[${accountState.name}] Account state updated (new balance: $${accountState.balance})`);
+      log(`[${accountState.name}] Account state updated`);
     }
   };
 }

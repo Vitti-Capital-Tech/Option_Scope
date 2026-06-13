@@ -53,13 +53,6 @@ export default function ControlPanel({
                   {accounts.find(a => a.id === activeAccountId)?.name ?? ''}
                 </span>
               </div>
-              <div style={{ width: 1, height: 14, backgroundColor: 'var(--border)' }}></div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)', textTransform: 'uppercase' }}>Balance:</span>
-                <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--accent)' }}>
-                  ${(accounts.find(a => a.id === activeAccountId)?.balance ?? 0).toLocaleString()}
-                </span>
-              </div>
               <button
                 onClick={triggerEditAccount}
                 style={{

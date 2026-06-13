@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 export default function AccountSelectorStrip({
   accounts,
@@ -10,7 +10,9 @@ export default function AccountSelectorStrip({
   session,
   handleLogout
 }) {
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   return (
+
     <div className="account-selector-strip">
       {/* Account selection and actions group */}
       <div className="account-selector-group">
@@ -23,7 +25,7 @@ export default function AccountSelectorStrip({
         >
           {accounts.map(acc => (
             <option key={acc.id} value={acc.id} style={{ background: 'var(--bg3)', color: 'var(--text)' }}>
-              {acc.name} (${acc.balance?.toLocaleString()})
+              {acc.name}
             </option>
           ))}
         </select>
@@ -66,7 +68,7 @@ export default function AccountSelectorStrip({
             )}
           </span>
           <button
-            onClick={handleLogout}
+            onClick={() => setShowLogoutConfirm(true)}
             className="account-selector-logout-btn"
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -76,6 +78,61 @@ export default function AccountSelectorStrip({
             </svg>
             Logout
           </button>
+        </div>
+      )}
+
+      {showLogoutConfirm && (
+        <div className="modal-overlay-wrapper" onClick={() => setShowLogoutConfirm(false)}>
+          <div className="modal-container-delete" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '380px' }}>
+            <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                <polyline points="16 17 21 12 16 7"></polyline>
+                <line x1="21" y1="12" x2="9" y2="12"></line>
+              </svg>
+              Confirm Logout
+            </h3>
+            
+            <p style={{ margin: 0, fontSize: '13px', lineHeight: '1.5', color: 'var(--text)' }}>
+              Are you sure you want to sign out of your account?
+            </p>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '8px' }}>
+              <button
+                onClick={() => setShowLogoutConfirm(false)}
+                style={{
+                  padding: '8px 16px',
+                  borderRadius: '6px',
+                  border: '1px solid var(--border)',
+                  background: 'transparent',
+                  color: 'var(--text)',
+                  cursor: 'pointer',
+                  fontSize: '13px',
+                  fontWeight: 500
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setShowLogoutConfirm(false);
+                  handleLogout();
+                }}
+                style={{
+                  padding: '8px 16px',
+                  borderRadius: '6px',
+                  border: 'none',
+                  background: '#f85149',
+                  color: '#ffffff',
+                  cursor: 'pointer',
+                  fontSize: '13px',
+                  fontWeight: 500
+                }}
+              >
+                Logout
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
