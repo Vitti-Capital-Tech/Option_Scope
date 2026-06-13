@@ -755,11 +755,12 @@ async function startSingleAccountEngine(account) {
           calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
         const totalFees = (pos.entryFee || 0) + exitFee;
 
-        // Check top-3 ranking
-        const top3SpreadsOfType = uniqueTopSpreads
+        // Check top-rank protection ranking
+        const maxActiveAllowed = pos.type === 'call' ? config.numberOfCalls : config.numberOfPuts;
+        const protectedSpreadsOfType = uniqueTopSpreads
           .filter(s => s.buyLeg.type === pos.type)
-          .slice(0, 3);
-        const inTop3 = top3SpreadsOfType.some(s =>
+          .slice(0, maxActiveAllowed);
+        const isProtected = protectedSpreadsOfType.some(s =>
           Number(s.buyLeg.strike) === Number(pos.buyLeg.strike)
         );
 
@@ -828,7 +829,7 @@ async function startSingleAccountEngine(account) {
             exitReason = `Leg Swap: Buy ${currentStrike} -> ${targetStrike} | Old Buy: $${latestBuy.toFixed(2)} | New Buy: $${bestSwapTarget.buyPrice.toFixed(2)} | Old Sell Qty: ${pos.sellQty} | New Sell Qty: ${getScaledSellQty(bestSwapTarget)} | Sell Price: $${latestSell.toFixed(2)} | Net Premium Swap: $${netPremiumSwap.toFixed(2)}`;
             reservedTargets.add(targetStrike);
             reservedSellTargets.add(targetSellStrike);
-          } else if (!onlyExits && !inTop3) {
+          } else if (!onlyExits && !isProtected) {
             // 2. Fallback to standard rotation (only for positions not in Top 3 during a full cycle)
             const bestTarget = uniqueTopSpreads.filter(s => s.buyLeg.type === pos.type).find(s => {
               const bS = Number(s.buyLeg.strike);

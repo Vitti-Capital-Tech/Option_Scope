@@ -374,14 +374,13 @@ New entries are opened from `uniqueTopSpreads` (the deduplicated, ROI-ranked can
 1. **Expiry Buffer Guard**: Skip if `minutesToExpiry < 5`.
 2. **Days to Expiry Guard**: Skip if the expiry has fewer days remaining than the configured `daysToExpiry` threshold.
 3. **Strike Uniqueness (Local)**: Block if buy or sell strike already active in `remaining` or `newEntries` (same type/underlying).
-4. **Portfolio Cap (Local)**: Block if `remaining + newEntries count >= 3` for this type.
+4. **Portfolio Cap (Local)**: Block if `remaining + newEntries count >= config.numberOfCalls` (for calls) or `config.numberOfPuts` (for puts) for this type.
 4. **Execution**: `entryBuyPrice = spread.ask`, `entrySellPrice = spread.bid`. Entry IVs captured: `entryBuyIv = ticker.askIv`, `entrySellIv = ticker.bidIv`. Baseline ATM ratio (`entryAtmRatio`) and unscaled lot size (`originalLotSize`) are computed.
    - **ATM Ratio Entry Scaling**: If `atmRatioScaling` is enabled, the target ratio is scaled using a percentage offset: `targetRatio = originalRatio + (pct / 100) * (atmRatioVal - originalRatio)`, where `pct` is `atmRatioPctCall`/`atmRatioPctPut` and `atmRatioVal` is the live ATM ratio rounded to 0.25. The entry ratio to use is `ratioToUse = Math.max(spread.sellQty, Math.round(targetRatio / 0.25) * 0.25)`. Both long lot size and short quantity are scaled under the 200X leverage limit ($200k cap) using this `ratioToUse`.
    - The final scaled values are written to `buy_leg` JSON metadata and stored inside Supabase `active_positions`.
 5. **$200K Short Value Cap**: If `spotPrice × sellQty × sellLotSize >= $200,000`, both lot size and sell qty are scaled down proportionally to bring the short notional to exactly $200K.
-6. **Account Margin Cap**: The total margin of all remaining positions + staged new entries + this candidate's margin must not exceed the account's balance (`accountState.balance`). If it does, the entry is skipped.
-7. **Supabase Insert (with three DB-level guards)**:
-   - Count guard: `SELECT id WHERE underlying AND type AND account_id` — abort if count `>= 3`.
+6. **Supabase Insert (with three DB-level guards)**:
+   - Count guard: `SELECT id WHERE underlying AND type AND account_id` — abort if count `>= config.numberOfCalls` (for calls) or `config.numberOfPuts` (for puts).
    - Buy strike uniqueness: `SELECT id WHERE buy_strike = X AND account_id` — abort if exists (`buyConflict`).
    - Sell strike uniqueness: `SELECT id WHERE sell_strike = Y AND account_id` — abort if exists (`sellConflict`).
    - Unique constraint `23505` is the final net.
@@ -525,12 +524,11 @@ On first spot price arrival, `backfillMargins` queries all `active_positions` fr
 
 ### 2. Custom React Modals
 - **Create Account Modal**:
-  - Collects Name, Initial Balance, and initial Strategy Filters (Underlying, Days to Expiry, Min Strike Diff, Min IV Diff, Max Ratio Dev, Min Sell Premium, Max Debit, Min Long Dist, Max Sell Qty, and ATM Ratio Scaling with Call/Put ATM percentages).
+  - Collects Name and initial Strategy Filters (Underlying, Days to Expiry, Min Strike Diff, Min IV Diff, Max Ratio Dev, Min Sell Premium, Max Debit, Min Long Dist, Max Sell Qty, and ATM Ratio Scaling with Call/Put ATM percentages).
   - Pre-fills all strategy filters with the current active filters on the screen as convenient defaults.
   - Utilizes `react-hook-form` for input validation and error feedback.
   - Validations:
     - Account Name: Required, trimmed input must be non-empty.
-    - Initial Balance: Required, must be a positive number.
   - Visual Indicators:
     - Invalid inputs are styled with a red border (`border: 1px solid #f85149`).
     - Validation error messages are rendered in red text directly beneath the corresponding invalid fields.
@@ -541,14 +539,13 @@ On first spot price arrival, `backfillMargins` queries all `active_positions` fr
   - Checks if the account has open positions; if yes, displays a prominent warning that positions will be cascaded.
   - Refreshes state instantly by invoking `await fetchAccounts()` immediately post-deletion to avoid stale lists.
   - Buttons: Cancel and Delete are locked during execution with a spinning SVG loader inline.
-- **Renaming & Updating Account Balance (Edit Account Modal)**:
-  - Triggered by clicking a pencil icon next to the active account details (Name and Balance displayed in a compact visual pill container).
-  - Opens a custom styled React modal allowing the user to update both Account Name and Balance in a single transaction.
+- **Renaming Account (Edit Account Modal)**:
+  - Triggered by clicking a pencil icon next to the active account details (Name displayed in a compact visual pill container).
+  - Opens a custom styled React modal allowing the user to update the Account Name.
   - The modal inputs are pre-populated with the active account's current values.
   - Utilizes `react-hook-form` for input validation and error feedback.
   - Validations:
     - Account Name: Required, trimmed input must be non-empty.
-    - Balance: Required, must be a positive number.
   - Visual Indicators:
     - Invalid inputs are styled with a red border (`border: 1px solid #f85149`).
     - Validation error messages are rendered in red text directly beneath the corresponding invalid fields.
@@ -556,7 +553,7 @@ On first spot price arrival, `backfillMargins` queries all `active_positions` fr
     - Locks input and action buttons (Cancel/Save) by toggling `isSavingAccount`.
     - Renders a spinning inline SVG loader inside the Save button.
     - Performs an optimistic local state update to `accounts` for immediate visual responsiveness.
-    - Updates both name and balance in a single database update query against `paper_trading_accounts`.
+    - Updates name in a database update query against `paper_trading_accounts`.
     - Refreshes account list using `fetchAccounts()` to sync changes globally, then closes the modal.
 
 ---

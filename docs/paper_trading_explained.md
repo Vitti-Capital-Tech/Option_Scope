@@ -46,7 +46,7 @@ The entry point is `startPaperTradingEngine()`. It acts like a **manager** that:
 3. Listens for account changes in real-time:
    - **New account added** → starts a new engine
    - **Account deactivated** → stops its engine
-   - **Account updated** (e.g. balance change) → updates the running engine's state
+   - **Account updated** (e.g. name or status changes) → updates the running engine's state
 
 Each account runs in complete isolation — its own WebSocket, its own positions, its own config.
 
@@ -87,6 +87,9 @@ After startup, four timers run continuously, all wrapped inside **try-catch** bl
 | **Spot price poll** | Every 10 seconds | Updates BTC/ETH spot price via REST API |
 | **Product refresh** | Every 5 minutes | Refreshes the list of available option contracts |
 | **Positions sync** | Every 30 seconds | Re-fetches positions from DB as a safety fallback |
+
+> [!TIP]
+> **Real-time Spot updates**: In addition to the periodic REST API fallback poll (every 10 seconds), the engine streams the perpetual contract (`BTCUSD` or `ETHUSD`) directly over the WebSocket ticker stream. This allows the engine to update the underlying spot price instantly as trades occur.
 
 ### The Evaluation Loop Decision
 
@@ -232,27 +235,27 @@ Ensures no single position has more than $200K notional exposure on the short si
 
 
 
-### Guard 9: DB-Level Count Guard
+### Guard 8: DB-Level Count Guard
 ```
 Query: SELECT count(*) FROM active_positions WHERE type = X AND account_id = Y
 If count ≥ `config.numberOfCalls` (for calls) or `config.numberOfPuts` (for puts) → BLOCK
 ```
 Double-check against the **database** (not just local memory) to prevent race conditions.
 
-### Guard 10: DB-Level Buy Strike Uniqueness
+### Guard 9: DB-Level Buy Strike Uniqueness
 ```
 Query: SELECT * FROM active_positions WHERE buy_strike = X AND type = Y AND account_id = Z
 If exists → BLOCK
 ```
 
-### Guard 11: DB-Level Sell Strike Uniqueness
+### Guard 10: DB-Level Sell Strike Uniqueness
 ```
 Query: SELECT * FROM active_positions WHERE sell_strike = X AND type = Y AND account_id = Z
 If exists → BLOCK
 ```
 
 > [!IMPORTANT]
-> Guards 9-11 are **database-level guards** that act as a second safety net. Even if the in-memory checks pass, the DB checks can still block an entry. This prevents duplicate positions if two evaluation cycles overlap or if the engine restarts.
+> Guards 8-10 are **database-level guards** that act as a second safety net. Even if the in-memory checks pass, the DB checks can still block an entry. This prevents duplicate positions if two evaluation cycles overlap or if the engine restarts.
 
 ### Entry Pricing
 
@@ -289,7 +292,7 @@ For each position, the engine walks through this **priority tree** from top to b
 │     → EXIT + re-enter with better buy leg    │
 │                                              │
 │  5. PRIORITY 4: Standard Rotation?           │
-│     → EXIT if not in Top 3 + better exists   │
+│     → EXIT if not protected + better exists  │
 │                                              │
 │  6. PRIORITY 3: ATM reached?                 │
 │     → EXIT if spot crosses buy strike        │
@@ -428,7 +431,7 @@ A standard rotation is a **full replacement** — both legs are exited and a new
 Only when **all** of these are true:
 
 1. **Full Evaluation Cycle**: The current run is a full evaluation cycle (`onlyExits = false`), ensuring the entry code runs in the same tick and processes the replacement immediately.
-2. The position is **NOT in the Top 3** ranked spreads for its type.
+2. The position is **NOT in the top protected** ranked spreads for its type (`config.numberOfCalls` for calls, `config.numberOfPuts` for puts).
 3. A better target exists (closer to ATM, no strike conflicts).
 4. **Rotation budget available**: at least `config.numberOfCalls` (for calls) or `config.numberOfPuts` (for puts) active positions of this type exist, and fewer than `maxCallRotations`/`maxPutRotations` rotations have happened this cycle.
 5. The spot step guard passes (0.5% movement from entry).
@@ -445,9 +448,9 @@ Can rotate? = (active positions of this type ≥ config.numberOfCalls/Puts) AND 
 
 This prevents the engine from churning through all positions in a single minute. At most **config.numberOfCalls calls and config.numberOfPuts puts** can rotate per evaluation cycle.
 
-### What "Not in Top 3" Means
+### What "Not in Protected Rank" Means
 
-After scanning and ranking all candidate spreads by distance-to-ATM, the engine takes the **top 3 by type** (3 calls, 3 puts). If a position's buy strike appears in this top-3 list, it's **protected** from rotation. If not, it's eligible to be replaced.
+After scanning and ranking all candidate spreads by distance-to-ATM, the engine takes the top-ranked spreads by type up to the configured limit (**config.numberOfCalls** for calls, **config.numberOfPuts** for puts). If a position's buy strike appears in this top list, it's **protected** from rotation. If not, it's eligible to be replaced.
 
 ---
 
@@ -482,7 +485,7 @@ Here's every safety guard in one table:
 | Scaling floor (50%) | `paperTradingEngine.js` | Buy lot size can never go below 50% of initial |
 | Scaling ATM ratio guard | `paperTradingEngine.js` | Live ATM ratio must justify the lot reduction |
 | Leg swap no-debit | `paperTradingEngine.js` | Leg swaps that cost money are rejected |
-| Spot step (0.5%) | `paperTradingEngine.js` | Rotation/swap requires spot to have moved ≥ 0.5% |
+| Spot step (0.5%) | `paperTradingEngine.js` | Rotation/swap requires spot to have moved ≥ 0.5% (rounded to nearest 100) |
 | Rotation budget | `paperTradingEngine.js` | Max rotations per type per evaluation cycle (`config.numberOfCalls` for calls, `config.numberOfPuts` for puts) |
 | `lastDbWrite` cooldown (3s) | `paperTradingEngine.js` | Skips position refetch for 3s after a DB write |
 | Heartbeat timer delete | `paperTradingEngine.js` / `heartbeat.js` | Clears interval timer and deletes the DB row on account deletion to prevent zombie row resurrection |
@@ -554,7 +557,7 @@ flowchart TD
     V -->|No| X{"Leg swap available?"}
     
     X -->|Yes| Y["EXIT + re-enter with new buy leg"]
-    X -->|No| Z{"Lost Top 3 + better target?"}
+    X -->|No| Z{"Lost Rank Protection + better target?"}
     
     Z -->|Yes| AA{"Rotation budget available?"}
     AA -->|Yes| AB["EXIT: Standard rotation"]
@@ -597,7 +600,7 @@ flowchart TD
 | Scaling step | 25% | Lot size reduction per scaling event |
 | Scaling floor | 50% | Minimum lot size as % of initial |
 | ATM PnL minimum | $50 | Min simulated ATM profit for entry |
-| Spot step threshold | 0.5% | Min spot movement for rotation/swap |
+| Spot step threshold | 0.5% | Min spot movement for rotation/swap (rounded to nearest 100) |
 | ATM strike tolerance (BTC) | 500 points | Fallback tolerance for finding ATM prices |
 | ATM strike tolerance (ETH) | 50 points | Fallback tolerance for finding ATM prices |
 | Evaluation hang limit | 60 seconds | Max duration evaluation can run before process is restarted |
