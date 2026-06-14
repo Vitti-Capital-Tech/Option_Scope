@@ -440,13 +440,30 @@ async function startSingleAccountEngine(account) {
         }
       }
 
+      const hasConflictWithOtherActivePositions = (spread, activePositions) => {
+        const bStrike = Number(spread.buyLeg.strike);
+        const sStrike = Number(spread.sellLeg.strike);
+        const type = spread.buyLeg.type;
+
+        return activePositions.some(p => {
+          if (Number(p.buyLeg.strike) === bStrike && Number(p.sellLeg.strike) === sStrike) {
+            return false;
+          }
+          return p.underlying === underlying &&
+                 p.type === type &&
+                 (Number(p.buyLeg.strike) === bStrike || Number(p.sellLeg.strike) === sStrike);
+        });
+      };
+
       const uniqueCalls = Object.values(callGroups).map(group => {
         group.sort((a, b) => b.roi - a.roi);
-        return group[0];
+        const bestNonConflicting = group.find(s => !hasConflictWithOtherActivePositions(s, positions));
+        return bestNonConflicting || group[0];
       });
       const uniquePuts = Object.values(putGroups).map(group => {
         group.sort((a, b) => b.roi - a.roi);
-        return group[0];
+        const bestNonConflicting = group.find(s => !hasConflictWithOtherActivePositions(s, positions));
+        return bestNonConflicting || group[0];
       });
 
       // Sort candidate lists by distance to ATM (closest to ATM first)
