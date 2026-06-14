@@ -455,16 +455,27 @@ async function startSingleAccountEngine(account) {
         });
       };
 
-      const uniqueCalls = Object.values(callGroups).map(group => {
+      const uniqueCalls = [];
+      for (const group of Object.values(callGroups)) {
         group.sort((a, b) => b.roi - a.roi);
-        const bestNonConflicting = group.find(s => !hasConflictWithOtherActivePositions(s, positions));
-        return bestNonConflicting || group[0];
-      });
-      const uniquePuts = Object.values(putGroups).map(group => {
+        const primary = group[0];
+        uniqueCalls.push(primary);
+        if (hasConflictWithOtherActivePositions(primary, positions)) {
+          const fallback = group.slice(1).find(s => !hasConflictWithOtherActivePositions(s, positions));
+          if (fallback) uniqueCalls.push(fallback);
+        }
+      }
+
+      const uniquePuts = [];
+      for (const group of Object.values(putGroups)) {
         group.sort((a, b) => b.roi - a.roi);
-        const bestNonConflicting = group.find(s => !hasConflictWithOtherActivePositions(s, positions));
-        return bestNonConflicting || group[0];
-      });
+        const primary = group[0];
+        uniquePuts.push(primary);
+        if (hasConflictWithOtherActivePositions(primary, positions)) {
+          const fallback = group.slice(1).find(s => !hasConflictWithOtherActivePositions(s, positions));
+          if (fallback) uniquePuts.push(fallback);
+        }
+      }
 
       // Sort candidate lists by distance to ATM (closest to ATM first)
       uniqueCalls.sort((a, b) => Math.abs(a.buyLeg.strike - spotPrice) - Math.abs(b.buyLeg.strike - spotPrice));
