@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 export default function AccountSelectorStrip({
   accounts,
@@ -11,6 +11,23 @@ export default function AccountSelectorStrip({
   handleLogout
 }) {
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const [isOpen, setIsOpen] = useState(false);
+  const dropdownRef = useRef(null);
+
+  useEffect(() => {
+    function handleClickOutside(event) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setIsOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
+
+  const activeAccount = accounts.find(acc => acc.id === activeAccountId);
+
   return (
 
     <div className="account-selector-strip">
@@ -18,17 +35,71 @@ export default function AccountSelectorStrip({
       <div className="account-selector-group">
         <span className="account-selector-label">Account:</span>
         
-        <select
-          value={activeAccountId || ''}
-          onChange={e => setActiveAccountId(e.target.value)}
-          className="account-selector-select"
-        >
-          {accounts.map(acc => (
-            <option key={acc.id} value={acc.id} style={{ background: 'var(--bg3)', color: 'var(--text)' }}>
-              {acc.name}
-            </option>
-          ))}
-        </select>
+        <div className="account-dropdown-container" ref={dropdownRef}>
+          <button 
+            type="button"
+            className="account-dropdown-trigger" 
+            onClick={() => setIsOpen(!isOpen)}
+          >
+            <div className="account-dropdown-trigger-content">
+              <svg className="account-icon-avatar" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                <circle cx="12" cy="7" r="4"></circle>
+              </svg>
+              <span className="account-dropdown-name">{activeAccount?.name || 'Select Account'}</span>
+            </div>
+            <svg 
+              className="account-chevron-icon" 
+              width="12" 
+              height="12" 
+              viewBox="0 0 24 24" 
+              fill="none" 
+              stroke="currentColor" 
+              strokeWidth="2.5"
+              style={{
+                transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                transition: 'transform 0.2s ease'
+              }}
+            >
+              <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+          </button>
+
+          {isOpen && (
+            <div className="account-dropdown-menu">
+              <div className="account-dropdown-menu-header">Select Trading Account</div>
+              <div className="account-dropdown-list">
+                {accounts.map(acc => {
+                  const isSelected = acc.id === activeAccountId;
+                  return (
+                    <button
+                      key={acc.id}
+                      type="button"
+                      className={`account-dropdown-item ${isSelected ? 'selected' : ''}`}
+                      onClick={() => {
+                        setActiveAccountId(acc.id);
+                        setIsOpen(false);
+                      }}
+                    >
+                      <div className="account-dropdown-item-left">
+                        <svg className="account-dropdown-item-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                          <line x1="9" y1="3" x2="9" y2="21"></line>
+                        </svg>
+                        <span>{acc.name}</span>
+                      </div>
+                      {isSelected && (
+                        <svg className="account-selected-checkmark" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="3">
+                          <polyline points="20 6 9 17 4 12"></polyline>
+                        </svg>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
 
         <button
           onClick={triggerCreateAccount}
