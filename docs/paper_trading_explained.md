@@ -85,11 +85,21 @@ After startup, four timers run continuously, all wrapped inside **try-catch** bl
 |-------|----------|---------|
 | **Evaluation loop** | Every 1 second | The core brain — evaluates exits and entries |
 | **Spot price poll** | Every 10 seconds | Updates BTC/ETH spot price via REST API |
-| **Product refresh** | Every 5 minutes | Refreshes the list of available option contracts |
+| **Product refresh** | Every 5 minutes | Refreshes option contracts and handles automatic expiry rollover if needed |
 | **Positions sync** | Every 30 seconds | Re-fetches positions from DB as a safety fallback |
 
 > [!TIP]
 > **Real-time Spot updates**: In addition to the periodic REST API fallback poll (every 10 seconds), the engine streams the perpetual contract (`BTCUSD` or `ETHUSD`) directly over the WebSocket ticker stream. This allows the engine to update the underlying spot price instantly as trades occur.
+
+### Product Refresh & Expiry Rollover
+
+Every 5 minutes (as well as during startup and configuration updates), the engine refreshes the list of active option products. As part of this sequence, it validates the active expiry selection:
+
+1. **Stale Expiry Detection**: It computes the remaining days of the current `config.expiry`. If it is less than the configured `daysToExpiry` threshold, the expiry is flagged as stale/invalid.
+2. **Auto-Rollover**: The engine automatically scans all available expiries on the exchange and updates `config.expiry` to the nearest future date that satisfies the `daysToExpiry` requirement, saving this change back to the database.
+3. **Scanner Rollover vs. Position Rollover**: 
+   - **Scanner Rollover**: Changing `config.expiry` only shifts the engine's scanning focus. In the next minute loop, it runs a completely fresh scan for option spreads on the new expiry and will only enter trades if they meet all configuration parameters.
+   - **No Position Rollover**: Active positions are never carried forward or rolled over. Instead, they are always exited 2 minutes prior to their expiration date and recorded as settled in the trade history, starting fresh.
 
 ### The Evaluation Loop Decision
 

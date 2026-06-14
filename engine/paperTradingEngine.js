@@ -187,7 +187,10 @@ async function startSingleAccountEngine(account) {
       products = prods;
       expiries = getExpiries(prods);
 
-      if (expiries.length && (!config.expiry || !expiries.includes(config.expiry))) {
+      const currentDaysRemaining = config.expiry ? (new Date(config.expiry).getTime() - Date.now()) / (24 * 60 * 60 * 1000) : 0;
+      const isExpiryStale = config.expiry && currentDaysRemaining < (config.daysToExpiry || 0);
+
+      if (expiries.length && (!config.expiry || !expiries.includes(config.expiry) || isExpiryStale)) {
         let selectedExpiry = null;
         for (const exp of expiries) {
           const daysRemaining = (new Date(exp).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
@@ -199,15 +202,17 @@ async function startSingleAccountEngine(account) {
         if (!selectedExpiry) {
           selectedExpiry = expiries[0];
         }
-        config.expiry = selectedExpiry;
-        log(`[${accountState.name}] Expiry auto-selected: ${config.expiry}`);
-        // Persist the auto-selected expiry back to Supabase
-        if (configDbId) {
-          await supabase.from('paper_trading_config').upsert({
-            id: configDbId,
-            expiry: config.expiry,
-            updated_at: new Date().toISOString()
-          });
+        if (selectedExpiry !== config.expiry) {
+          config.expiry = selectedExpiry;
+          log(`[${accountState.name}] Expiry auto-selected: ${config.expiry}`);
+          // Persist the auto-selected expiry back to Supabase
+          if (configDbId) {
+            await supabase.from('paper_trading_config').upsert({
+              id: configDbId,
+              expiry: config.expiry,
+              updated_at: new Date().toISOString()
+            });
+          }
         }
       }
     } catch (e) { logError('Product refresh error', e); }
