@@ -903,7 +903,7 @@ async function startSingleAccountEngine(account) {
 
                   if (!hasConflict) {
                     shouldExit = true;
-                    exitReason = `Lost Top 3 and Rank 1 better target available (${targetStrike})`;
+                    exitReason = `Lost Protected Rank (Top ${maxActiveAllowed}) and Rank 1 better target available (${targetStrike})`;
                     reservedTargets.add(targetStrike);
                     reservedSellTargets.add(targetSellStrike);
                   }
@@ -931,9 +931,9 @@ async function startSingleAccountEngine(account) {
           : (activePutsCount >= config.numberOfPuts && putRotationsApproved < maxPutRotations);
 
         let rotationApproved = false;
-        if (!canRotateThisType && exitReason.includes('Lost Top 3')) {
+        if (!canRotateThisType && exitReason.includes('Lost Protected Rank')) {
           if (shouldExit) { shouldExit = false; }
-        } else if (canRotateThisType && exitReason.includes('Lost Top 3')) {
+        } else if (canRotateThisType && exitReason.includes('Lost Protected Rank')) {
           if (shouldExit) {
             rotationApproved = true;
             if (pos.type === 'call') callRotationsApproved++; else putRotationsApproved++;
@@ -942,7 +942,7 @@ async function startSingleAccountEngine(account) {
 
         if (shouldExit) {
           // Final guard for unapproved rotation exits
-          if (exitReason.includes('Lost Top 3') && !rotationApproved) {
+          if (exitReason.includes('Lost Protected Rank') && !rotationApproved) {
             shouldExit = false;
             remaining.push(pos);
             continue;

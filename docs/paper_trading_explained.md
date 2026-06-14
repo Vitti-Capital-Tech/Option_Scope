@@ -153,6 +153,11 @@ Every candidate pair must pass **all** of these filters to be considered:
 | 7 | **Max Sell Qty** | `maxSellQty` (default: 10) | The sell quantity (ratio) must not exceed 10 |
 | 8 | **Max Net Premium** | `maxNetPremium` (default: $20) | The net premium debit cannot exceed $20 (i.e., `sellQty × sellPrice - buyPrice ≥ -$20`) |
 | 9 | **Days to Expiry** | `daysToExpiry` (default: 0) | The option expiry date must be at least this many days away from the current time. Options closer to expiry are rejected. |
+| 10 | **Max Calls (#)** | `numberOfCalls` (default: 3) | Maximum active calls allowed concurrently. Also sets call rotation thresholds and call protection slices dynamically. |
+| 11 | **Max Puts (#)** | `numberOfPuts` (default: 3) | Maximum active puts allowed concurrently. Also sets put rotation thresholds and put protection slices dynamically. |
+| 12 | **ATM Ratio Entry** | `atmRatioScaling` (default: false) | Checkbox toggle to enable scaling of entry sell quantities based on ATM strike option prices. |
+| 13 | **Call ATM Pct (%)** | `atmRatioPctCall` (default: 50) | The scaling percentage for ATM ratio adjustments on call spreads. |
+| 14 | **Put ATM Pct (%)** | `atmRatioPctPut` (default: 50) | The scaling percentage for ATM ratio adjustments on put spreads. |
 
 ### How the Sell Quantity (Ratio) Is Calculated
 

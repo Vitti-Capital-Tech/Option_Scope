@@ -322,25 +322,25 @@ Evaluated only if no expiry exit was triggered.
 Evaluated only if no exit was triggered, the position's expiry matches `selExpiry`, and `uniqueTopSpreads` is non-empty.
 
 1. **Leg Swap Check (Same Sell Strike, Better Buy Strike)**:
-   - Always checked first (even if the active position is still in the Top 3 unique candidate strikes).
+   - Always checked first (even if the active position is still in the top protected unique candidate strikes).
    - Looks for a candidate in `uniqueTopSpreads` with the exact same sell strike as the active position, but a better (closer to ATM) buy strike.
    - Enforces the **0.5% Spot Step Movement Guard** on the spot price relative to the active position's entry spot base.
    - Enforces the **Net Premium Swap Cost Check**: calculates `netPremiumSwap = (deltaQty * latestSell) - (s.buyPrice - latestBuy)`, where `deltaQty = getScaledSellQty(s) - pos.sellQty` (enforcing the $200,000 portfolio cap scaling at 200× leverage on the candidate's `s.sellQty` first) and `latestSell` is the ask price of the sell leg. If `netPremiumSwap < 0` (representing a net debit), the candidate is rejected.
    - If a valid swap target is found, `shouldExit` is set to `true`, and `exitReason` is set to `Leg Swap: Buy [currentStrike] -> [targetStrike]`.
 
-2. **Fallback to Standard Rotation (Only if not in Top 3)**:
-   - Evaluated only if no Leg Swap was triggered, and the position is not in the Top 3 unique strikes (`inTop3 === false`).
+2. **Fallback to Standard Rotation (Only if not in Top Protected Ranks)**:
+   - Evaluated only if no Leg Swap was triggered, and the position is not in the top protected unique strikes (`inTopProtected === false`, which dynamically slices `uniqueTopSpreads` up to `config.numberOfCalls` or `config.numberOfPuts`).
    - Finds a `bestTarget` in `uniqueTopSpreads` that passes safety guards (strike conflicts, reservation, and 0.5% spot movement).
    - If the fallback candidate happens to have the same sell strike, it checks the **Net Premium Swap Cost Check** as well; if the cost is too high (i.e. `netPremiumSwap < 0`), it rejects that candidate.
-   - If the target is directionally closer to ATM, the exit is approved (`exitReason = 'Lost Top 3 and Rank 1 better target available ([targetStrike])'`).
+   - If the target is directionally closer to ATM, the exit is approved (`exitReason = 'Lost Protected Rank (Top [maxActiveAllowed]) and Rank 1 better target available ([targetStrike])'`).
 
 **Threshold Guard (Rotation Only):**
 
 Rotations are gated by the portfolio depth requirement:
 
-- Calls can only rotate if `activeCallsCount >= 3`.
-- Puts can only rotate if `activePutsCount >= 3`.
-- Maximum `MAX_ROTATIONS_PER_CYCLE = 3` total rotations per evaluation cycle.
+- Calls can only rotate if `activeCallsCount >= config.numberOfCalls`.
+- Puts can only rotate if `activePutsCount >= config.numberOfPuts`.
+- Maximum total rotations per evaluation cycle is dynamically capped by `maxCallRotations = config.numberOfCalls` (for calls) and `maxPutRotations = config.numberOfPuts` (for puts).
 
 ### D. Leg Swap Execution Details
 
