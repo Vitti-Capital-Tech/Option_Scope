@@ -453,9 +453,12 @@ async function startSingleAccountEngine(account) {
       uniqueCalls.sort((a, b) => Math.abs(a.buyLeg.strike - spotPrice) - Math.abs(b.buyLeg.strike - spotPrice));
       uniquePuts.sort((a, b) => Math.abs(a.buyLeg.strike - spotPrice) - Math.abs(b.buyLeg.strike - spotPrice));
 
+      const maxCallCandidates = Math.max(10, config.numberOfCalls || 3);
+      const maxPutCandidates = Math.max(10, config.numberOfPuts || 3);
+
       const uniqueTopSpreads = [
-        ...uniqueCalls.slice(0, 10),
-        ...uniquePuts.slice(0, 10)
+        ...uniqueCalls.slice(0, maxCallCandidates),
+        ...uniquePuts.slice(0, maxPutCandidates)
       ];
 
       if (!onlyExits && uniqueTopSpreads.length > 0) {

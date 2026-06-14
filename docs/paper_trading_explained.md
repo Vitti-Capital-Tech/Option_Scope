@@ -182,7 +182,7 @@ This simulates: _What's the profit if spot moves to the buy strike?_ Only spread
 
 1. Group by buy strike — if multiple spreads share the same buy strike, keep only the one with the **highest ROI**
 2. Sort by **distance to ATM** (closest first)
-3. Take top **10 calls + 10 puts** maximum
+3. Take the top **10 calls + 10 puts** maximum (or higher if the configured `numberOfCalls`/`numberOfPuts` is set to more than 10, ensuring candidates always cover your max limits).
 
 ---
 
