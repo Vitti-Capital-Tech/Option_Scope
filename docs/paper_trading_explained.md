@@ -180,9 +180,17 @@ This simulates: _What's the profit if spot moves to the buy strike?_ Only spread
 
 ### Deduplication & Ranking
 
-1. Group by buy strike — if multiple spreads share the same buy strike, keep only the one with the **highest ROI**
+1. Group by buy strike — if multiple spreads share the same buy strike:
+   - Keep the one with the **highest ROI** (primary candidate, essential for Leg Swaps).
+   - If this highest ROI candidate conflicts with any of your currently active positions (other than itself), ALSO keep the next best **non-conflicting fallback candidate** for that same buy strike (if one exists). This allows normal entries to execute on non-conflicting spreads even when the primary highest ROI spread is blocked by active positions.
 2. Sort by **distance to ATM** (closest first)
 3. Take the top **10 calls + 10 puts** maximum (or higher if the configured `numberOfCalls`/`numberOfPuts` is set to more than 10, ensuring candidates always cover your max limits).
+
+> [!IMPORTANT]
+> **Why we keep both the primary (potentially conflicting) and fallback (non-conflicting) candidates:**
+> - **Leg Swaps** require candidates that share the **same sell strike** as an active position. Since this sell strike is already active, the candidate will naturally trigger a "sell strike conflict" check. If we filtered out conflicting candidates before grouping, we would never find candidate upgrades for Leg Swaps.
+> - **Normal Entries** require candidates that do **not** conflict with any active position strikes. If we only kept the highest ROI candidate per buy strike and it had a conflict, we would be locked out of entering any trades for that buy strike even if other non-conflicting spreads on that strike existed.
+> - **The Solution**: We keep the primary highest-ROI candidate (preserving it for Leg Swaps) *and* dynamically append the next best non-conflicting fallback candidate for the same buy strike (enabling normal entries). This prevents trade lockouts.
 
 ---
 

@@ -271,7 +271,7 @@ Steps: A → B → C → D → E → F (detailed in sections below).
 ### A. Candidate Pool Construction
 
 1. **Self-Contained Local Scan**: The headless engine runs its own `scanTickers` (same algorithm as `RatioSpreadScanner`) on calls and puts separately, filtered by option type and ATM direction. Unlike the browser-based version, the headless engine does **not** merge results from the `RatioSpreadScanner` `BroadcastChannel` — it is fully self-contained.
-2. **Unique Ranking List (`uniqueTopSpreads`)**: A deduplicated and filtered view (one entry per buy strike, max 10 per type) where candidate spreads are filtered by `ATM P&L >= $50` and sorted by ROI descending to choose the best candidate per buy strike. Used for ranking, rotation, and entry decisions.
+2. **Unique Ranking List (`uniqueTopSpreads`)**: A deduplicated and filtered view of candidate spreads. Grouped by buy strike: we keep the highest-ROI candidate (essential for Leg Swaps) and, if it conflicts with active positions, also append the next best non-conflicting fallback candidate (to prevent entry lockouts). The lists of candidates are sorted by distance to ATM (closest first) and sliced to `Math.max(10, numberOfCalls/numberOfPuts)` dynamically. Used for ranking, rotation, and entry decisions.
 
 ### B. Sorted Position Processing (Worst-First)
 
