@@ -833,7 +833,7 @@ async function startSingleAccountEngine(account) {
             const netPremiumSwap = (deltaQty * latestSell) - (s.buyPrice - latestBuy);
             if (netPremiumSwap < 0) {
               if (!onlyExits) {
-                log(`  Leg Swap candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: net premium swap cost too high ($${netPremiumSwap.toFixed(2)} < $0.00 credit/debit)`);
+                logWarn(`[${accountState.name}] Leg Swap candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: net premium swap cost too high ($${netPremiumSwap.toFixed(2)} < $0.00 credit/debit)`);
               }
               return false;
             }
@@ -844,7 +844,7 @@ async function startSingleAccountEngine(account) {
             const spotStepValid = Math.abs(spotPrice - oldSpotBase) >= oldThresh;
             if (!spotStepValid) {
               if (!onlyExits) {
-                log(`  Leg Swap candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: spot step invalid (Spot: ${spotPrice}, Entry Spot Base: ${oldSpotBase}, Required movement: ${oldThresh})`);
+                logWarn(`[${accountState.name}] Leg Swap candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: spot step invalid (Spot: ${spotPrice}, Entry Spot Base: ${oldSpotBase}, Required movement: ${oldThresh})`);
               }
               return false;
             }
@@ -879,7 +879,12 @@ async function startSingleAccountEngine(account) {
               if (sS === Number(pos.sellLeg.strike)) {
                 const deltaQty = getScaledSellQty(s) - pos.sellQty;
                 const netPremiumSwap = (deltaQty * latestSell) - (s.buyPrice - latestBuy);
-                if (netPremiumSwap < 0) return false;
+                if (netPremiumSwap < 0) {
+                  if (!onlyExits) {
+                    logWarn(`[${accountState.name}] Rotation candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: net premium swap cost too high ($${netPremiumSwap.toFixed(2)} < $0.00 credit/debit)`);
+                  }
+                  return false;
+                }
               }
 
               const oldSpotBase = pos.entrySpotPrice || pos.entryBuyPrice || spotPrice;
@@ -887,7 +892,7 @@ async function startSingleAccountEngine(account) {
               const spotStepValid = Math.abs(spotPrice - oldSpotBase) >= oldThresh;
               if (!spotStepValid) {
                 if (!onlyExits) {
-                  log(`  Candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: spot step invalid (Spot: ${spotPrice}, Entry Spot Base: ${oldSpotBase}, Required movement: ${oldThresh})`);
+                  logWarn(`[${accountState.name}] Rotation candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: spot step invalid (Spot: ${spotPrice}, Entry Spot Base: ${oldSpotBase}, Required movement: ${oldThresh})`);
                 }
                 return false;
               }
