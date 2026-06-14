@@ -1130,14 +1130,14 @@ async function startSingleAccountEngine(account) {
           const minutesToExpiry = (new Date(spread.buyLeg.symbol?.includes(config.expiry) ? config.expiry : config.expiry).getTime() - Date.now()) / 60000;
           const expiryCheck = (new Date(config.expiry).getTime() - Date.now()) / 60000;
           if (expiryCheck < 5) {
-            logWarn(`Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: too close to expiry (${expiryCheck.toFixed(1)} mins remaining)`);
+            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: too close to expiry (${expiryCheck.toFixed(1)} mins remaining)`);
             continue;
           }
 
           // Days to expiry guard
           const daysRemaining = (new Date(config.expiry).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
           if (daysRemaining < (config.daysToExpiry || 0)) {
-            logWarn(`Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: days to expiry (${daysRemaining.toFixed(2)}) is less than min required (${config.daysToExpiry})`);
+            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: days to expiry (${daysRemaining.toFixed(2)}) is less than min required (${config.daysToExpiry})`);
             continue;
           }
 
@@ -1156,11 +1156,11 @@ async function startSingleAccountEngine(account) {
           );
 
           if (buyConflictPos) {
-            logWarn(`Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Buy strike conflict with active/new position ${buyConflictPos.id} (${buyConflictPos.buyLeg.strike}/${buyConflictPos.sellLeg.strike})`);
+            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Buy strike conflict with active/new position ${buyConflictPos.id} (${buyConflictPos.buyLeg.strike}/${buyConflictPos.sellLeg.strike})`);
             continue;
           }
           if (sellConflictPos) {
-            logWarn(`Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Sell strike conflict with active/new position ${sellConflictPos.id} (${sellConflictPos.buyLeg.strike}/${sellConflictPos.sellLeg.strike})`);
+            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Sell strike conflict with active/new position ${sellConflictPos.id} (${sellConflictPos.buyLeg.strike}/${sellConflictPos.sellLeg.strike})`);
             continue;
           }
 
@@ -1169,7 +1169,7 @@ async function startSingleAccountEngine(account) {
             newEntries.filter(p => p.underlying === underlying && p.type === spreadType).length;
           const typeCap = spreadType === 'call' ? config.numberOfCalls : config.numberOfPuts;
           if (count >= typeCap) {
-            logWarn(`Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Portfolio cap of ${typeCap} reached for type ${spreadType}`);
+            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Portfolio cap of ${typeCap} reached for type ${spreadType}`);
             continue;
           }
 
@@ -1299,7 +1299,8 @@ async function startSingleAccountEngine(account) {
               .from('active_positions').select('id')
               .eq('account_id', accountState.id)
               .eq('underlying', underlying).eq('type', t.type);
-            if (!countError && (activeOfType?.length ?? 0) >= 3) {
+            const typeCap = t.type === 'call' ? config.numberOfCalls : config.numberOfPuts;
+            if (!countError && (activeOfType?.length ?? 0) >= typeCap) {
               logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} blocked. Active count on DB: ${activeOfType?.length ?? 0}`);
               continue;
             }
@@ -1340,16 +1341,16 @@ async function startSingleAccountEngine(account) {
 
             if (insertError) {
               if (insertError.code === '23505') {
-                logWarn(`DB Guard: Duplicate strike entry blocked for ${t.buyLeg.strike}/${t.sellLeg.strike}`);
+                logWarn(`[${accountState.name}] DB Guard: Duplicate strike entry blocked for ${t.buyLeg.strike}/${t.sellLeg.strike}`);
               } else {
-                logError('Insert error:', insertError.message);
+                logError(`[${accountState.name}] Insert error:`, insertError.message);
               }
             } else {
               const originalLotSize = t.sellLeg.lotSize || 1;
               const ratioLong = t.buyLeg.lotSize / originalLotSize;
-              log(`📥 ENTRY: ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} | Qty: ${ratioLong.toFixed(2)}:${t.sellQty} | Net: $${(t.sellQty * t.entrySellPrice - t.entryBuyPrice * ratioLong).toFixed(2)}`);
+              log(`[${accountState.name}] 📥 ENTRY: ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} | Qty: ${ratioLong.toFixed(2)}:${t.sellQty} | Net: $${(t.sellQty * t.entrySellPrice - t.entryBuyPrice * ratioLong).toFixed(2)}`);
             }
-          } catch (err) { logError('Entry persistence error:', err); }
+          } catch (err) { logError(`[${accountState.name}] Entry persistence error:`, err); }
         }
       }
 
