@@ -2980,14 +2980,25 @@ body.light-theme .pt-live-badge {
 /* ── Paper Trading & ATM Exit Collapsible Filters ──────── */
 .pt-filters-toggle-btn {
   display: none;
-  background: var(--bg);
+  background: var(--bg3);
   border: 1px solid var(--border);
   color: var(--text);
   padding: 6px 12px;
-  border-radius: 4px;
+  border-radius: 6px;
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.pt-filters-toggle-btn:hover {
+  background: var(--bg2);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.pt-filters-toggle-btn:active {
+  transform: scale(0.97);
 }
 
 .pt-filters-container {
@@ -3026,21 +3037,36 @@ body.light-theme .pt-live-badge {
   }
 
   .pt-filters-toggle-btn {
-    display: inline-block;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
   }
 
   .pt-filters-container {
-    display: none;
+    display: flex;
     flex-direction: column;
     align-items: stretch;
     width: 100%;
     gap: 10px;
-    border-top: 1px solid var(--border);
-    padding-top: 12px;
+    border-top: 1px solid transparent;
+    padding-top: 0;
+    margin-top: 0;
+    max-height: 0;
+    opacity: 0;
+    overflow: hidden;
+    transition: max-height 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+                opacity 0.25s ease,
+                padding 0.35s ease,
+                margin-top 0.35s ease,
+                border-color 0.35s ease;
   }
 
   .pt-filters-container.expanded {
-    display: flex;
+    max-height: 800px;
+    opacity: 1;
+    border-top: 1px solid var(--border);
+    padding-top: 12px;
+    margin-top: 4px;
   }
 
   .pt-filters-container .form-group {
