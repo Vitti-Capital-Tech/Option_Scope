@@ -551,6 +551,7 @@ async function startSingleAccountEngine(account) {
         const tickerSell = tickerData[pos.sellLeg.symbol];
         const liveExitBuy = tickerBuy?.bid ?? tickerBuy?.lastPrice ?? tickerBuy?.markPrice;
         const liveExitSell = tickerSell?.ask ?? tickerSell?.lastPrice ?? tickerSell?.markPrice;
+        const liveEntrySell = tickerSell?.bid ?? tickerSell?.lastPrice ?? tickerSell?.markPrice ?? liveExitSell;
 
         if (liveExitBuy == null || liveExitSell == null) {
           remaining.push(pos);
@@ -849,7 +850,7 @@ async function startSingleAccountEngine(account) {
 
             // Swap PnL guard: net premium swap cost (sell - buy) must be at least 0 (i.e. no debit)
             const deltaQty = getScaledSellQty(s) - pos.sellQty;
-            const netPremiumSwap = (deltaQty * latestSell) - (s.buyPrice - latestBuy);
+            const netPremiumSwap = (deltaQty * (deltaQty > 0 ? liveEntrySell : latestSell)) - (s.buyPrice - latestBuy);
             if (netPremiumSwap < 0) {
               if (!onlyExits) {
                 logWarn(`[${accountState.name}] Leg Swap candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: net premium swap cost too high ($${netPremiumSwap.toFixed(2)} < $0.00 credit/debit)`);
@@ -880,8 +881,8 @@ async function startSingleAccountEngine(account) {
             pos._pendingLegSwap = bestSwapTarget;
             shouldExit = true;
             const deltaQty = getScaledSellQty(bestSwapTarget) - pos.sellQty;
-            const netPremiumSwap = (deltaQty * latestSell) - (bestSwapTarget.buyPrice - latestBuy);
-            exitReason = `Leg Swap: Buy ${currentStrike} -> ${targetStrike} | Old Buy: $${latestBuy.toFixed(2)} | New Buy: $${bestSwapTarget.buyPrice.toFixed(2)} | Old Sell Qty: ${pos.sellQty} | New Sell Qty: ${getScaledSellQty(bestSwapTarget)} | Sell Price: $${latestSell.toFixed(2)} | Net Premium Swap: $${netPremiumSwap.toFixed(2)}`;
+            const netPremiumSwap = (deltaQty * (deltaQty > 0 ? liveEntrySell : latestSell)) - (bestSwapTarget.buyPrice - latestBuy);
+            exitReason = `Leg Swap: Buy ${currentStrike} -> ${targetStrike} | Old Buy: $${latestBuy.toFixed(2)} | New Buy: $${bestSwapTarget.buyPrice.toFixed(2)} | Old Sell Qty: ${pos.sellQty} | New Sell Qty: ${getScaledSellQty(bestSwapTarget)} | Sell Price: $${(deltaQty > 0 ? liveEntrySell : latestSell).toFixed(2)} | Net Premium Swap: $${netPremiumSwap.toFixed(2)}`;
             reservedTargets.add(targetStrike);
             reservedSellTargets.add(targetSellStrike);
           } else if (!onlyExits && !isProtected) {
@@ -896,8 +897,8 @@ async function startSingleAccountEngine(account) {
 
               // If it's a leg swap (same sell strike), check swap cost based on net premium
               if (sS === Number(pos.sellLeg.strike)) {
-                const deltaQty = getScaledSellQty(s) - pos.sellQty;
-                const netPremiumSwap = (deltaQty * latestSell) - (s.buyPrice - latestBuy);
+               const deltaQty = getScaledSellQty(s) - pos.sellQty;
+                const netPremiumSwap = (deltaQty * (deltaQty > 0 ? liveEntrySell : latestSell)) - (s.buyPrice - latestBuy);
                 if (netPremiumSwap < 0) {
                   if (!onlyExits) {
                     logWarn(`[${accountState.name}] Rotation candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: net premium swap cost too high ($${netPremiumSwap.toFixed(2)} < $0.00 credit/debit)`);
@@ -935,8 +936,8 @@ async function startSingleAccountEngine(account) {
                   pos._pendingLegSwap = bestTarget;
                   shouldExit = true;
                   const deltaQty = getScaledSellQty(bestTarget) - pos.sellQty;
-                  const netPremiumSwap = (deltaQty * latestSell) - (bestTarget.buyPrice - latestBuy);
-                  exitReason = `Leg Swap: Buy ${currentStrike} -> ${targetStrike} | Old Buy: $${latestBuy.toFixed(2)} | New Buy: $${bestTarget.buyPrice.toFixed(2)} | Old Sell Qty: ${pos.sellQty} | New Sell Qty: ${getScaledSellQty(bestTarget)} | Sell Price: $${latestSell.toFixed(2)} | Net Premium Swap: $${netPremiumSwap.toFixed(2)}`;
+                  const netPremiumSwap = (deltaQty * (deltaQty > 0 ? liveEntrySell : latestSell)) - (bestTarget.buyPrice - latestBuy);
+                  exitReason = `Leg Swap: Buy ${currentStrike} -> ${targetStrike} | Old Buy: $${latestBuy.toFixed(2)} | New Buy: $${bestTarget.buyPrice.toFixed(2)} | Old Sell Qty: ${pos.sellQty} | New Sell Qty: ${getScaledSellQty(bestTarget)} | Sell Price: $${(deltaQty > 0 ? liveEntrySell : latestSell).toFixed(2)} | Net Premium Swap: $${netPremiumSwap.toFixed(2)}`;
                   reservedTargets.add(targetStrike);
                   reservedSellTargets.add(targetSellStrike);
                 } else {
@@ -1103,8 +1104,8 @@ async function startSingleAccountEngine(account) {
             let shortAdjustmentPnl = 0;
 
             if (deltaQty > 0) {
-              adjustedSellEntryPrice = ((pos.sellQty * pos.entrySellPrice) + (deltaQty * latestSell)) / adjustedTargetSellQty;
-              shortAdjustmentFee = calculateFee(latestSell, spotPrice, Math.abs(deltaQty), pos.sellLeg.lotSize || 1);
+              adjustedSellEntryPrice = ((pos.sellQty * pos.entrySellPrice) + (deltaQty * liveEntrySell)) / adjustedTargetSellQty;
+              shortAdjustmentFee = calculateFee(liveEntrySell, spotPrice, Math.abs(deltaQty), pos.sellLeg.lotSize || 1);
             } else if (deltaQty < 0) {
               shortAdjustmentFee = calculateFee(latestSell, spotPrice, Math.abs(deltaQty), pos.sellLeg.lotSize || 1);
               shortAdjustmentPnl = (pos.entrySellPrice - latestSell) * Math.abs(deltaQty) * (pos.sellLeg.lotSize || 1);

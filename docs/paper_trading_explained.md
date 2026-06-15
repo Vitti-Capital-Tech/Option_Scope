@@ -425,14 +425,17 @@ Better candidate: BUY 106000 / SELL 110000 (Call)  ← closer to ATM = better
 | 1 | Same sell strike | The candidate's sell leg must match the existing position's sell strike exactly |
 | 2 | Better buy strike | For calls: new strike < old strike. For puts: new strike > old strike (closer to ATM) |
 | 3 | No conflicts | New buy strike isn't used by any other active position |
-| 4 | **No net debit** | `netPremiumSwap ≥ 0` — the swap must not cost money. Formula: `(deltaQty × sellPrice) - (newBuyPrice - oldBuyBid)` |
+| 4 | **No net debit** | `netPremiumSwap ≥ 0` — the swap must not cost money. Formula: `(deltaQty × shortPrice) - (newBuyAsk - oldBuyBid)` |
 | 5 | **Spot step valid** | Spot must have moved at least 0.5% from the entry spot price (rounded to nearest 100) |
 
 ### What "No Net Debit" Means
 
 ```
-netPremiumSwap = (change in sell qty × sell price) - (new buy ask - current buy bid)
+netPremiumSwap = (change in sell qty × short price) - (new buy ask - current buy bid)
 ```
+Where `short price` is:
+- **`sellBid` (bid price)** if `change in sell qty > 0` (we are selling extra options)
+- **`sellAsk` (ask price)** if `change in sell qty < 0` (we are buying back options to decrease ratio)
 
 - If positive → you **receive** money in the swap (good)
 - If zero → break-even swap (acceptable)
@@ -446,7 +449,9 @@ When a leg swap fires:
    - **Entry Fee (`longEntryFee`)**: The entry fee allocated to the exited buy leg is calculated exactly based on its initial entry parameters: `calculateFee(pos.entryBuyPrice, pos.entrySpotPrice, pos.buyLeg.lotSize, pos.buyLeg.originalLotSize || 1)` (capped to `pos.entryFee`). This prevents allocating any of the Sell Leg's entry fee to the exited Buy Leg.
 2. The **sell leg stays untouched** (no exit fee on the sell side).
 3. The position is **updated in-place** in `active_positions` with the new buy leg.
-4. If the sell quantity changes (due to different delta notional ratios), the sell entry price is **weighted-averaged**.
+4. If the sell quantity changes (due to different delta notional ratios):
+   - **Increase** (`deltaQty > 0`): Extra short contracts are sold at the market **bid** price. The sell entry price is **weighted-averaged** using this bid price.
+   - **Decrease** (`deltaQty < 0`): Excess short contracts are bought back at the market **ask** price. Realized PnL is recorded in `accumulated_sell_pnl`.
 5. The new active entry fee is updated as: `(pos.entryFee - longEntryFee) + newLongEntryFee + shortAdjustmentFee`, perfectly preserving the Sell Leg's initial entry fee.
 
 ---
