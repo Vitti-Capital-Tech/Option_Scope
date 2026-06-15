@@ -200,9 +200,8 @@ export default function ResultTable({
                   const margin = (r.buyPrice * adjustedLotSize) + (shortValue / leverage);
                   const roi = (atAtmPnl != null && margin > 0) ? (atAtmPnl / margin) * 100 : null;
 
-                  const rawNetPremium = atmRatioScaling 
-                    ? ((r.sellPrice * totalSellQty) - r.buyPrice) * scale
-                    : r.netPremium;
+                  const rawNetPremium = r.netPremium;
+
 
                   const isRatioChanged = atmRatioScaling && totalSellQty !== r.sellQty;
 
