@@ -393,21 +393,33 @@ async function startSingleAccountEngine(account) {
           return { atmPnl: null, roi: null };
         }
 
+        const entryAtmRatio = (buyIntrinsic != null && sellIntrinsic != null && sellIntrinsic > 0)
+          ? parseFloat((Math.round((buyIntrinsic / sellIntrinsic) / 0.25) * 0.25).toFixed(2))
+          : null;
+
+        let ratioToUse = spread.sellQty;
+        if (config.atmRatioScaling && entryAtmRatio != null) {
+          const pct = spread.buyLeg.type === 'call' ? config.atmRatioPctCall : config.atmRatioPctPut;
+          const originalRatio = spread.sellQty;
+          const diff = Math.max(0, entryAtmRatio - originalRatio);
+          ratioToUse = Math.max(originalRatio, Math.round((originalRatio + (pct / 100) * diff) / 0.25) * 0.25);
+        }
+
         const sellLotSize = spread.sellLeg.lotSize || lotSize;
-        let shortValue = spotPrice * spread.sellQty * sellLotSize;
+        let shortValue = spotPrice * ratioToUse * sellLotSize;
 
         let adjustedLotSize = lotSize;
-        let adjustedSellQty = spread.sellQty;
+        let adjustedSellQty = ratioToUse;
         let scale = 1;
 
         if (shortValue >= 200000) {
           scale = 200000 / shortValue;
           adjustedLotSize = Number((lotSize * scale).toFixed(2));
-          adjustedSellQty = Number((spread.sellQty * scale).toFixed(2));
+          adjustedSellQty = Number((ratioToUse * scale).toFixed(2));
           shortValue = 200000;
         }
 
-        const atmPnl = ((buyIntrinsic - spread.buyPrice) + (spread.sellPrice - sellIntrinsic) * spread.sellQty) * adjustedLotSize;
+        const atmPnl = ((buyIntrinsic - spread.buyPrice) + (spread.sellPrice - sellIntrinsic) * ratioToUse) * adjustedLotSize;
         const margin = calcMargin(spread.buyPrice, adjustedLotSize, spotPrice, adjustedSellQty, sellLotSize);
         const roi = margin > 0 ? (atmPnl / margin) * 100 : 0;
 
