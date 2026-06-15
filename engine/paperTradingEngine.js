@@ -433,9 +433,16 @@ async function startSingleAccountEngine(account) {
       }
       for (const spread of topSpreads) {
         const { atmPnl, roi } = calculateAtmPnlAndRoi(spread);
-        const passed = (atmPnl != null && atmPnl >= 50);
+        
+        let minAtmPnl = 50;
+        if (config.atmRatioScaling) {
+          const pct = spread.buyLeg.type === 'call' ? config.atmRatioPctCall : config.atmRatioPctPut;
+          minAtmPnl = 50 * (1 - (pct || 0) / 100);
+        }
+
+        const passed = (atmPnl != null && atmPnl >= minAtmPnl);
         if (!onlyExits) {
-          log(`  Candidate ${spread.buyLeg.type.toUpperCase()} ${spread.buyLeg.strike}/${spread.sellLeg.strike}: ATM P&L = $${atmPnl != null ? atmPnl.toFixed(2) : 'null'} (Min required: $50.00), ROI = ${roi != null ? roi.toFixed(2) : 0}%, Passed = ${passed}`);
+          log(`  Candidate ${spread.buyLeg.type.toUpperCase()} ${spread.buyLeg.strike}/${spread.sellLeg.strike}: ATM P&L = $${atmPnl != null ? atmPnl.toFixed(2) : 'null'} (Min required: $${minAtmPnl.toFixed(2)}), ROI = ${roi != null ? roi.toFixed(2) : 0}%, Passed = ${passed}`);
         }
         if (passed) {
           processedSpreads.push({ ...spread, atmPnl, roi });

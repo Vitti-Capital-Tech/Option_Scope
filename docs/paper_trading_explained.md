@@ -180,13 +180,21 @@ This gives a **delta-neutral** ratio. If the buy leg has 3× the delta notional 
 
 ### After Scanning: ATM PnL Filter
 
-**File**: [paperTradingEngine.js:L315-L360](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L315-L360)
+**File**: [paperTradingEngine.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js)
 
 After `scanTickers` produces candidates, each one gets an **ATM PnL check**:
 
-> "If we entered this spread now and the price immediately moved to ATM, would we make at least $50?"
+> "If we entered this spread now and the price immediately moved to ATM, would we make at least the minimum required ATM P&L?"
 
-This simulates: _What's the profit if spot moves to the buy strike?_ Only spreads with ATM PnL ≥ $50 survive.
+This simulates: _What's the profit if spot moves to the buy strike?_ 
+
+To maintain consistency when **ATM Ratio Scaling** is enabled, both the scanner filter and UI adjust the minimum required ATM P&L threshold dynamically:
+- **ATM Ratio Scaling Disabled**: Spreads must have `ATM PnL >= $50.00`.
+- **ATM Ratio Scaling Enabled**: The threshold is reduced proportionally to the scaling percentage to account for the larger short leg ratio:
+  - **Call Spreads**: `Min Required = 50 * (1 - config.atmRatioPctCall / 100)` (e.g., a `50%` scaling value reduces the required floor to **`$25.00`**).
+  - **Put Spreads**: `Min Required = 50 * (1 - config.atmRatioPctPut / 100)` (e.g., a `25%` scaling value reduces the required floor to **`$37.50`**).
+
+Only spreads that meet this adjusted minimum floor survive the filter.
 
 ### Deduplication & Ranking
 
