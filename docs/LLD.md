@@ -131,9 +131,9 @@ The Scanner also writes the top-3 results to `localStorage` under the key `vitti
 | `maxNetPremium` | 20 | Maximum net premium (debit cap): spreads with `netPremium > maxNetPremium` are filtered out |
 | `minLongDist` | 500 | Minimum spot distance (pts) the buy strike must be from current spot |
 | `maxSellQty` | 10 | Maximum allowed sell quantity (ratio cap) |
-| `atmRatioScaling` | `false` | Whether to scale quantity based on ATM ratio |
+| `atmRatioScaling` | `true` | Whether to scale quantity based on ATM ratio |
 | `atmRatioPctCall` | `50` | Scale percentage for Call option scaling |
-| `atmRatioPctPut` | `50` | Scale percentage for Put option scaling |
+| `atmRatioPctPut` | `25` | Scale percentage for Put option scaling |
 
 ### Market Ingestion Flow
 
@@ -404,9 +404,9 @@ When the engine starts for a new account and no `paper_trading_config` row exist
 | `max_net_premium` | 20 |
 | `min_long_dist` | 500 |
 | `max_sell_qty` | 10 |
-| `atm_ratio_scaling` | `false` |
+| `atm_ratio_scaling` | `true` |
 | `atm_ratio_distance_call` | 50 |
-| `atm_ratio_distance_put` | 50 |
+| `atm_ratio_distance_put` | 25 |
 | `days_to_expiry` | 0 |
 
 ### J. Config Hot-Reload via Supabase Realtime

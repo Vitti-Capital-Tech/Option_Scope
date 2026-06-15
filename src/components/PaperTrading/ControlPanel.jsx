@@ -142,7 +142,7 @@ export default function ControlPanel({
               </div>
               <div key="atmRatioPctPut" className="form-group">
                 <label style={{ marginBottom: 0 }}>Put ATM Pct (%):</label>
-                <input type="number" step="1" value={draftConfig.atmRatioPctPut ?? 50}
+                <input type="number" step="1" value={draftConfig.atmRatioPctPut ?? 25}
                   onChange={e => updateDraftConfig('atmRatioPctPut', Number(e.target.value))}
                   style={{ width: 50, padding: '4px 8px', fontSize: '13px' }} />
               </div>
