@@ -64,7 +64,7 @@ const formatCombinedTitle = (callSym, putSym, priceType) => {
 const ChartPanel = forwardRef(function ChartPanel({
   title, colorUp, colorDown, iconColor,
   alerts = [], onAddAlert, onRemoveAlert,
-  showIvCall, showIvPut, theme
+  showIvCall, showIvPut, theme, visible = true
 }, ref) {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
@@ -420,7 +420,7 @@ const ChartPanel = forwardRef(function ChartPanel({
 
   return (
     <div className="chart-panel-container" style={{
-      flex: 1, display: 'flex', flexDirection: 'column',
+      flex: 1, display: visible ? 'flex' : 'none', flexDirection: 'column',
       border: '1px solid var(--border)', borderRadius: 8,
       overflow: 'hidden', minHeight: 0, background: 'var(--bg)'
     }}>
@@ -1954,15 +1954,16 @@ export default function App({ onNavigate, theme, toggleTheme }) {
             )}
           </div>
 
-          {/* Idle/Loading overlay — sits ON TOP of charts via absolute positioning */}
+          {/* Idle/Loading overlay — rendered as a flex container taking remaining space */}
           {(phase === 'idle' || phase === 'loading') && (
             <div style={{
-              position: 'absolute', inset: 12, zIndex: 10,
+              flex: 1,
               display: 'flex', flexDirection: 'column',
               alignItems: 'center', justifyContent: 'center',
               background: theme === 'dark' ? 'rgba(10,13,18,0.96)' : 'rgba(255,255,255,0.96)',
               borderRadius: 8, border: '1px solid var(--border)',
               gap: 12,
+              minHeight: 250,
             }}>
               {phase === 'loading' && <div className="spinner" />}
               <div style={{ fontFamily: 'JetBrains Mono', fontSize: 14, fontWeight: 700, letterSpacing: 2 }}>
@@ -1978,6 +1979,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
           {/* Combined chart — Always in DOM */}
           <ChartPanel
             ref={combRef}
+            visible={phase !== 'idle' && phase !== 'loading'}
             title={formatCombinedTitle(activeCall, activePut, priceType)}
             colorUp="#3fb950"
             colorDown="#f85149"
