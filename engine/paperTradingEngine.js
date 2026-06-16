@@ -1436,6 +1436,25 @@ async function startSingleAccountEngine(account) {
 
   // ── Config hot-reload via Supabase Realtime ───────────────────────────
 
+  async function reloadConfigAndSync() {
+    try {
+      const oldUnderlying = config.underlying;
+      const oldExpiry = config.expiry;
+      await fetchConfig();
+
+      if (config.underlying !== oldUnderlying || config.expiry !== oldExpiry) {
+        log(`[${accountState.name}] Config changed (underlying/expiry): ${oldUnderlying}/${oldExpiry} → ${config.underlying}/${config.expiry}`);
+        await refreshProducts();
+        await fetchActivePositions();
+        tickerData = {};
+        startWebSocket();
+        tickerData = await backfillTickers(config.underlying, symbolMeta, tickerData);
+      }
+    } catch (e) {
+      logError(`[${accountState.name}] Error during config reload:`, e);
+    }
+  }
+
   function subscribeConfigChanges() {
     const channel = supabase
       .channel(`paper_config_changes_${accountState.id}`)
@@ -1451,25 +1470,14 @@ async function startSingleAccountEngine(account) {
           }
 
           log(`[${accountState.name}] Config change detected — reloading...`);
-          const oldUnderlying = config.underlying;
-          const oldExpiry = config.expiry;
-          await fetchConfig();
-
-          // If underlying or expiry changed, restart WS and refresh products
-          if (config.underlying !== oldUnderlying || config.expiry !== oldExpiry) {
-            log(`[${accountState.name}] Config changed: ${oldUnderlying}/${oldExpiry} → ${config.underlying}/${config.expiry}`);
-            await refreshProducts();
-            await fetchActivePositions();
-            tickerData = {};
-            startWebSocket();
-            tickerData = await backfillTickers(config.underlying, symbolMeta, tickerData);
-          }
+          await reloadConfigAndSync();
         }
       )
       .subscribe();
 
     return channel;
   }
+
 
   // ── Main startup sequence ─────────────────────────────────────────────
 
@@ -1557,14 +1565,16 @@ async function startSingleAccountEngine(account) {
     }
   }, 5 * 60 * 1000);
 
-  // Active positions refresh — every 30 seconds (fallback sync)
+  // Active positions and config refresh — every 30 seconds (fallback sync)
   const positionsTimer = setInterval(async () => {
     try {
+      await reloadConfigAndSync();
       await fetchActivePositions();
     } catch (e) {
       logError(`[${accountState.name}] Error in positionsTimer:`, e);
     }
   }, 30000);
+
 
   log(`[${accountState.name}] Paper Trading Engine is LIVE`);
 
