@@ -2327,6 +2327,11 @@ body.light-theme .pt-live-badge {
     overflow: visible !important;
   }
 
+  .chart-panel-container {
+    min-height: 400px !important;
+    height: 450px !important;
+  }
+
   .watchlist-container {
     max-height: none !important;
     overflow-y: visible !important;

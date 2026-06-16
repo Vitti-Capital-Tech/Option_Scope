@@ -419,20 +419,20 @@ const ChartPanel = forwardRef(function ChartPanel({
   }), []);
 
   return (
-    <div style={{
+    <div className="chart-panel-container" style={{
       flex: 1, display: 'flex', flexDirection: 'column',
       border: '1px solid var(--border)', borderRadius: 8,
       overflow: 'hidden', minHeight: 0, background: 'var(--bg)'
     }}>
       <div style={{
-        padding: '6px 12px', background: 'var(--bg2)',
+        padding: '8px 12px', background: 'var(--bg2)',
         borderBottom: '1px solid var(--border)',
         fontSize: 10, fontWeight: 700, letterSpacing: 1.5,
         color: 'var(--text-dim)', display: 'flex', alignItems: 'center',
         justifyContent: 'space-between',
-        gap: 8, flexShrink: 0,
+        gap: 8, flexShrink: 0, flexWrap: 'wrap',
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ color: iconColor || colorUp }}>▮</span>
             <span>{title}</span>
