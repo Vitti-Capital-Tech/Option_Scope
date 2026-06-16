@@ -1553,7 +1553,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
             </svg>
           </button>
 
-          <div className={`sidebar-collapsible ${isConfigCollapsed ? '' : 'expanded'}`} style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div className={`sidebar-collapsible ${isConfigCollapsed ? '' : 'expanded'}`} style={{ width: '100%', display: isConfigCollapsed ? 'none' : 'flex', flexDirection: 'column', gap: '12px' }}>
             <div className="card">
               <div className="card-title">Configuration</div>
 

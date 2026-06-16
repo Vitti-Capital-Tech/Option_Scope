@@ -4058,8 +4058,8 @@ body.light-theme .pt-btn-apply.active {
   .mobile-bottom-tab.active::after {
     content: '';
     position: absolute;
-    top: 0;
-    width: 24px;
+    bottom: 0;
+    width: 100%;
     height: 3px;
     background: var(--accent);
     border-radius: 0 0 2px 2px;
