@@ -71,7 +71,7 @@ export default function ResultTable({
           {results.length > 0 && (
             <span className="scanner-match-badge">{results.length} match{results.length !== 1 ? 'es' : ''}</span>
           )}
-          <div className="hide-mobile" style={{ fontSize: 12 }}>
+          <div style={{ fontSize: 12 }}>
             Spot Price: {spotPrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
           {lastRefreshed > 0 && (
@@ -138,7 +138,7 @@ export default function ResultTable({
                 <th>Qty (B/S)</th>
                 <th>Net/IV</th>
                 <th className="hide-mobile">Δ (B/S)</th>
-                <th className="hide-mobile" style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.2)', background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>ATM Ask/Bid</th>
+                <th style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.2)', background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>ATM Ask/Bid</th>
                 <th style={{ background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>ATM P&L</th>
                 <th style={{ borderRight: '1px solid rgba(0, 217, 163, 0.2)', background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>Margin</th>
               </tr>
@@ -332,7 +332,7 @@ export default function ResultTable({
                           </div>
                         </td>
 
-                        <td className="hide-mobile" style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.1)', background: 'rgba(0, 217, 163, 0.02)' }}>
+                        <td style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.1)', background: 'rgba(0, 217, 163, 0.02)' }}>
                           <div>
                             <div className="scanner-buy">{bestRow.buyIntrinsic != null ? `$${bestRow.buyIntrinsic.toFixed(2)}` : '—'}</div>
                             <div className="scanner-sell">{bestRow.sellIntrinsic != null ? `$${bestRow.sellIntrinsic.toFixed(2)}` : '—'}</div>
@@ -412,7 +412,7 @@ export default function ResultTable({
                               </div>
                             </td>
 
-                            <td className="hide-mobile" style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.1)', background: 'rgba(0, 217, 163, 0.01)' }}>
+                            <td style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.1)', background: 'rgba(0, 217, 163, 0.01)' }}>
                               <div>
                                 <div className="scanner-buy">{r.buyIntrinsic != null ? `$${r.buyIntrinsic.toFixed(2)}` : '—'}</div>
                                 <div className="scanner-sell">{r.sellIntrinsic != null ? `$${r.sellIntrinsic.toFixed(2)}` : '—'}</div>

@@ -715,17 +715,16 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
                 </div>
               </>
             )}
-
-            {/* Actions for Start/Stop Scan button */}
-            <div className="scanner-filter-actions">
-              <button
-                className={`btn-start ${scanning ? 'btn-stop' : ''}`}
-                onClick={scanning ? handleStopScan : handleStartScan}
-                disabled={!selExpiry}
-              >
-                {scanning ? '■ STOP SCAN' : '▶ START SCAN'}
-              </button>
-            </div>
+          </div>
+          {/* Actions for Start/Stop Scan button */}
+          <div>
+            <button
+              className={`btn-start ${scanning ? 'btn-stop' : ''}`}
+              onClick={scanning ? handleStopScan : handleStartScan}
+              disabled={!selExpiry}
+            >
+              {scanning ? '■ STOP SCAN' : '▶ START SCAN'}
+            </button>
           </div>
         </div>
 
