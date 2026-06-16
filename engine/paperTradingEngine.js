@@ -853,7 +853,7 @@ async function startSingleAccountEngine(account) {
             const netPremiumSwap = (deltaQty * (deltaQty > 0 ? liveEntrySell : latestSell)) - (s.buyPrice - latestBuy);
             if (netPremiumSwap < -10) {
               if (!onlyExits) {
-                logWarn(`[${accountState.name}] Leg Swap candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: net premium swap cost too high ($${netPremiumSwap.toFixed(2)} < $0.00 credit/debit)`);
+                logWarn(`[${accountState.name}] Leg Swap candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: net premium swap cost too high ($${netPremiumSwap.toFixed(2)} < $-10.00 credit/debit)`);
               }
               return false;
             }
