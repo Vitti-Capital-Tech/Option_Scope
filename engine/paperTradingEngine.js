@@ -301,7 +301,7 @@ async function startSingleAccountEngine(account) {
     const spotAge = Date.now() - lastSpotUpdate;
     if (lastSpotUpdate > 0 && spotAge > 120000) {
       logWarn(`[${accountState.name}] Spot stale (${Math.round(spotAge / 1000)}s). Skipping evaluation.`);
-      
+
       const now = Date.now();
       if (now - lastWsReconnectTime > 60000) {
         logWarn(`[${accountState.name}] Forcing WebSocket reconnect due to stale spot...`);
@@ -429,11 +429,11 @@ async function startSingleAccountEngine(account) {
       // Compute ATM P&L and ROI for each spread in topSpreads, and filter by ATM P&L >= 50
       const processedSpreads = [];
       if (!onlyExits) {
-        log(`Evaluating ${topSpreads.length} candidate spreads for entry (Spot: ${spotPrice}, ATM Strike: ${atmStrike})`);
+        log(`[${accountState.name}] Evaluating ${topSpreads.length} candidate spreads for entry (Spot: ${spotPrice}, ATM Strike: ${atmStrike})`);
       }
       for (const spread of topSpreads) {
         const { atmPnl, roi } = calculateAtmPnlAndRoi(spread);
-        
+
         let minAtmPnl = 50;
         if (config.atmRatioScaling) {
           const pct = spread.buyLeg.type === 'call' ? config.atmRatioPctCall : config.atmRatioPctPut;
@@ -474,8 +474,8 @@ async function startSingleAccountEngine(account) {
             return false;
           }
           return p.underlying === underlying &&
-                 p.type === type &&
-                 (Number(p.buyLeg.strike) === bStrike || Number(p.sellLeg.strike) === sStrike);
+            p.type === type &&
+            (Number(p.buyLeg.strike) === bStrike || Number(p.sellLeg.strike) === sStrike);
         });
       };
 
@@ -592,8 +592,8 @@ async function startSingleAccountEngine(account) {
             const initialScaledLotSize = pos.buyLeg.initialScaledLotSize !== undefined
               ? pos.buyLeg.initialScaledLotSize
               : (pos.buyLeg.originalSellQty && pos.buyLeg.originalSellQty > 0
-                  ? Number((pos.sellQty * (originalLotSize / pos.buyLeg.originalSellQty)).toFixed(2))
-                  : originalLotSize);
+                ? Number((pos.sellQty * (originalLotSize / pos.buyLeg.originalSellQty)).toFixed(2))
+                : originalLotSize);
             const deltaBuyQty = Number((initialScaledLotSize * 0.25).toFixed(2));
             const floorLimit = Number((initialScaledLotSize * 0.5).toFixed(2));
             let currentLotSize = pos.buyLeg.lotSize;
@@ -897,7 +897,7 @@ async function startSingleAccountEngine(account) {
 
               // If it's a leg swap (same sell strike), check swap cost based on net premium
               if (sS === Number(pos.sellLeg.strike)) {
-               const deltaQty = getScaledSellQty(s) - pos.sellQty;
+                const deltaQty = getScaledSellQty(s) - pos.sellQty;
                 const netPremiumSwap = (deltaQty * (deltaQty > 0 ? liveEntrySell : latestSell)) - (s.buyPrice - latestBuy);
                 if (netPremiumSwap < 0) {
                   if (!onlyExits) {
@@ -1578,9 +1578,9 @@ async function startSingleAccountEngine(account) {
       clearInterval(positionsTimer);
       if (wsHandle) { wsHandle.close(); wsHandle = null; }
       supabase.removeChannel(configChannel);
-      
+
       await heartbeat.stop(isDeleted);
-      
+
       log(`[${accountState.name}] Paper Trading Engine stopped.`);
     },
     updateAccount(newAccount) {
@@ -1674,7 +1674,7 @@ export async function startPaperTradingEngine() {
       const { data: currentAccounts, error: syncError } = await supabase
         .from('paper_trading_accounts')
         .select('*');
-      
+
       if (syncError || !currentAccounts) {
         logError('Fallback sync: failed to fetch accounts:', syncError?.message);
         return;
