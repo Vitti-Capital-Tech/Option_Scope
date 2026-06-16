@@ -1533,29 +1533,36 @@ export default function App({ onNavigate, theme, toggleTheme }) {
       <div className="body">
         {/* Sidebar */}
         <aside className="sidebar">
-          <button
-            className="sidebar-toggle-btn"
-            onClick={() => setIsConfigCollapsed(!isConfigCollapsed)}
-          >
-            <span>{isConfigCollapsed ? 'SHOW CONFIGURATION' : 'HIDE CONFIGURATION'}</span>
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              style={{ transform: isConfigCollapsed ? 'rotate(0deg)' : 'rotate(180deg)', transition: 'transform 0.2s' }}
+          <div className="card" style={{ padding: '12px 14px' }}>
+            <div
+              className="card-title collapsible-header"
+              onClick={() => {
+                if (window.innerWidth <= 900) {
+                  setIsConfigCollapsed(!isConfigCollapsed);
+                }
+              }}
+              style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: window.innerWidth <= 900 ? 'pointer' : 'default', margin: 0 }}
             >
-              <polyline points="6 9 12 15 18 9"></polyline>
-            </svg>
-          </button>
+              <span>Configuration</span>
+              <span className="mobile-only-toggle" style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '9px', color: 'var(--text-dim)', letterSpacing: '0.5px' }}>
+                <span>{isConfigCollapsed ? 'SHOW' : 'HIDE'}</span>
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  style={{ transform: isConfigCollapsed ? 'rotate(0deg)' : 'rotate(180deg)', transition: 'transform 0.2s' }}
+                >
+                  <polyline points="6 9 12 15 18 9"></polyline>
+                </svg>
+              </span>
+            </div>
 
-          <div className={`sidebar-collapsible ${isConfigCollapsed ? '' : 'expanded'}`} style={{ width: '100%', display: isConfigCollapsed ? 'none' : 'flex', flexDirection: 'column', gap: '12px' }}>
-            <div className="card">
-              <div className="card-title">Configuration</div>
+            <div className={`sidebar-collapsible ${isConfigCollapsed ? '' : 'expanded'}`} style={{ width: '100%', display: isConfigCollapsed ? 'none' : 'flex', flexDirection: 'column', gap: '12px', marginTop: isConfigCollapsed ? '0' : '12px' }}>
 
               <div className="form-group">
                 <label>Underlying</label>
@@ -1617,57 +1624,57 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                   {TF_LIST.map(t => <option key={t} value={t}>{t}</option>)}
                 </select>
               </div>
-
-              <button className="btn-start" disabled={(!callSym && !putSym) || (legType !== 'put' && !callSym) || (legType !== 'call' && !putSym)} onClick={addToWatchList}>
-                ADD TO WATCHLIST
-              </button>
-
-              {errMsg && <div style={{ color: '#f85149', fontSize: 11, marginTop: 8, lineHeight: 1.4 }}>{errMsg}</div>}
             </div>
+          </div>
 
-            <div className="card">
-              <div className="card-title">Live Prices ({priceType === 'mark' ? 'Mark' : 'LTP'})</div>
-              <div className="stat-row">
-                <span className="stat-label">CALL</span>
-                <span className="stat-val call">{callPrice ? callPrice.toFixed(2) : '—'}</span>
-              </div>
-              <div className="stat-row">
-                <span className="stat-label">PUT</span>
-                <span className="stat-val put">{putPrice ? putPrice.toFixed(2) : '—'}</span>
-              </div>
-              <div className="stat-row">
-                <span className="stat-label">COMBINED</span>
-                <span className="stat-val comb">{combPrice}</span>
-              </div>
+          <button className="btn-start" disabled={(!callSym && !putSym) || (legType !== 'put' && !callSym) || (legType !== 'call' && !putSym)} onClick={addToWatchList}>
+            ADD TO WATCHLIST
+          </button>
+
+          {errMsg && <div style={{ color: '#f85149', fontSize: 11, marginTop: 8, lineHeight: 1.4 }}>{errMsg}</div>}
+
+          <div className="card">
+            <div className="card-title">Live Prices ({priceType === 'mark' ? 'Mark' : 'LTP'})</div>
+            <div className="stat-row">
+              <span className="stat-label">CALL</span>
+              <span className="stat-val call">{callPrice ? callPrice.toFixed(2) : '—'}</span>
             </div>
+            <div className="stat-row">
+              <span className="stat-label">PUT</span>
+              <span className="stat-val put">{putPrice ? putPrice.toFixed(2) : '—'}</span>
+            </div>
+            <div className="stat-row">
+              <span className="stat-label">COMBINED</span>
+              <span className="stat-val comb">{combPrice}</span>
+            </div>
+          </div>
 
-            {/* Alert History card */}
-            <div className="card" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 250 }}>
-              <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', flexShrink: 0 }}>
-                <span>Alert History</span>
-                <span onClick={() => setAlertLogs([])} style={{ fontSize: 9, cursor: 'pointer', opacity: 0.6 }}>Clear</span>
-              </div>
-              <div className="trade-list" style={{ flex: 1, overflowY: 'auto', paddingRight: 4 }}>
-                {!alertLogs.length && <div style={{ textAlign: 'center', padding: 20, color: '#484f58', fontSize: 11 }}>No alerts logged yet.</div>}
-                {alertLogs.map(log => (
-                  <div key={log.id} style={{
-                    padding: '6px 0', borderBottom: '1px solid var(--border)', fontSize: 11,
-                    display: 'flex', flexDirection: 'column', gap: 2
-                  }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#e3b341', fontWeight: 800, fontSize: 10 }}>
-                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-                          <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-                        </svg>
-                        TRIGGERED
-                      </div>
-                      <span style={{ color: '#7d8590', fontSize: 10 }}>{log.time}</span>
+          {/* Alert History card */}
+          <div className="card" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 250 }}>
+            <div className="card-title" style={{ display: 'flex', justifyContent: 'space-between', flexShrink: 0 }}>
+              <span>Alert History</span>
+              <span onClick={() => setAlertLogs([])} style={{ fontSize: 9, cursor: 'pointer', opacity: 0.6 }}>Clear</span>
+            </div>
+            <div className="trade-list" style={{ flex: 1, overflowY: 'auto', paddingRight: 4 }}>
+              {!alertLogs.length && <div style={{ textAlign: 'center', padding: 20, color: '#484f58', fontSize: 11 }}>No alerts logged yet.</div>}
+              {alertLogs.map(log => (
+                <div key={log.id} style={{
+                  padding: '6px 0', borderBottom: '1px solid var(--border)', fontSize: 11,
+                  display: 'flex', flexDirection: 'column', gap: 2
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#e3b341', fontWeight: 800, fontSize: 10 }}>
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                        <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                      </svg>
+                      TRIGGERED
                     </div>
-                    <div style={{ color: theme === 'dark' ? '#e6edf3' : '#1e2329', lineHeight: 1.4 }}>{log.msg}</div>
+                    <span style={{ color: '#7d8590', fontSize: 10 }}>{log.time}</span>
                   </div>
-                ))}
-              </div>
+                  <div style={{ color: theme === 'dark' ? '#e6edf3' : '#1e2329', lineHeight: 1.4 }}>{log.msg}</div>
+                </div>
+              ))}
             </div>
           </div>
         </aside>
@@ -1961,7 +1968,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
               <div style={{ fontFamily: 'JetBrains Mono', fontSize: 14, fontWeight: 700, letterSpacing: 2 }}>
                 {phase === 'loading' ? 'LOADING CANDLES' : 'OPTIONSCOPE'}
               </div>
-              <div style={{ fontSize: 12, color: '#7d8590' }}>
+              <div style={{ fontSize: 12, color: '#7d8590', textAlign: "center" }}>
                 {phase === 'loading' ? 'Loading chart data...' : 'Add a strategy to your watchlist and select it to view the chart.'}
               </div>
               {errMsg && <div style={{ color: '#f85149', fontSize: 12, maxWidth: 320, textAlign: 'center' }}>{errMsg}</div>}

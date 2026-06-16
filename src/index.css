@@ -2687,26 +2687,13 @@ body.light-theme .pt-live-badge {
 }
 
 /* Collapsible sidebar styles */
-.sidebar-toggle-btn {
-  display: none;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  color: var(--text);
-  padding: 8px 16px;
-  border-radius: 6px;
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-  margin-bottom: 12px;
-  width: 100%;
-  align-items: center;
-  justify-content: space-between;
-  box-sizing: border-box;
+.mobile-only-toggle {
+  display: none !important;
 }
 
 @media (max-width: 900px) {
-  .sidebar-toggle-btn {
-    display: flex;
+  .mobile-only-toggle {
+    display: flex !important;
   }
 
   .sidebar-collapsible {
