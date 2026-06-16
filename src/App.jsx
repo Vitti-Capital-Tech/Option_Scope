@@ -1975,7 +1975,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
             </div>
           )}
 
-          {/* Combined chart — ALWAYS in DOM */}
+          {/* Combined chart — Always in DOM */}
           <ChartPanel
             ref={combRef}
             title={formatCombinedTitle(activeCall, activePut, priceType)}
