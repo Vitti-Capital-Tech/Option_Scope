@@ -758,6 +758,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     }
   };
 
+  const handleCancelFilters = () => {
+    setDraftConfig({ ...config });
+  };
+
+
   const handleResetFilters = () => {
     setConfig(c => {
       const resetConfig = { ...c, ...DEFAULT_FILTERS };
@@ -1490,10 +1495,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               updateDraftConfig={updateDraftConfig}
               isFiltersDirty={isFiltersDirty}
               handleApplyFilters={handleApplyFilters}
+              handleCancelFilters={handleCancelFilters}
               isDefaultConfig={isDefaultConfig}
               handleResetFilters={handleResetFilters}
               spotPrice={spotPrice}
             />
+
 
             <KpiDashboard
               todayPnl={todayPnl}

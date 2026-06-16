@@ -16,6 +16,7 @@ export default function ControlPanel({
   updateDraftConfig,
   isFiltersDirty,
   handleApplyFilters,
+  handleCancelFilters,
   isDefaultConfig,
   handleResetFilters,
   spotPrice
@@ -149,7 +150,7 @@ export default function ControlPanel({
             </>
           )}
           
-          {/* Apply & Reset Buttons */}
+          {/* Apply, Cancel & Reset Buttons */}
           <div className="pt-filter-actions">
             <button 
               type="button"
@@ -158,6 +159,14 @@ export default function ControlPanel({
               disabled={!isFiltersDirty}
             >
               Apply
+            </button>
+            <button 
+              type="button"
+              className="pt-btn-filter pt-btn-cancel"
+              onClick={handleCancelFilters} 
+              disabled={!isFiltersDirty}
+            >
+              Cancel
             </button>
             <button 
               type="button"

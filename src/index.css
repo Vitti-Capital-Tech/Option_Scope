@@ -3246,6 +3246,25 @@ body.light-theme .pt-live-badge {
   cursor: not-allowed;
 }
 
+/* Cancel Button */
+.pt-btn-cancel {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+
+.pt-btn-cancel:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+
+.pt-btn-cancel:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+
 /* Apply Button */
 .pt-btn-apply {
   background: var(--bg3);
