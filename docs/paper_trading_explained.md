@@ -425,7 +425,7 @@ Better candidate: BUY 106000 / SELL 110000 (Call)  ← closer to ATM = better
 | 1 | Same sell strike | The candidate's sell leg must match the existing position's sell strike exactly |
 | 2 | Better buy strike | For calls: new strike < old strike. For puts: new strike > old strike (closer to ATM) |
 | 3 | No conflicts | New buy strike isn't used by any other active position |
-| 4 | **No net debit** | `netPremiumSwap ≥ 0` — the swap must not cost money. Formula: `(deltaQty × shortPrice) - (newBuyAsk - oldBuyBid)` |
+| 4 | **Net debit of 10 is allowed** | `netPremiumSwap ≥ -10` — the swap must not cost money. Formula: `(deltaQty × shortPrice) - (newBuyAsk - oldBuyBid)` |
 | 5 | **Spot step valid** | Spot must have moved at least 0.5% from the entry spot price (rounded to nearest 100) |
 
 ### What "No Net Debit" Means

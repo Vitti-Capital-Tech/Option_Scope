@@ -851,7 +851,7 @@ async function startSingleAccountEngine(account) {
             // Swap PnL guard: net premium swap cost (sell - buy) must be at least 0 (i.e. no debit)
             const deltaQty = getScaledSellQty(s) - pos.sellQty;
             const netPremiumSwap = (deltaQty * (deltaQty > 0 ? liveEntrySell : latestSell)) - (s.buyPrice - latestBuy);
-            if (netPremiumSwap < 0) {
+            if (netPremiumSwap < -10) {
               if (!onlyExits) {
                 logWarn(`[${accountState.name}] Leg Swap candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: net premium swap cost too high ($${netPremiumSwap.toFixed(2)} < $0.00 credit/debit)`);
               }
@@ -899,7 +899,7 @@ async function startSingleAccountEngine(account) {
               if (sS === Number(pos.sellLeg.strike)) {
                 const deltaQty = getScaledSellQty(s) - pos.sellQty;
                 const netPremiumSwap = (deltaQty * (deltaQty > 0 ? liveEntrySell : latestSell)) - (s.buyPrice - latestBuy);
-                if (netPremiumSwap < 0) {
+                if (netPremiumSwap < -10) {
                   if (!onlyExits) {
                     logWarn(`[${accountState.name}] Rotation candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: net premium swap cost too high ($${netPremiumSwap.toFixed(2)} < $0.00 credit/debit)`);
                   }
