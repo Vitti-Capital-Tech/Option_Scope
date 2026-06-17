@@ -805,6 +805,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           days_to_expiry: 0,
           number_of_calls: 3,
           number_of_puts: 3,
+          spot_diff: 0.5,
           updated_at: new Date().toISOString()
         };
         const { data: inserted, error: insertErr } = await supabase
