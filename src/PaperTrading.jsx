@@ -24,6 +24,30 @@ const UNDERLYINGS = ['BTC', 'ETH'];
 const HEARTBEAT_ONLINE_THRESHOLD = 60000;
 const HEARTBEAT_STALE_THRESHOLD = 120000;
 
+const ACCOUNT_CONFIG_DEFAULTS = {
+  minStrikeDiff: 800,
+  minIvDiff: 5,
+  maxRatioDeviation: 0.25,
+  minSellPremium: 10,
+  maxNetPremium: 20,
+  minLongDist: 500,
+  maxSellQty: 10,
+  atmRatioScaling: true,
+  atmRatioPctCall: 50,
+  atmRatioPctPut: 25,
+  daysToExpiry: 0,
+  numberOfCalls: 3,
+  numberOfPuts: 3,
+  spotDiff: 0.5
+};
+
+const normalizeAccountDefaultConfig = (config = {}) => {
+  return Object.keys(ACCOUNT_CONFIG_DEFAULTS).reduce((acc, key) => {
+    acc[key] = config?.[key] ?? ACCOUNT_CONFIG_DEFAULTS[key];
+    return acc;
+  }, {});
+};
+
 const calculateFee = (price, spot, qty, lotSize) => {
   if (!price || !spot) return 0;
   const feePerUnit = Math.min(0.035 * price, 0.0001 * spot);
@@ -421,7 +445,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     return () => clearInterval(interval);
   }, [refreshProducts]);
 
-  // ── Load accounts ──────────────────────────────────────────────────────
   const fetchAccounts = useCallback(async () => {
     if (!userProfile) return;
     try {
@@ -431,18 +454,38 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       }
       const { data, error } = await query.order('created_at', { ascending: true });
       if (data && !error) {
-        setAccounts(data);
-        if (data.length > 0) {
+        const normalizedAccounts = data.map(acc => ({
+          ...acc,
+          default_config: normalizeAccountDefaultConfig(acc.default_config)
+        }));
+
+        setAccounts(normalizedAccounts);
+        if (normalizedAccounts.length > 0) {
           setActiveAccountId(prev => {
-            if (prev && data.some(a => a.id === prev)) return prev;
-            return data[0].id;
+            if (prev && normalizedAccounts.some(a => a.id === prev)) return prev;
+            return normalizedAccounts[0].id;
           });
         } else {
           setActiveAccountId(null);
         }
+
+        const staleAccounts = normalizedAccounts.filter((acc, index) => {
+          const original = data[index]?.default_config || {};
+          return Object.keys(ACCOUNT_CONFIG_DEFAULTS).some(key => original[key] === undefined || original[key] === null);
+        });
+
+        if (staleAccounts.length > 0) {
+          await Promise.all(staleAccounts.map(acc => (
+            supabase
+              .from('paper_trading_accounts')
+              .update({ default_config: normalizeAccountDefaultConfig(acc.default_config) })
+              .eq('id', acc.id)
+          )));
+        }
+
         try {
           const ch = new BroadcastChannel('option-scope-sync');
-          ch.postMessage({ type: 'ACCOUNTS_SYNC', payload: { accounts: data }, senderId: 'paper-trading-dashboard', timestamp: Date.now() });
+          ch.postMessage({ type: 'ACCOUNTS_SYNC', payload: { accounts: normalizedAccounts }, senderId: 'paper-trading-dashboard', timestamp: Date.now() });
           ch.close();
         } catch (e) { }
       }
@@ -477,7 +520,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       ? data.ownerId
       : (session?.user?.id ?? null);
 
-    const defaultConfigVal = {
+    const defaultConfigVal = normalizeAccountDefaultConfig({
       minStrikeDiff: data.minStrikeDiff,
       minIvDiff: data.minIvDiff,
       maxRatioDeviation: data.maxRatioDeviation,
@@ -492,7 +535,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       numberOfCalls: data.numberOfCalls,
       numberOfPuts: data.numberOfPuts,
       spotDiff: data.spotDiff
-    };
+    });
 
     setIsCreatingAccount(true);
     try {
