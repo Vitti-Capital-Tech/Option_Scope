@@ -120,7 +120,7 @@ export default function ControlPanel({
             { label: 'Days to Expiry:', key: 'daysToExpiry', width: 50 },
             { label: 'Max Calls (#):', key: 'numberOfCalls', width: 50 },
             { label: 'Max Puts (#):', key: 'numberOfPuts', width: 50 },
-            { label: 'Spot Diff (%):', key: 'spotDiff', width: 50, step: '0.1' }
+            { label: 'Spot Diff (%):', key: 'spotDiff', width: 60, step: '0.1' }
           ].map(({ label, key, width, step }) => (
             <div key={key} className="form-group">
               <label style={{ marginBottom: 0 }}>{label}</label>
