@@ -670,6 +670,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         days_to_expiry: newCfg.daysToExpiry,
         number_of_calls: newCfg.numberOfCalls ?? 3,
         number_of_puts: newCfg.numberOfPuts ?? 3,
+        spot_diff: newCfg.spotDiff ?? 0.5,
         updated_at: new Date().toISOString()
       }).select();
       if (error) {
