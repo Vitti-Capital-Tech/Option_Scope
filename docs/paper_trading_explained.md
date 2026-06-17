@@ -427,7 +427,7 @@ Better candidate: BUY 106000 / SELL 110000 (Call)  ← closer to ATM = better
 | 2 | Better buy strike | For calls: new strike < old strike. For puts: new strike > old strike (closer to ATM) |
 | 3 | No conflicts | New buy strike isn't used by any other active position |
 | 4 | **Net debit of 10 is allowed** | `netPremiumSwap ≥ -10` — the swap must not cost money. Formula: `(deltaQty × shortPrice) - (newBuyAsk - oldBuyBid)` |
-| 5 | **Spot step valid** | Spot must have moved at least 0.5% from the entry spot price (rounded to nearest 100) |
+| 5 | **Spot step valid** | Spot must have moved at least `config.spotDiff` from the entry spot price (rounded to nearest 100) |
 
 ### What "No Net Debit" Means
 
@@ -471,7 +471,7 @@ Only when **all** of these are true:
 2. The position is **NOT in the top protected** ranked spreads for its type (`config.numberOfCalls` for calls, `config.numberOfPuts` for puts).
 3. A better target exists (closer to ATM, no strike conflicts).
 4. **Rotation budget available**: at least `config.numberOfCalls` (for calls) or `config.numberOfPuts` (for puts) active positions of this type exist, and fewer than `maxCallRotations`/`maxPutRotations` rotations have happened this cycle.
-5. The spot step guard passes (0.5% movement from entry).
+5. The spot step guard passes (`config.spotDiff`% movement from entry).
 6. If the target happens to share the same sell strike, the net premium swap must be ≥ 0.
 7. **No DB Strike Conflicts**: A pre-exit query checks Supabase to ensure the replacement target's strikes do not conflict with existing active positions. If a conflict is found, the exit is aborted.
 
@@ -522,7 +522,7 @@ Here's every safety guard in one table:
 | Scaling floor (50%) | `paperTradingEngine.js` | Buy lot size can never go below 50% of initial |
 | Scaling ATM ratio guard | `paperTradingEngine.js` | Live ATM ratio must justify the lot reduction |
 | Leg swap no-debit | `paperTradingEngine.js` | Leg swaps that cost money are rejected |
-| Spot step (0.5%) | `paperTradingEngine.js` | Rotation/swap requires spot to have moved ≥ 0.5% (rounded to nearest 100) |
+| Spot step (`config.spotDiff`%) | `paperTradingEngine.js` | Rotation/swap requires spot to have moved ≥ `config.spotDiff`% (rounded to nearest 100) |
 | Rotation budget | `paperTradingEngine.js` | Max rotations per type per evaluation cycle (`config.numberOfCalls` for calls, `config.numberOfPuts` for puts) |
 | `lastDbWrite` cooldown (3s) | `paperTradingEngine.js` | Skips position refetch for 3s after a DB write |
 | Heartbeat timer delete | `paperTradingEngine.js` / `heartbeat.js` | Clears interval timer and deletes the DB row on account deletion to prevent zombie row resurrection |
@@ -637,7 +637,7 @@ flowchart TD
 | Scaling step | 25% | Lot size reduction per scaling event |
 | Scaling floor | 50% | Minimum lot size as % of initial |
 | ATM PnL minimum | $50 | Min simulated ATM profit for entry |
-| Spot step threshold | 0.5% | Min spot movement for rotation/swap (rounded to nearest 100) |
+| Spot step threshold | `config.spotDiff`% | Min spot movement for rotation/swap (rounded to nearest 100) |
 | ATM strike tolerance (BTC) | 500 points | Fallback tolerance for finding ATM prices |
 | ATM strike tolerance (ETH) | 50 points | Fallback tolerance for finding ATM prices |
 | Evaluation hang limit | 60 seconds | Max duration evaluation can run before process is restarted |
