@@ -17,12 +17,12 @@ export default function CreateAccountModal({
     <div className="modal-overlay-wrapper">
       <form onSubmit={onSubmit} className="modal-form-create">
         <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: 'var(--text)', borderBottom: '1px solid var(--border)', paddingBottom: '8px' }}>Create New Trading Account</h3>
-        
+
         <div className="modal-columns-create">
           {/* Left Column: Account Details */}
           <div className="modal-col-left-create">
             <h4 style={{ margin: 0, fontSize: '12px', fontWeight: 600, color: 'var(--text)', borderBottom: '1px dashed var(--border)', paddingBottom: '4px' }}>Account Info</h4>
-            
+
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)', letterSpacing: '0.04em' }}>ACCOUNT NAME</label>
               <input
@@ -169,7 +169,7 @@ export default function CreateAccountModal({
           {/* Right Column: Default Strategy Filters */}
           <div className="modal-col-right-create">
             <h4 style={{ margin: 0, fontSize: '12px', fontWeight: 600, color: 'var(--text)', borderBottom: '1px dashed var(--border)', paddingBottom: '4px' }}>Default Strategy Filters</h4>
-            
+
             <div style={{ display: 'flex', gap: '16px' }}>
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Min Strike Diff ($)</label>
@@ -317,6 +317,24 @@ export default function CreateAccountModal({
                 <input
                   type="number"
                   {...register('numberOfPuts', { valueAsNumber: true })}
+                  style={{
+                    padding: '10px 14px',
+                    borderRadius: 8,
+                    border: '1px solid var(--border)',
+                    background: 'var(--bg3)',
+                    color: 'var(--text)',
+                    fontSize: 13,
+                    outline: 'none'
+                  }}
+                />
+              </div>
+
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Spot Diff (%)</label>
+                <input
+                  type="number"
+                  step="0.1"
+                  {...register('spotDiff', { valueAsNumber: true })}
                   style={{
                     padding: '10px 14px',
                     borderRadius: 8,

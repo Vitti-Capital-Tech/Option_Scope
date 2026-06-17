@@ -32,7 +32,7 @@ export default function FirstAccountCard({
             {/* Left Column: Account Info */}
             <div className="first-account-col-left">
               <h4 className="first-account-section-title">Account Info</h4>
-              
+
               <div className="first-account-form-group">
                 <label className="first-account-label">ACCOUNT NAME</label>
                 <input
@@ -109,7 +109,7 @@ export default function FirstAccountCard({
             {/* Right Column: Default Strategy Filters */}
             <div className="first-account-col-right">
               <h4 className="first-account-section-title">Default Strategy Filters</h4>
-              
+
               <div className="first-account-row">
                 <div className="first-account-form-group">
                   <label className="first-account-label">Min Strike Diff ($)</label>
@@ -192,6 +192,15 @@ export default function FirstAccountCard({
                   <input
                     type="number"
                     {...register('numberOfPuts', { valueAsNumber: true })}
+                    className="first-account-input"
+                  />
+                </div>
+                <div className="first-account-form-group">
+                  <label className="first-account-label">Spot Diff (%)</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    {...register('spotDiff', { valueAsNumber: true })}
                     className="first-account-input"
                   />
                 </div>

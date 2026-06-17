@@ -88,6 +88,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       daysToExpiry: 0,
       numberOfCalls: 3,
       numberOfPuts: 3,
+      spotdiff: 0.5
     }
   });
 
@@ -116,6 +117,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     daysToExpiry: 0,
     numberOfCalls: 3,
     numberOfPuts: 3,
+    spotDiff: 0.5
   }));
   const [draftConfig, setDraftConfig] = useState(() => ({ ...config }));
   const [isConfigLoaded, setIsConfigLoaded] = useState(false);
@@ -564,6 +566,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       daysToExpiry: config.daysToExpiry,
       numberOfCalls: config.numberOfCalls ?? 3,
       numberOfPuts: config.numberOfPuts ?? 3,
+      spotDiff: config.spotDiff ?? 0.5
     });
     setIsCreateModalOpen(true);
   };
@@ -691,6 +694,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     'daysToExpiry',
     'numberOfCalls',
     'numberOfPuts',
+    'spotDiff'
   ];
 
   const updateConfig = (keyOrObj, value) => {
@@ -735,6 +739,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       daysToExpiry: 0,
       numberOfCalls: 3,
       numberOfPuts: 3,
+      spotDiff: 0.5
     };
     if (activeAccount && activeAccount.default_config) {
       return { ...baseFilters, ...activeAccount.default_config };
@@ -828,6 +833,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           daysToExpiry: data.days_to_expiry ?? 0,
           numberOfCalls: data.number_of_calls ?? 3,
           numberOfPuts: data.number_of_puts ?? 3,
+          spotDiff: data.spot_diff ?? 0.5
         };
         setConfig(loadedConfig);
         setDraftConfig(loadedConfig);

@@ -120,6 +120,7 @@ export default function ControlPanel({
             { label: 'Days to Expiry:', key: 'daysToExpiry', width: 50 },
             { label: 'Max Calls (#):', key: 'numberOfCalls', width: 50 },
             { label: 'Max Puts (#):', key: 'numberOfPuts', width: 50 },
+            { label: 'Spot Diff (%):', key: 'spotDiff', width: 50, step: '0.1' }
           ].map(({ label, key, width, step }) => (
             <div key={key} className="form-group">
               <label style={{ marginBottom: 0 }}>{label}</label>
@@ -149,29 +150,29 @@ export default function ControlPanel({
               </div>
             </>
           )}
-          
+
           {/* Apply, Cancel & Reset Buttons */}
           <div className="pt-filter-actions">
-            <button 
+            <button
               type="button"
               className={`pt-btn-filter pt-btn-apply ${isFiltersDirty ? 'active' : ''}`}
-              onClick={handleApplyFilters} 
+              onClick={handleApplyFilters}
               disabled={!isFiltersDirty}
             >
               Apply
             </button>
-            <button 
+            <button
               type="button"
               className="pt-btn-filter pt-btn-cancel"
-              onClick={handleCancelFilters} 
+              onClick={handleCancelFilters}
               disabled={!isFiltersDirty}
             >
               Cancel
             </button>
-            <button 
+            <button
               type="button"
               className="pt-btn-filter pt-btn-reset"
-              onClick={handleResetFilters} 
+              onClick={handleResetFilters}
               disabled={isDefaultConfig}
             >
               Reset

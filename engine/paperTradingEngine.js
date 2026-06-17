@@ -42,6 +42,7 @@ async function startSingleAccountEngine(account) {
     daysToExpiry: 0,
     numberOfCalls: 3,
     numberOfPuts: 3,
+    spotDiff: 0.5
   };
   let products = [];
   let expiries = [];
@@ -140,6 +141,7 @@ async function startSingleAccountEngine(account) {
           daysToExpiry: data.days_to_expiry ?? 0,
           numberOfCalls: data.number_of_calls ?? 3,
           numberOfPuts: data.number_of_puts ?? 3,
+          spotDiff: data.spot_diff ?? 0.5
         };
         configDbId = data.id;
         log(`[${accountState.name}] Config loaded: ${config.underlying} | Expiry: ${config.expiry || 'auto'}`);
@@ -860,7 +862,8 @@ async function startSingleAccountEngine(account) {
 
             // Spot step movement guard
             const oldSpotBase = pos.entrySpotPrice || pos.entryBuyPrice || spotPrice;
-            const oldThresh = Math.round((oldSpotBase * 0.005) / 100) * 100;
+            const spotDiff = config.spotDiff ?? 0.5;
+            const oldThresh = Math.round((oldSpotBase * spotDiff * 0.01) / 100) * 100;
             const spotStepValid = Math.abs(spotPrice - oldSpotBase) >= oldThresh;
             if (!spotStepValid) {
               if (!onlyExits) {
@@ -908,7 +911,8 @@ async function startSingleAccountEngine(account) {
               }
 
               const oldSpotBase = pos.entrySpotPrice || pos.entryBuyPrice || spotPrice;
-              const oldThresh = Math.round((oldSpotBase * 0.005) / 100) * 100;
+              const spotDiff = config.spotDiff ?? 0.5;
+              const oldThresh = Math.round((oldSpotBase * spotDiff * 0.01) / 100) * 100;
               const spotStepValid = Math.abs(spotPrice - oldSpotBase) >= oldThresh;
               if (!spotStepValid) {
                 if (!onlyExits) {
