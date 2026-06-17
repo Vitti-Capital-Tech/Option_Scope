@@ -490,7 +490,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       atmRatioPctPut: data.atmRatioPctPut,
       daysToExpiry: data.daysToExpiry,
       numberOfCalls: data.numberOfCalls,
-      numberOfPuts: data.numberOfPuts
+      numberOfPuts: data.numberOfPuts,
+      spotDiff: data.spotDiff
     };
 
     setIsCreatingAccount(true);
@@ -531,6 +532,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           days_to_expiry: data.daysToExpiry,
           number_of_calls: data.numberOfCalls ?? 3,
           number_of_puts: data.numberOfPuts ?? 3,
+          spot_diff: data.spotDiff ?? 0.5
         }]);
 
         // Manually fetch accounts first to update state instantly!
