@@ -89,6 +89,8 @@ export function scanTickers(tickers, config, spotPrice) {
       const strikeDiff = Math.abs(sellLeg.strike - buyLeg.strike);
       if (strikeDiff < config.minStrikeDiff) continue;
 
+      if (buyLeg.expiry !== sellLeg.expiry) continue;
+
       const buyPrice = buyLeg.ask;
       const sellPrice = sellLeg.bid;
       

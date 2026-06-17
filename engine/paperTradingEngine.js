@@ -352,8 +352,8 @@ async function startSingleAccountEngine(account) {
       }
 
       // A. Local Scan: top candidates per type
-      const callTickers = allTickers.filter(t => t.type === 'call' && (atmStrike === null || t.strike >= atmStrike));
-      const putTickers = allTickers.filter(t => t.type === 'put' && (atmStrike === null || t.strike <= atmStrike));
+      const callTickers = allTickers.filter(t => t.type === 'call' && t.expiry === config.expiry && (atmStrike === null || t.strike >= atmStrike));
+      const putTickers = allTickers.filter(t => t.type === 'put' && t.expiry === config.expiry && (atmStrike === null || t.strike <= atmStrike));
       const localTopCalls = scanTickers(callTickers, config, spotPrice);
       const localTopPuts = scanTickers(putTickers, config, spotPrice);
       const topSpreads = [...localTopCalls, ...localTopPuts];
