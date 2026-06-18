@@ -354,6 +354,20 @@ async function startSingleAccountEngine(account) {
       // A. Local Scan: top candidates per type
       const callTickers = allTickers.filter(t => t.type === 'call' && t.expiry === config.expiry && (atmStrike === null || t.strike >= atmStrike));
       const putTickers = allTickers.filter(t => t.type === 'put' && t.expiry === config.expiry && (atmStrike === null || t.strike <= atmStrike));
+
+      if (!onlyExits) {
+        const now = Date.now();
+        const staleCallCount = callTickers.filter(t => !((t.askUpdatedAt || 0) > 0 && (now - t.askUpdatedAt) < 120000)).length;
+        const stalePutCount = putTickers.filter(t => !((t.bidUpdatedAt || 0) > 0 && (now - t.bidUpdatedAt) < 120000)).length;
+        const totalTickers = allTickers.length;
+        const expiryMatchCount = callTickers.length + putTickers.length;
+        if (expiryMatchCount === 0) {
+          logWarn(`[${accountState.name}] Ticker pool: ${totalTickers} total, 0 match expiry ${config.expiry} — WS may not have started yet.`);
+        } else if (staleCallCount + stalePutCount > 0) {
+          logWarn(`[${accountState.name}] Ticker pool: ${expiryMatchCount} matching expiry (${callTickers.length} calls, ${putTickers.length} puts), but ${staleCallCount + stalePutCount} have stale quotes (>120s) — waiting for fresh WS data.`);
+        }
+      }
+
       const localTopCalls = scanTickers(callTickers, config, spotPrice);
       const localTopPuts = scanTickers(putTickers, config, spotPrice);
       const topSpreads = [...localTopCalls, ...localTopPuts];

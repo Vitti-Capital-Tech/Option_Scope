@@ -295,6 +295,10 @@ export async function backfillTickers(underlying, symbolMeta, existingData = {})
       const bidIv = normalizeIv(toFiniteNumber(t.quotes?.bid_iv));
       const askIv = normalizeIv(toFiniteNumber(t.quotes?.ask_iv));
 
+      const resolvedBid = bid ?? (prev?.bid ?? null);
+      const resolvedAsk = ask ?? (prev?.ask ?? null);
+      const now = Date.now();
+
       backfill[t.symbol] = {
         symbol: t.symbol,
         strike: meta.strike,
@@ -303,10 +307,12 @@ export async function backfillTickers(underlying, symbolMeta, existingData = {})
         expiry: meta.expiry,
         markPrice: (markPrice && markPrice > 0) ? markPrice : (prev?.markPrice ?? null),
         lastPrice: (lastPrice && lastPrice > 0) ? lastPrice : (prev?.lastPrice ?? null),
-        bid: bid ?? (prev?.bid ?? null),
-        ask: ask ?? (prev?.ask ?? null),
-        bidUpdatedAt: 0,
-        askUpdatedAt: 0,
+        bid: resolvedBid,
+        ask: resolvedAsk,
+        // Set timestamps to now if bid/ask exist, so backfill quotes are treated as
+        // fresh on the first entry scan after startup. WS live quotes overwrite these.
+        bidUpdatedAt: resolvedBid != null ? now : 0,
+        askUpdatedAt: resolvedAsk != null ? now : 0,
         bidIv: bidIv ?? (prev?.bidIv ?? null),
         askIv: askIv ?? (prev?.askIv ?? null),
         iv: iv ?? (prev?.iv ?? null),
