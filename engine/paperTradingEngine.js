@@ -145,7 +145,7 @@ async function startSingleAccountEngine(account) {
           spotDiff: data.spot_diff ?? 0.5
         };
         configDbId = data.id;
-        log(`[${accountState.name}] Config loaded: ${config.underlying} | Expiry: ${config.expiry || 'auto'}`);
+        // log(`[${accountState.name}] Config loaded: ${config.underlying} | Expiry: ${config.expiry || 'auto'}`);
       }
     } catch (e) { logError(`[${accountState.name}] Config fetch error`, e); }
   }
@@ -459,7 +459,7 @@ async function startSingleAccountEngine(account) {
 
         const passed = (atmPnl != null && atmPnl >= minAtmPnl);
         if (!onlyExits) {
-          log(`  Candidate ${spread.buyLeg.type.toUpperCase()} ${spread.buyLeg.strike}/${spread.sellLeg.strike}: ATM P&L = $${atmPnl != null ? atmPnl.toFixed(2) : 'null'} (Min required: $${minAtmPnl.toFixed(2)}), ROI = ${roi != null ? roi.toFixed(2) : 0}%, Passed = ${passed}`);
+          log(`[${accountState.name}] Candidate ${spread.buyLeg.type.toUpperCase()} ${spread.buyLeg.strike}/${spread.sellLeg.strike}: ATM P&L = $${atmPnl != null ? atmPnl.toFixed(2) : 'null'} (Min required: $${minAtmPnl.toFixed(2)}), ROI = ${roi != null ? roi.toFixed(2) : 0}%, Passed = ${passed}`);
         }
         if (passed) {
           processedSpreads.push({ ...spread, atmPnl, roi });
