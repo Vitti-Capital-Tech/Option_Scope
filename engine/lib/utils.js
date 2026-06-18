@@ -74,6 +74,14 @@ export function scanTickers(tickers, config, spotPrice) {
   const sorted = [...tickers].sort((a, b) => a.strike - b.strike);
   const validPairs = [];
 
+  // Track rejection reasons for diagnostics
+  const rejected = {
+    strikeDiff: 0, noPrice: 0, staleQuote: 0,
+    noIv: 0, ivDiff: 0, longDist: 0,
+    sellPremium: 0, noDelta: 0, ratioDev: 0,
+    maxSellQty: 0, netPrem: 0,
+  };
+
   for (let i = 0; i < sorted.length; i++) {
     for (let j = i + 1; j < sorted.length; j++) {
       const buy = sorted[i];
@@ -87,49 +95,50 @@ export function scanTickers(tickers, config, spotPrice) {
       }
 
       const strikeDiff = Math.abs(sellLeg.strike - buyLeg.strike);
-      if (strikeDiff < config.minStrikeDiff) continue;
+      if (strikeDiff < config.minStrikeDiff) { rejected.strikeDiff++; continue; }
 
       if (buyLeg.expiry !== sellLeg.expiry) continue;
 
       const buyPrice = buyLeg.ask;
       const sellPrice = sellLeg.bid;
       
-      if (buyPrice == null || sellPrice == null || buyPrice <= 0 || sellPrice <= 0) continue;
+      if (buyPrice == null || sellPrice == null || buyPrice <= 0 || sellPrice <= 0) { rejected.noPrice++; continue; }
 
       // Require WS-confirmed quotes (reject stale REST backfill data)
       const now = Date.now();
       const FRESHNESS_MS = 120000; // 120 seconds
       const buyAskFresh = (buyLeg.askUpdatedAt || 0) > 0 && (now - buyLeg.askUpdatedAt) < FRESHNESS_MS;
       const sellBidFresh = (sellLeg.bidUpdatedAt || 0) > 0 && (now - sellLeg.bidUpdatedAt) < FRESHNESS_MS;
-      if (!buyAskFresh || !sellBidFresh) continue;
+      if (!buyAskFresh || !sellBidFresh) { rejected.staleQuote++; continue; }
+
       const buyIv = buyLeg.askIv ?? buyLeg.iv;
       const sellIv = sellLeg.bidIv ?? sellLeg.iv;
 
-      if (buyIv == null || sellIv == null) continue;
+      if (buyIv == null || sellIv == null) { rejected.noIv++; continue; }
       const ivDiff = Math.abs(buyIv - sellIv);
-      if (ivDiff < config.minIvDiff) continue;
+      if (ivDiff < config.minIvDiff) { rejected.ivDiff++; continue; }
 
       const spotDist = Math.abs(buyLeg.strike - spotPrice);
-      if (spotDist < (config.minLongDist || 0)) continue;
+      if (spotDist < (config.minLongDist || 0)) { rejected.longDist++; continue; }
 
-      if (!sellPrice || sellPrice < config.minSellPremium) continue;
+      if (!sellPrice || sellPrice < config.minSellPremium) { rejected.sellPremium++; continue; }
 
       const buyDN = buyLeg.deltaNotional;
       const sellDN = sellLeg.deltaNotional;
-      if (!buyDN || !sellDN || !buyPrice || !sellPrice) continue;
+      if (!buyDN || !sellDN || !buyPrice || !sellPrice) { rejected.noDelta++; continue; }
 
       const premiumRatio = buyPrice / sellPrice;
       const deltaNotionalRatio = buyDN / sellDN;
       const ratioDeviation = Math.abs(premiumRatio - deltaNotionalRatio) / deltaNotionalRatio;
-      if (ratioDeviation > config.maxRatioDeviation) continue;
+      if (ratioDeviation > config.maxRatioDeviation) { rejected.ratioDev++; continue; }
 
       const rawQty = buyDN / sellDN;
       const sellQty = Math.max(1, Math.round(rawQty / 0.25) * 0.25);
-      if (sellQty > (config.maxSellQty || 10)) continue;
+      if (sellQty > (config.maxSellQty || 10)) { rejected.maxSellQty++; continue; }
 
       const netPrem = sellQty * sellPrice - buyPrice;
 
-      if (netPrem < -config.maxNetPremium) continue;
+      if (netPrem < -config.maxNetPremium) { rejected.netPrem++; continue; }
 
       validPairs.push({
         buyLeg, sellLeg, strikeDiff, sellQty,
@@ -145,8 +154,9 @@ export function scanTickers(tickers, config, spotPrice) {
     return b.netPremium - a.netPremium;
   });
 
-  return validPairs.slice(0, 50);
+  return { pairs: validPairs.slice(0, 50), rejected };
 }
+
 
 /**
  * Format a timestamp for console logging.

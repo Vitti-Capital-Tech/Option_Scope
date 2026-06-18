@@ -368,9 +368,13 @@ async function startSingleAccountEngine(account) {
         }
       }
 
-      const localTopCalls = scanTickers(callTickers, config, spotPrice);
-      const localTopPuts = scanTickers(putTickers, config, spotPrice);
+      const { pairs: localTopCalls, rejected: callRej } = scanTickers(callTickers, config, spotPrice);
+      const { pairs: localTopPuts, rejected: putRej } = scanTickers(putTickers, config, spotPrice);
       const topSpreads = [...localTopCalls, ...localTopPuts];
+
+      // Merge rejection counts from calls + puts
+      const totalRejected = {};
+      for (const k of Object.keys(callRej)) totalRejected[k] = (callRej[k] || 0) + (putRej[k] || 0);
 
       function getTickerPrice(strike, optType, priceField, expiry) {
         const lowerType = optType.toLowerCase();
@@ -447,6 +451,22 @@ async function startSingleAccountEngine(account) {
       const processedSpreads = [];
       if (!onlyExits) {
         log(`[${accountState.name}] Evaluating ${topSpreads.length} candidate spreads for entry (Spot: ${spotPrice}, ATM Strike: ${atmStrike})`);
+        if (topSpreads.length === 0) {
+          // Log top rejection reason to diagnose why 0 candidates
+          const topFilter = Object.entries(totalRejected)
+            .filter(([, v]) => v > 0)
+            .sort(([, a], [, b]) => b - a)[0];
+          if (topFilter) {
+            const filterNames = {
+              strikeDiff: 'minStrikeDiff', noPrice: 'no ask/bid price',
+              staleQuote: 'stale WS quote (>120s)', noIv: 'missing IV',
+              ivDiff: 'minIvDiff', longDist: 'minLongDist',
+              sellPremium: 'minSellPremium', noDelta: 'missing delta',
+              ratioDev: 'maxRatioDeviation', maxSellQty: 'maxSellQty', netPrem: 'maxNetPremium'
+            };
+            logWarn(`[${accountState.name}] 0 candidates — top filter: ${filterNames[topFilter[0]] || topFilter[0]} rejected ${topFilter[1]} pairs (pool: ${callTickers.length} calls, ${putTickers.length} puts)`);
+          }
+        }
       }
       for (const spread of topSpreads) {
         const { atmPnl, roi } = calculateAtmPnlAndRoi(spread);
