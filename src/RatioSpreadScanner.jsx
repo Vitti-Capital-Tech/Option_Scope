@@ -367,6 +367,8 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
           const strikeDiff = Math.abs(sellLeg.strike - buyLeg.strike);
           if (strikeDiff < config.minStrikeDiff) continue;
 
+          if (buyLeg.expiry !== sellLeg.expiry) continue;
+
           // For Buy Leg (Long): use Ask price and Ask IV
           // For Sell Leg (Short): use Bid price and Bid IV
           const buyPrice = buyLeg.ask;
