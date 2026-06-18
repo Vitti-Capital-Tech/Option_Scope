@@ -112,7 +112,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       daysToExpiry: 0,
       numberOfCalls: 3,
       numberOfPuts: 3,
-      spotdiff: 0.5
+      spotDiff: 0.5
     }
   });
 
