@@ -1604,7 +1604,7 @@ async function startSingleAccountEngine(account) {
     }
   }, 5 * 60 * 1000);
 
-  // Active positions and config refresh — every 30 seconds (fallback sync)
+  // Active positions and config refresh — every 2 minutes (fallback sync; Realtime handles real-time updates)
   const positionsTimer = setInterval(async () => {
     try {
       await reloadConfigAndSync();
@@ -1612,7 +1612,7 @@ async function startSingleAccountEngine(account) {
     } catch (e) {
       logError(`[${accountState.name}] Error in positionsTimer:`, e);
     }
-  }, 30000);
+  }, 120000);
 
 
   log(`[${accountState.name}] Paper Trading Engine is LIVE`);

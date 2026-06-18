@@ -950,7 +950,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     try {
       const { data, error } = await supabase
         .from('trade_history')
-        .select('*')
+        .select('id, trade_id, underlying, expiry, type, buy_leg, sell_leg, sell_qty, strike_diff, entry_time, exit_time, entry_buy_price, entry_sell_price, exit_buy_price, exit_sell_price, entry_spot_price, exit_spot_price, margin, realized_gross_pnl, realized_net_pnl, exit_fee, total_fees, exit_reason, is_partial, lot_size, account_id')
         .eq('account_id', activeAccountId)
         .eq('underlying', underlying)
         .order('exit_time', { ascending: false });
@@ -1005,7 +1005,35 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'trade_history', filter: `account_id=eq.${activeAccountId}` },
-        () => { fetchSupabaseTradeHistory(); }
+        (payload) => {
+          // Use payload.new directly — no need to re-fetch all history on every insert
+          const t = payload.new;
+          if (!t || t.underlying !== underlying) return;
+          const parsedBuyLeg = safeParseLeg(t.buy_leg);
+          const parsedSellLeg = safeParseLeg(t.sell_leg);
+          const newTrade = {
+            id: t.trade_id || t.id,
+            underlying: t.underlying, expiry: t.expiry, type: t.type,
+            buyLeg: parsedBuyLeg, sellLeg: parsedSellLeg,
+            sellQty: t.sell_qty, strikeDiff: t.strike_diff,
+            entryTime: new Date(t.entry_time), exitTime: new Date(t.exit_time),
+            entryBuyPrice: t.entry_buy_price, entrySellPrice: t.entry_sell_price,
+            exitBuyPrice: t.exit_buy_price, exitSellPrice: t.exit_sell_price,
+            entrySpotPrice: t.entry_spot_price, exitSpotPrice: t.exit_spot_price,
+            margin: t.margin,
+            realizedGrossPnl: t.realized_gross_pnl, realizedNetPnl: t.realized_net_pnl,
+            exitFee: t.exit_fee, totalFees: t.total_fees,
+            entryFee: (t.total_fees || 0) - (t.exit_fee || 0),
+            exitReason: t.exit_reason,
+            entryBuyIv: parsedBuyLeg?.entryIv || null,
+            entrySellIv: parsedSellLeg?.entryIv || null,
+            exitBuyIv: parsedBuyLeg?.exitIv || null,
+            exitSellIv: parsedSellLeg?.exitIv || null,
+            _isPartial: t.is_partial || false,
+            _exitedBuyQty: t.lot_size ?? parsedBuyLeg?.lotSize ?? 1,
+          };
+          setTradeHistory(prev => [newTrade, ...prev]);
+        }
       )
       .subscribe();
 
@@ -1031,7 +1059,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     try {
       const { data, error } = await supabase
         .from('engine_heartbeat')
-        .select('*')
+        .select('id, last_heartbeat, status, ws_status, underlying, expiry, active_positions, spot_price')
         .eq('id', `paper_trading_${activeAccountId}`);
 
       if (error || !data || data.length === 0) {

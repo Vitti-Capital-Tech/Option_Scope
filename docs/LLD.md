@@ -45,7 +45,7 @@ Incoming frames are filtered to only process `type === 'v2/ticker'`. All other m
 ### Key Network Subsystems
 
 1. **Auto-Reconnect**: Self-heals on network drops with a 3-second backoff. Critical for VPS unattended operation.
-2. **REST Backfill (`refreshAllTickers` / `backfillTickers`)**: Triggered on algo start or manual page refresh. Calls `/v2/tickers` and merges results into the local ticker cache without zeroing existing data — prevents the "PnL = 0" glitch before the first WebSocket frame arrives. Crucially, to prevent executing entries on stale/model-derived REST prices, backfilled quotes are tagged with `bidUpdatedAt = 0` and `askUpdatedAt = 0` (marking them as unconfirmed).
+2. **REST Backfill (`refreshAllTickers` / `backfillTickers`)**: Triggered on algo start or manual page refresh. Calls `/v2/tickers` and merges results into the local ticker cache without zeroing existing data — prevents the "PnL = 0" glitch before the first WebSocket frame arrives. **Backfill timestamp behavior**: If a valid bid or ask price is present in the REST response, `bidUpdatedAt`/`askUpdatedAt` is now set to `Date.now()`, allowing the first entry scan after startup to use backfill data immediately. Tickers with no bid/ask price still receive `timestamp = 0` and are rejected by the freshness guard as unconfirmed. Live WS quotes overwrite these timestamps as they arrive.
 3. **Redundant Connection Guard (`lastWsSymbolsRef`)**: Hashes the current symbol list. Skips WebSocket teardown/recreate if the symbol set has not changed, avoiding the "WebSocket closed before established" race condition during periodic 5-minute product refreshes.
 4. **50ms Buffered Flush**: All incoming ticker frames are written to `tickerBufferRef` (a plain object). A `setTimeout(flushTickerBuffer, 50)` timer batches and flushes them into `latestTickerDataRef` and triggers a single React state update. This limits render pressure under volatile data bursts.
 
@@ -148,7 +148,7 @@ The scanner runs an O(N²) pair search within each option type (calls and puts s
 
 1. **Directional Filtering**: Universe is split at ATM — Calls at strike `>= atmStrike`, Puts at strike `<= atmStrike`.
 2. **Leg Assignment**: For calls, the lower strike is the buy (long) leg; for puts, the higher strike is the buy leg.
-3. **Strict Execution-Realistic Pricing & Freshness Check**: `buyPrice = buyLeg.ask`, `sellPrice = sellLeg.bid`. The pair is skipped immediately if either active quote is missing. No fallback to `markPrice` or `lastPrice` is allowed for entries. Additionally, quotes must be WS-confirmed and fresh: both legs are checked to ensure their `bidUpdatedAt` and `askUpdatedAt` timestamps are greater than `0` (ignoring REST-backfilled data) and less than 120,000 milliseconds old (`Date.now() - updatedAt < 120000`), preventing stale entries on illiquid strikes.
+3. **Strict Execution-Realistic Pricing & Freshness Check**: `buyPrice = buyLeg.ask`, `sellPrice = sellLeg.bid`. The pair is skipped immediately if either active quote is missing. No fallback to `markPrice` or `lastPrice` is allowed for entries. Quotes must be WS-confirmed and fresh: both legs are checked to ensure their `bidUpdatedAt` and `askUpdatedAt` timestamps are less than 120,000 milliseconds old (`Date.now() - updatedAt < 120000`), preventing stale entries on illiquid strikes. After engine startup, REST-backfilled tickers with a valid price get `timestamp = Date.now()` (not 0), so the first scan can use backfill data. Tickers with no price still get `timestamp = 0` and are rejected. **Rejection Tracking**: `scanTickers` returns `{ pairs, rejected }` where `rejected` maps each filter name to a count of rejected pairs, enabling diagnostic logging when 0 candidates are found.
 4. **Directional IV**: `buyIv = buyLeg.askIv ?? iv`, `sellIv = sellLeg.bidIv ?? iv`. Pair is skipped if either IV is null.
 5. **Filter Gauntlet** (all must pass):
    - `strikeDiff >= minStrikeDiff`
@@ -193,9 +193,9 @@ After every scan, `publishTopSpreads` packages the top-3 calls and puts into a p
 
 ### Concurrency Safety Guards
 
-**Supabase Realtime Subscription**: On mount (when `trading = true`), the engine subscribes to `postgres_changes` events on `active_positions` (`event: '*'`). Any INSERT, UPDATE, or DELETE by any client (engine tab, browser tab) triggers an immediate `fetchSupabaseActivePositions()` call, delivering the update to all connected sessions in < 1 second. The channel is unsubscribed (`supabase.removeChannel`) on component unmount or when `trading` becomes `false`.
+**Supabase Realtime Subscription**: On mount (when `trading = true`), the engine subscribes to `postgres_changes` events on `active_positions` (`event: '*'`). Any INSERT, UPDATE, or DELETE triggers an immediate `fetchSupabaseActivePositions()` call, delivering the update to all connected sessions in <1 second.
 
-**Egress Optimization & Polling Removal**: Standard 10-second fallback polling intervals for positions and trade history are completely removed from the UI. The UI relies on the Realtime channels for updates, reducing PostgREST bandwidth.
+**Trade History Realtime Optimization**: The `trade_history` INSERT subscription now uses `payload.new` directly instead of triggering a full `fetchSupabaseTradeHistory()` refetch on every trade close. The new trade row is mapped and prepended to local state immediately. This eliminates the largest source of Supabase egress (previously a full-table fetch with JSONB buy_leg/sell_leg on every exit). A full history fetch still occurs on initial load and tab focus restoration.
 
 **DB-Level Count Guard (pre-insert)**: Before inserting any new position, the engine queries `active_positions` for the current `(underlying, type)` pair. If the live count is `>= 3`, the insert is aborted. Uses plain `.select('id')` (not `{ head: true }`) to ensure non-null response data.
 
@@ -243,7 +243,7 @@ Applied at entry in both engines and dynamically in the frontend UI:
 
 The engine file (`paperTradingEngine.js`) executes a top-level **Supervisor Manager** (`startPaperTradingEngine`) upon start:
 1. **Initial Bootstrap**: Fetches all existing accounts from the `paper_trading_accounts` table.
-2. **Parallel Isolation**: For each account, it spawns an independent, self-contained running instance of the strategy engine (`startSingleAccountEngine(account)`). Each account loop executes on its own 1-second interval cadence (`setInterval`).
+2. **Parallel Startup**: All account engines are started simultaneously via `Promise.allSettled(accounts.map(acc => startAccountEngine(acc)))`. This reduces startup time from ~30s (sequential `for...await`) to ~3s regardless of account count. `allSettled` is used instead of `Promise.all` so one account's startup failure does not block others.
 3. **Database-Driven Hot-Reloading**: Subscribes to Supabase realtime database changes on the `paper_trading_accounts` table:
    - **INSERT**: Automatically triggers creation of a new isolated engine loop for the newly added account ID.
    - **DELETE**: Clears the evaluation intervals for the deleted account, stopping its execution loops immediately.
@@ -259,7 +259,7 @@ Called every second by `setInterval`. Uses the `isEvaluating` mutex to prevent r
 | **Evaluation loop** | 1 second | Core brain — exits every tick, entries on minute boundaries |
 | **Spot price poll** | 10 seconds | REST-based fallback spot price update |
 | **Product refresh** | 5 minutes | Refreshes available option contracts from Delta Exchange |
-| **Positions fallback sync** | 30 seconds | Re-fetches active positions from Supabase as a safety net against missed Realtime events |
+| **Positions fallback sync** | 2 minutes | Re-fetches active positions from Supabase as a safety net against missed Realtime events (reduced from 30s) |
 
 * **Exit Evaluation (every 1 second)**: The engine runs `evaluateStrategy(true)` (Exit-Only) on intermediate seconds. It iterates over active positions, calculates real-time liquidation value P&L and fees, and checks exit triggers (ATM, expiry, rotations) against streaming WebSocket ticker quotes and polled spot prices. If no exits occur, it does not query or write to Supabase.
 * **Full Evaluation (every minute boundary)**: The engine runs `evaluateStrategy(false)` (Full Run) when a new clock-minute crosses (`currentMinute > lastMinute` or on startup). In addition to checking exits, it scans for new spread candidates, filters them by ATM P&L >= $50, sorts them to pick the best ROI candidate per buy strike, checks DB-level count/strike restrictions, and inserts new positions into Supabase.

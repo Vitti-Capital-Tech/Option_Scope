@@ -90,7 +90,7 @@ After startup, four timers run continuously, all wrapped inside **try-catch** bl
 | **Evaluation loop** | Every 1 second | The core brain — evaluates exits and entries |
 | **Spot price poll** | Every 10 seconds | Updates BTC/ETH spot price via REST API |
 | **Product refresh** | Every 5 minutes | Refreshes option contracts and handles automatic expiry rollover if needed |
-| **Positions sync** | Every 30 seconds | Re-fetches positions from DB as a safety fallback |
+| **Positions sync** | Every 2 minutes | Re-fetches positions from DB as a safety fallback (previously 30s — reduced since Realtime handles real-time sync) |
 
 > [!TIP]
 > **Real-time Spot updates**: In addition to the periodic REST API fallback poll (every 10 seconds), the engine streams the perpetual contract (`BTCUSD` or `ETHUSD`) directly over the WebSocket ticker stream. This allows the engine to update the underlying spot price instantly as trades occur.
@@ -565,6 +565,23 @@ After scanning, the engine merges call and put rejection counts and logs the **t
 > [!NOTE]
 > If the **top filter is `minSellPremium`** and all accounts are affected simultaneously, this is a **market condition issue** (e.g., near-expiry OTM options have low premiums due to theta decay) — not a bug.
 
+### Trade History Realtime Optimization
+
+Instead of re-fetching all trade history from Supabase on every `INSERT` event, the `historyChannel` Realtime handler now uses `payload.new` directly:
+
+```javascript
+// Before: full re-fetch on every closed trade
+historyChannel.on('INSERT', () => { fetchSupabaseTradeHistory(); })
+
+// After: use the payload data already delivered in the event
+historyChannel.on('INSERT', (payload) => {
+  const newTrade = mapRow(payload.new);
+  setTradeHistory(prev => [newTrade, ...prev]);
+})
+```
+
+This eliminates the largest source of Supabase egress. A full re-fetch still happens on initial page load and when the tab regains focus.
+
 ---
 
 ## Config Synchronization
@@ -664,7 +681,7 @@ flowchart TD
 | Entry scan interval | 1 minute | How often new entries are considered |
 | Spot poll interval | 10 seconds | How often spot price is fetched via REST |
 | Product refresh | 5 minutes | How often the option chain is refreshed |
-| Position sync | 30 seconds | How often positions are re-fetched from DB |
+| Position sync | 2 minutes | Fallback re-fetch from DB (Realtime is the primary sync) |
 | Spot staleness limit | 120 seconds | Max age of spot price before skipping eval |
 | Quote freshness limit | 120 seconds | Max age of option quotes for entry |
 | Expiry exit buffer | 2 minutes | How early before expiry to force-exit |
