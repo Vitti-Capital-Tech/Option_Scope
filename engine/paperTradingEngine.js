@@ -1681,9 +1681,9 @@ export async function startPaperTradingEngine() {
   if (error) {
     logError('Failed to fetch paper trading accounts:', error.message);
   } else if (accounts) {
-    for (const acc of accounts) {
-      await startAccountEngine(acc);
-    }
+    log(`Starting ${accounts.length} account engines in parallel...`);
+    await Promise.allSettled(accounts.map(acc => startAccountEngine(acc)));
+    log(`All account engines started.`);
   }
 
   // Subscribe to paper_trading_accounts changes
