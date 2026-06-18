@@ -18,7 +18,8 @@ This document explains **every** logic and condition in the Paper Trading engine
 10. [Leg Swap (In-Place Upgrade)](#leg-swap)
 11. [Standard Rotation (Full Replacement)](#standard-rotation)
 12. [Safety Guards Summary](#safety-guards-summary)
-13. [Config Synchronization](#config-synchronization)
+13. [Diagnostic Logging (0 Candidates)](#diagnostic-logging-0-candidates)
+14. [Config Synchronization](#config-synchronization)
 
 ---
 
@@ -42,13 +43,16 @@ The strategy is a **ratio spread** — you buy 1 option (the long/buy leg) and s
 The entry point is `startPaperTradingEngine()`. It acts like a **manager** that:
 
 1. Fetches all active accounts from `paper_trading_accounts` table
-2. Starts an **independent engine loop** for each account
+2. Starts an **independent engine loop** for **all accounts in parallel** using `Promise.allSettled`
 3. Listens for account changes in real-time:
    - **New account added** → starts a new engine
    - **Account deactivated** → stops its engine
    - **Account updated** (e.g. name or status changes) → updates the running engine's state
 
 Each account runs in complete isolation — its own WebSocket, its own positions, its own config.
+
+> [!TIP]
+> **Parallel Startup**: All accounts start simultaneously via `Promise.allSettled`. With 10 accounts, startup time is ~3 seconds (previously ~30 seconds with sequential `for...await`). `allSettled` is used instead of `Promise.all` so that one account's startup failure does not block the others.
 
 ---
 
@@ -65,7 +69,7 @@ When an engine starts for an account, it runs these steps in order:
 | 3 | **Auto-select expiry** if not set or expired | Picks the nearest valid expiry date meeting the `daysToExpiry` threshold |
 | 4 | **Fetch spot price** | Gets current BTC/ETH price |
 | 5 | **Load active positions** from Supabase | Restores any positions from a previous run |
-| 6 | **Backfill tickers** via REST API | Pre-loads option prices so we don't start with empty data |
+| 6 | **Backfill tickers** via REST API | Pre-loads option prices so we don't start with empty data. If a ticker has a valid bid/ask price, its `bidUpdatedAt`/`askUpdatedAt` is set to `Date.now()` so it is treated as fresh for the first scan. WS live quotes overwrite these timestamps as they arrive. |
 | 7 | **Start WebSocket** | Connects to Delta Exchange for real-time price streaming |
 | 8 | **Start heartbeat** | Writes a "I'm alive" signal to the DB every few seconds |
 | 9 | **Subscribe to config changes** | Listens for when you change filters in the UI |
@@ -155,7 +159,7 @@ Every candidate pair must pass **all** of these filters to be considered:
 | # | Filter | Config Key | What It Means |
 |---|--------|-----------|---------------|
 | 1 | **Strike Difference** | `minStrikeDiff` (default: 800) | The two strikes must be at least 800 points apart |
-| 2 | **Fresh Quotes** | — (hardcoded 120s) | Both the buy Ask and sell Bid prices must have been updated via WebSocket within the last **120 seconds**. REST-backfilled data (timestamp = 0) is rejected |
+| 2 | **Fresh Quotes** | — (hardcoded 120s) | Both the buy Ask and sell Bid prices must have been updated within the last **120 seconds**. After startup, REST-backfill data now gets `Date.now()` timestamps if a valid price exists — allowing the first scan to use backfill data immediately. As WS live quotes arrive, they overwrite these timestamps. Tickers with no bid/ask price still get timestamp = 0 and are rejected. |
 | 3 | **IV Difference** | `minIvDiff` (default: 5) | The implied volatility difference between the two options must be ≥ 5% |
 | 4 | **Min Long Distance** | `minLongDist` (default: 500) | The buy leg's strike must be at least 500 points away from spot price |
 | 5 | **Min Sell Premium** | `minSellPremium` (default: $10) | The sell leg's bid price must be at least $10 |
@@ -502,8 +506,8 @@ Here's every safety guard in one table:
 | WebSocket stale spot reconnect | `paperTradingEngine.js` | Automatically forces WebSocket reconnect (`startWebSocket()`) if spot remains stale > 120s |
 | Evaluation hang guard (60s) | `paperTradingEngine.js` | Logs fatal error and crashes process (`exit(1)`) if evaluation is hung > 60s, triggering PM2 container recovery |
 | Config fetch retry loop (10x) | `paperTradingEngine.js` | Retries config load up to 10 times with 500ms delay to prevent duplicate key database insert collisions |
-| Quote freshness (120s) | `utils.js` | Rejects spread candidates with stale WS quotes |
-| Backfill rejection (timestamp = 0) | `utils.js` | Rejects REST-backfilled data that has no real timestamp |
+| Quote freshness (120s) | `utils.js` | Rejects spread candidates whose quotes are older than 120 seconds |
+| Backfill rejection (timestamp = 0) | `utils.js` | Rejects tickers with no bid/ask price that still have timestamp = 0. Tickers with a valid price from REST backfill are treated as fresh (timestamp = `Date.now()`) for the first scan, then overwritten by live WS quotes. |
 | Min strike diff | `utils.js` | Minimum distance between buy and sell strikes |
 | Min IV diff | `utils.js` | Minimum implied volatility gap |
 | Min long distance | `utils.js` | Buy leg must be far enough from spot |
@@ -526,6 +530,40 @@ Here's every safety guard in one table:
 | Rotation budget | `paperTradingEngine.js` | Max rotations per type per evaluation cycle (`config.numberOfCalls` for calls, `config.numberOfPuts` for puts) |
 | `lastDbWrite` cooldown (3s) | `paperTradingEngine.js` | Skips position refetch for 3s after a DB write |
 | Heartbeat timer delete | `paperTradingEngine.js` / `heartbeat.js` | Clears interval timer and deletes the DB row on account deletion to prevent zombie row resurrection |
+
+---
+
+## Diagnostic Logging (0 Candidates)
+
+**Files**: [`paperTradingEngine.js`](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js), [`utils.js`](file:///c:/Users/ASUS/Documents/Option_Scope/engine/lib/utils.js)
+
+When `Evaluating 0 candidate spreads` appears in logs, the engine now automatically logs **why** — making it easy to distinguish a market condition issue from a technical one.
+
+### How It Works
+
+`scanTickers()` now returns `{ pairs, rejected }` instead of just an array. The `rejected` object contains per-filter rejection counts:
+
+```javascript
+rejected = {
+  strikeDiff, noPrice, staleQuote, noIv,
+  ivDiff, longDist, sellPremium, noDelta,
+  ratioDev, maxSellQty, netPrem
+}
+```
+
+After scanning, the engine merges call and put rejection counts and logs the **top rejecting filter** when 0 candidates result.
+
+### Reading the Diagnostic Logs
+
+| Log Pattern | Meaning |
+|---|---|
+| `0 candidates — top filter: minSellPremium rejected 171 pairs` | Market premiums are too low for current config (near-expiry theta decay) |
+| `0 candidates — top filter: stale WS quote (>120s) rejected 83 pairs` | WebSocket disconnected — reconnecting |
+| `Ticker pool: 138 total, 0 match expiry ... — WS may not have started yet` | Engine just restarted, WS not connected yet |
+| `Ticker pool: 85 matching expiry, but 23 have stale quotes (>120s)` | WS partially stale — some symbols not updated |
+
+> [!NOTE]
+> If the **top filter is `minSellPremium`** and all accounts are affected simultaneously, this is a **market condition issue** (e.g., near-expiry OTM options have low premiums due to theta decay) — not a bug.
 
 ---
 
