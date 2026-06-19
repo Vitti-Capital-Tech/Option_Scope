@@ -1596,6 +1596,21 @@ async function startSingleAccountEngine(account) {
           await reloadConfigAndSync();
         }
       )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'paper_trading_schedules' },
+        async (payload) => {
+          const newRecord = payload.new;
+          const oldRecord = payload.old;
+          const relevantRecord = newRecord || oldRecord;
+          if (relevantRecord && relevantRecord.account_id !== accountState.id) {
+            return;
+          }
+
+          log(`[${accountState.name}] Schedules change detected — reloading...`);
+          await fetchSchedules();
+        }
+      )
       .subscribe();
 
     return channel;
