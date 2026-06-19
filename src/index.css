@@ -4345,5 +4345,44 @@ body.light-theme .pt-btn-apply.active {
   font-family: 'JetBrains Mono', monospace;
 }
 
+/* ── Custom Input styling ── */
+.custom-input-field {
+  width: 100%;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 8px 12px;
+  font-family: 'Inter', sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  outline: none;
+  transition: all 0.15s ease;
+  cursor: text;
+}
+
+.custom-input-field:hover:not(:disabled) {
+  border-color: var(--text-dim);
+  background: var(--bg2);
+}
+
+.custom-input-field:focus:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--bg);
+  box-shadow: 0 0 0 2px rgba(240, 185, 11, 0.15);
+}
+
+.custom-input-field.error {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 2px rgba(246, 70, 93, 0.15);
+}
+
+.custom-input-field:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: var(--bg2);
+}
+
+
 
 

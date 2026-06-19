@@ -1,4 +1,5 @@
 import React from 'react';
+import CustomInput from '../common/CustomInput';
 
 export default function EditAccountModal({
   isOpen,
@@ -17,8 +18,9 @@ export default function EditAccountModal({
         
         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
           <label style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-dim)' }}>Account Name</label>
-          <input
+          <CustomInput
             type="text"
+            error={!!errors.name}
             {...register('name', {
               required: 'Account name is required',
               validate: value => value.trim() !== '' || 'Account name cannot be empty'
@@ -26,9 +28,6 @@ export default function EditAccountModal({
             style={{
               padding: '8px 12px',
               borderRadius: '6px',
-              border: errors.name ? '1px solid #f85149' : '1px solid var(--border)',
-              background: 'var(--bg3)',
-              color: 'var(--text)',
               fontSize: '13px',
               outline: 'none'
             }}

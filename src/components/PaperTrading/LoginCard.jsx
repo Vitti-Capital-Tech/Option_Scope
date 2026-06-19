@@ -1,8 +1,9 @@
 import React from 'react';
+import CustomInput from '../common/CustomInput';
 
 export default function LoginCard({ authEmail, setAuthEmail, authError, isAuthenticating, handleAuthSubmit }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 'calc(100vh - 120px)', width: '100%', background: 'var(--bg)' }}>
+    <div style={{ display: 'flex', alignItems: 'center', justifycontent: 'center', minHeight: 'calc(100vh - 120px)', width: '100%', background: 'var(--bg)' }}>
       <div style={{
         width: '100%',
         maxWidth: 420,
@@ -42,7 +43,7 @@ export default function LoginCard({ authEmail, setAuthEmail, authError, isAuthen
         <form onSubmit={handleAuthSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)', letterSpacing: '0.04em' }}>EMAIL ADDRESS</label>
-            <input
+            <CustomInput
               id="auth-email"
               type="email"
               value={authEmail}
@@ -53,15 +54,9 @@ export default function LoginCard({ authEmail, setAuthEmail, authError, isAuthen
               style={{
                 padding: '10px 14px',
                 borderRadius: 8,
-                border: '1px solid var(--border)',
-                background: 'var(--bg3)',
-                color: 'var(--text)',
                 fontSize: 14,
                 outline: 'none',
-                transition: 'border-color 0.2s'
               }}
-              onFocus={e => e.target.style.borderColor = 'var(--accent)'}
-              onBlur={e => e.target.style.borderColor = 'var(--border)'}
             />
           </div>
 

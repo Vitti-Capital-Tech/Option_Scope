@@ -1,4 +1,5 @@
 import React, { useState, useCallback } from 'react';
+import CustomInput from '../common/CustomInput';
 
 const DEFAULT_WINDOW = {
   label: 'Window',
@@ -45,7 +46,7 @@ function getUnoccupiedSlots(schedules, excludeId = null) {
   const slots = [];
   let inSlot = false;
   let start = 0;
-  
+
   // Traverse 1440 minutes starting at 330 (05:30 AM IST)
   for (let i = 0; i < 1440; i++) {
     const m = (330 + i) % 1440;
@@ -57,7 +58,7 @@ function getUnoccupiedSlots(schedules, excludeId = null) {
       inSlot = false;
     }
   }
-  
+
   if (inSlot) {
     slots.push({ start, end: 330 });
   }
@@ -181,18 +182,18 @@ export default function SchedulePanel({
           const startMin = toMin(s.startTime);
           const endMin = toMin(s.endTime);
           const color = WINDOW_COLORS[i % WINDOW_COLORS.length];
-          
+
           // Shift minutes relative to 05:30 AM start
           const startShifted = (startMin - 330 + 1440) % 1440;
           const endShifted = (endMin - 330 + 1440) % 1440;
           const isSplit = startShifted > endShifted;
-          
+
           const tooltip = `${s.label || 'Window'} (${cleanTime(s.startTime)} - ${cleanTime(s.endTime)})\nCalls: ${s.numberOfCalls} | Puts: ${s.numberOfPuts}\nStrike Diff: ${s.minStrikeDiff} | Long Dist: ${s.minLongDist}`;
 
           if (isSplit) {
             return (
               <React.Fragment key={s.id}>
-                <div 
+                <div
                   title={tooltip}
                   style={{
                     position: 'absolute',
@@ -209,7 +210,7 @@ export default function SchedulePanel({
                     {s.label}
                   </span>
                 </div>
-                <div 
+                <div
                   title={tooltip}
                   style={{
                     position: 'absolute',
@@ -225,8 +226,8 @@ export default function SchedulePanel({
           }
 
           return (
-            <div 
-              key={s.id} 
+            <div
+              key={s.id}
               title={tooltip}
               style={{
                 position: 'absolute',
@@ -280,7 +281,7 @@ export default function SchedulePanel({
           onMouseOver={e => e.currentTarget.style.background = 'rgba(0,217,163,0.2)'}
           onMouseOut={e => e.currentTarget.style.background = 'rgba(0,217,163,0.12)'}
         >
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
           Add Window
         </button>
       </div>
@@ -334,7 +335,7 @@ export default function SchedulePanel({
               {/* Window Label */}
               <div className="schedule-item-block" style={{ width: 130 }}>
                 <span className="schedule-item-label">Window Name</span>
-                <input
+                <CustomInput
                   type="text"
                   className="schedule-inline-input"
                   value={s.label}
@@ -347,31 +348,31 @@ export default function SchedulePanel({
               {/* Start Time */}
               <div className="schedule-item-block">
                 <span className="schedule-item-label">Start Time (IST)</span>
-                <input
+                <CustomInput
                   type="time"
                   className="schedule-inline-input"
                   value={cleanTime(s.startTime)}
                   onChange={e => handleChange(s.id, 'startTime', e.target.value)}
-                  style={{ width: 90 }}
+                  style={{ width: 100 }}
                 />
               </div>
 
               {/* End Time */}
               <div className="schedule-item-block">
                 <span className="schedule-item-label">End Time (IST)</span>
-                <input
+                <CustomInput
                   type="time"
                   className="schedule-inline-input"
                   value={cleanTime(s.endTime)}
                   onChange={e => handleChange(s.id, 'endTime', e.target.value)}
-                  style={{ width: 90 }}
+                  style={{ width: 100 }}
                 />
               </div>
 
               {/* Max Calls */}
               <div className="schedule-item-block">
                 <span className="schedule-item-label">Max Calls</span>
-                <input
+                <CustomInput
                   type="number"
                   min="0"
                   max="20"
@@ -385,7 +386,7 @@ export default function SchedulePanel({
               {/* Max Puts */}
               <div className="schedule-item-block">
                 <span className="schedule-item-label">Max Puts</span>
-                <input
+                <CustomInput
                   type="number"
                   min="0"
                   max="20"
@@ -399,7 +400,7 @@ export default function SchedulePanel({
               {/* Min Strike Diff */}
               <div className="schedule-item-block">
                 <span className="schedule-item-label">Min Strike Diff</span>
-                <input
+                <CustomInput
                   type="number"
                   min="0"
                   className="schedule-inline-input"
@@ -412,7 +413,7 @@ export default function SchedulePanel({
               {/* Min Long Dist */}
               <div className="schedule-item-block">
                 <span className="schedule-item-label">Min Long Dist</span>
-                <input
+                <CustomInput
                   type="number"
                   min="0"
                   className="schedule-inline-input"
@@ -424,19 +425,19 @@ export default function SchedulePanel({
 
               {/* Overlap Indicator Badge inside the row */}
               {overlapWindow && (
-                <div 
-                  className="schedule-item-block" 
-                  style={{ 
-                    alignItems: 'center', 
-                    justifyContent: 'center', 
-                    color: '#f85149', 
-                    cursor: 'help' 
+                <div
+                  className="schedule-item-block"
+                  style={{
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: '#f85149',
+                    cursor: 'help'
                   }}
                   title={`Time overlaps with "${overlapWindow.label || 'another window'}" (${cleanTime(overlapWindow.startTime)} – ${cleanTime(overlapWindow.endTime)})`}
                 >
                   <span className="schedule-item-label" style={{ color: '#f85149' }}>Status</span>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'rgba(248,81,73,0.1)', border: '1px solid rgba(248,81,73,0.3)', padding: '4px 8px', borderRadius: 4, fontSize: 9, fontWeight: 700 }}>
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
                     OVERLAP
                   </div>
                 </div>
@@ -475,9 +476,9 @@ export default function SchedulePanel({
                   title={s.isNew ? "Cancel window" : "Delete schedule window"}
                 >
                   {s.isNew ? (
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
                   ) : (
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14H6L5 6" /><path d="M10 11v6M14 11v6" /><path d="M9 6V4h6v2" /></svg>
                   )}
                 </button>
               </div>
@@ -494,11 +495,11 @@ export default function SchedulePanel({
         }}>
           {hasOverlap && (
             <span style={{ fontSize: 10, color: '#f85149', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ transform: 'translateY(-1px)' }}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ transform: 'translateY(-1px)' }}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
               Cannot save: Time overlap detected between active windows.
             </span>
           )}
-          
+
           <button
             type="button"
             onClick={onSave}
@@ -519,7 +520,7 @@ export default function SchedulePanel({
               </>
             ) : (
               <>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>
                 Save Schedules
               </>
             )}
@@ -532,7 +533,7 @@ export default function SchedulePanel({
         <div className="modal-overlay-wrapper" style={{ animation: 'fadeIn 0.15s ease-out' }}>
           <div className="modal-container-delete" style={{ maxWidth: 360, margin: 'auto' }}>
             <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: '#f85149', display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ transform: 'translateY(-1px)' }}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ transform: 'translateY(-1px)' }}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
               Delete Schedule Window
             </h3>
             <p style={{ margin: 0, fontSize: '13px', lineHeight: '1.5', color: 'var(--text)' }}>

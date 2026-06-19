@@ -12,6 +12,7 @@ import { useTabListener } from './useTabSync';
 import './index.css';
 import Navbar from './components/PaperTrading/Navbar';
 import CustomSelect from './components/common/CustomSelect';
+import CustomInput from './components/common/CustomInput';
 
 const UNDERLYINGS = ['BTC', 'ETH'];
 const TF_LIST = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '12h', '1d', '1w'];
@@ -488,12 +489,12 @@ const ChartPanel = forwardRef(function ChartPanel({
                   { label: '≤', value: '<=' }
                 ]}
               />
-              <input
+              <CustomInput
                 type="number"
                 placeholder="Alert Price"
                 value={newAlert.price}
                 onChange={e => setNewAlert(prev => ({ ...prev, price: e.target.value }))}
-                style={{ background: 'transparent', border: 'none', color: theme === 'dark' ? '#e6edf3' : '#1e2329', width: 70, fontSize: 11, fontFamily: 'JetBrains Mono', outline: 'none' }}
+                style={{ background: 'transparent', border: 'none', color: theme === 'dark' ? '#e6edf3' : '#1e2329', width: 70, fontSize: 11, fontFamily: 'JetBrains Mono', outline: 'none', boxShadow: 'none' }}
                 onKeyDown={e => {
                   if (e.key === 'Enter' && newAlert.price) {
                     onAddAlert(newAlert.dir, newAlert.price);
@@ -1920,11 +1921,11 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                                 { label: '≤', value: '<=' }
                               ]}
                             />
-                            <input
+                            <CustomInput
                               type="number"
                               placeholder="Price"
                               id={`price-${item.id}`}
-                              style={{ background: 'transparent', border: 'none', color: theme === 'dark' ? '#e6edf3' : '#1e2329', width: 50, fontSize: 10, fontFamily: 'JetBrains Mono', outline: 'none' }}
+                              style={{ background: 'transparent', border: 'none', color: theme === 'dark' ? '#e6edf3' : '#1e2329', width: 50, fontSize: 10, fontFamily: 'JetBrains Mono', outline: 'none', boxShadow: 'none' }}
                               onKeyDown={e => {
                                 if (e.key === 'Enter') {
                                   const dir = document.getElementById(`dir-${item.id}`).value;

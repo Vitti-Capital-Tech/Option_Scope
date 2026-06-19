@@ -1,6 +1,7 @@
 import React from 'react';
 import { fmtExpiry } from '../../api';
 import CustomSelect from '../common/CustomSelect';
+import CustomInput from '../common/CustomInput';
 import SchedulePanel from './SchedulePanel';
 
 export default function ControlPanel({
@@ -132,7 +133,7 @@ export default function ControlPanel({
           ].map(({ label, key, width, step }) => (
             <div key={key} className="form-group">
               <label style={{ marginBottom: 0 }}>{label}</label>
-              <input type="number" step={step} value={draftConfig?.[key] ?? ''}
+              <CustomInput type="number" step={step} value={draftConfig?.[key] ?? ''}
                 onChange={e => updateDraftConfig(key, Number(e.target.value))}
                 style={{ width, padding: '4px 8px', fontSize: '13px' }} />
             </div>
@@ -146,13 +147,13 @@ export default function ControlPanel({
             <>
               <div key="atmRatioPctCall" className="form-group">
                 <label style={{ marginBottom: 0 }}>Call ATM Pct (%):</label>
-                <input type="number" step="1" value={draftConfig.atmRatioPctCall ?? 50}
+                <CustomInput type="number" step="1" value={draftConfig.atmRatioPctCall ?? 50}
                   onChange={e => updateDraftConfig('atmRatioPctCall', Number(e.target.value))}
                   style={{ width: 50, padding: '4px 8px', fontSize: '13px' }} />
               </div>
               <div key="atmRatioPctPut" className="form-group">
                 <label style={{ marginBottom: 0 }}>Put ATM Pct (%):</label>
-                <input type="number" step="1" value={draftConfig.atmRatioPctPut ?? 25}
+                <CustomInput type="number" step="1" value={draftConfig.atmRatioPctPut ?? 25}
                   onChange={e => updateDraftConfig('atmRatioPctPut', Number(e.target.value))}
                   style={{ width: 50, padding: '4px 8px', fontSize: '13px' }} />
               </div>
@@ -175,9 +176,9 @@ export default function ControlPanel({
           {(draftConfig?.exitType === 'ITM' || draftConfig?.exitType === 'OTM') && (
             <div key="exitPoints" className="form-group">
               <label style={{ marginBottom: 0 }}>Exit Points:</label>
-              <input type="number" step="1" value={draftConfig.exitPoints ?? 0}
+              <CustomInput type="number" step="1" value={draftConfig.exitPoints ?? 0}
                 onChange={e => updateDraftConfig('exitPoints', Number(e.target.value))}
-                style={{ width: 60, padding: '4px 8px', fontSize: '13px', borderRadius: '4px', border: '1px solid var(--border)', background: 'var(--bg3)', color: 'var(--text)' }} />
+                style={{ width: 60, padding: '4px 8px', fontSize: '13px' }} />
             </div>
           )}
 

@@ -11,6 +11,7 @@ import ResultTable from './ResultTable';
 import { normalizeIv, toFiniteNumber, matchesOptionType } from './scannerUtils';
 import Navbar from './components/PaperTrading/Navbar';
 import CustomSelect from './components/common/CustomSelect';
+import CustomInput from './components/common/CustomInput';
 
 // ── Main Scanner Component ──────────────────────────────────────────────────
 export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
@@ -615,7 +616,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             <span className="scanner-config-title filter-title">FILTERS</span>
             <div className="form-group row-inline">
               <label>Min Strike Diff ($):</label>
-              <input
+              <CustomInput
                 type="number"
                 value={config.minStrikeDiff}
                 onChange={e => updateConfig('minStrikeDiff', Number(e.target.value))}
@@ -624,7 +625,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             </div>
             <div className="form-group row-inline">
               <label>Min IV Diff (%):</label>
-              <input
+              <CustomInput
                 type="number"
                 value={config.minIvDiff}
                 onChange={e => updateConfig('minIvDiff', Number(e.target.value))}
@@ -633,7 +634,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             </div>
             <div className="form-group row-inline">
               <label>Max Ratio Dev:</label>
-              <input
+              <CustomInput
                 type="number"
                 step="0.01"
                 value={config.maxRatioDeviation}
@@ -643,7 +644,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             </div>
             <div className="form-group row-inline">
               <label>Min Sell Prem ($):</label>
-              <input
+              <CustomInput
                 type="number"
                 value={config.minSellPremium}
                 onChange={e => updateConfig('minSellPremium', Number(e.target.value))}
@@ -653,7 +654,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
 
             <div className="form-group row-inline">
               <label>Max Debit ($):</label>
-              <input
+              <CustomInput
                 type="number"
                 value={config.maxNetPremium}
                 onChange={e => updateConfig('maxNetPremium', Number(e.target.value))}
@@ -662,7 +663,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             </div>
             <div className="form-group row-inline">
               <label>Min Long Dist:</label>
-              <input
+              <CustomInput
                 type="number"
                 value={config.minLongDist}
                 onChange={e => updateConfig('minLongDist', Number(e.target.value))}
@@ -671,7 +672,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             </div>
             <div className="form-group row-inline">
               <label>Max Ratio (1:X):</label>
-              <input
+              <CustomInput
                 type="number"
                 step="0.25"
                 value={config.maxSellQty}
@@ -688,14 +689,14 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
               <>
                 <div key="atmRatioPctCall" className="form-group row-inline">
                   <label>Call ATM Pct (%):</label>
-                  <input type="number" step="1" value={config.atmRatioPctCall ?? 50}
+                  <CustomInput type="number" step="1" value={config.atmRatioPctCall ?? 50}
                     onChange={e => updateConfig('atmRatioPctCall', Number(e.target.value))}
                     style={{ width: 50 }}
                   />
                 </div>
                 <div key="atmRatioPctPut" className="form-group row-inline">
                   <label>Put ATM Pct (%):</label>
-                  <input type="number" step="1" value={config.atmRatioPctPut ?? 50}
+                  <CustomInput type="number" step="1" value={config.atmRatioPctPut ?? 50}
                     onChange={e => updateConfig('atmRatioPctPut', Number(e.target.value))}
                     style={{ width: 50 }}
                   />
