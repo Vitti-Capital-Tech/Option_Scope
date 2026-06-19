@@ -90,6 +90,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [accountToDeleteId, setAccountToDeleteId] = useState(null);
 
+  // Time-based schedule windows
+  const [schedules, setSchedules] = useState([]);
+  const [isSavingSchedules, setIsSavingSchedules] = useState(false);
+
   const {
     register: registerCreate,
     handleSubmit: handleSubmitCreate,
@@ -914,6 +918,57 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     } catch (e) { }
   }, [activeAccountId]);
 
+  const fetchSupabaseSchedules = useCallback(async () => {
+    if (!activeAccountId) return;
+    try {
+      const { data, error } = await supabase
+        .from('paper_trading_schedules')
+        .select('*')
+        .eq('account_id', activeAccountId)
+        .order('sort_order', { ascending: true });
+      if (!error && data) {
+        setSchedules(data.map(s => ({
+          id: s.id,
+          label: s.label || 'Window',
+          startTime: s.start_time,
+          endTime: s.end_time,
+          numberOfCalls: s.number_of_calls ?? 3,
+          numberOfPuts: s.number_of_puts ?? 3,
+          minLongDist: s.min_long_dist ?? 500,
+          minStrikeDiff: s.min_strike_diff ?? 800,
+          isActive: s.is_active ?? true,
+          sort_order: s.sort_order ?? 0,
+        })));
+      }
+    } catch (e) { console.error('Schedule fetch error', e); }
+  }, [activeAccountId]);
+
+  const saveSupabaseSchedules = useCallback(async () => {
+    if (!activeAccountId) return;
+    setIsSavingSchedules(true);
+    try {
+      await supabase.from('paper_trading_schedules').delete().eq('account_id', activeAccountId);
+      if (schedules.length > 0) {
+        const rows = schedules.map((s, i) => ({
+          account_id: activeAccountId,
+          label: s.label || 'Window',
+          start_time: s.startTime,
+          end_time: s.endTime,
+          number_of_calls: s.numberOfCalls ?? 3,
+          number_of_puts: s.numberOfPuts ?? 3,
+          min_long_dist: s.minLongDist ?? 500,
+          min_strike_diff: s.minStrikeDiff ?? 800,
+          is_active: s.isActive ?? true,
+          sort_order: i,
+          updated_at: new Date().toISOString(),
+        }));
+        await supabase.from('paper_trading_schedules').insert(rows);
+      }
+      await fetchSupabaseSchedules();
+    } catch (e) { console.error('Schedule save error', e); }
+    finally { setIsSavingSchedules(false); }
+  }, [activeAccountId, schedules, fetchSupabaseSchedules]);
+
   // ── Supabase reads ────────────────────────────────────────────────────
   const fetchSupabaseActivePositions = useCallback(async () => {
     if (!activeAccountId) return;
@@ -1014,6 +1069,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     fetchSupabaseActivePositions();
     fetchSupabaseTradeHistory();
     fetchSupabaseConfig();
+    fetchSupabaseSchedules();
 
     const realtimeChannel = supabase
       .channel(`active_positions_changes_${activeAccountId}`)
@@ -1607,6 +1663,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               isDefaultConfig={isDefaultConfig}
               handleResetFilters={handleResetFilters}
               spotPrice={spotPrice}
+              schedules={schedules}
+              setSchedules={setSchedules}
+              onSaveSchedules={saveSupabaseSchedules}
+              isSavingSchedules={isSavingSchedules}
             />
 
 

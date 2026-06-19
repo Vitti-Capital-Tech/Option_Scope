@@ -59,6 +59,7 @@ async function startSingleAccountEngine(account) {
   let evaluationStart = 0;
   let lastWsReconnectTime = 0;
   let lastDbWrite = 0;
+  let schedules = []; // Time-based schedule windows
 
   // ── Supabase data fetchers ────────────────────────────────────────────
 
@@ -154,6 +155,31 @@ async function startSingleAccountEngine(account) {
         // log(`[${accountState.name}] Config loaded: ${config.underlying} | Expiry: ${config.expiry || 'auto'}`);
       }
     } catch (e) { logError(`[${accountState.name}] Config fetch error`, e); }
+  }
+
+  // ── Schedule fetcher ────────────────────────────────────────────────────
+
+  async function fetchSchedules() {
+    try {
+      const { data, error } = await supabase
+        .from('paper_trading_schedules')
+        .select('*')
+        .eq('account_id', accountState.id)
+        .order('sort_order', { ascending: true });
+      if (!error && data) {
+        schedules = data.map(s => ({
+          id: s.id,
+          label: s.label || 'Window',
+          startTime: s.start_time,  // 'HH:MM' IST
+          endTime: s.end_time,      // 'HH:MM' IST
+          numberOfCalls: s.number_of_calls ?? 3,
+          numberOfPuts: s.number_of_puts ?? 3,
+          minLongDist: s.min_long_dist ?? 500,
+          minStrikeDiff: s.min_strike_diff ?? 800,
+          isActive: s.is_active ?? true,
+        }));
+      }
+    } catch (e) { logError(`[${accountState.name}] Schedule fetch error`, e); }
   }
 
   async function fetchActivePositions() {
@@ -295,6 +321,28 @@ async function startSingleAccountEngine(account) {
 
   // ── Core strategy evaluation (Phase 2) ────────────────────────────────
 
+  // Returns active schedule window for current IST time, or null if none match
+  function getActiveSchedule() {
+    const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+    const nowIST = new Date(Date.now() + IST_OFFSET_MS);
+    const nowMin = nowIST.getUTCHours() * 60 + nowIST.getUTCMinutes();
+
+    for (const s of schedules) {
+      if (!s.isActive) continue;
+      const [sh, sm] = s.startTime.split(':').map(Number);
+      const [eh, em] = s.endTime.split(':').map(Number);
+      const startMin = sh * 60 + sm;
+      const endMin = eh * 60 + em;
+      // Handle overnight windows (e.g. 22:00 -> 06:00)
+      if (startMin > endMin) {
+        if (nowMin >= startMin || nowMin < endMin) return s;
+      } else {
+        if (nowMin >= startMin && nowMin < endMin) return s;
+      }
+    }
+    return null;
+  }
+
   async function evaluateStrategy(onlyExits = false) {
     if (isEvaluating) {
       const evalDuration = Date.now() - evaluationStart;
@@ -335,8 +383,24 @@ async function startSingleAccountEngine(account) {
         return;
       }
 
-      const underlying = config.underlying;
-      const selExpiry = config.expiry;
+      // ── Apply active time-schedule overrides ──────────────────────────
+      const activeSchedule = getActiveSchedule();
+      const effectiveConfig = activeSchedule
+        ? {
+            ...config,
+            numberOfCalls: activeSchedule.numberOfCalls,
+            numberOfPuts: activeSchedule.numberOfPuts,
+            minLongDist: activeSchedule.minLongDist,
+            minStrikeDiff: activeSchedule.minStrikeDiff,
+          }
+        : { ...config };
+
+      if (activeSchedule) {
+        log(`[${accountState.name}] Schedule active: "${activeSchedule.label}" — Calls: ${activeSchedule.numberOfCalls}, Puts: ${activeSchedule.numberOfPuts}, LongDist: ${activeSchedule.minLongDist}, StrikeDiff: ${activeSchedule.minStrikeDiff}`);
+      }
+
+      const underlying = effectiveConfig.underlying;
+      const selExpiry = effectiveConfig.expiry;
 
       function getScaledSellQty(s) {
         const targetLotSize = s.buyLeg.lotSize || 1;
@@ -374,8 +438,8 @@ async function startSingleAccountEngine(account) {
         }
       }
 
-      const { pairs: localTopCalls, rejected: callRej } = scanTickers(callTickers, config, spotPrice);
-      const { pairs: localTopPuts, rejected: putRej } = scanTickers(putTickers, config, spotPrice);
+      const { pairs: localTopCalls, rejected: callRej } = scanTickers(callTickers, effectiveConfig, spotPrice);
+      const { pairs: localTopPuts, rejected: putRej } = scanTickers(putTickers, effectiveConfig, spotPrice);
       const topSpreads = [...localTopCalls, ...localTopPuts];
 
       // Merge rejection counts from calls + puts
@@ -548,8 +612,8 @@ async function startSingleAccountEngine(account) {
       uniqueCalls.sort((a, b) => Math.abs(a.buyLeg.strike - spotPrice) - Math.abs(b.buyLeg.strike - spotPrice));
       uniquePuts.sort((a, b) => Math.abs(a.buyLeg.strike - spotPrice) - Math.abs(b.buyLeg.strike - spotPrice));
 
-      const maxCallCandidates = Math.max(10, config.numberOfCalls || 3);
-      const maxPutCandidates = Math.max(10, config.numberOfPuts || 3);
+      const maxCallCandidates = Math.max(10, effectiveConfig.numberOfCalls || 3);
+      const maxPutCandidates = Math.max(10, effectiveConfig.numberOfPuts || 3);
 
       const uniqueTopSpreads = [
         ...uniqueCalls.slice(0, maxCallCandidates),
@@ -567,8 +631,8 @@ async function startSingleAccountEngine(account) {
 
       let callRotationsApproved = 0;
       let putRotationsApproved = 0;
-      const maxCallRotations = config.numberOfCalls;
-      const maxPutRotations = config.numberOfPuts;
+      const maxCallRotations = effectiveConfig.numberOfCalls;
+      const maxPutRotations = effectiveConfig.numberOfPuts;
 
       const remaining = [];
       const exited = [];
@@ -855,7 +919,7 @@ async function startSingleAccountEngine(account) {
         const totalFees = (pos.entryFee || 0) + exitFee;
 
         // Check top-rank protection ranking
-        const maxActiveAllowed = pos.type === 'call' ? config.numberOfCalls : config.numberOfPuts;
+        const maxActiveAllowed = pos.type === 'call' ? effectiveConfig.numberOfCalls : effectiveConfig.numberOfPuts;
         const protectedSpreadsOfType = uniqueTopSpreads
           .filter(s => s.buyLeg.type === pos.type)
           .slice(0, maxActiveAllowed);
@@ -1048,8 +1112,8 @@ async function startSingleAccountEngine(account) {
 
         // Threshold guard for rotations
         const canRotateThisType = pos.type === 'call'
-          ? (activeCallsCount >= config.numberOfCalls && callRotationsApproved < maxCallRotations)
-          : (activePutsCount >= config.numberOfPuts && putRotationsApproved < maxPutRotations);
+          ? (activeCallsCount >= effectiveConfig.numberOfCalls && callRotationsApproved < maxCallRotations)
+          : (activePutsCount >= effectiveConfig.numberOfPuts && putRotationsApproved < maxPutRotations);
 
         let rotationApproved = false;
         if (!canRotateThisType && exitReason.includes('Lost Protected Rank')) {
@@ -1285,7 +1349,7 @@ async function startSingleAccountEngine(account) {
           // Portfolio cap
           let count = remaining.filter(p => p.underlying === underlying && p.type === spreadType).length +
             newEntries.filter(p => p.underlying === underlying && p.type === spreadType).length;
-          const typeCap = spreadType === 'call' ? config.numberOfCalls : config.numberOfPuts;
+          const typeCap = spreadType === 'call' ? effectiveConfig.numberOfCalls : effectiveConfig.numberOfPuts;
           if (count >= typeCap) {
             logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Portfolio cap of ${typeCap} reached for type ${spreadType}`);
             continue;
@@ -1417,7 +1481,7 @@ async function startSingleAccountEngine(account) {
               .from('active_positions').select('id')
               .eq('account_id', accountState.id)
               .eq('underlying', underlying).eq('type', t.type);
-            const typeCap = t.type === 'call' ? config.numberOfCalls : config.numberOfPuts;
+            const typeCap = t.type === 'call' ? effectiveConfig.numberOfCalls : effectiveConfig.numberOfPuts;
             if (!countError && (activeOfType?.length ?? 0) >= typeCap) {
               logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} blocked. Active count on DB: ${activeOfType?.length ?? 0}`);
               continue;
@@ -1545,8 +1609,10 @@ async function startSingleAccountEngine(account) {
   log(`[${accountState.name}] Paper Trading Engine starting...`);
   log(`[${accountState.name}] ═══════════════════════════════════════════`);
 
-  // 1. Load config
+  // 1. Load config + schedules
   await fetchConfig();
+  await fetchSchedules();
+  log(`[${accountState.name}] Schedules loaded: ${schedules.length} window(s)`);
 
   // 2. Load products + expiry
   await refreshProducts();
@@ -1629,6 +1695,7 @@ async function startSingleAccountEngine(account) {
   const positionsTimer = setInterval(async () => {
     try {
       await reloadConfigAndSync();
+      await fetchSchedules(); // Refresh schedules periodically
       await fetchActivePositions();
     } catch (e) {
       logError(`[${accountState.name}] Error in positionsTimer:`, e);

@@ -1,6 +1,7 @@
 import React from 'react';
 import { fmtExpiry } from '../../api';
 import CustomSelect from '../common/CustomSelect';
+import SchedulePanel from './SchedulePanel';
 
 export default function ControlPanel({
   underlying,
@@ -20,7 +21,11 @@ export default function ControlPanel({
   handleCancelFilters,
   isDefaultConfig,
   handleResetFilters,
-  spotPrice
+  spotPrice,
+  schedules,
+  setSchedules,
+  onSaveSchedules,
+  isSavingSchedules,
 }) {
   const UNDERLYINGS = ['BTC', 'ETH'];
 
@@ -217,6 +222,16 @@ export default function ControlPanel({
           <span className="pt-pulse"></span>
           LIVE ALGO
         </div>
+      </div>
+
+      {/* ── Time-based Schedules ─────────────────────────────── */}
+      <div className="pt-schedules-panel">
+        <SchedulePanel
+          schedules={schedules}
+          setSchedules={setSchedules}
+          onSave={onSaveSchedules}
+          isSaving={isSavingSchedules}
+        />
       </div>
     </>
   );

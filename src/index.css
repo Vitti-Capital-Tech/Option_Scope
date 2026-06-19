@@ -4195,3 +4195,17 @@ body.light-theme .pt-btn-apply.active {
   background: transparent;
 }
 
+
+
+/* -- Schedule Panel ----------------------------------------------------- */
+.pt-schedules-panel {
+  border-top: 1px solid var(--border);
+  padding: 12px 16px;
+  background: var(--bg2);
+}
+
+.schedule-panel {
+  display: flex;
+  flex-direction: column;
+}
+

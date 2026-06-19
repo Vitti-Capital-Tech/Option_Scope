@@ -282,7 +282,7 @@ All active positions are sorted by descending `|buyStrike - spotPrice|` (farthes
 For each active position, before evaluating its full exit triggers (such as expiry or ATM exit), the engine checks whether the position qualifies for a partial scale-down based on profitability, trailing PnL threshold, and ATM ratio drift:
 
 1. **Profitability Guard**: The position's unrealized `currentGrossPnl` (including accumulated sell PnL) must be **greater than zero**. This prevents scaling from triggering immediately at entry when PnL is zero.
-2. **Trailing Threshold Check**: Checkpoint values are recovered from `pos.buyLeg` metadata (or initialized from entry values on first evaluation). The trailing threshold is `checkpointAtmPnl * 0.25 + checkpointPnl`. The condition `currentGrossPnl >= threshold` must be met, meaning the position's PnL is at or above the trailing threshold.
+2. **Trailing Threshold Check**: Checkpoint values are recovered from `pos.buyLeg` metadata (or initialized from entry values on first evaluation). The trailing threshold is `checkpointAtmPnl * 0.10 + checkpointPnl`. The condition `currentGrossPnl >= threshold` must be met, meaning the position's PnL is at or above the trailing threshold.
 3. **Hypothetical Reduction & Recalculation**: The engine hypothetically reduces the current long lot size by `deltaBuyQty` (10% of the position's fixed initial scaled lot size `pos.buyLeg.initialScaledLotSize`): `hypotheticalLotSize = currentLotSize - deltaBuyQty`. It then recalculates the position's lot ratio under this hypothetical reduction: `recalculatedRatio = pos.sellQty / hypotheticalLotSize`.
 4. **ATM Ratio Comparison (1:x comparison)**: The live ATM ratio (`liveAtmRatio`, computed as `buyIntrinsic / sellIntrinsic` rounded to nearest `0.25`) is compared to the `recalculatedRatio`. The condition is: **`liveAtmRatio >= recalculatedRatio + 1`**. This means the market's ATM ratio must be at least **1** point higher than the recalculated position ratio before the exit is triggered.
 5. **Floor Limit**: The hypothetical long lot size must be at or above the dynamic floor limit of 50% of the position's fixed initial scaled lot size (`pos.buyLeg.initialScaledLotSize * 0.5`).
@@ -588,3 +588,48 @@ To prevent continuous writes to Supabase during filter updates, editing filter v
 - **Reset Button**:
   - Bound to `isDefaultConfig` selector which checks if all properties in `DEFAULT_FILTERS` match the active `config`.
   - When clicked, calls `handleResetFilters` which restores filters in the state to system defaults, saves them to Supabase immediately, and broadcasts `CONFIG_SYNC` across tabs.
+
+---
+
+## 12) Time-Based Filter Schedules
+
+Time-Based Filter Schedules are implemented as a per-account configuration that allows overriding core entry/portfolio parameters based on the current local IST time.
+
+### 1. Database Schema
+Table: `paper_trading_schedules`
+- `id` (UUID, primary key, default: `gen_random_uuid()`)
+- `account_id` (UUID, foreign key referencing `paper_trading_accounts(id)`, on delete cascade)
+- `label` (TEXT, user-defined name for the window)
+- `start_time` (TEXT, e.g., `"22:00"`, format `"HH:mm"`)
+- `end_time` (TEXT, e.g., `"06:00"`, format `"HH:mm"`)
+- `number_of_calls` (INTEGER, max concurrent calls override)
+- `number_of_puts` (INTEGER, max concurrent puts override)
+- `min_long_dist` (INTEGER, override for minimum long strike distance)
+- `min_strike_diff` (INTEGER, override for minimum strike difference)
+- `is_active` (BOOLEAN, default `true`)
+- `created_at` (TIMESTAMPTZ, default `now()`)
+
+RLS Policies:
+- Enable all CRUD operations for authenticated users (matching option-scope's security profile).
+
+### 2. Engine Evaluation Loop Overrides
+- **State management**: The engine maintains a local `schedules = []` array.
+- **Fetch & Refresh**: `fetchSchedules()` queries the database for schedules belonging to the active account on startup and refreshes them every 2 minutes.
+- **Time Comparison (`getActiveSchedule()`)**:
+  - The current timestamp is converted to Indian Standard Time (IST) offset by +5.5 hours.
+  - The current time is computed as minutes since midnight (`nowMin = hours * 60 + minutes`).
+  - For each active schedule, start/end minutes are parsed from the `"HH:mm"` string.
+  - Overnight windows are supported: if `startMin > endMin`, a match occurs if `nowMin >= startMin || nowMin < endMin`. Otherwise, a match occurs if `nowMin >= startMin && nowMin < endMin`.
+  - The first matching active schedule window is returned.
+- **`effectiveConfig` Generation**:
+  - If a schedule window matches, the engine creates an `effectiveConfig` by spreading the account's base configuration and overriding the scheduled properties: `numberOfCalls`, `numberOfPuts`, `minLongDist`, and `minStrikeDiff`.
+  - If no schedule window matches, `effectiveConfig` falls back to the base account config.
+  - All scanner candidate matching and position limit evaluations inside `evaluateStrategy()` utilize this `effectiveConfig`.
+
+### 3. Frontend Schedule Configuration UI (`SchedulePanel.jsx`)
+- **Visual Schedule Timeline**: A 24-hour visual bar is rendered at the top of the schedule panel, representing midnight to midnight in IST. The bar renders colored blocks indicating configured schedule windows (green for active, gray for inactive) and gaps (hashed fallback/base configuration).
+- **CRUD Operations**:
+  - Users can toggle active state, change time inputs (`startTime`, `endTime`), labels, and strategy filter values (`numberOfCalls`, `numberOfPuts`, `minLongDist`, `minStrikeDiff`) directly.
+  - **Add Window**: Appends a new default window to the state.
+  - **Delete Window**: Removes the window from the state.
+  - **Save All**: Performed in a single batch write (deletes existing scheduled rows for the account and inserts the current list) to prevent partial synchronization states. Renders an inline spinning SVG inside the "Save All" button during the write operation.

@@ -129,6 +129,8 @@ Browser (React + Vite Dashboard)
 10. Open new positions up to the configured limit per type from the ranked candidate list, enforced by local and DB-level count guards.
 11. Sync all entries and exits to Supabase. Full `positions` array replacement only happens when rows are added/removed, not on routine PnL updates.
 12. **Instant Cross-Device Sync**: Supabase Realtime pushes `active_positions` change events to all connected sessions within <1s of a write. Trade history `INSERT` events are handled directly from the Realtime `payload.new` data — no full history re-fetch on each trade close. This eliminates the largest source of Supabase egress. The `lastDbWriteRef` post-write blackout is 3s to minimize the window where a just-written position could be overwritten by a stale re-fetch. Tab visibility listeners pause all active intervals (spot price, heartbeat) when in the background.
+13. **Time-Based Filter Schedules**: Supports configuring multiple time windows per account. When an active window matches the current local time (in IST, including overnight spans), the engine overrides specific parameters (`numberOfCalls`, `numberOfPuts`, `minStrikeDiff`, `minLongDist`) with the window's scheduled values, falling back to the base account configuration when no window matches.
+
 
 ### Performance Monitoring & History
 - **Dual KPIs**: Tracks **Today's P&L** (Today's Realized + Current Open) using UTC+12h settlement offset, and **All-Time P&L** (Total Realized + Total Open).

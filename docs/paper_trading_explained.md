@@ -20,6 +20,7 @@ This document explains **every** logic and condition in the Paper Trading engine
 12. [Safety Guards Summary](#safety-guards-summary)
 13. [Diagnostic Logging (0 Candidates)](#diagnostic-logging-0-candidates)
 14. [Config Synchronization](#config-synchronization)
+15. [Time-Based Filter Schedules](#time-based-filter-schedules)
 
 ---
 
@@ -390,8 +391,10 @@ Imagine you entered with a lot size of 1.0 on the buy leg. As the position becom
 
 ```
 Start:  lotSize = 1.00
-Step 1: lotSize = 0.75  (shaved off 0.25)
-Step 2: lotSize = 0.50  (shaved off another 0.25)
+Step 1: lotSize = 0.90  (shaved off 0.10)
+Step 2: lotSize = 0.80  (shaved off another 0.10)
+...
+Step 5: lotSize = 0.50  (shaved off another 0.10)
 STOP:   Can't go below 0.50 (50% floor of initial scaled lot size)
 ```
 
@@ -629,6 +632,30 @@ When you click **Reset**:
 ### Tab Synchronization
 - Changes are synchronized across browser tabs in real-time using a local broadcast channel (`CONFIG_SYNC` event).
 - To prevent database write loop collisions, receiving tabs update only their local React state buffers and do **not** trigger redundant database writes, preserving the correct, newly applied configuration.
+
+---
+
+## Time-Based Filter Schedules
+
+**File**: [paperTradingEngine.js:L325-L344](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L325-L344), [SchedulePanel.jsx](file:///c:/Users/ASUS/Documents/Option_Scope/src/components/PaperTrading/SchedulePanel.jsx)
+
+Time-Based Filter Schedules allow users to define multiple named time windows per account within a 24-hour cycle. Each window overrides specific entry and portfolio filters during that period.
+
+### Overridden Parameters
+Only the following 4 parameters are scheduled:
+1. **Max Calls** (`numberOfCalls`)
+2. **Max Puts** (`numberOfPuts`)
+3. **Min Strike Difference** (`minStrikeDiff`)
+4. **Min Long Distance** (`minLongDist`)
+
+All other filter settings (like `minIvDiff`, `exitType`, etc.) default back to the base account config.
+
+### Execution & Evaluation
+- **Local IST Time**: All schedules are configured and evaluated in Indian Standard Time (IST).
+- **Overnight Windows**: The engine correctly handles overnight ranges (e.g., `22:00` to `06:00` the next morning) by splitting/wrapping time comparisons correctly.
+- **Fallback Behavior**: If the current time does not fall into any active scheduled window, the engine automatically falls back to using the base account configuration parameters.
+- **Database Table**: Schedules are persisted in the `paper_trading_schedules` table, containing `account_id`, `label`, `start_time`, `end_time`, `number_of_calls`, `number_of_puts`, `min_long_dist`, `min_strike_diff`, and `is_active`.
+- **Periodic Sync**: The background engine fetches schedules on startup and refreshes them every **2 minutes** alongside positions.
 
 ---
 
