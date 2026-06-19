@@ -650,11 +650,17 @@ Only the following 4 parameters are scheduled:
 
 All other filter settings (like `minIvDiff`, `exitType`, etc.) default back to the base account config.
 
-### Execution & Evaluation
-- **Local IST Time**: All schedules are configured and evaluated in Indian Standard Time (IST).
-- **Overnight Windows**: The engine correctly handles overnight ranges (e.g., `22:00` to `06:00` the next morning) by splitting/wrapping time comparisons correctly.
-- **Fallback Behavior**: If the current time does not fall into any active scheduled window, the engine automatically falls back to using the base account configuration parameters.
-- **Database Table**: Schedules are persisted in the `paper_trading_schedules` table, containing `account_id`, `label`, `start_time`, `end_time`, `number_of_calls`, `number_of_puts`, `min_long_dist`, `min_strike_diff`, and `is_active`.
+### Layout & UI
+- **Watchlist Style**: The configuration interface (`SchedulePanel.jsx`) features a compact, horizontal, inline-editable list styled like the Charts Watchlist. Users can edit window names, times, and overrides directly within the row.
+- **Visual Timeline**: A 24-hour horizontal bar visualizes active windows, gaps, and overrides. The timeline boundary starts/ends at `05:30` IST (representing the `00:00` UTC Delta Exchange daily rollover/day boundary). This ensures that any empty slots wrap around `05:30` IST and display at the end of the bar.
+- **Permanent Activation**: All configured schedule windows are permanently active/enabled (`is_active = true`), and the checkbox toggle has been removed.
+
+### Execution, Timezones & Evaluation
+- **Database (UTC)**: All times in the database `paper_trading_schedules` table (columns `start_time` and `end_time`) are stored as UTC `HH:mm` strings.
+- **Frontend (IST)**: The frontend displays and accepts inputs in Indian Standard Time (IST). Helper functions `utcToIst` and `istToUtc` automatically convert values when fetching and saving.
+- **Engine Comparison**: The backend trading engine evaluates schedule matches against the current UTC time.
+- **Overnight Windows**: The engine correctly handles overnight ranges in UTC (e.g. `16:30` to `00:30` UTC) by splitting/wrapping time comparisons correctly.
+- **Fallback Behavior**: If the current UTC time does not fall into any active scheduled window, the engine automatically falls back to using the base account configuration parameters.
 - **Periodic Sync**: The background engine fetches schedules on startup and refreshes them every **2 minutes** alongside positions.
 
 ---

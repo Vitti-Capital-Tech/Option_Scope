@@ -593,20 +593,20 @@ To prevent continuous writes to Supabase during filter updates, editing filter v
 
 ## 12) Time-Based Filter Schedules
 
-Time-Based Filter Schedules are implemented as a per-account configuration that allows overriding core entry/portfolio parameters based on the current local IST time.
+Time-Based Filter Schedules are implemented as a per-account configuration that allows overriding core entry/portfolio parameters based on a schedule. The database stores these times in UTC, while the frontend displays and manages them in IST.
 
 ### 1. Database Schema
 Table: `paper_trading_schedules`
 - `id` (UUID, primary key, default: `gen_random_uuid()`)
 - `account_id` (UUID, foreign key referencing `paper_trading_accounts(id)`, on delete cascade)
 - `label` (TEXT, user-defined name for the window)
-- `start_time` (TEXT, e.g., `"22:00"`, format `"HH:mm"`)
-- `end_time` (TEXT, e.g., `"06:00"`, format `"HH:mm"`)
+- `start_time` (TEXT, e.g., `"16:30"`, format `"HH:mm"`, stored in UTC)
+- `end_time` (TEXT, e.g., `"00:30"`, format `"HH:mm"`, stored in UTC)
 - `number_of_calls` (INTEGER, max concurrent calls override)
 - `number_of_puts` (INTEGER, max concurrent puts override)
 - `min_long_dist` (INTEGER, override for minimum long strike distance)
 - `min_strike_diff` (INTEGER, override for minimum strike difference)
-- `is_active` (BOOLEAN, default `true`)
+- `is_active` (BOOLEAN, default `true`, permanently set to active/enabled via frontend UI)
 - `created_at` (TIMESTAMPTZ, default `now()`)
 
 RLS Policies:
@@ -616,10 +616,10 @@ RLS Policies:
 - **State management**: The engine maintains a local `schedules = []` array.
 - **Fetch & Refresh**: `fetchSchedules()` queries the database for schedules belonging to the active account on startup and refreshes them every 2 minutes.
 - **Time Comparison (`getActiveSchedule()`)**:
-  - The current timestamp is converted to Indian Standard Time (IST) offset by +5.5 hours.
-  - The current time is computed as minutes since midnight (`nowMin = hours * 60 + minutes`).
-  - For each active schedule, start/end minutes are parsed from the `"HH:mm"` string.
-  - Overnight windows are supported: if `startMin > endMin`, a match occurs if `nowMin >= startMin || nowMin < endMin`. Otherwise, a match occurs if `nowMin >= startMin && nowMin < endMin`.
+  - The current time is evaluated in UTC using the server's UTC clock.
+  - The current time is computed as minutes since midnight UTC (`nowMin = UTC_hours * 60 + UTC_minutes`).
+  - For each active schedule, start/end minutes are parsed from the `"HH:mm"` UTC string stored in the database.
+  - Overnight windows are supported in UTC: if `startMin > endMin`, a match occurs if `nowMin >= startMin || nowMin < endMin`. Otherwise, a match occurs if `nowMin >= startMin && nowMin < endMin`.
   - The first matching active schedule window is returned.
 - **`effectiveConfig` Generation**:
   - If a schedule window matches, the engine creates an `effectiveConfig` by spreading the account's base configuration and overriding the scheduled properties: `numberOfCalls`, `numberOfPuts`, `minLongDist`, and `minStrikeDiff`.
@@ -627,9 +627,12 @@ RLS Policies:
   - All scanner candidate matching and position limit evaluations inside `evaluateStrategy()` utilize this `effectiveConfig`.
 
 ### 3. Frontend Schedule Configuration UI (`SchedulePanel.jsx`)
-- **Visual Schedule Timeline**: A 24-hour visual bar is rendered at the top of the schedule panel, representing midnight to midnight in IST. The bar renders colored blocks indicating configured schedule windows (green for active, gray for inactive) and gaps (hashed fallback/base configuration).
+- **Layout & Style**: Designed as a compact, horizontal, inline-editable list styled like the Charts Watchlist, rather than heavy collapsible cards.
+- **Visual Schedule Timeline**: A 24-hour visual bar is rendered at the top of the schedule panel, representing the daily trading cycle starting and ending at `05:30` IST (corresponding to `00:00` UTC Delta Exchange daily rollover/day boundary). The bar renders colored blocks indicating configured schedule windows and gaps (hashed fallback/base configuration). Empty slots naturally display at the end of the bar, and calculations wrap around the `05:30` IST boundary.
+- **Timezone Serialization**: Frontend inputs and the timeline visualization operate in Indian Standard Time (IST) for user convenience. When fetching or saving, helpers `utcToIst` and `istToUtc` automatically convert times between the database's UTC format and the UI's IST format.
 - **CRUD Operations**:
-  - Users can toggle active state, change time inputs (`startTime`, `endTime`), labels, and strategy filter values (`numberOfCalls`, `numberOfPuts`, `minLongDist`, `minStrikeDiff`) directly.
-  - **Add Window**: Appends a new default window to the state.
+  - Users edit schedule labels, time inputs (in IST), and strategy override parameters (`numberOfCalls`, `numberOfPuts`, `minLongDist`, `minStrikeDiff`) directly in inline-editable fields.
+  - The "Enabled" checkbox has been removed, making all schedule windows permanently active (`isActive = true`).
+  - **Add Window**: Appends a new default window (defaulting to `05:30` - `05:30` IST) to the state.
   - **Delete Window**: Removes the window from the state.
   - **Save All**: Performed in a single batch write (deletes existing scheduled rows for the account and inserts the current list) to prevent partial synchronization states. Renders an inline spinning SVG inside the "Save All" button during the write operation.
