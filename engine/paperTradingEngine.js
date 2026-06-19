@@ -637,7 +637,7 @@ async function startSingleAccountEngine(account) {
               : (pos.buyLeg.originalSellQty && pos.buyLeg.originalSellQty > 0
                 ? Number((pos.sellQty * (originalLotSize / pos.buyLeg.originalSellQty)).toFixed(2))
                 : originalLotSize);
-            const deltaBuyQty = Number((initialScaledLotSize * 0.25).toFixed(2));
+            const deltaBuyQty = Number((initialScaledLotSize * 0.10).toFixed(2));
             const floorLimit = Number((initialScaledLotSize * 0.5).toFixed(2));
             let currentLotSize = pos.buyLeg.lotSize;
             let hypotheticalLotSize = Number((currentLotSize - deltaBuyQty).toFixed(2));
@@ -671,7 +671,7 @@ async function startSingleAccountEngine(account) {
               ? pos.buyLeg.lastCheckpointAtmPnl
               : (atmBuyPnlPerLot * currentLotSize) + atmSellPnlTotal;
 
-            let threshold = (checkpointAtmPnl * 0.25) + checkpointPnl;
+            let threshold = (checkpointAtmPnl * 0.10) + checkpointPnl;
 
             while (
               currentGrossPnl >= threshold &&
@@ -722,14 +722,14 @@ async function startSingleAccountEngine(account) {
               const postGrossPnl = (buyPriceDiff * hypotheticalLotSize)
                 + (sellPriceDiff * pos.sellQty * (pos.sellLeg.lotSize || 1))
                 + accumulatedPartialBuyPnl;
-              const nextThreshold = (postAtmPnl * 0.25) + postGrossPnl;
+              const nextThreshold = (postAtmPnl * 0.10) + postGrossPnl;
               const partialExitReason = [
                 `Partial Exit`,
                 `Current Gross PnL: $${currentGrossPnl.toFixed(2)}`,
                 `Threshold Met: $${threshold.toFixed(2)}`,
                 `Checkpoint PnL: $${checkpointPnl.toFixed(2)}`,
                 `Checkpoint ATM PnL: $${checkpointAtmPnl.toFixed(2)}`,
-                `ATM step (25%): $${(checkpointAtmPnl * 0.25).toFixed(2)}`,
+                `ATM step (10%): $${(checkpointAtmPnl * 0.10).toFixed(2)}`,
                 `Next threshold: $${nextThreshold.toFixed(2)}`,
                 `Live ATM Ratio: ${liveAtmRatio.toFixed(2)}`,
                 `Recalculated Ratio: ${recalculatedRatio.toFixed(2)}`,
@@ -780,7 +780,7 @@ async function startSingleAccountEngine(account) {
               checkpointAtmPnl = (atmBuyPnlPerLot * currentLotSize) + atmSellPnlTotal;
               pos.buyLeg.lastCheckpointAtmPnl = checkpointAtmPnl;
 
-              threshold = (checkpointAtmPnl * 0.25) + checkpointPnl;
+              threshold = (checkpointAtmPnl * 0.10) + checkpointPnl;
 
               pos.buyLeg.maxAtmRatio = recalculatedRatio;
 

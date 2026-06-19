@@ -1,4 +1,5 @@
 import React from 'react';
+import CustomSelect from '../common/CustomSelect';
 
 export default function FirstAccountCard({
   onSubmit,
@@ -7,7 +8,9 @@ export default function FirstAccountCard({
   isCreatingAccount,
   watchAtmRatioScaling,
   watchCreateExitType,
-  onCancel
+  onCancel,
+  setValue,
+  watch
 }) {
   return (
     <div className="first-account-wrapper">
@@ -55,13 +58,14 @@ export default function FirstAccountCard({
               <div className="first-account-row">
                 <div className="first-account-form-group">
                   <label className="first-account-label">Underlying</label>
-                  <select
-                    {...register('underlying')}
-                    className="first-account-select"
-                  >
-                    <option value="BTC">BTC</option>
-                    <option value="ETH">ETH</option>
-                  </select>
+                  <CustomSelect
+                    value={watch('underlying') || 'BTC'}
+                    onChange={val => setValue('underlying', val)}
+                    options={[
+                      { label: 'BTC', value: 'BTC' },
+                      { label: 'ETH', value: 'ETH' }
+                    ]}
+                  />
                 </div>
                 <div className="first-account-form-group">
                   <label className="first-account-label">Days to Expiry</label>
@@ -182,14 +186,15 @@ export default function FirstAccountCard({
               <div className="first-account-row">
                 <div className="first-account-form-group">
                   <label className="first-account-label">Exit Type</label>
-                  <select
-                    {...register('exitType')}
-                    className="first-account-select"
-                  >
-                    <option value="ATM">ATM</option>
-                    <option value="ITM">ITM</option>
-                    <option value="OTM">OTM</option>
-                  </select>
+                  <CustomSelect
+                    value={watch('exitType') || 'ATM'}
+                    onChange={val => setValue('exitType', val)}
+                    options={[
+                      { label: 'ATM', value: 'ATM' },
+                      { label: 'ITM', value: 'ITM' },
+                      { label: 'OTM', value: 'OTM' }
+                    ]}
+                  />
                 </div>
                 {watchCreateExitType && watchCreateExitType !== 'ATM' && (
                   <div className="first-account-form-group">

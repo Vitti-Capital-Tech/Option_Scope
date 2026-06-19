@@ -1,5 +1,6 @@
 import React from 'react';
 import { fmtExpiry } from '../../api';
+import CustomSelect from '../common/CustomSelect';
 
 export default function ControlPanel({
   underlying,
@@ -31,20 +32,22 @@ export default function ControlPanel({
           <span className="pt-control-label">Algo</span>
           <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
             <label style={{ marginBottom: 0 }}>Underlying:</label>
-            <select value={underlying} onChange={e => updateConfig('underlying', e.target.value)}
-              style={{ padding: '6px 12px', width: '100px', fontSize: '13px' }}>
-              {UNDERLYINGS.map(u => <option key={u}>{u}</option>)}
-            </select>
+            <CustomSelect 
+              value={underlying} 
+              onChange={val => updateConfig('underlying', val)}
+              options={UNDERLYINGS.map(u => ({ label: u, value: u }))}
+              style={{ width: '100px' }} 
+            />
           </div>
           <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
             <label style={{ marginBottom: 0 }}>Expiry:</label>
-            <select value={selExpiry} onChange={e => updateConfig('expiry', e.target.value)}
+            <CustomSelect 
+              value={selExpiry} 
+              onChange={val => updateConfig('expiry', val)}
               disabled={!filteredExpiries.length}
-              style={{ padding: '6px 12px', width: '160px', fontSize: '13px' }}>
-              {!filteredExpiries.length
-                ? <option>Loading...</option>
-                : filteredExpiries.map(e => <option key={e} value={e}>{fmtExpiry(e)}</option>)}
-            </select>
+              options={!filteredExpiries.length ? [{ label: 'Loading...', value: selExpiry }] : filteredExpiries.map(e => ({ label: fmtExpiry(e), value: e }))}
+              style={{ width: '160px' }} 
+            />
           </div>
           {activeAccountId && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, background: 'var(--bg)', padding: '6px 12px', borderRadius: '6px', border: '1px solid var(--border)' }}>
@@ -153,13 +156,16 @@ export default function ControlPanel({
 
           <div key="exitType" className="form-group" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <label style={{ marginBottom: 0 }}>Exit Type:</label>
-            <select value={draftConfig?.exitType ?? 'ATM'}
-              onChange={e => updateDraftConfig('exitType', e.target.value)}
-              style={{ padding: '4px 8px', fontSize: '13px', width: '75px', borderRadius: '4px', border: '1px solid var(--border)', background: 'var(--bg3)', color: 'var(--text)' }}>
-              <option value="ATM">ATM</option>
-              <option value="ITM">ITM</option>
-              <option value="OTM">OTM</option>
-            </select>
+            <CustomSelect 
+              value={draftConfig?.exitType ?? 'ATM'}
+              onChange={val => updateDraftConfig('exitType', val)}
+              options={[
+                { label: 'ATM', value: 'ATM' },
+                { label: 'ITM', value: 'ITM' },
+                { label: 'OTM', value: 'OTM' }
+              ]}
+              style={{ width: '85px' }} 
+            />
           </div>
           {(draftConfig?.exitType === 'ITM' || draftConfig?.exitType === 'OTM') && (
             <div key="exitPoints" className="form-group">

@@ -1,4 +1,5 @@
 import React from 'react';
+import CustomSelect from '../common/CustomSelect';
 
 export default function CreateAccountModal({
   isOpen,
@@ -10,7 +11,9 @@ export default function CreateAccountModal({
   watchAtmRatioScaling,
   watchCreateExitType,
   profiles,
-  userRole
+  userRole,
+  setValue,
+  watch
 }) {
   if (!isOpen) return null;
 
@@ -53,23 +56,14 @@ export default function CreateAccountModal({
             <div style={{ display: 'flex', gap: '16px' }}>
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Underlying</label>
-                <select
-                  {...register('underlying')}
-                  style={{
-                    padding: '10px 14px',
-                    borderRadius: 8,
-                    border: '1px solid var(--border)',
-                    background: 'var(--bg3)',
-                    color: 'var(--text)',
-                    fontSize: 13,
-                    outline: 'none',
-                    width: '100%',
-                    cursor: 'pointer'
-                  }}
-                >
-                  <option value="BTC">BTC</option>
-                  <option value="ETH">ETH</option>
-                </select>
+                <CustomSelect
+                  value={watch('underlying') || 'BTC'}
+                  onChange={val => setValue('underlying', val)}
+                  options={[
+                    { label: 'BTC', value: 'BTC' },
+                    { label: 'ETH', value: 'ETH' }
+                  ]}
+                />
               </div>
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Days to Expiry</label>
@@ -93,27 +87,14 @@ export default function CreateAccountModal({
             {userRole === 'admin' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Owner (Admin Only)</label>
-                <select
-                  {...register('ownerId')}
-                  style={{
-                    padding: '10px 14px',
-                    borderRadius: 8,
-                    border: '1px solid var(--border)',
-                    background: 'var(--bg3)',
-                    color: 'var(--text)',
-                    fontSize: 13,
-                    outline: 'none',
-                    width: '100%',
-                    cursor: 'pointer'
-                  }}
-                >
-                  <option value="">Default (Self)</option>
-                  {profiles.map(p => (
-                    <option key={p.id} value={p.id}>
-                      {p.email}
-                    </option>
-                  ))}
-                </select>
+                <CustomSelect
+                  value={watch('ownerId') || ''}
+                  onChange={val => setValue('ownerId', val)}
+                  options={[
+                    { label: 'Default (Self)', value: '' },
+                    ...profiles.map(p => ({ label: p.email, value: p.id }))
+                  ]}
+                />
               </div>
             )}
 
@@ -299,24 +280,15 @@ export default function CreateAccountModal({
             <div style={{ display: 'flex', gap: '16px' }}>
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Exit Type</label>
-                <select
-                  {...register('exitType')}
-                  style={{
-                    padding: '10px 14px',
-                    borderRadius: 8,
-                    border: '1px solid var(--border)',
-                    background: 'var(--bg3)',
-                    color: 'var(--text)',
-                    fontSize: 13,
-                    outline: 'none',
-                    width: '100%',
-                    cursor: 'pointer'
-                  }}
-                >
-                  <option value="ATM">ATM</option>
-                  <option value="ITM">ITM</option>
-                  <option value="OTM">OTM</option>
-                </select>
+                <CustomSelect
+                  value={watch('exitType') || 'ATM'}
+                  onChange={val => setValue('exitType', val)}
+                  options={[
+                    { label: 'ATM', value: 'ATM' },
+                    { label: 'ITM', value: 'ITM' },
+                    { label: 'OTM', value: 'OTM' }
+                  ]}
+                />
               </div>
               {watchCreateExitType && watchCreateExitType !== 'ATM' && (
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>

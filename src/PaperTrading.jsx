@@ -95,7 +95,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     handleSubmit: handleSubmitCreate,
     formState: { errors: errorsCreate },
     reset: resetCreate,
-    watch: watchCreate
+    watch: watchCreate,
+    setValue: setValueCreate
   } = useForm({
     defaultValues: {
       name: '',
@@ -1572,6 +1573,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             watchAtmRatioScaling={watchCreateAtmRatioScaling}
             watchCreateExitType={watchCreateExitType}
             onCancel={handleLogout}
+            setValue={setValueCreate}
+            watch={watchCreate}
           />
         ) : (
           <>
@@ -1669,6 +1672,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         watchCreateExitType={watchCreateExitType}
         profiles={profiles}
         userRole={userProfile?.role}
+        setValue={setValueCreate}
+        watch={watchCreate}
       />
 
       <DeleteAccountModal

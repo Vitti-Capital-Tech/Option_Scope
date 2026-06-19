@@ -10,6 +10,7 @@ const SCANNER_TOP_KEY = 'vitti_scanner_top_spreads_v1';
 import ResultTable from './ResultTable';
 import { normalizeIv, toFiniteNumber, matchesOptionType } from './scannerUtils';
 import Navbar from './components/PaperTrading/Navbar';
+import CustomSelect from './components/common/CustomSelect';
 
 // ── Main Scanner Component ──────────────────────────────────────────────────
 export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
@@ -587,18 +588,22 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             <span className="scanner-config-title">SCANNER CONFIG</span>
             <div className="form-group row-inline">
               <label>Underlying:</label>
-              <select value={underlying} onChange={e => { setUnderlying(e.target.value); stopScan(); }}>
-                {UNDERLYINGS.map(u => <option key={u}>{u}</option>)}
-              </select>
+              <CustomSelect
+                value={underlying}
+                onChange={val => { setUnderlying(val); stopScan(); }}
+                options={UNDERLYINGS.map(u => ({ label: u, value: u }))}
+                style={{ width: '100px' }}
+              />
             </div>
             <div className="form-group row-inline">
               <label>Expiry:</label>
-              <select value={selExpiry} onChange={e => { setSelExpiry(e.target.value); stopScan(); }} disabled={!expiries.length}>
-                {!expiries.length
-                  ? <option>Loading...</option>
-                  : expiries.map(e => <option key={e} value={e}>{fmtExpiry(e)}</option>)
-                }
-              </select>
+              <CustomSelect
+                value={selExpiry}
+                onChange={val => { setSelExpiry(val); stopScan(); }}
+                disabled={!expiries.length}
+                options={!expiries.length ? [{ label: 'Loading...', value: selExpiry }] : expiries.map(e => ({ label: fmtExpiry(e), value: e }))}
+                style={{ width: '160px' }}
+              />
             </div>
             <button
               className="scanner-filters-toggle-btn"

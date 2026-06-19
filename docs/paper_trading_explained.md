@@ -386,7 +386,7 @@ This is the most complex part. Think of it as **gradually taking profit** by red
 
 ### The Concept
 
-Imagine you entered with a lot size of 1.0 on the buy leg. As the position becomes more profitable, the engine **shaves off 25% of the initial lot size** at each step:
+Imagine you entered with a lot size of 1.0 on the buy leg. As the position becomes more profitable, the engine **shaves off 10% of the initial lot size** at each step:
 
 ```
 Start:  lotSize = 1.00
@@ -399,14 +399,14 @@ STOP:   Can't go below 0.50 (50% floor of initial scaled lot size)
 
 | Condition | Formula | Meaning |
 |-----------|---------|---------|
-| **PnL threshold** | `currentGrossPnl ≥ checkpointPnl + (checkpointAtmPnl × 25%)` | The position's gross profit must exceed the last checkpoint plus 25% of the ATM P&L |
+| **PnL threshold** | `currentGrossPnl ≥ checkpointPnl + (checkpointAtmPnl × 10%)` | The position's gross profit must exceed the last checkpoint plus 10% of the ATM P&L |
 | **Floor limit** | `hypotheticalLotSize ≥ floorLimit (50% of initial)` | Can't reduce below 50% of the initial scaled lot size |
 | **ATM ratio guard** | `liveAtmRatio ≥ recalculatedRatio + 1` | The live ATM ratio must be at least 1 higher than what the ratio would become after scaling |
 
 ### What Happens When It Scales
 
 1. A **partial exit trade** is recorded in `trade_history` with `is_partial = true`.
-2. The buy leg's `lotSize` is reduced by `deltaBuyQty` (25% of initial).
+2. The buy leg's `lotSize` is reduced by `deltaBuyQty` (10% of initial).
 3. The `checkpointPnl` and `checkpointAtmPnl` are **reset** to current values (this raises the bar for the next scaling step).
 4. **Accurate & Symmetrical Fee Calculations**: 
    - **Entry Fee (`partialEntryFee`)**: Calculated exactly for the exited buy leg portion using the entry parameters: `calculateFee(pos.entryBuyPrice, pos.entrySpotPrice, deltaBuyQty, pos.buyLeg.originalLotSize || 1)` (capped to the remaining entry fee). This avoids scaling down the total entry fee proportionally (which would incorrectly deduct a portion of the Sell Leg's entry fee while it is still open).
@@ -660,7 +660,7 @@ flowchart TD
     O --> S
     
     S --> T{"Scaling conditions met?"}
-    T -->|Yes| U["Partial exit: reduce buy lot 25%"]
+    T -->|Yes| U["Partial exit: reduce buy lot 10%"]
     T -->|No| V{"Expiry <= 2 min?"}
     
     V -->|Yes| W["EXIT: Expiry settlement"]
@@ -707,7 +707,7 @@ flowchart TD
 | Max positions per type | Configurable | Max calls (`config.numberOfCalls`) or puts (`config.numberOfPuts`) per account (default: 3) |
 | Max rotations per cycle | Configurable | Max rotations per type per eval cycle (`config.numberOfCalls` for calls, `config.numberOfPuts` for puts) |
 | $200K cap | $200,000 | Max short notional value |
-| Scaling step | 25% | Lot size reduction per scaling event |
+| Scaling step | 10% | Lot size reduction per scaling event |
 | Scaling floor | 50% | Minimum lot size as % of initial |
 | ATM PnL minimum | $50 | Min simulated ATM profit for entry |
 | Spot step threshold | `config.spotDiff`% | Min spot movement for rotation/swap (rounded to nearest 100) |

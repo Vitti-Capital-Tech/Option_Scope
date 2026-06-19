@@ -11,6 +11,7 @@ import {
 import { useTabListener } from './useTabSync';
 import './index.css';
 import Navbar from './components/PaperTrading/Navbar';
+import CustomSelect from './components/common/CustomSelect';
 
 const UNDERLYINGS = ['BTC', 'ETH'];
 const TF_LIST = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '12h', '1d', '1w'];
@@ -474,18 +475,19 @@ const ChartPanel = forwardRef(function ChartPanel({
           {/* Multiple Alerts UI */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 4, background: theme === 'dark' ? '#161b22' : '#f0f2f5', padding: '2px 6px', borderRadius: 6, border: `1px solid ${theme === 'dark' ? '#30363d' : '#d1d5db'}` }}>
-              <select
+              <CustomSelect
+                variant="inline"
                 value={newAlert.dir}
-                onChange={e => setNewAlert(prev => ({ ...prev, dir: e.target.value }))}
+                onChange={val => setNewAlert(prev => ({ ...prev, dir: val }))}
                 style={{
-                  background: 'transparent', border: 'none',
                   color: newAlert.dir === '>=' ? '#3fb950' : '#f85149',
-                  fontSize: 11, fontWeight: 700, outline: 'none', cursor: 'pointer'
+                  fontWeight: 700
                 }}
-              >
-                <option value=">=" style={{ color: '#3fb950' }}>&ge;</option>
-                <option value="<=" style={{ color: '#f85149' }}>&le;</option>
-              </select>
+                options={[
+                  { label: '≥', value: '>=' },
+                  { label: '≤', value: '<=' }
+                ]}
+              />
               <input
                 type="number"
                 placeholder="Alert Price"
@@ -1566,63 +1568,75 @@ export default function App({ onNavigate, theme, toggleTheme }) {
 
               <div className="form-group">
                 <label>Underlying</label>
-                <select value={underlying} onChange={e => setUnderlying(e.target.value)}>
-                  {UNDERLYINGS.map(u => <option key={u}>{u}</option>)}
-                </select>
+                <CustomSelect
+                  value={underlying}
+                  onChange={val => setUnderlying(val)}
+                  options={UNDERLYINGS.map(u => ({ label: u, value: u }))}
+                />
               </div>
 
               <div className="form-group">
                 <label>Expiry Date</label>
-                <select value={selExpiry} onChange={e => setSelExpiry(e.target.value)} disabled={!expiries.length}>
-                  {!expiries.length
-                    ? <option>Loading...</option>
-                    : expiries.map(e => <option key={e} value={e}>{fmtExpiry(e)}</option>)
-                  }
-                </select>
+                <CustomSelect
+                  value={selExpiry}
+                  onChange={val => setSelExpiry(val)}
+                  disabled={!expiries.length}
+                  options={!expiries.length ? [{ label: 'Loading...', value: selExpiry }] : expiries.map(e => ({ label: fmtExpiry(e), value: e }))}
+                />
               </div>
 
               <div className="form-group" style={{ opacity: legType === 'put' ? 0.5 : 1 }}>
                 <label>Call Strike</label>
-                <select value={selCallStrike} onChange={e => setSelCallStrike(e.target.value)} disabled={!strikes.length || legType === 'put'}>
-                  {!strikes.length
-                    ? <option>Select Expiry First</option>
-                    : strikes.map(s => <option key={s} value={s}>{Number(s).toLocaleString()}</option>)
-                  }
-                </select>
+                <CustomSelect
+                  value={selCallStrike}
+                  onChange={val => setSelCallStrike(val)}
+                  disabled={!strikes.length || legType === 'put'}
+                  options={!strikes.length ? [{ label: 'Select Expiry First', value: selCallStrike }] : strikes.map(s => ({ label: Number(s).toLocaleString(), value: s }))}
+                />
               </div>
 
               <div className="form-group" style={{ opacity: legType === 'call' ? 0.5 : 1 }}>
                 <label>Put Strike</label>
-                <select value={selPutStrike} onChange={e => setSelPutStrike(e.target.value)} disabled={!strikes.length || legType === 'call'}>
-                  {!strikes.length
-                    ? <option>Select Expiry First</option>
-                    : strikes.map(s => <option key={s} value={s}>{Number(s).toLocaleString()}</option>)
-                  }
-                </select>
+                <CustomSelect
+                  value={selPutStrike}
+                  onChange={val => setSelPutStrike(val)}
+                  disabled={!strikes.length || legType === 'call'}
+                  options={!strikes.length ? [{ label: 'Select Expiry First', value: selPutStrike }] : strikes.map(s => ({ label: Number(s).toLocaleString(), value: s }))}
+                />
               </div>
 
               <div className="form-group">
                 <label>Leg Type</label>
-                <select value={legType} onChange={e => setLegType(e.target.value)}>
-                  <option value="combined">Combined (Straddle/Strangle)</option>
-                  <option value="call">Call Premium Only</option>
-                  <option value="put">Put Premium Only</option>
-                </select>
+                <CustomSelect
+                  value={legType}
+                  onChange={val => setLegType(val)}
+                  options={[
+                    { label: 'Combined (Straddle/Strangle)', value: 'combined' },
+                    { label: 'Call Premium Only', value: 'call' },
+                    { label: 'Put Premium Only', value: 'put' }
+                  ]}
+                />
               </div>
 
               <div className="form-group">
                 <label>Price Source</label>
-                <select value={priceType} onChange={e => setPriceType(e.target.value)}>
-                  <option value="mark">Mark Price</option>
-                  <option value="ltp">Last Traded Price</option>
-                </select>
+                <CustomSelect
+                  value={priceType}
+                  onChange={val => setPriceType(val)}
+                  options={[
+                    { label: 'Mark Price', value: 'mark' },
+                    { label: 'Last Traded Price', value: 'ltp' }
+                  ]}
+                />
               </div>
 
               <div className="form-group">
                 <label>Candle Interval</label>
-                <select value={tf} onChange={e => setTf(e.target.value)}>
-                  {TF_LIST.map(t => <option key={t} value={t}>{t}</option>)}
-                </select>
+                <CustomSelect
+                  value={tf}
+                  onChange={val => setTf(val)}
+                  options={TF_LIST.map(t => ({ label: t, value: t }))}
+                />
               </div>
             </div>
           </div>
@@ -1889,18 +1903,23 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                           </div>
 
                           <div className="watch-alert-inputs" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                            <select
-                              id={`dir-${item.id}`}
-                              style={{
-                                background: 'transparent', border: 'none',
-                                color: document.getElementById(`dir-${item.id}`)?.value === '<=' ? '#f85149' : '#3fb950',
-                                fontSize: 10, fontWeight: 700, outline: 'none', cursor: 'pointer'
+                            <CustomSelect
+                              variant="inline"
+                              value={item.alerts?.length > 0 ? '>=' : '>='} // default, managed externally anyway
+                              onChange={val => {
+                                // Keep UI updated since it's an uncontrolled list state
+                                const selEl = document.getElementById(`dir-${item.id}`);
+                                if (selEl) selEl.value = val;
                               }}
-                              onChange={(e) => e.target.style.color = e.target.value === '>=' ? '#3fb950' : '#f85149'}
-                            >
-                              <option value=">=" style={{ color: '#3fb950' }}>&ge;</option>
-                              <option value="<=" style={{ color: '#f85149' }}>&le;</option>
-                            </select>
+                              style={{
+                                color: '#3fb950',
+                                fontWeight: 700
+                              }}
+                              options={[
+                                { label: '≥', value: '>=' },
+                                { label: '≤', value: '<=' }
+                              ]}
+                            />
                             <input
                               type="number"
                               placeholder="Price"
