@@ -37,21 +37,21 @@ export default function ControlPanel({
           <span className="pt-control-label">Algo</span>
           <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
             <label style={{ marginBottom: 0 }}>Underlying:</label>
-            <CustomSelect 
-              value={underlying} 
+            <CustomSelect
+              value={underlying}
               onChange={val => updateConfig('underlying', val)}
               options={UNDERLYINGS.map(u => ({ label: u, value: u }))}
-              style={{ width: '100px' }} 
+              style={{ width: '100px' }}
             />
           </div>
           <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
             <label style={{ marginBottom: 0 }}>Expiry:</label>
-            <CustomSelect 
-              value={selExpiry} 
+            <CustomSelect
+              value={selExpiry}
               onChange={val => updateConfig('expiry', val)}
               disabled={!filteredExpiries.length}
               options={!filteredExpiries.length ? [{ label: 'Loading...', value: selExpiry }] : filteredExpiries.map(e => ({ label: fmtExpiry(e), value: e }))}
-              style={{ width: '160px' }} 
+              style={{ width: '160px' }}
             />
           </div>
           {activeAccountId && (
@@ -161,7 +161,7 @@ export default function ControlPanel({
 
           <div key="exitType" className="form-group" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <label style={{ marginBottom: 0 }}>Exit Type:</label>
-            <CustomSelect 
+            <CustomSelect
               value={draftConfig?.exitType ?? 'ATM'}
               onChange={val => updateDraftConfig('exitType', val)}
               options={[
@@ -169,7 +169,7 @@ export default function ControlPanel({
                 { label: 'ITM', value: 'ITM' },
                 { label: 'OTM', value: 'OTM' }
               ]}
-              style={{ width: '85px' }} 
+              style={{ width: '85px' }}
             />
           </div>
           {(draftConfig?.exitType === 'ITM' || draftConfig?.exitType === 'OTM') && (
@@ -210,7 +210,7 @@ export default function ControlPanel({
           </div>
         </div>
       </div>
-      <div className='flex justify-between mt-3! px-10!'>
+      <div className='flex justify-between mt-3! px-10! mb-3!'>
         {spotPrice && (
           <div className="pt-spot-display">
             <span className="pt-spot-label">SPOT</span>
