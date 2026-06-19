@@ -4209,3 +4209,64 @@ body.light-theme .pt-btn-apply.active {
   flex-direction: column;
 }
 
+.schedule-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg2);
+  transition: all 0.2s ease;
+}
+
+.schedule-card:hover {
+  border-color: var(--border-hover);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.schedule-card.expanded {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+
+.schedule-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  background: transparent;
+  transition: background 0.2s ease;
+  user-select: none;
+}
+
+.schedule-card-header:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.schedule-input {
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+  box-sizing: border-box;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.schedule-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(0, 217, 163, 0.12);
+}
+
+.schedule-timeline-bar {
+  position: relative;
+  height: 28px;
+  border-radius: 6px;
+  background: repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.015), rgba(255, 255, 255, 0.015) 10px, rgba(255, 255, 255, 0.035) 10px, rgba(255, 255, 255, 0.035) 20px), var(--bg3);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  margin: 12px 0;
+}
+
+
