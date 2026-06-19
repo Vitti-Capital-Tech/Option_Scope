@@ -35,9 +35,14 @@ export default function ActivePositionsTable({
     let operator = isCall ? '≥' : '≤';
 
     if (exitType === 'ITM') {
-      triggerPrice = isCall ? buyStrike + exitPoints : buyStrike - exitPoints;
-    } else if (exitType === 'OTM') {
       triggerPrice = isCall ? buyStrike - exitPoints : buyStrike + exitPoints;
+      operator = isCall ? '≤' : '≥';
+    } else if (exitType === 'OTM') {
+      triggerPrice = isCall ? buyStrike + exitPoints : buyStrike - exitPoints;
+      operator = isCall ? '≥' : '≤';
+    } else {
+      triggerPrice = buyStrike;
+      operator = isCall ? '≥' : '≤';
     }
 
     return {
