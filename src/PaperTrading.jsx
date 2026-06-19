@@ -918,6 +918,30 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     } catch (e) { }
   }, [activeAccountId]);
 
+  // Convert UTC time string 'HH:mm' or 'HH:mm:ss' to IST 'HH:mm'
+  const utcToIst = (utcTimeStr) => {
+    if (!utcTimeStr) return '05:30';
+    const parts = utcTimeStr.split(':').map(Number);
+    const h = parts[0] || 0;
+    const m = parts[1] || 0;
+    const totalMin = (h * 60 + m + 330) % 1440;
+    const istH = Math.floor(totalMin / 60);
+    const istM = totalMin % 60;
+    return `${String(istH).padStart(2, '0')}:${String(istM).padStart(2, '0')}`;
+  };
+
+  // Convert IST time string 'HH:mm' to UTC 'HH:mm'
+  const istToUtc = (istTimeStr) => {
+    if (!istTimeStr) return '18:30';
+    const parts = istTimeStr.split(':').map(Number);
+    const h = parts[0] || 0;
+    const m = parts[1] || 0;
+    const totalMin = (h * 60 + m - 330 + 1440) % 1440;
+    const utcH = Math.floor(totalMin / 60);
+    const utcM = totalMin % 60;
+    return `${String(utcH).padStart(2, '0')}:${String(utcM).padStart(2, '0')}`;
+  };
+
   const fetchSupabaseSchedules = useCallback(async () => {
     if (!activeAccountId) return;
     try {
@@ -930,8 +954,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         setSchedules(data.map(s => ({
           id: s.id,
           label: s.label || 'Window',
-          startTime: s.start_time,
-          endTime: s.end_time,
+          startTime: utcToIst(s.start_time),
+          endTime: utcToIst(s.end_time),
           numberOfCalls: s.number_of_calls ?? 3,
           numberOfPuts: s.number_of_puts ?? 3,
           minLongDist: s.min_long_dist ?? 500,
@@ -952,8 +976,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         const rows = schedules.map((s, i) => ({
           account_id: activeAccountId,
           label: s.label || 'Window',
-          start_time: s.startTime,
-          end_time: s.endTime,
+          start_time: istToUtc(s.startTime),
+          end_time: istToUtc(s.endTime),
           number_of_calls: s.numberOfCalls ?? 3,
           number_of_puts: s.numberOfPuts ?? 3,
           min_long_dist: s.minLongDist ?? 500,

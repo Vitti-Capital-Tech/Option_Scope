@@ -2,8 +2,8 @@ import React, { useState, useCallback } from 'react';
 
 const DEFAULT_WINDOW = {
   label: 'Window',
-  startTime: '00:00',
-  endTime: '23:59',
+  startTime: '05:30',
+  endTime: '05:29',
   numberOfCalls: 3,
   numberOfPuts: 3,
   minLongDist: 500,
@@ -26,7 +26,7 @@ function formatMin(m) {
   return `${String(h).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
 }
 
-// Get unoccupied time slots across the 24h cycle
+// Get unoccupied time slots across the 24h cycle starting from 05:30 AM IST (330 minutes)
 function getUnoccupiedSlots(schedules, excludeId = null) {
   const mins = new Array(1440).fill(false);
   schedules.forEach(s => {
@@ -45,7 +45,10 @@ function getUnoccupiedSlots(schedules, excludeId = null) {
   const slots = [];
   let inSlot = false;
   let start = 0;
-  for (let m = 0; m < 1440; m++) {
+  
+  // Traverse 1440 minutes starting at 330 (05:30 AM IST)
+  for (let i = 0; i < 1440; i++) {
+    const m = (330 + i) % 1440;
     if (!mins[m] && !inSlot) {
       start = m;
       inSlot = true;
@@ -54,12 +57,13 @@ function getUnoccupiedSlots(schedules, excludeId = null) {
       inSlot = false;
     }
   }
+  
   if (inSlot) {
-    slots.push({ start, end: 1440 });
+    slots.push({ start, end: 330 });
   }
 
-  // Handle overnight merge: if slot at end (ends at 1440) and slot at start (starts at 0) exist, merge them
-  if (slots.length > 1 && slots[0].start === 0 && slots[slots.length - 1].end === 1440) {
+  // Handle wrap merge: if slot at end (ends at 330) and slot at start (starts at 330) exist, merge them
+  if (slots.length > 1 && slots[0].start === 330 && slots[slots.length - 1].end === 330) {
     const mergedSlot = {
       start: slots[slots.length - 1].start,
       end: slots[0].end
@@ -123,16 +127,15 @@ export default function SchedulePanel({
   onSave,
   isSaving,
 }) {
-  const [expanded, setExpanded] = useState(null); // id of expanded card
   const [deletingId, setDeletingId] = useState(null); // id of schedule window pending deletion
 
   const handleAdd = useCallback(() => {
     const slots = getUnoccupiedSlots(schedules);
-    let startTime = '00:00';
-    let endTime = '23:59';
+    let startTime = '05:30';
+    let endTime = '05:29';
     if (slots.length > 0) {
       startTime = formatMin(slots[0].start);
-      const endVal = slots[0].end === 1440 ? 1439 : slots[0].end;
+      const endVal = slots[0].end === 330 ? 329 : slots[0].end;
       endTime = formatMin(endVal);
     }
     const newWin = {
@@ -145,7 +148,6 @@ export default function SchedulePanel({
       sort_order: schedules.length,
     };
     setSchedules(prev => [...prev, newWin]);
-    setExpanded(newWin.id);
   }, [schedules, setSchedules]);
 
   const handleChange = useCallback((id, key, value) => {
@@ -156,21 +158,17 @@ export default function SchedulePanel({
 
   const handleDelete = useCallback((id) => {
     setSchedules(prev => prev.filter(s => s.id !== id));
-    setExpanded(e => e === id ? null : e);
   }, [setSchedules]);
 
-  const toggleActive = useCallback((id) => {
-    setSchedules(prev =>
-      prev.map(s => s.id === id ? { ...s, isActive: !s.isActive } : s)
-    );
-  }, [setSchedules]);
+  // Check if there are any active overlaps across all schedules
+  const hasOverlap = schedules.some(s => s.isActive && checkOverlap(schedules, s) !== null);
 
   // ── Timeline bar ────────────────────────────────────────────────────────
   const renderTimeline = () => {
     const TOTAL = 1440; // minutes in a day
     return (
       <div className="schedule-timeline-bar">
-        {/* Hour ticks */}
+        {/* Hour ticks (8 sections, 3 hours each starting at 5:30am) */}
         {[0, 3, 6, 9, 12, 15, 18, 21, 24].map(h => (
           <div key={h} style={{
             position: 'absolute', left: `${(h * 60 / TOTAL) * 100}%`,
@@ -183,18 +181,23 @@ export default function SchedulePanel({
           const startMin = toMin(s.startTime);
           const endMin = toMin(s.endTime);
           const color = WINDOW_COLORS[i % WINDOW_COLORS.length];
-          const isOvernight = startMin > endMin;
+          
+          // Shift minutes relative to 05:30 AM start
+          const startShifted = (startMin - 330 + 1440) % 1440;
+          const endShifted = (endMin - 330 + 1440) % 1440;
+          const isSplit = startShifted > endShifted;
+          
           const tooltip = `${s.label || 'Window'} (${cleanTime(s.startTime)} - ${cleanTime(s.endTime)})\nCalls: ${s.numberOfCalls} | Puts: ${s.numberOfPuts}\nStrike Diff: ${s.minStrikeDiff} | Long Dist: ${s.minLongDist}`;
 
-          if (isOvernight) {
+          if (isSplit) {
             return (
               <React.Fragment key={s.id}>
                 <div 
                   title={tooltip}
                   style={{
                     position: 'absolute',
-                    left: `${(startMin / TOTAL) * 100}%`,
-                    width: `${((TOTAL - startMin) / TOTAL) * 100}%`,
+                    left: `${(startShifted / TOTAL) * 100}%`,
+                    width: `${((TOTAL - startShifted) / TOTAL) * 100}%`,
                     top: 2, bottom: 2, borderRadius: 3,
                     background: color, opacity: 0.75,
                     display: 'flex', alignItems: 'center',
@@ -211,7 +214,7 @@ export default function SchedulePanel({
                   style={{
                     position: 'absolute',
                     left: '0%',
-                    width: `${(endMin / TOTAL) * 100}%`,
+                    width: `${(endShifted / TOTAL) * 100}%`,
                     top: 2, bottom: 2, borderRadius: 3,
                     background: color, opacity: 0.75,
                     cursor: 'pointer',
@@ -227,8 +230,8 @@ export default function SchedulePanel({
               title={tooltip}
               style={{
                 position: 'absolute',
-                left: `${(startMin / TOTAL) * 100}%`,
-                width: `${((endMin - startMin) / TOTAL) * 100}%`,
+                left: `${(startShifted / TOTAL) * 100}%`,
+                width: `${((endShifted - startShifted) / TOTAL) * 100}%`,
                 top: 2, bottom: 2, borderRadius: 3,
                 background: color, opacity: 0.75,
                 display: 'flex', alignItems: 'center',
@@ -242,8 +245,8 @@ export default function SchedulePanel({
             </div>
           );
         })}
-        {/* Time labels */}
-        {['12am', '3am', '6am', '9am', '12pm', '3pm', '6pm', '9pm'].map((label, i) => (
+        {/* Time labels shifted relative to 5:30am IST start */}
+        {['5:30am', '8:30am', '11:30am', '2:30pm', '5:30pm', '8:30pm', '11:30pm', '2:30am'].map((label, i) => (
           <span key={label} style={{
             position: 'absolute',
             left: `${((i * 3 * 60) / TOTAL) * 100}%`,
@@ -318,58 +321,135 @@ export default function SchedulePanel({
         </div>
       )}
 
-      {/* Schedule Cards */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {/* Schedule Items List */}
+      <div className="schedule-list">
         {schedules.map((s, i) => {
           const color = WINDOW_COLORS[i % WINDOW_COLORS.length];
-          const isOpen = expanded === s.id;
           const overlapWindow = checkOverlap(schedules, s);
 
           return (
-            <div key={s.id} className={`schedule-card ${isOpen ? 'expanded' : ''}`} style={{
-              borderColor: isOpen ? `${color}70` : 'var(--border)',
+            <div key={s.id} className={`schedule-item ${s.isActive ? '' : 'inactive'}`} style={{
+              borderLeft: `4px solid ${s.isActive ? color : 'var(--border)'}`,
             }}>
-              {/* Card Header */}
-              <div
-                className="schedule-card-header"
-                onClick={() => setExpanded(isOpen ? null : s.id)}
-                style={{
-                  background: isOpen ? `${color}08` : 'transparent',
-                }}
-              >
-                {/* Active Indicator Color Pill */}
-                <div style={{ width: 10, height: 10, borderRadius: 3, background: s.isActive ? color : 'var(--border)', flexShrink: 0 }} />
-                
-                {/* Window Name Label */}
-                <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: s.isActive ? 'var(--text)' : 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {s.label || 'Unnamed Window'}
-                </span>
-                
-                {/* Active/Inactive quick toggler */}
+              {/* Window Label */}
+              <div className="schedule-item-block" style={{ width: 130 }}>
+                <span className="schedule-item-label">Window Name</span>
                 <input
-                  type="checkbox"
-                  checked={s.isActive}
-                  onChange={(e) => {
-                    e.stopPropagation();
-                    toggleActive(s.id);
-                  }}
-                  style={{ accentColor: 'var(--accent)', cursor: 'pointer', marginRight: 4 }}
-                  title="Enable/disable schedule window"
+                  type="text"
+                  className="schedule-inline-input"
+                  value={s.label}
+                  onChange={e => handleChange(s.id, 'label', e.target.value)}
+                  placeholder="e.g. Night Window"
+                  style={{ width: '100%' }}
                 />
+              </div>
 
-                {/* Quick Info Summary */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-                  <span style={{ fontSize: 10, color: 'var(--text-dim)', background: 'var(--bg3)', padding: '2px 6px', borderRadius: 4, fontWeight: 500 }}>
-                    {cleanTime(s.startTime)} – {cleanTime(s.endTime)}
-                  </span>
-                  <span style={{ fontSize: 10, color: 'var(--text-dim)', background: 'var(--bg3)', padding: '2px 6px', borderRadius: 4, fontWeight: 500 }}>
-                    {s.numberOfCalls}C / {s.numberOfPuts}P
-                  </span>
+              {/* Start Time */}
+              <div className="schedule-item-block">
+                <span className="schedule-item-label">Start Time (IST)</span>
+                <input
+                  type="time"
+                  className="schedule-inline-input"
+                  value={cleanTime(s.startTime)}
+                  onChange={e => handleChange(s.id, 'startTime', e.target.value)}
+                  style={{ width: 90 }}
+                />
+              </div>
+
+              {/* End Time */}
+              <div className="schedule-item-block">
+                <span className="schedule-item-label">End Time (IST)</span>
+                <input
+                  type="time"
+                  className="schedule-inline-input"
+                  value={cleanTime(s.endTime)}
+                  onChange={e => handleChange(s.id, 'endTime', e.target.value)}
+                  style={{ width: 90 }}
+                />
+              </div>
+
+              {/* Max Calls */}
+              <div className="schedule-item-block">
+                <span className="schedule-item-label">Max Calls</span>
+                <input
+                  type="number"
+                  min="0"
+                  max="20"
+                  className="schedule-inline-input"
+                  value={s.numberOfCalls}
+                  onChange={e => handleChange(s.id, 'numberOfCalls', Number(e.target.value))}
+                  style={{ width: 64 }}
+                />
+              </div>
+
+              {/* Max Puts */}
+              <div className="schedule-item-block">
+                <span className="schedule-item-label">Max Puts</span>
+                <input
+                  type="number"
+                  min="0"
+                  max="20"
+                  className="schedule-inline-input"
+                  value={s.numberOfPuts}
+                  onChange={e => handleChange(s.id, 'numberOfPuts', Number(e.target.value))}
+                  style={{ width: 64 }}
+                />
+              </div>
+
+              {/* Min Strike Diff */}
+              <div className="schedule-item-block">
+                <span className="schedule-item-label">Min Strike Diff</span>
+                <input
+                  type="number"
+                  min="0"
+                  className="schedule-inline-input"
+                  value={s.minStrikeDiff}
+                  onChange={e => handleChange(s.id, 'minStrikeDiff', Number(e.target.value))}
+                  style={{ width: 90 }}
+                />
+              </div>
+
+              {/* Min Long Dist */}
+              <div className="schedule-item-block">
+                <span className="schedule-item-label">Min Long Dist</span>
+                <input
+                  type="number"
+                  min="0"
+                  className="schedule-inline-input"
+                  value={s.minLongDist}
+                  onChange={e => handleChange(s.id, 'minLongDist', Number(e.target.value))}
+                  style={{ width: 90 }}
+                />
+              </div>
+
+              {/* Overlap Indicator Badge inside the row */}
+              {overlapWindow && (
+                <div 
+                  className="schedule-item-block" 
+                  style={{ 
+                    alignItems: 'center', 
+                    justifyContent: 'center', 
+                    color: '#f85149', 
+                    cursor: 'help' 
+                  }}
+                  title={`Time overlaps with "${overlapWindow.label || 'another window'}" (${cleanTime(overlapWindow.startTime)} – ${cleanTime(overlapWindow.endTime)})`}
+                >
+                  <span className="schedule-item-label" style={{ color: '#f85149' }}>Status</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'rgba(248,81,73,0.1)', border: '1px solid rgba(248,81,73,0.3)', padding: '4px 8px', borderRadius: 4, fontSize: 9, fontWeight: 700 }}>
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                    OVERLAP
+                  </div>
                 </div>
+              )}
 
-                {/* Quick Delete Trash Button / Cancel Button */}
+
+
+              {/* Quick Delete Trash Button */}
+              <div className="schedule-item-block" style={{ justifyContent: 'center' }}>
+                <span className="schedule-item-label" style={{ opacity: 0 }}>Delete</span>
                 <button
                   type="button"
+                  className="watch-delete-btn"
                   onClick={(e) => {
                     e.stopPropagation();
                     if (s.isNew) {
@@ -381,7 +461,8 @@ export default function SchedulePanel({
                   style={{
                     background: 'none', border: 'none', color: 'var(--text-dim)',
                     cursor: 'pointer', display: 'flex', alignItems: 'center',
-                    padding: 4, borderRadius: 4, transition: 'all 0.15s'
+                    padding: 5, borderRadius: 5, transition: 'all 0.15s',
+                    marginTop: 3
                   }}
                   onMouseOver={e => {
                     e.currentTarget.style.color = '#f85149';
@@ -394,179 +475,57 @@ export default function SchedulePanel({
                   title={s.isNew ? "Cancel window" : "Delete schedule window"}
                 >
                   {s.isNew ? (
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                   ) : (
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
                   )}
                 </button>
-
-                {/* Chevron */}
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
-                  style={{ transition: 'transform 0.2s', transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)', color: 'var(--text-dim)', flexShrink: 0, marginLeft: 2 }}>
-                  <polyline points="6 9 12 15 18 9"/>
-                </svg>
               </div>
-
-              {/* Card Body */}
-              {isOpen && (
-                <div style={{ padding: '12px 14px', borderTop: '1px solid var(--border)' }}>
-                  {/* Row 1: Label */}
-                  <div style={{ marginBottom: 10 }}>
-                    <label style={{ fontSize: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 4, fontWeight: 600 }}>Label</label>
-                    <input
-                      type="text"
-                      className="schedule-input"
-                      value={s.label}
-                      onChange={e => handleChange(s.id, 'label', e.target.value)}
-                      placeholder="e.g. Night Window"
-                    />
-                  </div>
-
-                  {/* Row 2: Times (2 cols) */}
-                  <div style={{ display: 'flex', gap: 10, marginBottom: 10 }}>
-                    <div style={{ flex: 1 }}>
-                      <label style={{ fontSize: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 4, fontWeight: 600 }}>Start Time (IST)</label>
-                      <input
-                        type="time"
-                        className="schedule-input"
-                        value={cleanTime(s.startTime)}
-                        onChange={e => handleChange(s.id, 'startTime', e.target.value)}
-                      />
-                    </div>
-                    <div style={{ flex: 1 }}>
-                      <label style={{ fontSize: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 4, fontWeight: 600 }}>End Time (IST)</label>
-                      <input
-                        type="time"
-                        className="schedule-input"
-                        value={cleanTime(s.endTime)}
-                        onChange={e => handleChange(s.id, 'endTime', e.target.value)}
-                      />
-                    </div>
-                  </div>
-                  {overlapWindow && (
-                    <div style={{ fontSize: 10, color: '#f85149', marginTop: -6, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 4, fontWeight: 600 }}>
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ transform: 'translateY(-1px)' }}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                      Overlaps with "{overlapWindow.label || 'another window'}" ({cleanTime(overlapWindow.startTime)} – {cleanTime(overlapWindow.endTime)})
-                    </div>
-                  )}
-
-                  {/* Row 3: Strategy Filters - Max Calls, Max Puts, Min Strike Diff, Min Long Dist (4 cols) */}
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginBottom: 12 }}>
-                    <div>
-                      <label style={{ fontSize: 9, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.03em', display: 'block', marginBottom: 4, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title="Max Calls">Max Calls</label>
-                      <input type="number" min="0" max="20"
-                        className="schedule-input"
-                        value={s.numberOfCalls}
-                        onChange={e => handleChange(s.id, 'numberOfCalls', Number(e.target.value))}
-                      />
-                    </div>
-                    <div>
-                      <label style={{ fontSize: 9, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.03em', display: 'block', marginBottom: 4, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title="Max Puts">Max Puts</label>
-                      <input type="number" min="0" max="20"
-                        className="schedule-input"
-                        value={s.numberOfPuts}
-                        onChange={e => handleChange(s.id, 'numberOfPuts', Number(e.target.value))}
-                      />
-                    </div>
-                    <div>
-                      <label style={{ fontSize: 9, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.03em', display: 'block', marginBottom: 4, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title="Min Strike Diff">Min Strike Diff</label>
-                      <input type="number" min="0"
-                        className="schedule-input"
-                        value={s.minStrikeDiff}
-                        onChange={e => handleChange(s.id, 'minStrikeDiff', Number(e.target.value))}
-                      />
-                    </div>
-                    <div>
-                      <label style={{ fontSize: 9, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.03em', display: 'block', marginBottom: 4, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title="Min Long Dist">Min Long Dist</label>
-                      <input type="number" min="0"
-                        className="schedule-input"
-                        value={s.minLongDist}
-                        onChange={e => handleChange(s.id, 'minLongDist', Number(e.target.value))}
-                      />
-                    </div>
-                  </div>
-
-                  {/* Row 4: Controls */}
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderTop: '1px dashed var(--border)', paddingTop: 10, marginTop: 4 }}>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 11, color: 'var(--text)', fontWeight: 500 }}>
-                      <input
-                        type="checkbox"
-                        checked={s.isActive}
-                        onChange={() => toggleActive(s.id)}
-                        style={{ accentColor: 'var(--accent)', cursor: 'pointer' }}
-                      />
-                      Enable Schedule Window
-                    </label>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      {s.isNew ? (
-                        <button
-                          type="button"
-                          onClick={() => handleDelete(s.id)}
-                          style={{
-                            display: 'flex', alignItems: 'center', gap: 4,
-                            background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)',
-                            color: 'var(--text)', padding: '4px 12px', borderRadius: 5,
-                            fontSize: 11, fontWeight: 600, cursor: 'pointer', transition: 'all 0.15s',
-                          }}
-                          onMouseOver={e => e.currentTarget.style.background = 'rgba(255,255,255,0.1)'}
-                          onMouseOut={e => e.currentTarget.style.background = 'rgba(255,255,255,0.05)'}
-                        >
-                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                          Cancel
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => setDeletingId(s.id)}
-                          style={{
-                            display: 'flex', alignItems: 'center', gap: 4,
-                            background: 'rgba(248,81,73,0.08)', border: '1px solid rgba(248,81,73,0.2)',
-                            color: '#f85149', padding: '4px 10px', borderRadius: 5,
-                            fontSize: 11, fontWeight: 600, cursor: 'pointer', transition: 'all 0.15s',
-                          }}
-                          onMouseOver={e => e.currentTarget.style.background = 'rgba(248,81,73,0.15)'}
-                          onMouseOut={e => e.currentTarget.style.background = 'rgba(248,81,73,0.08)'}
-                        >
-                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
-                          Delete Window
-                        </button>
-                      )}
-
-                      <button
-                        type="button"
-                        onClick={onSave}
-                        disabled={isSaving || overlapWindow !== null}
-                        style={{
-                          display: 'flex', alignItems: 'center', gap: 4,
-                          background: overlapWindow ? 'var(--border)' : 'var(--accent)', border: 'none',
-                          color: overlapWindow ? 'var(--text-dim)' : '#000', padding: '4px 14px', borderRadius: 5,
-                          fontSize: 11, fontWeight: 700, cursor: (isSaving || overlapWindow !== null) ? 'not-allowed' : 'pointer',
-                          opacity: (isSaving || overlapWindow !== null) ? 0.6 : 1, transition: 'all 0.15s',
-                        }}
-                        title={overlapWindow ? "Cannot save: Time overlap detected with another active window" : "Save all schedules"}
-                      >
-                        {isSaving ? (
-                          <>
-                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" style={{ animation: 'spin 0.8s linear infinite' }}><circle cx="12" cy="12" r="10" stroke="rgba(0,0,0,0.2)" /><path d="M12 2a10 10 0 0 1 10 10" stroke="#000" /></svg>
-                            Saving...
-                          </>
-                        ) : (
-                          <>
-                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>
-                            Save Schedules
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
             </div>
           );
         })}
       </div>
 
-
+      {/* Footer controls with global Save button */}
+      {schedules.length > 0 && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'flex-end',
+          gap: 12, borderTop: '1px solid var(--border)', paddingTop: 12, marginTop: 12
+        }}>
+          {hasOverlap && (
+            <span style={{ fontSize: 10, color: '#f85149', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ transform: 'translateY(-1px)' }}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              Cannot save: Time overlap detected between active windows.
+            </span>
+          )}
+          
+          <button
+            type="button"
+            onClick={onSave}
+            disabled={isSaving || hasOverlap}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              background: hasOverlap ? 'var(--border)' : 'var(--accent)', border: 'none',
+              color: hasOverlap ? 'var(--text-dim)' : '#000', padding: '6px 16px', borderRadius: 5,
+              fontSize: 11, fontWeight: 700, cursor: (isSaving || hasOverlap) ? 'not-allowed' : 'pointer',
+              opacity: (isSaving || hasOverlap) ? 0.6 : 1, transition: 'all 0.15s',
+            }}
+            title={hasOverlap ? "Cannot save: Time overlap detected with another active window" : "Save all schedules"}
+          >
+            {isSaving ? (
+              <>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" style={{ animation: 'spin 0.8s linear infinite' }}><circle cx="12" cy="12" r="10" stroke="rgba(0,0,0,0.2)" /><path d="M12 2a10 10 0 0 1 10 10" stroke="#000" /></svg>
+                Saving...
+              </>
+            ) : (
+              <>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>
+                Save Schedules
+              </>
+            )}
+          </button>
+        </div>
+      )}
 
       {/* Delete Confirmation Modal Overlay */}
       {deletingId !== null && (

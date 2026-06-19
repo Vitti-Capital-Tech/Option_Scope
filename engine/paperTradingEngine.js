@@ -321,11 +321,10 @@ async function startSingleAccountEngine(account) {
 
   // ── Core strategy evaluation (Phase 2) ────────────────────────────────
 
-  // Returns active schedule window for current IST time, or null if none match
+  // Returns active schedule window for current UTC time, or null if none match
   function getActiveSchedule() {
-    const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
-    const nowIST = new Date(Date.now() + IST_OFFSET_MS);
-    const nowMin = nowIST.getUTCHours() * 60 + nowIST.getUTCMinutes();
+    const nowUTC = new Date();
+    const nowMin = nowUTC.getUTCHours() * 60 + nowUTC.getUTCMinutes();
 
     for (const s of schedules) {
       if (!s.isActive) continue;

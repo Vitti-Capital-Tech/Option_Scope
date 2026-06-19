@@ -4269,4 +4269,81 @@ body.light-theme .pt-btn-apply.active {
   margin: 12px 0;
 }
 
+/* -- Redesigned Horizontal Schedule List -- */
+.schedule-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+}
+
+.schedule-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: rgba(15, 20, 25, 0.4);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: max-content;
+  gap: 20px;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.schedule-item:hover {
+  background: rgba(255, 255, 255, 0.02);
+  border-color: var(--border-hover);
+}
+
+.schedule-item.inactive {
+  opacity: 0.6;
+}
+
+.schedule-item-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.schedule-item-label {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.schedule-inline-input {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-family: 'Inter', sans-serif;
+  font-size: 11px;
+  padding: 4px 8px;
+  outline: none;
+  transition: border-color 0.15s;
+  box-sizing: border-box;
+}
+
+.schedule-inline-input:focus {
+  border-color: var(--accent);
+}
+
+.schedule-inline-input[type="text"] {
+  font-weight: 600;
+}
+
+.schedule-inline-input[type="number"] {
+  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.schedule-inline-input[type="time"] {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+
 
