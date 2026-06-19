@@ -29,7 +29,6 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
   const [expectedTickerCount, setExpectedTickerCount] = useState(0);
   const [lastRefreshed, setLastRefreshed] = useState(0);
 
-  const [timeRemaining, setTimeRemaining] = useState(null);
   const [activeTableTab, setActiveTableTab] = useState('call');
   const [isFiltersCollapsed, setIsFiltersCollapsed] = useState(() => window.innerWidth <= 900);
 
@@ -38,6 +37,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
   const spotIntervalRef = useRef(null);
   const tickerBufferRef = useRef({});
   const flushTimerRef = useRef(null);
+  const lastScanTimeRef = useRef(0);
 
   // Configurable thresholds initialized from localStorage
   const [config, setConfig] = useState(() => {
@@ -194,6 +194,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
     latestTickerDataRef.current = {};
     setExpectedTickerCount(0);
     setLastRefreshed(0);
+    lastScanTimeRef.current = 0;
 
     // Get all strikes for this expiry
     const strikes = getStrikes(products, selExpiry);
@@ -273,9 +274,12 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             gamma,
             theta,
             lastUpdate: Date.now(),
+            bidUpdatedAt: bid != null ? Date.now() : 0,
+            askUpdatedAt: ask != null ? Date.now() : 0,
           };
         }
         setTickerData({ ...latestTickerDataRef.current });
+        lastScanTimeRef.current = 0; // Trigger scan immediately on backfill load
       }
     } catch (e) {
       console.error('REST backfill error in scanner:', e);
@@ -477,46 +481,21 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
 
   }, [scanning, spotPrice, config, publishTopSpreads]);
 
-  // Periodic and conditional scanning
+  // Periodic and conditional scanning with 2-second throttling
   useEffect(() => {
     if (!scanning || !spotPrice) return;
 
     const nowTime = Date.now();
-    const currentMinute = Math.floor(nowTime / 60000);
-    const lastMinute = Math.floor(lastRefreshed / 60000);
-
-    // Initial scan or new minute
-    if (lastRefreshed === 0 || currentMinute > lastMinute) {
+    // Scan if:
+    // 1. We haven't scanned yet (lastRefreshed === 0)
+    // 2. Or it has been at least 2 seconds (2000ms) since the last scan
+    if (lastRefreshed === 0 || (nowTime - lastScanTimeRef.current >= 2000)) {
+      lastScanTimeRef.current = nowTime;
       computeSpreads();
-      return;
     }
+  }, [tickerData, scanning, spotPrice, config, lastRefreshed, computeSpreads]);
 
-    // Fast-track initial results if we have enough data but no results yet
-    const allTickers = Object.values(tickerData);
-    if (resultsCall.length === 0 && resultsPut.length === 0 && allTickers.length > expectedTickerCount * 0.1) {
-      const elapsedSinceLast = nowTime - lastRefreshed;
-      if (elapsedSinceLast > 2000) {
-        computeSpreads();
-      }
-    }
-  }, [tickerData, scanning, spotPrice, expectedTickerCount, lastRefreshed, computeSpreads, resultsCall.length, resultsPut.length]);
 
-  // Countdown timer for Refresh button
-  useEffect(() => {
-    const timer = setInterval(() => {
-      const now = Date.now();
-      const nextMinute = (Math.floor(now / 60000) + 1) * 60000;
-      const left = Math.ceil((nextMinute - now) / 1000);
-      setTimeRemaining(left > 0 ? (left > 60 ? 60 : left) : 0);
-    }, 1000);
-
-    const now = Date.now();
-    const nextMinute = (Math.floor(now / 60000) + 1) * 60000;
-    const left = Math.ceil((nextMinute - now) / 1000);
-    setTimeRemaining(left > 0 ? (left > 60 ? 60 : left) : 0);
-
-    return () => clearInterval(timer);
-  }, [lastRefreshed, scanning]);
 
   // ── Stop scanning ──────────────────────────────────────────────────────
   const stopScan = useCallback(() => {
@@ -545,6 +524,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
       }
       return newConfig;
     });
+    lastScanTimeRef.current = 0; // Trigger scan immediately on config change
   };
 
   // Start/stop scanner locally
@@ -751,7 +731,6 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             expectedTickerCount={expectedTickerCount}
             config={config}
             onRefresh={() => computeSpreads(true)}
-            timeRemaining={timeRemaining}
             spotPrice={spotPrice}
             lastRefreshed={lastRefreshed}
             trueAtmStrike={globalAtmStrike}
@@ -767,7 +746,6 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             expectedTickerCount={expectedTickerCount}
             config={config}
             onRefresh={() => computeSpreads(true)}
-            timeRemaining={timeRemaining}
             spotPrice={spotPrice}
             lastRefreshed={lastRefreshed}
             trueAtmStrike={globalAtmStrike}

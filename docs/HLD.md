@@ -83,13 +83,15 @@ Browser (React + Vite Dashboard)
 
 1. Subscribe to all option symbols in the selected expiry.
 2. Buffer and batch ticker updates (50ms flush) to limit render pressure.
-3. Evaluate pair candidates using strike/IV/premium/deviation constraints. Uses **execution-realistic pricing**: Long legs are evaluated at the **Ask** and Short legs at the **Bid**. Similarly, **IV Diff** is calculated using directional IVs (Ask IV for long, Bid IV for short). Candidates must pass a **quote freshness guard**: both the buy and sell legs must have bid/ask quotes updated by the WebSocket stream in the last 120 seconds (`bidUpdatedAt > 0` and `askUpdatedAt > 0`), which prevents utilizing stale REST-backfilled quotes on illiquid strikes.
-4. Project spread values to the ATM boundary using live option chain shifting:
+3. Perform REST backfill on scanner startup. Set `bidUpdatedAt` and `askUpdatedAt` to `Date.now()` if quotes exist so that backfilled tickers are recognized as fresh, filling the tables immediately.
+4. Evaluate pair candidates every 2 seconds using a throttled scanner loop (and instantly on configuration updates).
+5. Candidates are filtered using strike/IV/premium/deviation constraints. Uses **execution-realistic pricing**: Long legs are evaluated at the **Ask** and Short legs at the **Bid**. Similarly, **IV Diff** is calculated using directional IVs (Ask IV for long, Bid IV for short). Candidates must pass a **quote freshness guard**: both the buy and sell legs must have bid/ask quotes updated (either via REST backfill initially or by WebSocket ticks subsequently) in the last 120 seconds (`bidUpdatedAt > 0` and `askUpdatedAt > 0`), which prevents utilizing stale quotes on illiquid strikes.
+6. Project spread values to the ATM boundary using live option chain shifting:
    - **At ATM Ask/Bid**: Pulls the current option chain Bid for the ATM strike (long leg) and the Ask for the OTM strike at `ATM ± strikeDiff` (short leg). If the exact strike is missing from `tickerData`, the nearest available strike within a tight asset-specific tolerance (**500** points for BTC and **50** points for ETH) under the same contract expiry is used as a fallback. Directly shows the ATM premium ratio below the prices, rounded to the nearest 0.25. Displays `—` when no suitable ticker exists.
    - **At ATM P&L**: Computes the liquidation payout using the live ATM option chain quotes: `[(ATM_Bid - Entry_Long) - (OTM_Ask - Entry_Short) × Qty] × lotSize`. Computed only when both legs have valid (non-null, non-zero) prices; shows `—` otherwise. Directly displays the Return on Margin (ROI %) inside the same cell.
    - **At ATM Margin**: Computes the trade's margin requirement matching the Paper Trading tier-leverage system. Always shown — it is derived from spread entry prices, not ATM chain data, so it is always available.
    - **ROI Sorting**: Dynamically groups results and sorts them descending by maximum ROI at ATM.
-5. Publish top-3 call and top-3 put candidates to the scanner table, and broadcast to Paper Trading via `BroadcastChannel`.
+7. Publish top-3 call and top-3 put candidates to the scanner table, and broadcast to Paper Trading via `BroadcastChannel`.
 
 ### Paper Trading (Automated Lifecycle)
 
