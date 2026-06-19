@@ -858,6 +858,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
       if (error && error.code === 'PGRST116') {
         const defaultRow = {
+          id: activeAccountId,
           account_id: activeAccountId,
           underlying: 'BTC',
           min_strike_diff: 800,
