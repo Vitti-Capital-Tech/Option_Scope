@@ -387,12 +387,12 @@ async function startSingleAccountEngine(account) {
       const activeSchedule = getActiveSchedule();
       const effectiveConfig = activeSchedule
         ? {
-            ...config,
-            numberOfCalls: activeSchedule.numberOfCalls,
-            numberOfPuts: activeSchedule.numberOfPuts,
-            minLongDist: activeSchedule.minLongDist,
-            minStrikeDiff: activeSchedule.minStrikeDiff,
-          }
+          ...config,
+          numberOfCalls: activeSchedule.numberOfCalls,
+          numberOfPuts: activeSchedule.numberOfPuts,
+          minLongDist: activeSchedule.minLongDist,
+          minStrikeDiff: activeSchedule.minStrikeDiff,
+        }
         : { ...config };
 
       if (activeSchedule) {
@@ -1094,7 +1094,7 @@ async function startSingleAccountEngine(account) {
           let reasonSuffix = '';
 
           if (exitType === 'ITM') {
-            isExitMet = isCall ? (spotPrice <= buyStrike - exitPoints) : (spotPrice >= buyStrike + exitPoints);
+            isExitMet = isCall ? (spotPrice >= buyStrike - exitPoints) : (spotPrice <= buyStrike + exitPoints);
             reasonSuffix = ` @ ITM (${isCall ? '-' : '+'}${exitPoints}pts)`;
           } else if (exitType === 'OTM') {
             isExitMet = isCall ? (spotPrice >= buyStrike + exitPoints) : (spotPrice <= buyStrike - exitPoints);
