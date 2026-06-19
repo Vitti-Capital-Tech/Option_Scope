@@ -3,8 +3,8 @@ import CustomInput from '../common/CustomInput';
 
 const DEFAULT_WINDOW = {
   label: 'Window',
-  startTime: '05:30',
-  endTime: '05:29',
+  startTime: '17:30',
+  endTime: '17:29',
   numberOfCalls: 3,
   numberOfPuts: 3,
   minLongDist: 500,
@@ -27,7 +27,7 @@ function formatMin(m) {
   return `${String(h).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
 }
 
-// Get unoccupied time slots across the 24h cycle starting from 05:30 AM IST (330 minutes)
+// Get unoccupied time slots across the 24h cycle starting from 05:30 PM IST (1050 minutes)
 function getUnoccupiedSlots(schedules, excludeId = null) {
   const mins = new Array(1440).fill(false);
   schedules.forEach(s => {
@@ -47,9 +47,9 @@ function getUnoccupiedSlots(schedules, excludeId = null) {
   let inSlot = false;
   let start = 0;
 
-  // Traverse 1440 minutes starting at 330 (05:30 AM IST)
+  // Traverse 1440 minutes starting at 1050 (05:30 PM IST)
   for (let i = 0; i < 1440; i++) {
-    const m = (330 + i) % 1440;
+    const m = (1050 + i) % 1440;
     if (!mins[m] && !inSlot) {
       start = m;
       inSlot = true;
@@ -60,11 +60,11 @@ function getUnoccupiedSlots(schedules, excludeId = null) {
   }
 
   if (inSlot) {
-    slots.push({ start, end: 330 });
+    slots.push({ start, end: 1050 });
   }
 
-  // Handle wrap merge: if slot at end (ends at 330) and slot at start (starts at 330) exist, merge them
-  if (slots.length > 1 && slots[0].start === 330 && slots[slots.length - 1].end === 330) {
+  // Handle wrap merge: if slot at end (ends at 1050) and slot at start (starts at 1050) exist, merge them
+  if (slots.length > 1 && slots[0].start === 1050 && slots[slots.length - 1].end === 1050) {
     const mergedSlot = {
       start: slots[slots.length - 1].start,
       end: slots[0].end
@@ -132,11 +132,11 @@ export default function SchedulePanel({
 
   const handleAdd = useCallback(() => {
     const slots = getUnoccupiedSlots(schedules);
-    let startTime = '05:30';
-    let endTime = '05:29';
+    let startTime = '17:30';
+    let endTime = '17:29';
     if (slots.length > 0) {
       startTime = formatMin(slots[0].start);
-      const endVal = slots[0].end === 330 ? 329 : slots[0].end;
+      const endVal = slots[0].end === 1050 ? 1049 : slots[0].end;
       endTime = formatMin(endVal);
     }
     const newWin = {
@@ -167,94 +167,132 @@ export default function SchedulePanel({
   // ── Timeline bar ────────────────────────────────────────────────────────
   const renderTimeline = () => {
     const TOTAL = 1440; // minutes in a day
+
+    // Calculate current time percent in IST shifted relative to 05:30 PM IST
+    const now = new Date();
+    // UTC hours and minutes plus 330 minutes (5 hours 30 mins) to get IST
+    const currentMinIST = (now.getUTCHours() * 60 + now.getUTCMinutes() + 330) % 1440;
+    const currentMinShifted = (currentMinIST - 1050 + 1440) % 1440;
+    const currentPercent = (currentMinShifted / TOTAL) * 100;
+
     return (
-      <div className="schedule-timeline-bar">
-        {/* Hour ticks (8 sections, 3 hours each starting at 5:30am) */}
-        {[0, 3, 6, 9, 12, 15, 18, 21, 24].map(h => (
-          <div key={h} style={{
-            position: 'absolute', left: `${(h * 60 / TOTAL) * 100}%`,
-            top: 0, bottom: 0, width: 1, background: 'var(--border)', opacity: 0.3,
-          }} />
-        ))}
-        {/* Schedule blocks */}
-        {schedules.map((s, i) => {
-          if (!s.isActive) return null;
-          const startMin = toMin(s.startTime);
-          const endMin = toMin(s.endTime);
-          const color = WINDOW_COLORS[i % WINDOW_COLORS.length];
+      <div className="schedule-timeline-container">
+        <div className="schedule-timeline-bar">
+          {/* Current Time Indicator line */}
+          <div
+            className="timeline-current-time-indicator"
+            style={{ left: `${currentPercent}%` }}
+            title={`Current Time: ${formatMin(currentMinIST)} IST`}
+          />
 
-          // Shift minutes relative to 05:30 AM start
-          const startShifted = (startMin - 330 + 1440) % 1440;
-          const endShifted = (endMin - 330 + 1440) % 1440;
-          const isSplit = startShifted > endShifted;
+          {/* Schedule blocks */}
+          {schedules.map((s, i) => {
+            if (!s.isActive) return null;
+            const startMin = toMin(s.startTime);
+            const endMin = toMin(s.endTime);
+            const color = WINDOW_COLORS[i % WINDOW_COLORS.length];
 
-          const tooltip = `${s.label || 'Window'} (${cleanTime(s.startTime)} - ${cleanTime(s.endTime)})\nCalls: ${s.numberOfCalls} | Puts: ${s.numberOfPuts}\nStrike Diff: ${s.minStrikeDiff} | Long Dist: ${s.minLongDist}`;
+            // Shift minutes relative to 05:30 PM start
+            const startShifted = (startMin - 1050 + 1440) % 1440;
+            const endShifted = (endMin - 1050 + 1440) % 1440;
+            const isSplit = startShifted > endShifted;
 
-          if (isSplit) {
+            const tooltip = `${s.label || 'Window'} (${cleanTime(s.startTime)} - ${cleanTime(s.endTime)})\nCalls: ${s.numberOfCalls} | Puts: ${s.numberOfPuts}\nStrike Diff: ${s.minStrikeDiff} | Long Dist: ${s.minLongDist}`;
+
+            if (isSplit) {
+              return (
+                <React.Fragment key={s.id}>
+                  <div
+                    title={tooltip}
+                    style={{
+                      position: 'absolute',
+                      left: `${(startShifted / TOTAL) * 100}%`,
+                      width: `${((TOTAL - startShifted) / TOTAL) * 100}%`,
+                      top: 0, bottom: 0,
+                      background: color, opacity: 0.75,
+                      display: 'flex', alignItems: 'center',
+                      paddingLeft: 6, overflow: 'hidden',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <span style={{ fontSize: 9, fontWeight: 800, color: '#000', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {s.label} ({cleanTime(s.startTime)} - {cleanTime(s.endTime)})
+                    </span>
+                  </div>
+                  <div
+                    title={tooltip}
+                    style={{
+                      position: 'absolute',
+                      left: '0%',
+                      width: `${(endShifted / TOTAL) * 100}%`,
+                      top: 0, bottom: 0,
+                      background: color, opacity: 0.75,
+                      display: 'flex', alignItems: 'center',
+                      paddingLeft: 6, overflow: 'hidden',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <span style={{ fontSize: 9, fontWeight: 800, color: '#000', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {s.label} ({cleanTime(s.startTime)} - {cleanTime(s.endTime)})
+                    </span>
+                  </div>
+                </React.Fragment>
+              );
+            }
+
             return (
-              <React.Fragment key={s.id}>
+              <div
+                key={s.id}
+                title={tooltip}
+                style={{
+                  position: 'absolute',
+                  left: `${(startShifted / TOTAL) * 100}%`,
+                  width: `${((endShifted - startShifted) / TOTAL) * 100}%`,
+                  top: 0, bottom: 0,
+                  background: color, opacity: 0.75,
+                  display: 'flex', alignItems: 'center',
+                  paddingLeft: 6, overflow: 'hidden',
+                  cursor: 'pointer',
+                }}
+              >
+                <span style={{ fontSize: 9, fontWeight: 800, color: '#000', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {s.label} ({cleanTime(s.startTime)} - {cleanTime(s.endTime)})
+                </span>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Time Axis (ticks & labels) rendered cleanly below the bar */}
+        <div className="schedule-timeline-axis">
+          {[
+            { label: '5:30pm', hour: 0 },
+            { label: '8:30pm', hour: 3 },
+            { label: '11:30pm', hour: 6 },
+            { label: '2:30am', hour: 9 },
+            { label: '5:30am', hour: 12 },
+            { label: '8:30am', hour: 15 },
+            { label: '11:30am', hour: 18 },
+            { label: '2:30pm', hour: 21 },
+            { label: '5:30pm', hour: 24 }
+          ].map(tick => {
+            const leftPercent = ((tick.hour * 60) / TOTAL) * 100;
+            return (
+              <React.Fragment key={tick.label + '-' + tick.hour}>
                 <div
-                  title={tooltip}
-                  style={{
-                    position: 'absolute',
-                    left: `${(startShifted / TOTAL) * 100}%`,
-                    width: `${((TOTAL - startShifted) / TOTAL) * 100}%`,
-                    top: 2, bottom: 2, borderRadius: 3,
-                    background: color, opacity: 0.75,
-                    display: 'flex', alignItems: 'center',
-                    paddingLeft: 4, overflow: 'hidden',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <span style={{ fontSize: 9, fontWeight: 700, color: '#000', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {s.label}
-                  </span>
-                </div>
-                <div
-                  title={tooltip}
-                  style={{
-                    position: 'absolute',
-                    left: '0%',
-                    width: `${(endShifted / TOTAL) * 100}%`,
-                    top: 2, bottom: 2, borderRadius: 3,
-                    background: color, opacity: 0.75,
-                    cursor: 'pointer',
-                  }}
+                  className="schedule-timeline-tick"
+                  style={{ left: `${leftPercent}%` }}
                 />
+                <span
+                  className="schedule-timeline-label"
+                  style={{ left: `${leftPercent}%` }}
+                >
+                  {tick.label}
+                </span>
               </React.Fragment>
             );
-          }
-
-          return (
-            <div
-              key={s.id}
-              title={tooltip}
-              style={{
-                position: 'absolute',
-                left: `${(startShifted / TOTAL) * 100}%`,
-                width: `${((endShifted - startShifted) / TOTAL) * 100}%`,
-                top: 2, bottom: 2, borderRadius: 3,
-                background: color, opacity: 0.75,
-                display: 'flex', alignItems: 'center',
-                paddingLeft: 4, overflow: 'hidden',
-                cursor: 'pointer',
-              }}
-            >
-              <span style={{ fontSize: 9, fontWeight: 700, color: '#000', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {s.label}
-              </span>
-            </div>
-          );
-        })}
-        {/* Time labels shifted relative to 5:30am IST start */}
-        {['5:30am', '8:30am', '11:30am', '2:30pm', '5:30pm', '8:30pm', '11:30pm', '2:30am'].map((label, i) => (
-          <span key={label} style={{
-            position: 'absolute',
-            left: `${((i * 3 * 60) / TOTAL) * 100}%`,
-            bottom: 1, fontSize: 8, color: 'var(--text-dim)', transform: 'translateX(-50%)',
-            pointerEvents: 'none', userSelect: 'none', fontWeight: 500,
-          }}>{label}</span>
-        ))}
+          })}
+        </div>
       </div>
     );
   };
@@ -292,7 +330,7 @@ export default function SchedulePanel({
       {/* Available Slots Info */}
       {schedules.length > 0 && (
         <div style={{
-          fontSize: 10, color: 'var(--text-dim)', marginTop: -6, marginBottom: 12,
+          fontSize: 10, color: 'var(--text-dim)', marginTop: 2, marginBottom: 12,
           display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap'
         }}>
           <span style={{ fontWeight: 600 }}>Available slots (IST):</span>
@@ -333,7 +371,7 @@ export default function SchedulePanel({
               borderLeft: `4px solid ${s.isActive ? color : 'var(--border)'}`,
             }}>
               {/* Window Label */}
-              <div className="schedule-item-block" style={{ width: 130 }}>
+              <div className="schedule-item-block schedule-item-name-block">
                 <span className="schedule-item-label">Window Name</span>
                 <CustomInput
                   type="text"
@@ -341,36 +379,33 @@ export default function SchedulePanel({
                   value={s.label}
                   onChange={e => handleChange(s.id, 'label', e.target.value)}
                   placeholder="e.g. Night Window"
-                  style={{ width: '100%' }}
                 />
               </div>
 
               {/* Start Time */}
-              <div className="schedule-item-block">
+              <div className="schedule-item-block schedule-item-time-block">
                 <span className="schedule-item-label">Start Time (IST)</span>
                 <CustomInput
                   type="time"
                   className="schedule-inline-input"
                   value={cleanTime(s.startTime)}
                   onChange={e => handleChange(s.id, 'startTime', e.target.value)}
-                  style={{ width: 100 }}
                 />
               </div>
 
               {/* End Time */}
-              <div className="schedule-item-block">
+              <div className="schedule-item-block schedule-item-time-block">
                 <span className="schedule-item-label">End Time (IST)</span>
                 <CustomInput
                   type="time"
                   className="schedule-inline-input"
                   value={cleanTime(s.endTime)}
                   onChange={e => handleChange(s.id, 'endTime', e.target.value)}
-                  style={{ width: 100 }}
                 />
               </div>
 
               {/* Max Calls */}
-              <div className="schedule-item-block">
+              <div className="schedule-item-block schedule-item-num-block">
                 <span className="schedule-item-label">Max Calls</span>
                 <CustomInput
                   type="number"
@@ -379,12 +414,11 @@ export default function SchedulePanel({
                   className="schedule-inline-input"
                   value={s.numberOfCalls}
                   onChange={e => handleChange(s.id, 'numberOfCalls', Number(e.target.value))}
-                  style={{ width: 64 }}
                 />
               </div>
 
               {/* Max Puts */}
-              <div className="schedule-item-block">
+              <div className="schedule-item-block schedule-item-num-block">
                 <span className="schedule-item-label">Max Puts</span>
                 <CustomInput
                   type="number"
@@ -393,12 +427,11 @@ export default function SchedulePanel({
                   className="schedule-inline-input"
                   value={s.numberOfPuts}
                   onChange={e => handleChange(s.id, 'numberOfPuts', Number(e.target.value))}
-                  style={{ width: 64 }}
                 />
               </div>
 
               {/* Min Strike Diff */}
-              <div className="schedule-item-block">
+              <div className="schedule-item-block schedule-item-num-block">
                 <span className="schedule-item-label">Min Strike Diff</span>
                 <CustomInput
                   type="number"
@@ -406,12 +439,11 @@ export default function SchedulePanel({
                   className="schedule-inline-input"
                   value={s.minStrikeDiff}
                   onChange={e => handleChange(s.id, 'minStrikeDiff', Number(e.target.value))}
-                  style={{ width: 90 }}
                 />
               </div>
 
               {/* Min Long Dist */}
-              <div className="schedule-item-block">
+              <div className="schedule-item-block schedule-item-num-block">
                 <span className="schedule-item-label">Min Long Dist</span>
                 <CustomInput
                   type="number"
@@ -419,14 +451,13 @@ export default function SchedulePanel({
                   className="schedule-inline-input"
                   value={s.minLongDist}
                   onChange={e => handleChange(s.id, 'minLongDist', Number(e.target.value))}
-                  style={{ width: 90 }}
                 />
               </div>
 
               {/* Overlap Indicator Badge inside the row */}
-              {overlapWindow && (
+              {overlapWindow ? (
                 <div
-                  className="schedule-item-block"
+                  className="schedule-item-block schedule-item-status-block"
                   style={{
                     alignItems: 'center',
                     justifyContent: 'center',
@@ -441,12 +472,15 @@ export default function SchedulePanel({
                     OVERLAP
                   </div>
                 </div>
+              ) : (
+                <div className="schedule-item-block schedule-item-status-block" style={{ opacity: 0, pointerEvents: 'none' }}>
+                  <span className="schedule-item-label">Status</span>
+                  <div style={{ padding: '4px 8px', fontSize: 9 }}>OK</div>
+                </div>
               )}
 
-
-
               {/* Quick Delete Trash Button */}
-              <div className="schedule-item-block" style={{ justifyContent: 'center' }}>
+              <div className="schedule-item-block schedule-item-delete-block" style={{ justifyContent: 'center' }}>
                 <span className="schedule-item-label" style={{ opacity: 0 }}>Delete</span>
                 <button
                   type="button"

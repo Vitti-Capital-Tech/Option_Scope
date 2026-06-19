@@ -4259,45 +4259,100 @@ body.light-theme .pt-btn-apply.active {
   box-shadow: 0 0 0 2px rgba(0, 217, 163, 0.12);
 }
 
+.schedule-timeline-container {
+  display: flex;
+  flex-direction: column;
+  margin: 12px 0 16px 0;
+}
+
 .schedule-timeline-bar {
   position: relative;
-  height: 28px;
+  height: 24px;
   border-radius: 6px;
   background: repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.015), rgba(255, 255, 255, 0.015) 10px, rgba(255, 255, 255, 0.035) 10px, rgba(255, 255, 255, 0.035) 20px), var(--bg3);
   border: 1px solid var(--border);
   overflow: hidden;
-  margin: 12px 0;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.schedule-timeline-axis {
+  position: relative;
+  height: 20px;
+  margin-top: 6px;
+}
+
+.schedule-timeline-tick {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  height: 5px;
+  background: var(--border);
+  opacity: 0.4;
+}
+
+.schedule-timeline-label {
+  position: absolute;
+  top: 8px;
+  font-size: 9px;
+  color: var(--text-dim);
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-weight: 600;
+  user-select: none;
+}
+
+.timeline-current-time-indicator {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #ff5252;
+  box-shadow: 0 0 6px #ff5252;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.timeline-current-time-indicator::after {
+  content: '';
+  position: absolute;
+  top: -2px;
+  left: -2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ff5252;
+  box-shadow: 0 0 8px #ff5252;
 }
 
 /* -- Redesigned Horizontal Schedule List -- */
 .schedule-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  overflow-x: auto;
-  padding-bottom: 8px;
+  gap: 12px;
+  margin-bottom: 8px;
 }
 
 .schedule-item {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1.8fr 1fr 1fr 0.7fr 0.7fr 0.9fr 0.9fr 1fr auto;
   align-items: center;
-  justify-content: space-between;
-  padding: 10px 16px;
-  background: rgba(15, 20, 25, 0.4);
+  padding: 12px 16px;
+  background: rgba(22, 27, 34, 0.4);
   border: 1px solid var(--border);
   border-radius: 8px;
-  min-width: max-content;
-  gap: 20px;
+  gap: 16px;
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  backdrop-filter: blur(8px);
 }
 
 .schedule-item:hover {
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(30, 36, 44, 0.6);
   border-color: var(--border-hover);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
 }
 
 .schedule-item.inactive {
-  opacity: 0.6;
+  opacity: 0.5;
 }
 
 .schedule-item-block {
@@ -4307,28 +4362,34 @@ body.light-theme .pt-btn-apply.active {
 }
 
 .schedule-item-label {
-  font-size: 9px;
-  font-weight: 600;
+  font-size: 10px;
+  font-weight: 700;
   color: var(--text-dim);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.8px;
 }
 
 .schedule-inline-input {
   background: var(--bg3);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 5px;
   color: var(--text);
   font-family: 'Inter', sans-serif;
-  font-size: 11px;
-  padding: 4px 8px;
+  font-size: 12px;
+  padding: 6px 10px;
   outline: none;
-  transition: border-color 0.15s;
+  transition: all 0.15s ease;
   box-sizing: border-box;
+  width: 100%;
+}
+
+.schedule-inline-input:hover:not(:disabled) {
+  border-color: var(--text-dim);
 }
 
 .schedule-inline-input:focus {
   border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(0, 217, 163, 0.15);
 }
 
 .schedule-inline-input[type="text"] {
@@ -4338,11 +4399,54 @@ body.light-theme .pt-btn-apply.active {
 .schedule-inline-input[type="number"] {
   font-family: 'JetBrains Mono', monospace;
   font-variant-numeric: tabular-nums;
-  text-align: right;
+  text-align: left;
 }
 
 .schedule-inline-input[type="time"] {
   font-family: 'JetBrains Mono', monospace;
+}
+
+/* Responsive Styles for SchedulePanel */
+@media (max-width: 992px) {
+  .schedule-item {
+    grid-template-columns: 2fr 1.2fr 1.2fr 1fr 1fr auto;
+    row-gap: 12px;
+  }
+}
+
+@media (max-width: 850px) {
+  .schedule-item {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    padding: 16px;
+    position: relative;
+  }
+
+  .schedule-item-block {
+    width: 100% !important;
+  }
+
+  .schedule-item-name-block {
+    grid-column: span 2;
+    padding-right: 32px; /* Avoid overlap with absolute delete button */
+  }
+
+  .schedule-item-status-block {
+    grid-column: span 2;
+  }
+
+  .schedule-item-delete-block {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    height: auto;
+    margin: 0;
+  }
+  
+  .schedule-item-delete-block .schedule-item-label {
+    display: none;
+  }
 }
 
 /* ── Custom Input styling ── */
