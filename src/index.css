@@ -2001,6 +2001,12 @@ body.light-theme .scanner-logs-body::-webkit-scrollbar-thumb:hover {
   border: 1px solid rgba(163, 113, 247, 0.2);
 }
 
+.pt-exit-badge.otm {
+  color: #00d2d3;
+  background: rgba(0, 210, 211, 0.08);
+  border: 1px solid rgba(0, 210, 211, 0.2);
+}
+
 .pt-exit-badge.atm {
   color: #0ecb81;
   background: rgba(14, 203, 129, 0.08);

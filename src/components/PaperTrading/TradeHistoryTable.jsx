@@ -26,6 +26,7 @@ export default function TradeHistoryTable({
     if (reason?.includes('Manual')) return 'manual';
     if (reason?.includes('Top 3')) return 'position';
     if (reason?.includes('ITM')) return 'itm';
+    if (reason?.includes('OTM')) return 'otm';
     if (reason?.includes('ATM')) return 'atm';
     if (reason?.includes('Expiry')) return 'expiry';
     return 'position';

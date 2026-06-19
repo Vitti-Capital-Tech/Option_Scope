@@ -6,6 +6,7 @@ export default function FirstAccountCard({
   errors,
   isCreatingAccount,
   watchAtmRatioScaling,
+  watchCreateExitType,
   onCancel
 }) {
   return (
@@ -176,6 +177,30 @@ export default function FirstAccountCard({
                   {...register('maxSellQty', { valueAsNumber: true })}
                   className="first-account-input"
                 />
+              </div>
+
+              <div className="first-account-row">
+                <div className="first-account-form-group">
+                  <label className="first-account-label">Exit Type</label>
+                  <select
+                    {...register('exitType')}
+                    className="first-account-select"
+                  >
+                    <option value="ATM">ATM</option>
+                    <option value="ITM">ITM</option>
+                    <option value="OTM">OTM</option>
+                  </select>
+                </div>
+                {watchCreateExitType && watchCreateExitType !== 'ATM' && (
+                  <div className="first-account-form-group">
+                    <label className="first-account-label">Exit Points</label>
+                    <input
+                      type="number"
+                      {...register('exitPoints', { valueAsNumber: true })}
+                      className="first-account-input"
+                    />
+                  </div>
+                )}
               </div>
 
               <div className="first-account-row">

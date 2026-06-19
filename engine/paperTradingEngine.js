@@ -42,7 +42,9 @@ async function startSingleAccountEngine(account) {
     daysToExpiry: 0,
     numberOfCalls: 3,
     numberOfPuts: 3,
-    spotDiff: 0.5
+    spotDiff: 0.5,
+    exitType: 'ATM',
+    exitPoints: 0
   };
   let products = [];
   let expiries = [];
@@ -110,6 +112,8 @@ async function startSingleAccountEngine(account) {
           number_of_calls: 3,
           number_of_puts: 3,
           spot_diff: 0.5,
+          exit_type: 'ATM',
+          exit_points: 0,
           updated_at: new Date().toISOString()
         };
         const { data: inserted, error: insertErr } = await supabase
@@ -142,7 +146,9 @@ async function startSingleAccountEngine(account) {
           daysToExpiry: data.days_to_expiry ?? 0,
           numberOfCalls: data.number_of_calls ?? 3,
           numberOfPuts: data.number_of_puts ?? 3,
-          spotDiff: data.spot_diff ?? 0.5
+          spotDiff: data.spot_diff ?? 0.5,
+          exitType: data.exit_type ?? 'ATM',
+          exitPoints: data.exit_points ?? 0
         };
         configDbId = data.id;
         // log(`[${accountState.name}] Config loaded: ${config.underlying} | Expiry: ${config.expiry || 'auto'}`);
@@ -1013,15 +1019,30 @@ async function startSingleAccountEngine(account) {
           }
         }
 
-        // Priority 3: ATM exit
+        // Priority 3: Dynamic ATM/ITM/OTM exit
         if (!shouldExit) {
           const isCall = pos.type === 'call';
           const buyStrike = pos.buyLeg.strike;
-          const isAtmMET = isCall ? spotPrice >= buyStrike : spotPrice <= buyStrike;
+          const exitType = config.exitType || 'ATM';
+          const exitPoints = Math.abs(config.exitPoints || 0);
 
-          if (isAtmMET) {
+          let isExitMet = false;
+          let reasonSuffix = '';
+
+          if (exitType === 'ITM') {
+            isExitMet = isCall ? (spotPrice >= buyStrike + exitPoints) : (spotPrice <= buyStrike - exitPoints);
+            reasonSuffix = ` @ ITM (+${exitPoints}pts)`;
+          } else if (exitType === 'OTM') {
+            isExitMet = isCall ? (spotPrice >= buyStrike - exitPoints) : (spotPrice <= buyStrike + exitPoints);
+            reasonSuffix = ` @ OTM (-${exitPoints}pts)`;
+          } else { // ATM
+            isExitMet = isCall ? (spotPrice >= buyStrike) : (spotPrice <= buyStrike);
+            reasonSuffix = ' @ ATM';
+          }
+
+          if (isExitMet) {
             shouldExit = true;
-            exitReason = 'Full Exit @ ATM';
+            exitReason = `Full Exit${reasonSuffix}`;
           }
         }
 

@@ -8,6 +8,7 @@ export default function CreateAccountModal({
   errors,
   isCreating,
   watchAtmRatioScaling,
+  watchCreateExitType,
   profiles,
   userRole
 }) {
@@ -293,6 +294,49 @@ export default function CreateAccountModal({
                   width: '100%'
                 }}
               />
+            </div>
+
+            <div style={{ display: 'flex', gap: '16px' }}>
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Exit Type</label>
+                <select
+                  {...register('exitType')}
+                  style={{
+                    padding: '10px 14px',
+                    borderRadius: 8,
+                    border: '1px solid var(--border)',
+                    background: 'var(--bg3)',
+                    color: 'var(--text)',
+                    fontSize: 13,
+                    outline: 'none',
+                    width: '100%',
+                    cursor: 'pointer'
+                  }}
+                >
+                  <option value="ATM">ATM</option>
+                  <option value="ITM">ITM</option>
+                  <option value="OTM">OTM</option>
+                </select>
+              </div>
+              {watchCreateExitType && watchCreateExitType !== 'ATM' && (
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Exit Points</label>
+                  <input
+                    type="number"
+                    {...register('exitPoints', { valueAsNumber: true })}
+                    style={{
+                      padding: '10px 14px',
+                      borderRadius: 8,
+                      border: '1px solid var(--border)',
+                      background: 'var(--bg3)',
+                      color: 'var(--text)',
+                      fontSize: 13,
+                      outline: 'none',
+                      width: '100%'
+                    }}
+                  />
+                </div>
+              )}
             </div>
 
             <div style={{ display: 'flex', gap: '16px' }}>

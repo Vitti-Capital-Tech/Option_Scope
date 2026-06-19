@@ -8,7 +8,7 @@ The app is built around four workflows:
 
 - **Charts**: Monitor call, put, or combined premium structures with live candles, Greeks, and alerting.
 - **Ratio Spread Scanner**: A standalone options discovery scanner. Discovers call/put ratio spread opportunities using lot-size-aware delta notional alignment and execution-realistic pricing (Long @ Ask, Short @ Bid). Persists configuration locally in `localStorage` independent of Paper Trading database states. Features real-time ATM projections displaying the **At ATM Ask/Bid** and the projected **At ATM P&L** directly from the live options chain, mapped to the true market ATM strike. When the exact ATM or derived OTM strike is missing from the live feed, the system automatically falls back to the **nearest available strike** within a tight asset-specific tolerance (**`500`** points for BTC / **`50`** points for ETH) under the same contract expiry.
-- **Paper Trading**: Scoped multi-account simulation environment. Features custom React modals to create, edit (renaming via `react-hook-form` validation), and delete accounts (complete with active position safety warnings). Live PnL is based on immediate liquidation values, full ATM exits, dynamic portfolio rotation, expiry settlement, IV tracking, and CSV exports.
+- **Paper Trading**: Scoped multi-account simulation environment. Features custom React modals to create, edit (renaming via `react-hook-form` validation), and delete accounts (complete with active position safety warnings). Live PnL is based on immediate liquidation values, configurable exit filters (ATM, ITM, OTM with points-based thresholds), dynamic portfolio rotation, expiry settlement, IV tracking, and CSV exports.
 - **ATM Exit Trading**: A simplified, always-on trading variant with a single exit rule (100% at ATM). Features bucketed performance analytics, configurable algo parameters persisted to Supabase, and automatic trade-level statistics aggregation by strike diff and sell quantity.
 
 ## Key Features
@@ -37,7 +37,7 @@ The app is built around four workflows:
 - **Zombie Exit Guard**: Positions that survive past expiry by more than 10 minutes are force-exited with the exit time back-dated to the exact expiry timestamp for accurate trade history.
 - **2-Minute Fallback Position Sync**: In addition to Supabase Realtime events, the engine re-fetches active positions from the database every **2 minutes** as a safety net against missed events (reduced from 30 seconds — Realtime is the primary sync mechanism).
 - **Evergreen Data Engine**: Background product/expiry refresh every 5 minutes keeps filters and candidate pools fresh without manual page reloads.
-- **Paper Trade Analytics**: Bid/Ask spread-aware margin estimate, unrealized/realized PnL based on liquidation value, full ATM exits, expiry settlement, and trade history export.
+- **Paper Trade Analytics**: Bid/Ask spread-aware margin estimate, unrealized/realized PnL based on liquidation value, configurable exit triggers (ATM, ITM, OTM), expiry settlement, and trade history export.
 - **ATM Exit Analytics**: Bucketed trade statistics (by sell quantity range and strike diff) with running averages for margin, P&L, net premium, and fees.
 
 ## Architecture

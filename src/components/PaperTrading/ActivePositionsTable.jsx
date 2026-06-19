@@ -15,7 +15,9 @@ export default function ActivePositionsTable({
   engineStatusColor,
   engineStatusLabel,
   calculatePositionMargin,
-  totalMargin
+  totalMargin,
+  exitType = 'ATM',
+  exitPoints = 0
 }) {
 
   const fmtDuration = (ms) => {
@@ -24,6 +26,24 @@ export default function ActivePositionsTable({
     const m = Math.floor(s / 60);
     if (m < 60) return `${m}m ${s % 60}s`;
     return `${Math.floor(m / 60)}h ${m % 60}m`;
+  };
+
+  const getExitTriggerDesc = (p, exitType = 'ATM', exitPoints = 0) => {
+    const isCall = p.type === 'call';
+    const buyStrike = Number(p.buyLeg.strike);
+    let triggerPrice = buyStrike;
+    let operator = isCall ? '≥' : '≤';
+
+    if (exitType === 'ITM') {
+      triggerPrice = isCall ? buyStrike + exitPoints : buyStrike - exitPoints;
+    } else if (exitType === 'OTM') {
+      triggerPrice = isCall ? buyStrike - exitPoints : buyStrike + exitPoints;
+    }
+
+    return {
+      text: `${operator} ${triggerPrice.toLocaleString()}`,
+      type: exitType
+    };
   };
 
   return (
@@ -142,6 +162,9 @@ export default function ActivePositionsTable({
                       <div style={{ display: 'flex', flexDirection: 'column' }}>
                         <span className="pt-strike-buy">{p.buyLeg.strike.toLocaleString()}</span>
                         <span className="pt-strike-sell" style={{ fontSize: '11px', opacity: 0.8 }}>{p.sellLeg.strike.toLocaleString()}</span>
+                        <span style={{ fontSize: '9px', color: 'var(--text-dim)', marginTop: 2, display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
+                          Exit: <span style={{ color: 'var(--accent)', fontWeight: 700 }}>{getExitTriggerDesc(p, exitType, exitPoints).text}</span> ({getExitTriggerDesc(p, exitType, exitPoints).type})
+                        </span>
                       </div>
                     </td>
                     <td className="hide-mobile"><span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-dim)' }}>{p.entrySpotPrice ? p.entrySpotPrice.toLocaleString() : '—'}</span></td>

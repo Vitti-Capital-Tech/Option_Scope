@@ -38,7 +38,9 @@ const ACCOUNT_CONFIG_DEFAULTS = {
   daysToExpiry: 0,
   numberOfCalls: 3,
   numberOfPuts: 3,
-  spotDiff: 0.5
+  spotDiff: 0.5,
+  exitType: 'ATM',
+  exitPoints: 0
 };
 
 const normalizeAccountDefaultConfig = (config = {}) => {
@@ -112,11 +114,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       daysToExpiry: 0,
       numberOfCalls: 3,
       numberOfPuts: 3,
-      spotDiff: 0.5
+      spotDiff: 0.5,
+      exitType: 'ATM',
+      exitPoints: 0
     }
   });
 
   const watchCreateAtmRatioScaling = watchCreate('atmRatioScaling');
+  const watchCreateExitType = watchCreate('exitType');
 
   const {
     register: registerEdit,
@@ -141,7 +146,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     daysToExpiry: 0,
     numberOfCalls: 3,
     numberOfPuts: 3,
-    spotDiff: 0.5
+    spotDiff: 0.5,
+    exitType: 'ATM',
+    exitPoints: 0
   }));
   const [draftConfig, setDraftConfig] = useState(() => ({ ...config }));
   const [isConfigLoaded, setIsConfigLoaded] = useState(false);
@@ -534,7 +541,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       daysToExpiry: data.daysToExpiry,
       numberOfCalls: data.numberOfCalls,
       numberOfPuts: data.numberOfPuts,
-      spotDiff: data.spotDiff
+      spotDiff: data.spotDiff,
+      exitType: data.exitType,
+      exitPoints: data.exitPoints
     });
 
     setIsCreatingAccount(true);
@@ -575,7 +584,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           days_to_expiry: data.daysToExpiry,
           number_of_calls: data.numberOfCalls ?? 3,
           number_of_puts: data.numberOfPuts ?? 3,
-          spot_diff: data.spotDiff ?? 0.5
+          spot_diff: data.spotDiff ?? 0.5,
+          exit_type: data.exitType ?? 'ATM',
+          exit_points: data.exitPoints ?? 0
         }]);
 
         // Manually fetch accounts first to update state instantly!
@@ -611,7 +622,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       daysToExpiry: config.daysToExpiry,
       numberOfCalls: config.numberOfCalls ?? 3,
       numberOfPuts: config.numberOfPuts ?? 3,
-      spotDiff: config.spotDiff ?? 0.5
+      spotDiff: config.spotDiff ?? 0.5,
+      exitType: config.exitType ?? 'ATM',
+      exitPoints: config.exitPoints ?? 0
     });
     setIsCreateModalOpen(true);
   };
@@ -714,6 +727,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         number_of_calls: newCfg.numberOfCalls ?? 3,
         number_of_puts: newCfg.numberOfPuts ?? 3,
         spot_diff: newCfg.spotDiff ?? 0.5,
+        exit_type: newCfg.exitType ?? 'ATM',
+        exit_points: newCfg.exitPoints ?? 0,
         updated_at: new Date().toISOString()
       }).select();
       if (error) {
@@ -740,7 +755,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     'daysToExpiry',
     'numberOfCalls',
     'numberOfPuts',
-    'spotDiff'
+    'spotDiff',
+    'exitType',
+    'exitPoints'
   ];
 
   const updateConfig = (keyOrObj, value) => {
@@ -785,7 +802,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       daysToExpiry: 0,
       numberOfCalls: 3,
       numberOfPuts: 3,
-      spotDiff: 0.5
+      spotDiff: 0.5,
+      exitType: 'ATM',
+      exitPoints: 0
     };
     if (activeAccount && activeAccount.default_config) {
       return { ...baseFilters, ...activeAccount.default_config };
@@ -850,6 +869,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           number_of_calls: 3,
           number_of_puts: 3,
           spot_diff: 0.5,
+          exit_type: 'ATM',
+          exit_points: 0,
           updated_at: new Date().toISOString()
         };
         const { data: inserted, error: insertErr } = await supabase
@@ -880,7 +901,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           daysToExpiry: data.days_to_expiry ?? 0,
           numberOfCalls: data.number_of_calls ?? 3,
           numberOfPuts: data.number_of_puts ?? 3,
-          spotDiff: data.spot_diff ?? 0.5
+          spotDiff: data.spot_diff ?? 0.5,
+          exitType: data.exit_type ?? 'ATM',
+          exitPoints: data.exit_points ?? 0
         };
         setConfig(loadedConfig);
         setDraftConfig(loadedConfig);
@@ -1547,6 +1570,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             errors={errorsCreate}
             isCreatingAccount={isCreatingAccount}
             watchAtmRatioScaling={watchCreateAtmRatioScaling}
+            watchCreateExitType={watchCreateExitType}
             onCancel={handleLogout}
           />
         ) : (
@@ -1614,6 +1638,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                 engineStatusLabel={engineStatusLabel}
                 calculatePositionMargin={calculatePositionMargin}
                 totalMargin={totalMargin}
+                exitType={config.exitType}
+                exitPoints={config.exitPoints}
               />
 
               <TradeHistoryTable
@@ -1640,6 +1666,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         errors={errorsCreate}
         isCreating={isCreatingAccount}
         watchAtmRatioScaling={watchCreateAtmRatioScaling}
+        watchCreateExitType={watchCreateExitType}
         profiles={profiles}
         userRole={userProfile?.role}
       />

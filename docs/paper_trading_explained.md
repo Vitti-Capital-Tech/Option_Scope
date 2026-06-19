@@ -173,6 +173,8 @@ Every candidate pair must pass **all** of these filters to be considered:
 | 13 | **Call ATM Pct (%)** | `atmRatioPctCall` (default: 50) | The scaling percentage for ATM ratio adjustments on call spreads. |
 | 14 | **Put ATM Pct (%)** | `atmRatioPctPut` (default: 25) | The scaling percentage for ATM ratio adjustments on put spreads. |
 | 15 | **Spot Diff (%)** | `spotDiff` (default: 0.5) | The spot diff required for the next entry in the Active Positions table. |
+| 16 | **Exit Type** | `exitType` (default: 'ATM') | Option exit type parameter: `ATM`, `ITM`, or `OTM` |
+| 17 | **Exit Points** | `exitPoints` (default: 0) | Point offset threshold from the buy strike required to exit the position (applicable for ITM/OTM exit types) |
 
 ### How the Sell Quantity (Ratio) Is Calculated
 
@@ -349,14 +351,30 @@ If current time ≥ expiry time - 2 minutes → EXIT
 
 We exit **2 minutes early** to avoid settlement mechanics. If a position somehow wasn't exited and it's been more than **10 minutes past expiry**, it's treated as a "zombie" and force-exited with the expiry time as the recorded exit time.
 
-### Exit: ATM Reached
+### Exit: Dynamic Spot Trigger (ATM, ITM, OTM)
 
+Depending on the `exitType` configured for the account:
+
+#### ATM (Standard)
 ```
 For CALLS: if spotPrice ≥ buyStrike → EXIT
 For PUTS:  if spotPrice ≤ buyStrike → EXIT
 ```
+Exits when the spot price crosses your buy leg's strike.
 
-When the spot price reaches or crosses your buy leg's strike, the position has hit its maximum theoretical profit zone. Time to lock it in.
+#### ITM (In The Money)
+```
+For CALLS: if spotPrice ≥ buyStrike + exitPoints → EXIT
+For PUTS:  if spotPrice ≤ buyStrike - exitPoints → EXIT
+```
+Exits when spot goes deeper into the money past the buy strike by `exitPoints` points.
+
+#### OTM (Out The Money)
+```
+For CALLS: if spotPrice ≥ buyStrike - exitPoints → EXIT
+For PUTS:  if spotPrice ≤ buyStrike + exitPoints → EXIT
+```
+Exits when spot gets within `exitPoints` points of the buy strike, prior to crossing it.
 
 ---
 
@@ -697,3 +715,5 @@ flowchart TD
 | ATM strike tolerance (ETH) | 50 points | Fallback tolerance for finding ATM prices |
 | Evaluation hang limit | 60 seconds | Max duration evaluation can run before process is restarted |
 | Days to Expiry | User configured | Minimum days to expiry required for new spreads |
+| Exit Type | ATM | Default option exit type parameter (`ATM`, `ITM`, `OTM`) |
+| Exit Points | 0 | Default points distance threshold for ITM/OTM exits |

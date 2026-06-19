@@ -12,7 +12,7 @@ This document is the authoritative implementation reference for every module, en
 | `App.jsx` | Interactive charts, greeks tracking, alert manager, SMA overlay, and support/resistance drawing tools. |
 | `RatioSpreadScanner.jsx` | Standalone option-chain scanner. Computes premium-to-delta-notional ratio deviation pairs, publishes top-3 results via `BroadcastChannel` and `localStorage`. Configuration is managed locally in `localStorage` independent of Paper Trading accounts. |
 | `PaperTrading.jsx` | React UI Dashboard for Paper Trading. Reads `active_positions`, `trade_history`, and heartbeat from Supabase. Connects to multi-account creation/management modals and controls configuration updates via a local draft buffer (Apply/Reset buttons). |
-| `engine/paperTradingEngine.js` | Headless Node.js engine. Handles entries, full ATM exits, rotation, IV tracking, fee calculations, and Supabase persistence. |
+| `engine/paperTradingEngine.js` | Headless Node.js engine. Handles entries, dynamic exits (ATM, ITM, OTM with points-based thresholds), rotation, IV tracking, fee calculations, and Supabase persistence. |
 | `ResultTable.jsx` | Reusable grouped table renderer for ratio spread candidates. |
 | `api.js` | Network abstraction: Delta REST calls, `createTickerStream` (WS with auto-reconnect), `createWS` (raw WS), `getTickers` (REST backfill). |
 | `scannerUtils.js` | Shared helpers: `normalizeIv`, `toFiniteNumber`, `matchesOptionType`, `formatTime`, `formatDateTime`. |
@@ -186,7 +186,7 @@ After every scan, `publishTopSpreads` packages the top-3 calls and puts into a p
 
 | Table | Engine | Key Fields | Notes |
 |---|---|---|---|
-| `paper_trading_config` | PaperTrading | `underlying`, `expiry`, all filter thresholds | Single `global` row, upserted on config change |
+| `paper_trading_config` | PaperTrading | `underlying`, `expiry`, all filter thresholds (including `exit_type`, `exit_points`) | Single `global` row, upserted on config change |
 | `active_positions` | PaperTrading | `id`, `buy_strike`, `sell_strike`, `buy_leg` (JSON), `sell_leg` (JSON), `accumulated_sell_pnl`, `margin` | Unique DB constraints `unique_buy_strike_per_type` and `unique_sell_strike_per_type` scoped by `(account_id, underlying, type, strike)` prevent duplicate inserts |
 | `trade_history` | PaperTrading | `trade_id`, `realized_net_pnl`, `exit_reason`, `is_partial`, `exit_time`, `total_fees` | `trade_id` pre-checked before insert to prevent duplicates |
 
@@ -311,11 +311,23 @@ Each position is evaluated in strict priority order:
 - **Zombie guard**: If the position is more than **10 minutes** past expiry (`Date.now() > expiryTs + 600,000ms`), its `exit_time` is back-dated to the exact expiry timestamp (`new Date(expiryTs).toISOString()`) for accurate reporting — ensuring trade history records reflect the true expiry moment rather than when the engine discovered the stale position.
 - **Bypasses all other guards.**
 
-**Priority 3 — ATM Exit:**
+**Priority 3 — Dynamic Exit (ATM, ITM, OTM):**
 
 Evaluated only if no expiry exit was triggered.
-- Condition: Spot price crosses the buy strike (`spotPrice >= buyStrike` for calls, or `spotPrice <= buyStrike` for puts).
-- Action: 100% exit, `exitReason = 'Full Exit @ ATM'`.
+- Condition: Spot price crosses the target price defined by the exit type and points offset relative to the buy strike:
+  - **ATM**:
+    - Call: `spotPrice >= buyStrike`
+    - Put: `spotPrice <= buyStrike`
+    - Exit Reason: `Full Exit @ ATM`
+  - **ITM**:
+    - Call: `spotPrice >= buyStrike + exitPoints`
+    - Put: `spotPrice <= buyStrike - exitPoints`
+    - Exit Reason: `Full Exit @ ITM (+{exitPoints}pts)`
+  - **OTM**:
+    - Call: `spotPrice >= buyStrike - exitPoints`
+    - Put: `spotPrice <= buyStrike + exitPoints`
+    - Exit Reason: `Full Exit @ OTM (-{exitPoints}pts)`
+- Action: 100% exit.
 
 **Priority 4 — Rotation & Leg Swap:**
 
@@ -408,6 +420,8 @@ When the engine starts for a new account and no `paper_trading_config` row exist
 | `atm_ratio_distance_call` | 50 |
 | `atm_ratio_distance_put` | 25 |
 | `days_to_expiry` | 0 |
+| `exit_type` | `'ATM'` |
+| `exit_points` | `0` |
 
 ### J. Config Hot-Reload via Supabase Realtime
 

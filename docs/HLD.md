@@ -5,7 +5,7 @@
 OptionScope is a client-side trading workstation for Delta Exchange options. It has three top-level modules:
 - **Charts**: Real-time call/put/combined premium monitoring with Greeks and alerts.
 - **Ratio Spread Scanner**: Live discovery of ratio spreads based on premium-to-delta-notional alignment.
-- **Paper Trading**: Fully automated simulation of spread entry, live PnL, full ATM exits, standard portfolio rotation, IV tracking, and expiry settlement.
+- **Paper Trading**: Fully automated simulation of spread entry, live PnL, configurable exit types (ATM, ITM, OTM with points-based offsets), standard portfolio rotation, IV tracking, and expiry settlement.
 
 The user selects underlying and expiry, then the system streams option telemetry and updates UI decisions in near real-time.
 
@@ -96,7 +96,7 @@ Browser (React + Vite Dashboard)
 1. Run a self-contained local scan for ratio spread candidates (the headless engine does not merge from the browser Scanner's BroadcastChannel).
    - **Strict Execution-Realistic Entries**: New positions are entered at the Ask for long legs and Bid for short legs. Entries require live active quotes and are strictly rejected if executable quotes (Ask/Bid) are missing or if they are stale. The system checks that the bid/ask quotes for both legs have been confirmed by the WebSocket stream in the last 120 seconds (`bidUpdatedAt > 0` and `askUpdatedAt > 0`). This prevents executing entries on model-derived or stale REST ticker prices from illiquid strikes.
    - **REST Backfill (`refreshAllTickers` / `backfillTickers`)**: Triggered on algo start or manual page refresh. Calls `/v2/tickers` and merges results into the local ticker cache without zeroing existing data. When a valid bid or ask price exists in the REST response, `bidUpdatedAt`/`askUpdatedAt` is set to `Date.now()` so the first scan after startup can use backfill data immediately. Tickers with no price still get `timestamp = 0` and are rejected by the freshness guard. WS live quotes overwrite these timestamps as they arrive.
-2. Evaluate active positions for rotation or ATM/expiry exit triggers every second to prevent slippage, while scanning and entering new positions on the 1-minute boundary.
+2. Evaluate active positions for rotation or dynamic exit targets (ATM, ITM, OTM with points-based thresholds)/expiry exit triggers every second to prevent slippage, while scanning and entering new positions on the 1-minute boundary.
    - **Liquidation-Based PnL**: Unrealized PnL is calculated based on immediate exit prices: long positions are valued at the current Bid (selling back) and short positions at the current Ask (buying back).
    - **Zombie Exit Guard**: If a position is more than **10 minutes past expiry**, its `exit_time` is back-dated to the exact expiry timestamp to ensure trade history reflects the true settlement moment.
    - **2-Minute Fallback Position Sync**: The engine re-fetches active positions from the database every 2 minutes as a safety net against missed Realtime events.

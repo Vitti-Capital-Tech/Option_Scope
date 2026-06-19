@@ -151,6 +151,25 @@ export default function ControlPanel({
             </>
           )}
 
+          <div key="exitType" className="form-group" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <label style={{ marginBottom: 0 }}>Exit Type:</label>
+            <select value={draftConfig?.exitType ?? 'ATM'}
+              onChange={e => updateDraftConfig('exitType', e.target.value)}
+              style={{ padding: '4px 8px', fontSize: '13px', width: '75px', borderRadius: '4px', border: '1px solid var(--border)', background: 'var(--bg3)', color: 'var(--text)' }}>
+              <option value="ATM">ATM</option>
+              <option value="ITM">ITM</option>
+              <option value="OTM">OTM</option>
+            </select>
+          </div>
+          {(draftConfig?.exitType === 'ITM' || draftConfig?.exitType === 'OTM') && (
+            <div key="exitPoints" className="form-group">
+              <label style={{ marginBottom: 0 }}>Exit Points:</label>
+              <input type="number" step="1" value={draftConfig.exitPoints ?? 0}
+                onChange={e => updateDraftConfig('exitPoints', Number(e.target.value))}
+                style={{ width: 60, padding: '4px 8px', fontSize: '13px', borderRadius: '4px', border: '1px solid var(--border)', background: 'var(--bg3)', color: 'var(--text)' }} />
+            </div>
+          )}
+
           {/* Apply, Cancel & Reset Buttons */}
           <div className="pt-filter-actions">
             <button
