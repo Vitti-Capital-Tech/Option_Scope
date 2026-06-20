@@ -365,17 +365,17 @@ Exits when the spot price crosses your buy leg's strike.
 
 #### ITM (In The Money)
 ```
-For CALLS: if spotPrice ≥ buyStrike + exitPoints → EXIT
-For PUTS:  if spotPrice ≤ buyStrike - exitPoints → EXIT
+For CALLS: if spotPrice ≥ buyStrike - exitPoints → EXIT
+For PUTS:  if spotPrice ≤ buyStrike + exitPoints → EXIT
 ```
-Exits when the option goes in-the-money relative to the strike (e.g. spot rises to or above `buyStrike + exitPoints` for calls, or falls to or below `buyStrike - exitPoints` for puts).
+Exits when the option goes in-the-money relative to the strike (e.g. spot rises to or above `buyStrike - exitPoints` for calls, or falls to or below `buyStrike + exitPoints` for puts).
 
 #### OTM (Out The Money)
 ```
-For CALLS: if spotPrice ≤ buyStrike - exitPoints → EXIT
-For PUTS:  if spotPrice ≥ buyStrike + exitPoints → EXIT
+For CALLS: if spotPrice ≤ buyStrike + exitPoints → EXIT
+For PUTS:  if spotPrice ≥ buyStrike - exitPoints → EXIT
 ```
-Exits when the option goes out-of-the-money relative to the strike (e.g. spot falls to or below `buyStrike - exitPoints` for calls, or rises to or above `buyStrike + exitPoints` for puts).
+Exits when the option goes out-of-the-money relative to the strike (e.g. spot falls to or below `buyStrike + exitPoints` for calls, or rises to or above `buyStrike - exitPoints` for puts).
 
 ---
 
