@@ -952,7 +952,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         .select('*')
         .eq('account_id', activeAccountId)
         .order('sort_order', { ascending: true });
-      if (!error && data) {
+      if (error) console.error('Fetch schedules error:', error);
+      if (data) {
         const mapped = data.map(s => ({
           id: s.id,
           label: s.label || 'Window',
@@ -984,7 +985,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     if (!activeAccountId) return;
     setIsSavingSchedules(true);
     try {
-      await supabase.from('paper_trading_schedules').delete().eq('account_id', activeAccountId);
+      const { error: delErr } = await supabase.from('paper_trading_schedules').delete().eq('account_id', activeAccountId);
+      if (delErr) console.error('Delete schedules error:', delErr);
       if (schedules.length > 0) {
         const rows = schedules.map((s, i) => ({
           account_id: activeAccountId,
@@ -999,7 +1001,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           sort_order: i,
           updated_at: new Date().toISOString(),
         }));
-        await supabase.from('paper_trading_schedules').insert(rows);
+        const { error: insErr } = await supabase.from('paper_trading_schedules').insert(rows);
+        if (insErr) console.error('Insert schedules error:', insErr);
       }
       
       const savedJson = JSON.stringify(schedules.map(s => ({

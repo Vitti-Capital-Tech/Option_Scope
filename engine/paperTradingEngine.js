@@ -166,7 +166,11 @@ async function startSingleAccountEngine(account) {
         .select('*')
         .eq('account_id', accountState.id)
         .order('sort_order', { ascending: true });
-      if (!error && data) {
+      if (error) {
+        logError(`[${accountState.name}] Fetch schedules error`, error);
+        return;
+      }
+      if (data) {
         schedules = data.map(s => ({
           id: s.id,
           label: s.label || 'Window',

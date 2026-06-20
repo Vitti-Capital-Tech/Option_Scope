@@ -620,6 +620,7 @@ Table: `paper_trading_schedules`
 
 RLS Policies:
 - Enable select/view and insert operations for authenticated users (`auth.uid() = user_id`) to support client-side fallback insertion.
+- Enable public `SELECT` read access (`Allow public read on schedules` policy using `true` check) to allow the unauthenticated background engine process (which uses `SUPABASE_ANON_KEY`) to load schedules successfully.
 
 ### 2. Engine Evaluation Loop Overrides
 - **State management**: The engine maintains a local `schedules = []` array.

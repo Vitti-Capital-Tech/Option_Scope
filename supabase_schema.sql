@@ -182,6 +182,10 @@ CREATE POLICY "Service role full access on schedules"
     USING (true)
     WITH CHECK (true);
 
+CREATE POLICY "Allow public read on schedules"
+    ON public.paper_trading_schedules FOR SELECT
+    USING (true);
+
 -- Indexes for performance and sorting
 CREATE INDEX IF NOT EXISTS idx_schedules_account_id 
     ON public.paper_trading_schedules (account_id, is_active, sort_order);
