@@ -138,28 +138,6 @@ export default function ControlPanel({
                 style={{ width, padding: '4px 8px', fontSize: '13px' }} />
             </div>
           ))}
-          <div key="atmRatioScaling" className="form-group" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <input type="checkbox" id="atmRatioScaling" checked={draftConfig?.atmRatioScaling ?? false}
-              onChange={e => updateDraftConfig('atmRatioScaling', e.target.checked)} />
-            <label htmlFor="atmRatioScaling" style={{ marginBottom: 0, cursor: 'pointer' }}>ATM Ratio Entry</label>
-          </div>
-          {draftConfig?.atmRatioScaling && (
-            <>
-              <div key="atmRatioPctCall" className="form-group">
-                <label style={{ marginBottom: 0 }}>Call ATM Pct (%):</label>
-                <CustomInput type="number" step="1" value={draftConfig.atmRatioPctCall ?? 50}
-                  onChange={e => updateDraftConfig('atmRatioPctCall', Number(e.target.value))}
-                  style={{ width: 50, padding: '4px 8px', fontSize: '13px' }} />
-              </div>
-              <div key="atmRatioPctPut" className="form-group">
-                <label style={{ marginBottom: 0 }}>Put ATM Pct (%):</label>
-                <CustomInput type="number" step="1" value={draftConfig.atmRatioPctPut ?? 25}
-                  onChange={e => updateDraftConfig('atmRatioPctPut', Number(e.target.value))}
-                  style={{ width: 50, padding: '4px 8px', fontSize: '13px' }} />
-              </div>
-            </>
-          )}
-
           <div key="exitType" className="form-group" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <label style={{ marginBottom: 0 }}>Exit Type:</label>
             <CustomSelect
@@ -180,6 +158,27 @@ export default function ControlPanel({
                 onChange={e => updateDraftConfig('exitPoints', Number(e.target.value))}
                 style={{ width: 60, padding: '4px 8px', fontSize: '13px' }} />
             </div>
+          )}
+          <div key="atmRatioScaling" className="form-group" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <input type="checkbox" id="atmRatioScaling" checked={draftConfig?.atmRatioScaling ?? false}
+              onChange={e => updateDraftConfig('atmRatioScaling', e.target.checked)} />
+            <label htmlFor="atmRatioScaling" style={{ marginBottom: 0, cursor: 'pointer' }}>ATM Ratio Entry</label>
+          </div>
+          {draftConfig?.atmRatioScaling && (
+            <>
+              <div key="atmRatioPctCall" className="form-group">
+                <label style={{ marginBottom: 0 }}>Call ATM Pct (%):</label>
+                <CustomInput type="number" step="1" value={draftConfig.atmRatioPctCall ?? 50}
+                  onChange={e => updateDraftConfig('atmRatioPctCall', Number(e.target.value))}
+                  style={{ width: 50, padding: '4px 8px', fontSize: '13px' }} />
+              </div>
+              <div key="atmRatioPctPut" className="form-group">
+                <label style={{ marginBottom: 0 }}>Put ATM Pct (%):</label>
+                <CustomInput type="number" step="1" value={draftConfig.atmRatioPctPut ?? 25}
+                  onChange={e => updateDraftConfig('atmRatioPctPut', Number(e.target.value))}
+                  style={{ width: 50, padding: '4px 8px', fontSize: '13px' }} />
+              </div>
+            </>
           )}
 
           {/* Apply, Cancel & Reset Buttons */}
