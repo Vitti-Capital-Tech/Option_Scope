@@ -656,12 +656,12 @@ All other filter settings (like `minIvDiff`, `exitType`, etc.) default back to t
 - **Permanent Activation**: All configured schedule windows are permanently active/enabled (`is_active = true`), and the checkbox toggle has been removed.
 
 ### Execution, Timezones & Evaluation
-- **Database (UTC)**: All times in the database `paper_trading_schedules` table (columns `start_time` and `end_time`) are stored as UTC `HH:mm` strings.
-- **Frontend (IST)**: The frontend displays and accepts inputs in Indian Standard Time (IST). Helper functions `utcToIst` and `istToUtc` automatically convert values when fetching and saving.
-- **Engine Comparison**: The backend trading engine evaluates schedule matches against the current UTC time.
-- **Overnight Windows**: The engine correctly handles overnight ranges in UTC (e.g. `16:30` to `00:30` UTC) by splitting/wrapping time comparisons correctly.
-- **Fallback Behavior**: If the current UTC time does not fall into any active scheduled window, the engine automatically falls back to using the base account configuration parameters.
-- **Periodic Sync**: The background engine fetches schedules on startup and refreshes them every **2 minutes** alongside positions.
+- **Database (IST)**: All times in the database `paper_trading_schedules` table (columns `start_time` and `end_time`) are stored directly as IST values in `TIME` type columns.
+- **Frontend (IST)**: The frontend displays and accepts inputs in Indian Standard Time (IST). Direct IST time strings are read and saved directly without timezone conversion offsets.
+- **Engine Comparison**: The backend trading engine evaluates schedule matches against the current time translated to IST (UTC + 5:30).
+- **Overnight Windows**: The engine correctly handles overnight ranges in IST (e.g. `22:29` to `06:30` IST) by splitting/wrapping time comparisons relative to the 24-hour cycle.
+- **Fallback Behavior**: If the current IST time does not fall into any active scheduled window, the engine automatically falls back to using the base account configuration parameters.
+- **Live Auto-Sync & Real-time Updates**: Changes made in the UI are automatically synced (debounced auto-save) to Supabase. The background engine subscribes to real-time postgres changes on `paper_trading_schedules` and reloads them instantly upon edits.
 
 ---
 

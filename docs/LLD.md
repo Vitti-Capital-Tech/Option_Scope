@@ -188,7 +188,7 @@ After every scan, `publishTopSpreads` packages the top-3 calls and puts into a p
 |---|---|---|---|
 | `paper_trading_config` | PaperTrading | `underlying`, `expiry`, all filter thresholds (including `exit_type`, `exit_points`) | Single `global` row, upserted on config change |
 | `active_positions` | PaperTrading | `id`, `buy_strike`, `sell_strike`, `buy_leg` (JSON), `sell_leg` (JSON), `accumulated_sell_pnl`, `margin` | Unique DB constraints `unique_buy_strike_per_type` and `unique_sell_strike_per_type` scoped by `(account_id, underlying, type, strike)` prevent duplicate inserts |
-| `trade_history` | PaperTrading | `trade_id`, `realized_net_pnl`, `exit_reason`, `is_partial`, `exit_time`, `total_fees` | `trade_id` pre-checked before insert to prevent duplicates |
+| `trade_history` | PaperTrading | `id`, `trade_id`, `realized_net_pnl`, `exit_reason`, `is_partial`, `exit_time`, `lot_size`, `total_fees` | `trade_id` pre-checked before insert to prevent duplicates. `id` acts as the primary key UUID, and `lot_size` tracks the volume of the trade. |
 
 
 ### Concurrency Safety Guards
@@ -204,25 +204,34 @@ After every scan, `publishTopSpreads` packages the top-3 calls and puts into a p
 **DB Unique Constraint Fallback**: PostgreSQL unique constraints `unique_buy_strike_per_type` and `unique_sell_strike_per_type` (scoped by `account_id`) act as the final safety net. Error code `23505` is caught and logged but does not crash the engine.
 
 ### DB Migration: Scoping Strike Constraints by Account
-To prevent strike conflicts between different accounts, the database constraints must be dropped and recreated to include `account_id`:
+To prevent strike conflicts between different accounts, the database constraints are drop-protected and recreated using unique index constraints:
 ```sql
 -- Drop old global constraints
 ALTER TABLE active_positions DROP CONSTRAINT IF EXISTS unique_buy_strike_per_type;
 ALTER TABLE active_positions DROP CONSTRAINT IF EXISTS unique_sell_strike_per_type;
 
--- Drop underlying indexes if they exist as separate relations
+-- Drop old constraints/indexes if they exist as separate relations
 DROP INDEX IF EXISTS unique_buy_strike_per_type;
 DROP INDEX IF EXISTS unique_sell_strike_per_type;
+DROP INDEX IF EXISTS idx_active_positions_buy_strike_unique;
+DROP INDEX IF EXISTS idx_active_positions_sell_strike_unique;
 
--- Create new account-scoped constraints
-ALTER TABLE active_positions
-  ADD CONSTRAINT unique_buy_strike_per_type UNIQUE (account_id, underlying, type, buy_strike);
+-- Create new account-scoped unique index constraints
+CREATE UNIQUE INDEX IF NOT EXISTS idx_active_positions_buy_strike_unique 
+    ON public.active_positions(account_id, underlying, type, buy_strike);
 
-ALTER TABLE active_positions
-  ADD CONSTRAINT unique_sell_strike_per_type UNIQUE (account_id, underlying, type, sell_strike);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_active_positions_sell_strike_unique 
+    ON public.active_positions(account_id, underlying, type, sell_strike);
 ```
 
 **Write Throttle (`lastDbWriteRef`)**: Tracks Unix timestamp of the last local database write. The Supabase Realtime subscription skips updates if a local write occurred within the last **3 seconds** to prevent a just-written position from being overwritten by a stale re-fetch before the DB has finished committing. (Previously 10 seconds — reduced to minimize the staleness window.)
+
+### RLS Policies & Database Setup Safety
+
+- **Profiles Table Fallback Policy**: Supports client-side profile fallback creation with an `INSERT` policy enabling authenticated users to insert their own profile:
+  `CREATE POLICY "Users can insert their own profile" ON public.profiles FOR INSERT WITH CHECK (auth.uid() = id);`
+- **Default Config Fallback**: To prevent `NOT NULL` DB constraint crashes, if no configuration exists for a newly created account, the application and engine initialize a default configuration row (`id: activeAccountId`) populated with standard parameters.
+- **Trade History ID & Lot Size Alignment**: The `trade_history` table features a distinct primary key `id` (UUID) alongside the custom `trade_id` string, and includes a `lot_size` column to prevent UI query crashes when displaying realized trades.
 
 ### Margin Calculation (`calcMargin` & Live UI Margin)
 
@@ -593,15 +602,15 @@ To prevent continuous writes to Supabase during filter updates, editing filter v
 
 ## 12) Time-Based Filter Schedules
 
-Time-Based Filter Schedules are implemented as a per-account configuration that allows overriding core entry/portfolio parameters based on a schedule. The database stores these times in UTC, while the frontend displays and manages them in IST.
+Time-Based Filter Schedules are implemented as a per-account configuration that allows overriding core entry/portfolio parameters based on a schedule. The database stores these times directly in Indian Standard Time (IST) format using `TIME` data type columns, and the back-end engine evaluates matches based on current IST minutes.
 
 ### 1. Database Schema
 Table: `paper_trading_schedules`
 - `id` (UUID, primary key, default: `gen_random_uuid()`)
 - `account_id` (UUID, foreign key referencing `paper_trading_accounts(id)`, on delete cascade)
 - `label` (TEXT, user-defined name for the window)
-- `start_time` (TEXT, e.g., `"16:30"`, format `"HH:mm"`, stored in UTC)
-- `end_time` (TEXT, e.g., `"00:30"`, format `"HH:mm"`, stored in UTC)
+- `start_time` (TIME, e.g., `"17:30:00"`, stored in IST)
+- `end_time` (TIME, e.g., `"22:29:00"`, stored in IST)
 - `number_of_calls` (INTEGER, max concurrent calls override)
 - `number_of_puts` (INTEGER, max concurrent puts override)
 - `min_long_dist` (INTEGER, override for minimum long strike distance)
@@ -610,16 +619,15 @@ Table: `paper_trading_schedules`
 - `created_at` (TIMESTAMPTZ, default `now()`)
 
 RLS Policies:
-- Enable all CRUD operations for authenticated users (matching option-scope's security profile).
+- Enable select/view and insert operations for authenticated users (`auth.uid() = user_id`) to support client-side fallback insertion.
 
 ### 2. Engine Evaluation Loop Overrides
 - **State management**: The engine maintains a local `schedules = []` array.
-- **Fetch & Refresh**: `fetchSchedules()` queries the database for schedules belonging to the active account on startup and refreshes them every 2 minutes.
+- **Fetch & Refresh**: `fetchSchedules()` queries the database for schedules belonging to the active account on startup, and refreshes them dynamically upon real-time Postgres updates or every 2 minutes as fallback.
 - **Time Comparison (`getActiveSchedule()`)**:
-  - The current time is evaluated in UTC using the server's UTC clock.
-  - The current time is computed as minutes since midnight UTC (`nowMin = UTC_hours * 60 + UTC_minutes`).
-  - For each active schedule, start/end minutes are parsed from the `"HH:mm"` UTC string stored in the database.
-  - Overnight windows are supported in UTC: if `startMin > endMin`, a match occurs if `nowMin >= startMin || nowMin < endMin`. Otherwise, a match occurs if `nowMin >= startMin && nowMin < endMin`.
+  - The current server time is converted to **IST minutes since midnight** (`istMin = (now.getUTCHours() * 60 + now.getUTCMinutes() + 330) % 1440`).
+  - For each active schedule, start/end minutes are parsed from the `"HH:mm"` IST time values loaded from the database.
+  - Overnight windows are supported in IST: if `startMin > endMin` (e.g., `22:29` to `06:30` IST), a match occurs if `istMin >= startMin || istMin < endMin`. Otherwise, a match occurs if `istMin >= startMin && istMin < endMin`.
   - The first matching active schedule window is returned.
 - **`effectiveConfig` Generation**:
   - If a schedule window matches, the engine creates an `effectiveConfig` by spreading the account's base configuration and overriding the scheduled properties: `numberOfCalls`, `numberOfPuts`, `minLongDist`, and `minStrikeDiff`.
@@ -629,10 +637,10 @@ RLS Policies:
 ### 3. Frontend Schedule Configuration UI (`SchedulePanel.jsx`)
 - **Layout & Style**: Designed as a compact, horizontal, inline-editable list styled like the Charts Watchlist, rather than heavy collapsible cards.
 - **Visual Schedule Timeline**: A 24-hour visual bar is rendered at the top of the schedule panel, representing the daily trading cycle starting and ending at `05:30` IST (corresponding to `00:00` UTC Delta Exchange daily rollover/day boundary). The bar renders colored blocks indicating configured schedule windows and gaps (hashed fallback/base configuration). Empty slots naturally display at the end of the bar, and calculations wrap around the `05:30` IST boundary.
-- **Timezone Serialization**: Frontend inputs and the timeline visualization operate in Indian Standard Time (IST) for user convenience. When fetching or saving, helpers `utcToIst` and `istToUtc` automatically convert times between the database's UTC format and the UI's IST format.
+- **Timezone Serialization**: Frontend inputs and the timeline visualization operate in Indian Standard Time (IST) for user convenience. Times are loaded and saved directly as raw IST time strings without UTC offset translations. trailing seconds (`:00`) added by database `TIME` columns are cleaned using `.substring(0, 5)` on fetch.
 - **CRUD Operations**:
   - Users edit schedule labels, time inputs (in IST), and strategy override parameters (`numberOfCalls`, `numberOfPuts`, `minLongDist`, `minStrikeDiff`) directly in inline-editable fields.
   - The "Enabled" checkbox has been removed, making all schedule windows permanently active (`isActive = true`).
   - **Add Window**: Appends a new default window (defaulting to `05:30` - `05:30` IST) to the state.
   - **Delete Window**: Removes the window from the state.
-  - **Save All**: Performed in a single batch write (deletes existing scheduled rows for the account and inserts the current list) to prevent partial synchronization states. Renders an inline spinning SVG inside the "Save All" button during the write operation.
+  - **Live Auto-Sync**: Updates are automatically saved to Supabase after a 1.2-second debounce, provided there are no active time overlaps. The "Save Schedules" button acts as a live sync indicator showing `✓ Live Synced`, `Syncing...`, or `Overlap Detected`.
