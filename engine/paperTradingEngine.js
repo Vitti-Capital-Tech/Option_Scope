@@ -321,10 +321,11 @@ async function startSingleAccountEngine(account) {
 
   // ── Core strategy evaluation (Phase 2) ────────────────────────────────
 
-  // Returns active schedule window for current UTC time, or null if none match
+  // Returns active schedule window for current IST time (UTC + 5:30), or null if none match
   function getActiveSchedule() {
-    const nowUTC = new Date();
-    const nowMin = nowUTC.getUTCHours() * 60 + nowUTC.getUTCMinutes();
+    const now = new Date();
+    // Convert current UTC time to IST (UTC + 5:30)
+    const istMin = (now.getUTCHours() * 60 + now.getUTCMinutes() + 330) % 1440;
 
     for (const s of schedules) {
       if (!s.isActive) continue;
@@ -334,9 +335,9 @@ async function startSingleAccountEngine(account) {
       const endMin = eh * 60 + em;
       // Handle overnight windows (e.g. 22:00 -> 06:00)
       if (startMin > endMin) {
-        if (nowMin >= startMin || nowMin < endMin) return s;
+        if (istMin >= startMin || istMin < endMin) return s;
       } else {
-        if (nowMin >= startMin && nowMin < endMin) return s;
+        if (istMin >= startMin && istMin < endMin) return s;
       }
     }
     return null;

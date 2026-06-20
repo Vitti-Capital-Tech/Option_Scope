@@ -540,22 +540,41 @@ export default function SchedulePanel({
             disabled={isSaving || hasOverlap}
             style={{
               display: 'flex', alignItems: 'center', gap: 6,
-              background: hasOverlap ? 'var(--border)' : 'var(--accent)', border: 'none',
-              color: hasOverlap ? 'var(--text-dim)' : '#000', padding: '6px 16px', borderRadius: 5,
+              background: hasOverlap 
+                ? 'rgba(248, 81, 73, 0.1)' 
+                : isSaving 
+                  ? 'rgba(240, 185, 11, 0.1)' 
+                  : 'rgba(63, 185, 80, 0.15)',
+              border: hasOverlap
+                ? '1px solid rgba(248, 81, 73, 0.3)'
+                : isSaving
+                  ? '1px solid rgba(240, 185, 11, 0.3)'
+                  : '1px solid rgba(63, 185, 80, 0.3)',
+              color: hasOverlap 
+                ? '#f85149' 
+                : isSaving 
+                  ? 'var(--accent)' 
+                  : '#3fb950',
+              padding: '6px 16px', borderRadius: 5,
               fontSize: 11, fontWeight: 700, cursor: (isSaving || hasOverlap) ? 'not-allowed' : 'pointer',
-              opacity: (isSaving || hasOverlap) ? 0.6 : 1, transition: 'all 0.15s',
+              opacity: 1, transition: 'all 0.15s',
             }}
-            title={hasOverlap ? "Cannot save: Time overlap detected with another active window" : "Save all schedules"}
+            title={hasOverlap ? "Cannot save: Time overlap detected with another active window" : "Schedules are live-synced to server"}
           >
             {isSaving ? (
               <>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" style={{ animation: 'spin 0.8s linear infinite' }}><circle cx="12" cy="12" r="10" stroke="rgba(0,0,0,0.2)" /><path d="M12 2a10 10 0 0 1 10 10" stroke="#000" /></svg>
-                Saving...
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" style={{ animation: 'spin 0.8s linear infinite' }}><circle cx="12" cy="12" r="10" stroke="rgba(240,185,11,0.2)" /><path d="M12 2a10 10 0 0 1 10 10" stroke="var(--accent)" /></svg>
+                Syncing...
+              </>
+            ) : hasOverlap ? (
+              <>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
+                Overlap Detected
               </>
             ) : (
               <>
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>
-                Save Schedules
+                ✓ Live Synced
               </>
             )}
           </button>

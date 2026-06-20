@@ -145,8 +145,8 @@ CREATE TABLE IF NOT EXISTS public.paper_trading_schedules (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     account_id UUID NOT NULL REFERENCES public.paper_trading_accounts(id) ON DELETE CASCADE,
     label TEXT NOT NULL DEFAULT 'Window',
-    start_time TEXT NOT NULL, -- Format 'HH:mm' stored in UTC
-    end_time TEXT NOT NULL,   -- Format 'HH:mm' stored in UTC
+    start_time TIME NOT NULL, -- IST time e.g. '17:30'
+    end_time TIME NOT NULL,   -- IST time e.g. '22:29'
     number_of_calls INTEGER NOT NULL DEFAULT 3,
     number_of_puts INTEGER NOT NULL DEFAULT 3,
     min_long_dist INTEGER NOT NULL DEFAULT 500,

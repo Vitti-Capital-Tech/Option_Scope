@@ -382,6 +382,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const lastDbWriteRef = useRef(0);
   const latestSpotPriceRef = useRef(null);
   const lastDaysToExpiryRef = useRef(null);
+  const lastSavedSchedulesRef = useRef(null);
 
   const flushTickerBuffer = useCallback(() => {
     flushTimerRef.current = null;
@@ -952,17 +953,28 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         .eq('account_id', activeAccountId)
         .order('sort_order', { ascending: true });
       if (!error && data) {
-        setSchedules(data.map(s => ({
+        const mapped = data.map(s => ({
           id: s.id,
           label: s.label || 'Window',
-          startTime: utcToIst(s.start_time),
-          endTime: utcToIst(s.end_time),
+          startTime: s.start_time ? s.start_time.substring(0, 5) : '17:30',
+          endTime: s.end_time ? s.end_time.substring(0, 5) : '17:29',
           numberOfCalls: s.number_of_calls ?? 3,
           numberOfPuts: s.number_of_puts ?? 3,
           minLongDist: s.min_long_dist ?? 500,
           minStrikeDiff: s.min_strike_diff ?? 800,
           isActive: s.is_active ?? true,
           sort_order: s.sort_order ?? 0,
+        }));
+        setSchedules(mapped);
+        lastSavedSchedulesRef.current = JSON.stringify(mapped.map(s => ({
+          label: s.label,
+          startTime: s.startTime,
+          endTime: s.endTime,
+          numberOfCalls: s.numberOfCalls,
+          numberOfPuts: s.numberOfPuts,
+          minLongDist: s.minLongDist,
+          minStrikeDiff: s.minStrikeDiff,
+          isActive: s.isActive
         })));
       }
     } catch (e) { console.error('Schedule fetch error', e); }
@@ -977,8 +989,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         const rows = schedules.map((s, i) => ({
           account_id: activeAccountId,
           label: s.label || 'Window',
-          start_time: istToUtc(s.startTime),
-          end_time: istToUtc(s.endTime),
+          start_time: s.startTime,
+          end_time: s.endTime,
           number_of_calls: s.numberOfCalls ?? 3,
           number_of_puts: s.numberOfPuts ?? 3,
           min_long_dist: s.minLongDist ?? 500,
@@ -989,10 +1001,91 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         }));
         await supabase.from('paper_trading_schedules').insert(rows);
       }
+      
+      const savedJson = JSON.stringify(schedules.map(s => ({
+        label: s.label,
+        startTime: s.startTime,
+        endTime: s.endTime,
+        numberOfCalls: s.numberOfCalls,
+        numberOfPuts: s.numberOfPuts,
+        minLongDist: s.minLongDist,
+        minStrikeDiff: s.minStrikeDiff,
+        isActive: s.isActive
+      })));
+      lastSavedSchedulesRef.current = savedJson;
+
       await fetchSupabaseSchedules();
     } catch (e) { console.error('Schedule save error', e); }
     finally { setIsSavingSchedules(false); }
   }, [activeAccountId, schedules, fetchSupabaseSchedules]);
+
+  // Auto-save schedules when they change (debounced)
+  useEffect(() => {
+    if (!activeAccountId) return;
+    
+    // Check if there is any overlap in the schedules
+    const toMin = (t) => {
+      if (!t) return 0;
+      const [h, m] = t.split(':').map(Number);
+      return h * 60 + m;
+    };
+    const checkOverlapLocal = (list, current) => {
+      if (!current.isActive) return null;
+      const curStart = toMin(current.startTime);
+      const curEnd = toMin(current.endTime);
+      const curIsOvernight = curStart > curEnd;
+      const overlaps = (s1, e1, s2, e2) => Math.max(s1, s2) < Math.min(e1, e2);
+
+      for (const s of list) {
+        if (s.id === current.id || !s.isActive) continue;
+        const start = toMin(s.startTime);
+        const end = toMin(s.endTime);
+        const isOvernight = start > end;
+
+        if (curIsOvernight && isOvernight) {
+          return s;
+        } else if (curIsOvernight) {
+          if (overlaps(curStart, 1440, start, end) || overlaps(0, curEnd, start, end)) {
+            return s;
+          }
+        } else if (isOvernight) {
+          if (overlaps(start, 1440, curStart, curEnd) || overlaps(0, end, curStart, curEnd)) {
+            return s;
+          }
+        } else {
+          if (overlaps(curStart, curEnd, start, end)) {
+            return s;
+          }
+        }
+      }
+      return null;
+    };
+
+    const hasOverlap = schedules.some(s => s.isActive && checkOverlapLocal(schedules, s) !== null);
+    if (hasOverlap) return; // Do not auto-save if they overlap
+
+    const currentJson = JSON.stringify(schedules.map(s => ({
+      label: s.label,
+      startTime: s.startTime,
+      endTime: s.endTime,
+      numberOfCalls: s.numberOfCalls,
+      numberOfPuts: s.numberOfPuts,
+      minLongDist: s.minLongDist,
+      minStrikeDiff: s.minStrikeDiff,
+      isActive: s.isActive
+    })));
+
+    if (lastSavedSchedulesRef.current === currentJson) {
+      return; // Skip if it matches the DB version
+    }
+
+    const timer = setTimeout(async () => {
+      lastSavedSchedulesRef.current = currentJson;
+      await saveSupabaseSchedules();
+    }, 1200);
+
+    return () => clearTimeout(timer);
+  }, [schedules, activeAccountId, saveSupabaseSchedules]);
 
   // ── Supabase reads ────────────────────────────────────────────────────
   const fetchSupabaseActivePositions = useCallback(async () => {
