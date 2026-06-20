@@ -39,7 +39,7 @@ export default function ActivePositionsTable({
       operator = isCall ? '≥' : '≤';
     } else if (exitType === 'OTM') {
       triggerPrice = isCall ? buyStrike - exitPoints : buyStrike + exitPoints;
-      operator = isCall ? '≤' : '≥';
+      operator = isCall ? '≥' : '≤';
     } else {
       triggerPrice = buyStrike;
       operator = isCall ? '≥' : '≤';

@@ -1097,7 +1097,7 @@ async function startSingleAccountEngine(account) {
             isExitMet = isCall ? (spotPrice >= buyStrike + exitPoints) : (spotPrice <= buyStrike - exitPoints);
             reasonSuffix = ` @ ITM (${isCall ? '+' : '-'}${exitPoints}pts)`;
           } else if (exitType === 'OTM') {
-            isExitMet = isCall ? (spotPrice <= buyStrike - exitPoints) : (spotPrice >= buyStrike + exitPoints);
+            isExitMet = isCall ? (spotPrice >= buyStrike - exitPoints) : (spotPrice <= buyStrike + exitPoints);
             reasonSuffix = ` @ OTM (${isCall ? '-' : '+'}${exitPoints}pts)`;
           } else { // ATM
             isExitMet = isCall ? (spotPrice >= buyStrike) : (spotPrice <= buyStrike);
