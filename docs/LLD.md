@@ -329,13 +329,13 @@ Evaluated only if no expiry exit was triggered.
     - Put: `spotPrice <= buyStrike`
     - Exit Reason: `Full Exit @ ATM`
   - **ITM**:
-    - Call: `spotPrice >= buyStrike - exitPoints`
-    - Put: `spotPrice <= buyStrike + exitPoints`
-    - Exit Reason: `Full Exit @ ITM (-{exitPoints}pts)` for calls / `(+{exitPoints}pts)` for puts
-  - **OTM**:
     - Call: `spotPrice >= buyStrike + exitPoints`
     - Put: `spotPrice <= buyStrike - exitPoints`
-    - Exit Reason: `Full Exit @ OTM (+{exitPoints}pts)` for calls / `(-{exitPoints}pts)` for puts
+    - Exit Reason: `Full Exit @ ITM (+{exitPoints}pts)` for calls / `(-{exitPoints}pts)` for puts
+  - **OTM**:
+    - Call: `spotPrice <= buyStrike - exitPoints`
+    - Put: `spotPrice >= buyStrike + exitPoints`
+    - Exit Reason: `Full Exit @ OTM (-{exitPoints}pts)` for calls / `(+{exitPoints}pts)` for puts
 - Action: 100% exit.
 
 **Priority 4 — Rotation & Leg Swap:**

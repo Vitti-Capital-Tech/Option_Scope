@@ -1094,11 +1094,11 @@ async function startSingleAccountEngine(account) {
           let reasonSuffix = '';
 
           if (exitType === 'ITM') {
-            isExitMet = isCall ? (spotPrice >= buyStrike - exitPoints) : (spotPrice <= buyStrike + exitPoints);
-            reasonSuffix = ` @ ITM (${isCall ? '-' : '+'}${exitPoints}pts)`;
-          } else if (exitType === 'OTM') {
             isExitMet = isCall ? (spotPrice >= buyStrike + exitPoints) : (spotPrice <= buyStrike - exitPoints);
-            reasonSuffix = ` @ OTM (${isCall ? '+' : '-'}${exitPoints}pts)`;
+            reasonSuffix = ` @ ITM (${isCall ? '+' : '-'}${exitPoints}pts)`;
+          } else if (exitType === 'OTM') {
+            isExitMet = isCall ? (spotPrice <= buyStrike - exitPoints) : (spotPrice >= buyStrike + exitPoints);
+            reasonSuffix = ` @ OTM (${isCall ? '-' : '+'}${exitPoints}pts)`;
           } else { // ATM
             isExitMet = isCall ? (spotPrice >= buyStrike) : (spotPrice <= buyStrike);
             reasonSuffix = ' @ ATM';
