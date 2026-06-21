@@ -399,9 +399,9 @@ async function startSingleAccountEngine(account) {
         }
         : { ...config };
 
-      if (activeSchedule) {
-        log(`[${accountState.name}] Schedule active: "${activeSchedule.label}" — Calls: ${activeSchedule.numberOfCalls}, Puts: ${activeSchedule.numberOfPuts}, LongDist: ${activeSchedule.minLongDist}, StrikeDiff: ${activeSchedule.minStrikeDiff}`);
-      }
+      // if (activeSchedule) {
+      //   log(`[${accountState.name}] Schedule active: "${activeSchedule.label}" — Calls: ${activeSchedule.numberOfCalls}, Puts: ${activeSchedule.numberOfPuts}, LongDist: ${activeSchedule.minLongDist}, StrikeDiff: ${activeSchedule.minStrikeDiff}`);
+      // }
 
       const underlying = effectiveConfig.underlying;
       const selExpiry = effectiveConfig.expiry;
@@ -746,7 +746,7 @@ async function startSingleAccountEngine(account) {
               hypotheticalLotSize >= floorLimit &&
               liveAtmRatio >= recalculatedRatio + 1
             ) {
-              log(`⚖️ SCALING: Position ${pos.id} (${pos.type.toUpperCase()}) - PnL: $${currentGrossPnl.toFixed(2)} >= Threshold: $${threshold.toFixed(2)}. ATM ratio (1:x) increased: Recalculated Ratio ${recalculatedRatio.toFixed(2)} <= Live ${liveAtmRatio} - 1. Reducing buy lot size from ${currentLotSize} to ${hypotheticalLotSize}.`);
+              log(`[${accountState.name}]: ⚖️ SCALING: Position ${pos.id} (${pos.type.toUpperCase()}) - PnL: $${currentGrossPnl.toFixed(2)} >= Threshold: $${threshold.toFixed(2)}. ATM ratio (1:x) increased: Recalculated Ratio ${recalculatedRatio.toFixed(2)} <= Live ${liveAtmRatio} - 1. Reducing buy lot size from ${currentLotSize} to ${hypotheticalLotSize}.`);
 
               const partialGrossPnl = buyPriceDiff * deltaBuyQty;
 
@@ -988,7 +988,7 @@ async function startSingleAccountEngine(account) {
             const targetSellStrike = Number(bestSwapTarget.sellLeg.strike);
             const currentStrike = Number(pos.buyLeg.strike);
             if (!onlyExits) {
-              log(`  Leg Swap target found: ${bestSwapTarget.buyLeg.type.toUpperCase()} ${targetStrike}/${targetSellStrike}. Upgrading buy strike from ${currentStrike}`);
+              log(`[${accountState.name}] Leg Swap target found: ${bestSwapTarget.buyLeg.type.toUpperCase()} ${targetStrike}/${targetSellStrike}. Upgrading buy strike from ${currentStrike}`);
             }
             pos._pendingLegSwap = bestSwapTarget;
             shouldExit = true;
