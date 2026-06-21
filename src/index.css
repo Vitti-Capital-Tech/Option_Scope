@@ -2975,7 +2975,7 @@ body.light-theme .pt-live-badge {
   }
 }
 
-/* ── Paper Trading & ATM Exit Collapsible Filters ──────── */
+/* ── Paper Trading Collapsible Filters ──────── */
 .pt-filters-toggle-btn {
   display: none;
   background: var(--bg3);
@@ -3086,7 +3086,7 @@ body.light-theme .pt-live-badge {
   }
 }
 
-/* ── Paper Trading & ATM Exit Responsive Headers & Table Scroll ──────── */
+/* ── Paper Trading & Responsive Headers & Table Scroll ──────── */
 .pt-section-controls {
   display: flex;
   align-items: center;
