@@ -60,6 +60,12 @@ When you select an underlying (BTC/ETH) and expiry date, and click **▶ START S
 [Scan Loop Active] ──► Run computeSpreads() immediately, then enter 2-second throttled loop
 ```
 
+### Configuration Storage & Independence
+
+Unlike Paper Trading parameters which are synchronized with Supabase databases, the Ratio Spread Scanner configuration operates as a **completely standalone client-side component**:
+* **Storage Location**: The settings (such as filter thresholds and scaling options) are saved directly in the user's browser `localStorage` under the key `vitti_algo_config`.
+* **Zero Database Overhead**: This prevents network roundtrips to database servers and avoids permission boundaries, making configuration updates instantaneous and persistent across browser sessions for the local device.
+
 ---
 
 ## The Scan Loop
@@ -82,7 +88,7 @@ Every candidate pair of options must pass **all** of these filters to be display
 | 3 | **Leg Expiry Match** | — | Expiry must be identical for both legs | Expiry must be identical for both legs |
 | 4 | **Positive Bid/Ask** | — | Buy leg must have Ask > 0, Sell leg must have Bid > 0 | Buy leg must have Ask > 0, Sell leg must have Bid > 0 |
 | 5 | **Quote Freshness** | — | Both bid and ask must be updated within the last 120s | Both bid and ask must be updated within the last 120s |
-| 6 | **IV Difference** | `minIvDiff` | $| \text{Buy Ask IV} - \text{Sell Bid IV} | \ge \text{Min IV Diff}$ | $| \text{Buy Ask IV} - \text{Sell Bid IV} | \ge \text{Min IV Diff}$ |
+| 6 | **IV Difference** | `minIvDiff` | $\lvert \text{Buy Ask IV} - \text{Sell Bid IV} \rvert \ge \text{Min IV Diff}$ | $\lvert \text{Buy Ask IV} - \text{Sell Bid IV} \rvert \ge \text{Min IV Diff}$ |
 | 7 | **Min Long Distance** | `minLongDist` | Buy strike - Spot price $\ge$ Min | Spot price - Buy strike $\ge$ Min |
 | 8 | **Min Sell Premium** | `minSellPremium` | Sell leg best Bid price $\ge$ Min | Sell leg best Bid price $\ge$ Min |
 | 9 | **Ratio Deviation** | `maxRatioDeviation` | Deviation between premium ratio and delta-notional ratio $\le$ Max Deviation | Deviation between premium ratio and delta-notional ratio $\le$ Max Deviation |
@@ -105,17 +111,21 @@ The raw ratio is then rounded to the nearest **0.25** fraction (minimum 1.00) to
 
 $$\text{sellQty} = \max\left(1.0, \text{round}\left(\frac{\text{Raw Ratio}}{0.25}\right) \times 0.25\right)$$
 
-### ATM Ratio Scaling
+### ATM Ratio Scaling (Visual Simulation Mode)
 
-When `atmRatioScaling` is enabled in config, the sell quantity (ratio) is scaled up proportionally if the current spread ratio is lower than what is available at ATM strikes:
+When the **ATM Ratio Entry** checkbox (`atmRatioScaling`) is enabled in the configuration bar, the scanner activates an automated visual simulation mode:
+* **Dynamic Scaling**: The sell quantity (ratio) is scaled up proportionally if the current spread ratio is lower than what is available at ATM strikes:
 
-$$\text{atmRatio} = \frac{\text{ATM Buy Price}}{\text{ATM Sell Price}}$$
+  $$\text{atmRatio} = \frac{\text{ATM Buy Price}}{\text{ATM Sell Price}}$$
 
-$$\text{ratioDiff} = \max(0, \text{atmRatio} - \text{sellQty})$$
+  $$\text{ratioDiff} = \max(0, \text{atmRatio} - \text{sellQty})$$
 
-$$\text{Adjusted Sell Qty} = \text{sellQty} + \left(\frac{\text{ATM Pct \%}}{100} \times \text{ratioDiff}\right)$$
+  $$\text{Adjusted Sell Qty} = \text{sellQty} + \left(\frac{\text{ATM Pct}}{100} \times \text{ratioDiff}\right)$$
 
-This is then rounded to the nearest 0.25. The percentage adjustment is set via `atmRatioPctCall` and `atmRatioPctPut` config variables.
+  This is then rounded to the nearest 0.25. The percentage adjustment is set via `atmRatioPctCall` and `atmRatioPctPut` config variables.
+* **Golden Highlighting**: If the scaled ratio deviates from the natural ratio, the ratio indicator in the table dynamically shifts and is highlighted in **golden text** (`var(--accent)`, `#f0b90b`) to visually emphasize that ATM ratio scaling is active for that candidate.
+* **Portfolio Cap Interactivity**: The adjusted ratio continues to interact with the **$200K Short Value Portfolio Cap**, meaning if the scaled short value exceeds $200,000, both the buy leg lot size and final sell quantity are scaled down proportionally.
+* **Legacy "Base/Extra" Toggle Deprecation**: The legacy, manual dollar-based "Base/Extra" toggle has been completely removed from both the scanner layout and computation logic. The automated ATM Ratio Scaling provides a much cleaner, streamlined approach to simulating ratio shifts.
 
 ### $200K Short Value Portfolio Cap
 
@@ -141,14 +151,23 @@ $$\text{buyIntrinsic} = \text{ATM Buy leg Bid price}$$
 
 $$\text{sellIntrinsic} = \text{OTM Sell leg Ask price (at ATM} \pm \text{strikeDiff)}$$
 
-$$\text{ATM P\&L} = [(\text{buyIntrinsic} - \text{Entry Buy Price}) + (\text{Entry Sell Price} - \text{sellIntrinsic}) \times \text{originalSellQty}] \times \text{Adjusted Lot Size}$$
+$$\text{ATM PnL} = [(\text{buyIntrinsic} - \text{Entry Buy Price}) + (\text{Entry Sell Price} - \text{sellIntrinsic}) \times \text{originalSellQty}] \times \text{Adjusted Lot Size}$$
 
 $$\text{Margin Requirement} = (\text{Entry Buy Price} \times \text{Adjusted Lot Size}) + \frac{\$200,000}{\text{Leverage (200)}}$$
 
-$$\text{ROI \%} = \left(\frac{\text{ATM P\&L}}{\text{Margin Requirement}}\right) \times 100$$
+$$\text{ROI} = \left(\frac{\text{ATM PnL}}{\text{Margin Requirement}}\right) \times 100$$
 
 > [!NOTE]
 > When `atmRatioScaling` is enabled, the displayed Net Premium in the scanner table dynamically updates to reflect the scaled short quantity: `(Entry Sell Price * scaledQty) - Entry Buy Price`.
+
+#### Nearest-Strike ATM Fallback Logic
+
+To prevent empty cells (`—` or `$0.00`) when option chains are sparse (often the case on high-volatility or newly created expiries), the system implements a **nearest-strike fallback** during ATM intrinsic price checks:
+* **Lookup Sequence**: The scanner first searches for an exact match of the target strike. If the exact strike ticker does not exist, it identifies the closest available strike of the same option type (Call or Put) under the same expiry.
+* **Tight Point Tolerances**:
+  * **BTC**: Searches within a maximum tolerance of **$\pm 500$ points** from the target strike.
+  * **ETH**: Searches within a maximum tolerance of **$\pm 50$ points** from the target strike.
+* **Omission**: If no strike falls within these absolute point boundaries, the fallback returns `null`, and the corresponding spread's ATM P&L, Margin, and ROI% calculations are omitted (rendered as `—` in the UI).
 
 ---
 
