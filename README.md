@@ -57,3 +57,6 @@ Detailed design documentation is available in the `docs` folder:
 
 - [High Level Design (HLD)](docs/hld.md)
 - [Low Level Design (LLD)](docs/lld.md)
+- [Option Premium Charts Explained](docs/charts_explained.md)
+- [Ratio Spread Scanner Explained](docs/ratio_spread_explained.md)
+- [Paper Trading Engine Explained](docs/paper_trading_explained.md)
