@@ -131,14 +131,14 @@ export default function ResultTable({
           <table className="scanner-table">
             <thead>
               <tr>
-                <th>Strikes</th>
-                <th>Prem (B/S)</th>
-                <th>Qty (B/S)</th>
-                <th>Net/IV</th>
-                <th className="hide-mobile">Δ (B/S)</th>
-                <th style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.2)', background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>ATM Ask/Bid</th>
-                <th style={{ background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>ATM P&L</th>
-                <th style={{ borderRight: '1px solid rgba(0, 217, 163, 0.2)', background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>Margin</th>
+                <th>Spread Strikes</th>
+                <th>Premium (L/S)</th>
+                <th>Ratio (L/S)</th>
+                <th>Net Premium & IV Edge</th>
+                <th className="hide-mobile">Delta (L/S)</th>
+                <th style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.2)', background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>ATM Pricing</th>
+                <th style={{ background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>ATM Edge (P&L)</th>
+                <th style={{ borderRight: '1px solid rgba(0, 217, 163, 0.2)', background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>Req. Margin</th>
               </tr>
             </thead>
             <tbody>

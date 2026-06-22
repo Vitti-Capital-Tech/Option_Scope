@@ -467,7 +467,7 @@ const ChartPanel = forwardRef(function ChartPanel({
                 display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, fontWeight: 600
               }}
             >
-              DRAW
+              TRENDLINE
             </button>
           </div>
 
@@ -1607,32 +1607,32 @@ export default function App({ onNavigate, theme, toggleTheme }) {
               </div>
 
               <div className="form-group">
-                <label>Leg Type</label>
+                <label>Strategy Type</label>
                 <CustomSelect
                   value={legType}
                   onChange={val => setLegType(val)}
                   options={[
                     { label: 'Combined (Straddle/Strangle)', value: 'combined' },
-                    { label: 'Call Premium Only', value: 'call' },
-                    { label: 'Put Premium Only', value: 'put' }
+                    { label: 'Single Leg (Call)', value: 'call' },
+                    { label: 'Single Leg (Put)', value: 'put' }
                   ]}
                 />
               </div>
 
               <div className="form-group">
-                <label>Price Source</label>
+                <label>Pricing Reference</label>
                 <CustomSelect
                   value={priceType}
                   onChange={val => setPriceType(val)}
                   options={[
                     { label: 'Mark Price', value: 'mark' },
-                    { label: 'Last Traded Price', value: 'ltp' }
+                    { label: 'Last Traded Price (LTP)', value: 'ltp' }
                   ]}
                 />
               </div>
 
               <div className="form-group">
-                <label>Candle Interval</label>
+                <label>Timeframe</label>
                 <CustomSelect
                   value={tf}
                   onChange={val => setTf(val)}
@@ -1643,7 +1643,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
           </div>
 
           <button className="btn-start" disabled={(!callSym && !putSym) || (legType !== 'put' && !callSym) || (legType !== 'call' && !putSym)} onClick={addToWatchList}>
-            ADD TO WATCHLIST
+            TRACK STRATEGY
           </button>
 
           {errMsg && <div style={{ color: '#f85149', fontSize: 11, marginTop: 8, lineHeight: 1.4 }}>{errMsg}</div>}
@@ -1904,6 +1904,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                           </div>
 
                           <div className="watch-alert-inputs" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <input type="hidden" id={`dir-${item.id}`} defaultValue=">=" />
                             <CustomSelect
                               variant="inline"
                               value={item.alerts?.length > 0 ? '>=' : '>='} // default, managed externally anyway

@@ -19,7 +19,7 @@ export default function KpiDashboard({
       <div className={`pt-kpi-card ${todayPnl >= 0 ? 'accent-green' : 'accent-red'}`}>
         <span className="pt-kpi-label">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2v20M17 7l-5-5-5 5" /></svg>
-          Today's P&L
+          Daily P&L
         </span>
         <span className={`pt-kpi-value ${todayPnl > 0 ? 'positive' : todayPnl < 0 ? 'negative' : 'neutral'}`}>
           {todayPnl > 0 ? '+' : ''}{todayPnl.toFixed(2)}
@@ -30,7 +30,7 @@ export default function KpiDashboard({
       <div className={`pt-kpi-card ${totalPnl >= 0 ? 'accent-blue' : 'accent-red'}`} style={{ borderLeft: '4px solid var(--accent)' }}>
         <span className="pt-kpi-label">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2v20M17 7l-5-5-5 5" /></svg>
-          All-Time P&L
+          Cumulative P&L
         </span>
         <span className={`pt-kpi-value ${totalPnl > 0 ? 'positive' : totalPnl < 0 ? 'negative' : 'neutral'}`}>
           {totalPnl > 0 ? '+' : ''}{totalPnl.toFixed(2)}
@@ -50,7 +50,7 @@ export default function KpiDashboard({
       <div className="pt-kpi-card accent-blue">
         <span className="pt-kpi-label">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18" /></svg>
-          Active
+          Open Positions
         </span>
         <span className="pt-kpi-value neutral">{activePositionsCount}</span>
         <span className="pt-kpi-sub">
@@ -62,7 +62,7 @@ export default function KpiDashboard({
       <div className="pt-kpi-card accent-purple">
         <span className="pt-kpi-label">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 8v4l3 3" /><circle cx="12" cy="12" r="10" /></svg>
-          Trades
+          Completed Trades
         </span>
         <span className="pt-kpi-value neutral">{tradeHistoryLength}</span>
         <span className="pt-kpi-sub">Closed positions</span>
@@ -71,7 +71,7 @@ export default function KpiDashboard({
       <div className="pt-kpi-card accent-blue">
         <span className="pt-kpi-label">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /></svg>
-          Margin Used
+          Margin Utilization
         </span>
         <span className="pt-kpi-value neutral">${totalMargin.toFixed(0)}</span>
         <span className="pt-kpi-sub">

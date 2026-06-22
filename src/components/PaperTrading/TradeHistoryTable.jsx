@@ -142,18 +142,18 @@ export default function TradeHistoryTable({
               <th className="hide-mobile">Exit Time</th>
               <th className="hide-mobile">Duration</th>
               <th>Expiry</th>
-              <th>Type / Ratio</th>
-              <th>Buy / Sell Strike</th>
+              <th>Position / Ratio</th>
+              <th>Strikes (Long/Short)</th>
               <th className="hide-mobile">Spot (In / Out)</th>
-              <th>In (Buy / Sell)</th>
-              <th className="hide-mobile">IV In (B/S)</th>
-              <th className="hide-mobile">Entry ATM Ratio (Prices)</th>
+              <th>Entry Premium (L/S)</th>
+              <th className="hide-mobile">Entry IV (L/S)</th>
+              <th className="hide-mobile">Entry ATM Scaling</th>
               <th className="hide-mobile">Entry Fee</th>
               <th className="hide-mobile">Exit Fee</th>
-              <th>Out (Buy / Sell)</th>
-              <th className="hide-mobile">IV Out (B/S)</th>
-              <th className="hide-mobile">Exit ATM Ratio (Prices)</th>
-              <th>Realized P&L</th>
+              <th>Exit Premium (L/S)</th>
+              <th className="hide-mobile">Exit IV (L/S)</th>
+              <th className="hide-mobile">Exit ATM Scaling</th>
+              <th>Net Realized P&L</th>
               <th>Exit Reason</th>
             </tr></thead>
             <tbody>

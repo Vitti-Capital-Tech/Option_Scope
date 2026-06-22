@@ -125,16 +125,16 @@ export default function ActivePositionsTable({
         <div className="pt-table-scroll">
           <table className="pt-table">
             <thead><tr>
-              <th>Type / Ratio</th>
+              <th>Position / Ratio</th>
               <th>Expiry</th>
-              <th>Buy / Sell Strike</th>
+              <th>Strikes (Long/Short)</th>
               <th className="hide-mobile">Entry Spot</th>
-              <th>In (Buy / Sell)</th>
-              <th className="hide-mobile">IV In (B/S)</th>
-              <th>Cur (Buy / Sell)</th>
-              <th className="hide-mobile">IV Cur (B/S)</th>
-              <th>Unrl P&L</th>
-              <th className="hide-xs">Margin</th>
+              <th>Entry Premium (L/S)</th>
+              <th className="hide-mobile">Entry IV (L/S)</th>
+              <th>Current Premium (L/S)</th>
+              <th className="hide-mobile">Current IV (L/S)</th>
+              <th>Unrealized P&L</th>
+              <th className="hide-xs">Req. Margin</th>
               <th className="hide-mobile">Duration</th>
             </tr></thead>
             <tbody>
