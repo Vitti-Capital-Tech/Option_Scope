@@ -964,8 +964,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           minLongDist: s.min_long_dist ?? 500,
           minStrikeDiff: s.min_strike_diff ?? 800,
           atmRatioScaling: s.atm_ratio_scaling ?? true,
-          atmRatioPctCall: s.atm_ratio_pct_call ?? 50,
-          atmRatioPctPut: s.atm_ratio_pct_put ?? 25,
+          atmRatioPctCall: s.atm_ratio_distance_call ?? 50,
+          atmRatioPctPut: s.atm_ratio_distance_put ?? 25,
           spotDiff: s.spot_diff ?? 0.5,
           isActive: s.is_active ?? true,
           sort_order: s.sort_order ?? 0,
@@ -1006,8 +1006,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           min_long_dist: s.minLongDist ?? 500,
           min_strike_diff: s.minStrikeDiff ?? 800,
           atm_ratio_scaling: s.atmRatioScaling ?? true,
-          atm_ratio_pct_call: s.atmRatioPctCall ?? 50,
-          atm_ratio_pct_put: s.atmRatioPctPut ?? 25,
+          atm_ratio_distance_call: s.atmRatioPctCall ?? 50,
+          atm_ratio_distance_put: s.atmRatioPctPut ?? 25,
           spot_diff: s.spotDiff ?? 0.5,
           is_active: s.isActive ?? true,
           sort_order: i,
@@ -1016,7 +1016,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         const { error: insErr } = await supabase.from('paper_trading_schedules').insert(rows);
         if (insErr) console.error('Insert schedules error:', insErr);
       }
-      
+
       const savedJson = JSON.stringify(schedules.map(s => ({
         label: s.label,
         startTime: s.startTime,
@@ -1041,7 +1041,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   // Auto-save schedules when they change (debounced)
   useEffect(() => {
     if (!activeAccountId) return;
-    
+
     // Check if there is any overlap in the schedules
     const toMin = (t) => {
       if (!t) return 0;

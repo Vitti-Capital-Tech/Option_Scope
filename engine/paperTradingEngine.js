@@ -181,8 +181,8 @@ async function startSingleAccountEngine(account) {
           minLongDist: s.min_long_dist ?? 500,
           minStrikeDiff: s.min_strike_diff ?? 800,
           atmRatioScaling: s.atm_ratio_scaling ?? true,
-          atmRatioPctCall: s.atm_ratio_pct_call ?? 50,
-          atmRatioPctPut: s.atm_ratio_pct_put ?? 25,
+          atmRatioPctCall: s.atm_ratio_distance_call ?? 50,
+          atmRatioPctPut: s.atm_ratio_distance_put ?? 25,
           spotDiff: s.spot_diff ?? 0.5,
           isActive: s.is_active ?? true,
         }));
