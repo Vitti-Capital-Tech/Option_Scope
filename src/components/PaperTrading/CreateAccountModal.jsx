@@ -65,7 +65,7 @@ export default function CreateAccountModal({
                 />
               </div>
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Days to Expiry</label>
+                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Min Days to Expiry (DTE)</label>
                 <CustomInput
                   type="number"
                   {...register('daysToExpiry', { valueAsNumber: true })}
@@ -102,14 +102,14 @@ export default function CreateAccountModal({
                 style={{ cursor: 'pointer' }}
               />
               <label htmlFor="modalAtmRatioScaling" style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text)', cursor: 'pointer', marginBottom: 0 }}>
-                ATM Ratio Entry
+                Dynamic ATM Scaling
               </label>
             </div>
 
             {watchAtmRatioScaling && (
               <div style={{ display: 'flex', gap: '16px' }}>
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Call ATM Pct (%)</label>
+                  <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Call Scaling (%)</label>
                   <CustomInput
                     type="number"
                     {...register('atmRatioPctCall', { valueAsNumber: true })}
@@ -122,7 +122,7 @@ export default function CreateAccountModal({
                   />
                 </div>
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Put ATM Pct (%)</label>
+                  <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Put Scaling (%)</label>
                   <CustomInput
                     type="number"
                     {...register('atmRatioPctPut', { valueAsNumber: true })}
@@ -144,7 +144,7 @@ export default function CreateAccountModal({
 
             <div style={{ display: 'flex', gap: '16px' }}>
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Min Strike Diff ($)</label>
+                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Min Spread Width ($)</label>
                 <CustomInput
                   type="number"
                   {...register('minStrikeDiff', { valueAsNumber: true })}
@@ -157,7 +157,7 @@ export default function CreateAccountModal({
                 />
               </div>
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Min IV Diff (%)</label>
+                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Min IV Edge (%)</label>
                 <CustomInput
                   type="number"
                   {...register('minIvDiff', { valueAsNumber: true })}
@@ -173,7 +173,7 @@ export default function CreateAccountModal({
 
             <div style={{ display: 'flex', gap: '16px' }}>
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Max Ratio Dev</label>
+                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Max Delta Deviation</label>
                 <CustomInput
                   type="number"
                   step="0.01"
@@ -187,7 +187,7 @@ export default function CreateAccountModal({
                 />
               </div>
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Min Sell Premium ($)</label>
+                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Min Short Premium ($)</label>
                 <CustomInput
                   type="number"
                   {...register('minSellPremium', { valueAsNumber: true })}
@@ -203,7 +203,7 @@ export default function CreateAccountModal({
 
             <div style={{ display: 'flex', gap: '16px' }}>
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Max Debit ($)</label>
+                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Max Net Debit ($)</label>
                 <CustomInput
                   type="number"
                   {...register('maxNetPremium', { valueAsNumber: true })}
@@ -216,7 +216,7 @@ export default function CreateAccountModal({
                 />
               </div>
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Min Long Dist</label>
+                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Min Spot Distance ($)</label>
                 <CustomInput
                   type="number"
                   {...register('minLongDist', { valueAsNumber: true })}
@@ -231,7 +231,7 @@ export default function CreateAccountModal({
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Max Ratio (1:X)</label>
+              <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Max Short Ratio (1:X)</label>
               <CustomInput
                 type="number"
                 step="0.25"
@@ -279,7 +279,7 @@ export default function CreateAccountModal({
 
             <div style={{ display: 'flex', gap: '16px' }}>
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Max Calls (#)</label>
+                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Max Open Calls</label>
                 <CustomInput
                   type="number"
                   {...register('numberOfCalls', { valueAsNumber: true })}
@@ -292,7 +292,7 @@ export default function CreateAccountModal({
                 />
               </div>
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Max Puts (#)</label>
+                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Max Open Puts</label>
                 <CustomInput
                   type="number"
                   {...register('numberOfPuts', { valueAsNumber: true })}
@@ -306,7 +306,7 @@ export default function CreateAccountModal({
               </div>
 
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Spot Diff (%)</label>
+                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Re-entry Spot Step (%)</label>
                 <CustomInput
                   type="number"
                   step="0.1"

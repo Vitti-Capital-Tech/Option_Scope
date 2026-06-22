@@ -119,17 +119,17 @@ export default function ControlPanel({
         <div className={`pt-filters-container ${isFiltersCollapsed ? 'collapsed' : 'expanded'}`}>
           <span className="pt-control-label">Filters</span>
           {[
-            { label: 'Min Strike Diff ($):', key: 'minStrikeDiff', width: 60 },
-            { label: 'Min IV Diff (%):', key: 'minIvDiff', width: 50 },
-            { label: 'Max Ratio Dev:', key: 'maxRatioDeviation', width: 60, step: '0.01' },
-            { label: 'Min Sell Prem ($):', key: 'minSellPremium', width: 60 },
-            { label: 'Max Debit ($):', key: 'maxNetPremium', width: 60 },
-            { label: 'Min Long Dist:', key: 'minLongDist', width: 60 },
-            { label: 'Max Ratio (1:X):', key: 'maxSellQty', width: 65, step: '0.25' },
-            { label: 'Days to Expiry:', key: 'daysToExpiry', width: 50 },
-            { label: 'Max Calls (#):', key: 'numberOfCalls', width: 50 },
-            { label: 'Max Puts (#):', key: 'numberOfPuts', width: 50 },
-            { label: 'Spot Diff (%):', key: 'spotDiff', width: 60, step: '0.1' }
+            { label: 'Min Spread Width ($):', key: 'minStrikeDiff', width: 60 },
+            { label: 'Min IV Edge (%):', key: 'minIvDiff', width: 50 },
+            { label: 'Max Delta Deviation:', key: 'maxRatioDeviation', width: 60, step: '0.01' },
+            { label: 'Min Short Premium ($):', key: 'minSellPremium', width: 60 },
+            { label: 'Max Net Debit ($):', key: 'maxNetPremium', width: 60 },
+            { label: 'Min Spot Distance ($):', key: 'minLongDist', width: 60 },
+            { label: 'Max Short Ratio (1:X):', key: 'maxSellQty', width: 65, step: '0.25' },
+            { label: 'Min Days to Expiry (DTE):', key: 'daysToExpiry', width: 50 },
+            { label: 'Max Open Calls:', key: 'numberOfCalls', width: 50 },
+            { label: 'Max Open Puts:', key: 'numberOfPuts', width: 50 },
+            { label: 'Re-entry Spot Step (%):', key: 'spotDiff', width: 60, step: '0.1' }
           ].map(({ label, key, width, step }) => (
             <div key={key} className="form-group">
               <label style={{ marginBottom: 0 }}>{label}</label>
@@ -162,18 +162,18 @@ export default function ControlPanel({
           <div key="atmRatioScaling" className="form-group" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <input type="checkbox" id="atmRatioScaling" checked={draftConfig?.atmRatioScaling ?? false}
               onChange={e => updateDraftConfig('atmRatioScaling', e.target.checked)} />
-            <label htmlFor="atmRatioScaling" style={{ marginBottom: 0, cursor: 'pointer' }}>ATM Ratio Entry</label>
+            <label htmlFor="atmRatioScaling" style={{ marginBottom: 0, cursor: 'pointer' }}>Dynamic ATM Scaling</label>
           </div>
           {draftConfig?.atmRatioScaling && (
             <>
               <div key="atmRatioPctCall" className="form-group">
-                <label style={{ marginBottom: 0 }}>Call ATM Pct (%):</label>
+                <label style={{ marginBottom: 0 }}>Call Scaling (%):</label>
                 <CustomInput type="number" step="1" value={draftConfig.atmRatioPctCall ?? 50}
                   onChange={e => updateDraftConfig('atmRatioPctCall', Number(e.target.value))}
                   style={{ width: 50, padding: '4px 8px', fontSize: '13px' }} />
               </div>
               <div key="atmRatioPctPut" className="form-group">
-                <label style={{ marginBottom: 0 }}>Put ATM Pct (%):</label>
+                <label style={{ marginBottom: 0 }}>Put Scaling (%):</label>
                 <CustomInput type="number" step="1" value={draftConfig.atmRatioPctPut ?? 25}
                   onChange={e => updateDraftConfig('atmRatioPctPut', Number(e.target.value))}
                   style={{ width: 50, padding: '4px 8px', fontSize: '13px' }} />

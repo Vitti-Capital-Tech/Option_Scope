@@ -70,7 +70,7 @@ export default function FirstAccountCard({
                   />
                 </div>
                 <div className="first-account-form-group">
-                  <label className="first-account-label">Days to Expiry</label>
+                  <label className="first-account-label">Min Days to Expiry (DTE)</label>
                   <CustomInput
                     type="number"
                     {...register('daysToExpiry', { valueAsNumber: true })}
@@ -87,14 +87,14 @@ export default function FirstAccountCard({
                   className="first-account-checkbox"
                 />
                 <label htmlFor="atmRatioScaling" className="first-account-checkbox-label">
-                  ATM Ratio Entry
+                  Dynamic ATM Scaling
                 </label>
               </div>
 
               {watchAtmRatioScaling && (
                 <div className="first-account-row">
                   <div className="first-account-form-group">
-                    <label className="first-account-label">Call ATM Pct (%)</label>
+                    <label className="first-account-label">Call Scaling (%)</label>
                     <CustomInput
                       type="number"
                       {...register('atmRatioPctCall', { valueAsNumber: true })}
@@ -102,7 +102,7 @@ export default function FirstAccountCard({
                     />
                   </div>
                   <div className="first-account-form-group">
-                    <label className="first-account-label">Put ATM Pct (%)</label>
+                    <label className="first-account-label">Put Scaling (%)</label>
                     <CustomInput
                       type="number"
                       {...register('atmRatioPctPut', { valueAsNumber: true })}
@@ -119,7 +119,7 @@ export default function FirstAccountCard({
 
               <div className="first-account-row">
                 <div className="first-account-form-group">
-                  <label className="first-account-label">Min Strike Diff ($)</label>
+                  <label className="first-account-label">Min Spread Width ($)</label>
                   <CustomInput
                     type="number"
                     {...register('minStrikeDiff', { valueAsNumber: true })}
@@ -127,7 +127,7 @@ export default function FirstAccountCard({
                   />
                 </div>
                 <div className="first-account-form-group">
-                  <label className="first-account-label">Min IV Diff (%)</label>
+                  <label className="first-account-label">Min IV Edge (%)</label>
                   <CustomInput
                     type="number"
                     {...register('minIvDiff', { valueAsNumber: true })}
@@ -138,7 +138,7 @@ export default function FirstAccountCard({
 
               <div className="first-account-row">
                 <div className="first-account-form-group">
-                  <label className="first-account-label">Max Ratio Dev</label>
+                  <label className="first-account-label">Max Delta Deviation</label>
                   <CustomInput
                     type="number"
                     step="0.01"
@@ -147,7 +147,7 @@ export default function FirstAccountCard({
                   />
                 </div>
                 <div className="first-account-form-group">
-                  <label className="first-account-label">Min Sell Premium ($)</label>
+                  <label className="first-account-label">Min Short Premium ($)</label>
                   <CustomInput
                     type="number"
                     {...register('minSellPremium', { valueAsNumber: true })}
@@ -158,7 +158,7 @@ export default function FirstAccountCard({
 
               <div className="first-account-row">
                 <div className="first-account-form-group">
-                  <label className="first-account-label">Max Debit ($)</label>
+                  <label className="first-account-label">Max Net Debit ($)</label>
                   <CustomInput
                     type="number"
                     {...register('maxNetPremium', { valueAsNumber: true })}
@@ -166,7 +166,7 @@ export default function FirstAccountCard({
                   />
                 </div>
                 <div className="first-account-form-group">
-                  <label className="first-account-label">Min Long Dist</label>
+                  <label className="first-account-label">Min Spot Distance ($)</label>
                   <CustomInput
                     type="number"
                     {...register('minLongDist', { valueAsNumber: true })}
@@ -176,7 +176,7 @@ export default function FirstAccountCard({
               </div>
 
               <div className="first-account-form-group">
-                <label className="first-account-label">Max Ratio (1:X)</label>
+                <label className="first-account-label">Max Short Ratio (1:X)</label>
                 <CustomInput
                   type="number"
                   step="0.25"
@@ -212,7 +212,7 @@ export default function FirstAccountCard({
 
               <div className="first-account-row">
                 <div className="first-account-form-group">
-                  <label className="first-account-label">Max Calls (#)</label>
+                  <label className="first-account-label">Max Open Calls</label>
                   <CustomInput
                     type="number"
                     {...register('numberOfCalls', { valueAsNumber: true })}
@@ -220,7 +220,7 @@ export default function FirstAccountCard({
                   />
                 </div>
                 <div className="first-account-form-group">
-                  <label className="first-account-label">Max Puts (#)</label>
+                  <label className="first-account-label">Max Open Puts</label>
                   <CustomInput
                     type="number"
                     {...register('numberOfPuts', { valueAsNumber: true })}
@@ -228,7 +228,7 @@ export default function FirstAccountCard({
                   />
                 </div>
                 <div className="first-account-form-group">
-                  <label className="first-account-label">Spot Diff (%)</label>
+                  <label className="first-account-label">Re-entry Spot Step (%)</label>
                   <CustomInput
                     type="number"
                     step="0.1"

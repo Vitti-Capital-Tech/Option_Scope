@@ -410,7 +410,7 @@ export default function SchedulePanel({
 
               {/* Max Calls */}
               <div className="schedule-item-block schedule-item-num-block">
-                <span className="schedule-item-label">Max Calls</span>
+                <span className="schedule-item-label">Max Open Calls</span>
                 <CustomInput
                   type="number"
                   min="0"
@@ -423,7 +423,7 @@ export default function SchedulePanel({
 
               {/* Max Puts */}
               <div className="schedule-item-block schedule-item-num-block">
-                <span className="schedule-item-label">Max Puts</span>
+                <span className="schedule-item-label">Max Open Puts</span>
                 <CustomInput
                   type="number"
                   min="0"
@@ -436,7 +436,7 @@ export default function SchedulePanel({
 
               {/* Min Strike Diff */}
               <div className="schedule-item-block schedule-item-num-block">
-                <span className="schedule-item-label">Min Strike Diff</span>
+                <span className="schedule-item-label">Min Spread Width</span>
                 <CustomInput
                   type="number"
                   min="0"
@@ -448,7 +448,7 @@ export default function SchedulePanel({
 
               {/* Min Long Dist */}
               <div className="schedule-item-block schedule-item-num-block">
-                <span className="schedule-item-label">Min Long Dist</span>
+                <span className="schedule-item-label">Min Spot Distance</span>
                 <CustomInput
                   type="number"
                   min="0"
@@ -468,13 +468,13 @@ export default function SchedulePanel({
                   style={{ cursor: 'pointer', width: 14, height: 14 }}
                 />
                 <label htmlFor={`atmRatioScaling-${s.id}`} style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.8, cursor: 'pointer', userSelect: 'none' }}>
-                  ATM Scaling
+                  Dynamic ATM Scaling
                 </label>
               </div>
 
               {/* ATM Ratio % Call */}
               <div className="schedule-item-block schedule-item-num-block">
-                <span className="schedule-item-label">ATM Ratio % Call</span>
+                <span className="schedule-item-label">Call Scaling (%)</span>
                 <CustomInput
                   type="number"
                   min="0"
@@ -488,7 +488,7 @@ export default function SchedulePanel({
 
               {/* ATM Ratio % Put */}
               <div className="schedule-item-block schedule-item-num-block">
-                <span className="schedule-item-label">ATM Ratio % Put</span>
+                <span className="schedule-item-label">Put Scaling (%)</span>
                 <CustomInput
                   type="number"
                   min="0"
@@ -502,7 +502,7 @@ export default function SchedulePanel({
 
               {/* Spot Diff % */}
               <div className="schedule-item-block schedule-item-num-block">
-                <span className="schedule-item-label">Spot Diff %</span>
+                <span className="schedule-item-label">Re-entry Spot Step (%)</span>
                 <CustomInput
                   type="number"
                   min="0"
