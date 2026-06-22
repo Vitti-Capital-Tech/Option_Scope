@@ -180,6 +180,10 @@ async function startSingleAccountEngine(account) {
           numberOfPuts: s.number_of_puts ?? 3,
           minLongDist: s.min_long_dist ?? 500,
           minStrikeDiff: s.min_strike_diff ?? 800,
+          atmRatioScaling: s.atm_ratio_scaling ?? true,
+          atmRatioPctCall: s.atm_ratio_pct_call ?? 50,
+          atmRatioPctPut: s.atm_ratio_pct_put ?? 25,
+          spotDiff: s.spot_diff ?? 0.5,
           isActive: s.is_active ?? true,
         }));
       }
@@ -396,6 +400,10 @@ async function startSingleAccountEngine(account) {
           numberOfPuts: activeSchedule.numberOfPuts,
           minLongDist: activeSchedule.minLongDist,
           minStrikeDiff: activeSchedule.minStrikeDiff,
+          atmRatioScaling: activeSchedule.atmRatioScaling,
+          atmRatioPctCall: activeSchedule.atmRatioPctCall,
+          atmRatioPctPut: activeSchedule.atmRatioPctPut,
+          spotDiff: activeSchedule.spotDiff
         }
         : { ...config };
 
@@ -493,8 +501,8 @@ async function startSingleAccountEngine(account) {
           : null;
 
         let ratioToUse = spread.sellQty;
-        if (config.atmRatioScaling && entryAtmRatio != null) {
-          const pct = spread.buyLeg.type === 'call' ? config.atmRatioPctCall : config.atmRatioPctPut;
+        if (effectiveConfig.atmRatioScaling && entryAtmRatio != null) {
+          const pct = spread.buyLeg.type === 'call' ? effectiveConfig.atmRatioPctCall : effectiveConfig.atmRatioPctPut;
           const originalRatio = spread.sellQty;
           const diff = Math.max(0, entryAtmRatio - originalRatio);
           ratioToUse = Math.max(originalRatio, Math.round((originalRatio + (pct / 100) * diff) / 0.25) * 0.25);
@@ -546,8 +554,8 @@ async function startSingleAccountEngine(account) {
         const { atmPnl, roi } = calculateAtmPnlAndRoi(spread);
 
         let minAtmPnl = 50;
-        if (config.atmRatioScaling) {
-          const pct = spread.buyLeg.type === 'call' ? config.atmRatioPctCall : config.atmRatioPctPut;
+        if (effectiveConfig.atmRatioScaling) {
+          const pct = spread.buyLeg.type === 'call' ? effectiveConfig.atmRatioPctCall : effectiveConfig.atmRatioPctPut;
           minAtmPnl = 50 * (1 - (pct || 0) / 100);
         }
 
@@ -971,7 +979,7 @@ async function startSingleAccountEngine(account) {
 
             // Spot step movement guard
             const oldSpotBase = pos.entrySpotPrice || pos.entryBuyPrice || spotPrice;
-            const spotDiff = config.spotDiff ?? 0.5;
+            const spotDiff = effectiveConfig.spotDiff ?? 0.5;
             const oldThresh = Math.round((oldSpotBase * spotDiff * 0.01) / 100) * 100;
             const spotStepValid = Math.abs(spotPrice - oldSpotBase) >= oldThresh;
             if (!spotStepValid) {
@@ -1020,7 +1028,7 @@ async function startSingleAccountEngine(account) {
               }
 
               const oldSpotBase = pos.entrySpotPrice || pos.entryBuyPrice || spotPrice;
-              const spotDiff = config.spotDiff ?? 0.5;
+              const spotDiff = effectiveConfig.spotDiff ?? 0.5;
               const oldThresh = Math.round((oldSpotBase * spotDiff * 0.01) / 100) * 100;
               const spotStepValid = Math.abs(spotPrice - oldSpotBase) >= oldThresh;
               if (!spotStepValid) {
@@ -1379,8 +1387,8 @@ async function startSingleAccountEngine(account) {
             : null;
 
           let ratioToUse = spread.sellQty;
-          if (config.atmRatioScaling && entryAtmRatio != null) {
-            const pct = spreadType === 'call' ? config.atmRatioPctCall : config.atmRatioPctPut;
+          if (effectiveConfig.atmRatioScaling && entryAtmRatio != null) {
+            const pct = spreadType === 'call' ? effectiveConfig.atmRatioPctCall : effectiveConfig.atmRatioPctPut;
             const originalRatio = spread.sellQty;
             const diff = Math.max(0, entryAtmRatio - originalRatio);
             ratioToUse = Math.max(originalRatio, Math.round((originalRatio + (pct / 100) * diff) / 0.25) * 0.25);

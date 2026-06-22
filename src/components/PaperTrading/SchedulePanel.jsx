@@ -9,6 +9,10 @@ const DEFAULT_WINDOW = {
   numberOfPuts: 3,
   minLongDist: 500,
   minStrikeDiff: 800,
+  atmRatioScaling: true,
+  atmRatioPctCall: 50,
+  atmRatioPctPut: 25,
+  spotDiff: 0.5,
   isActive: true,
 };
 
@@ -197,7 +201,7 @@ export default function SchedulePanel({
             const endShifted = (endMin - 1050 + 1440) % 1440;
             const isSplit = startShifted > endShifted;
 
-            const tooltip = `${s.label || 'Window'} (${cleanTime(s.startTime)} - ${cleanTime(s.endTime)})\nCalls: ${s.numberOfCalls} | Puts: ${s.numberOfPuts}\nStrike Diff: ${s.minStrikeDiff} | Long Dist: ${s.minLongDist}`;
+            const tooltip = `${s.label || 'Window'} (${cleanTime(s.startTime)} - ${cleanTime(s.endTime)})\nCalls: ${s.numberOfCalls} | Puts: ${s.numberOfPuts}\nStrike Diff: ${s.minStrikeDiff} | Long Dist: ${s.minLongDist}\nScaling: ${(s.atmRatioScaling ?? true) ? 'ON' : 'OFF'} (C: ${s.atmRatioPctCall ?? 50}%, P: ${s.atmRatioPctPut ?? 25}%)\nSpot Diff: ${s.spotDiff ?? 0.5}%`;
 
             if (isSplit) {
               return (
@@ -451,6 +455,61 @@ export default function SchedulePanel({
                   className="schedule-inline-input"
                   value={s.minLongDist}
                   onChange={e => handleChange(s.id, 'minLongDist', Number(e.target.value))}
+                />
+              </div>
+
+              {/* ATM Ratio Scaling Toggle */}
+              <div className="schedule-item-block schedule-item-checkbox-block" style={{ flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'center', marginTop: 14 }}>
+                <input
+                  type="checkbox"
+                  id={`atmRatioScaling-${s.id}`}
+                  checked={s.atmRatioScaling ?? true}
+                  onChange={e => handleChange(s.id, 'atmRatioScaling', e.target.checked)}
+                  style={{ cursor: 'pointer', width: 14, height: 14 }}
+                />
+                <label htmlFor={`atmRatioScaling-${s.id}`} style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.8, cursor: 'pointer', userSelect: 'none' }}>
+                  ATM Scaling
+                </label>
+              </div>
+
+              {/* ATM Ratio % Call */}
+              <div className="schedule-item-block schedule-item-num-block">
+                <span className="schedule-item-label">ATM Ratio % Call</span>
+                <CustomInput
+                  type="number"
+                  min="0"
+                  max="100"
+                  className="schedule-inline-input"
+                  value={s.atmRatioPctCall ?? 50}
+                  disabled={!(s.atmRatioScaling ?? true)}
+                  onChange={e => handleChange(s.id, 'atmRatioPctCall', Number(e.target.value))}
+                />
+              </div>
+
+              {/* ATM Ratio % Put */}
+              <div className="schedule-item-block schedule-item-num-block">
+                <span className="schedule-item-label">ATM Ratio % Put</span>
+                <CustomInput
+                  type="number"
+                  min="0"
+                  max="100"
+                  className="schedule-inline-input"
+                  value={s.atmRatioPctPut ?? 25}
+                  disabled={!(s.atmRatioScaling ?? true)}
+                  onChange={e => handleChange(s.id, 'atmRatioPctPut', Number(e.target.value))}
+                />
+              </div>
+
+              {/* Spot Diff % */}
+              <div className="schedule-item-block schedule-item-num-block">
+                <span className="schedule-item-label">Spot Diff %</span>
+                <CustomInput
+                  type="number"
+                  min="0"
+                  step="0.1"
+                  className="schedule-inline-input"
+                  value={s.spotDiff ?? 0.5}
+                  onChange={e => handleChange(s.id, 'spotDiff', Number(e.target.value))}
                 />
               </div>
 

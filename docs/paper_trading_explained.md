@@ -642,11 +642,15 @@ When you click **Reset**:
 Time-Based Filter Schedules allow users to define multiple named time windows per account within a 24-hour cycle. Each window overrides specific entry and portfolio filters during that period.
 
 ### Overridden Parameters
-Only the following 4 parameters are scheduled:
+Only the following 8 parameters are scheduled:
 1. **Max Calls** (`numberOfCalls`)
 2. **Max Puts** (`numberOfPuts`)
 3. **Min Strike Difference** (`minStrikeDiff`)
 4. **Min Long Distance** (`minLongDist`)
+5. **ATM Ratio Entry** (`atmRatioScaling`)
+6. **Call ATM Pct (%)** (`atmRatioPctCall`)
+7. **Put ATM Pct (%)** (`atmRatioPctPut`)
+8. **Spot Diff (%)** (`spotDiff`)
 
 All other filter settings (like `minIvDiff`, `exitType`, etc.) default back to the base account config.
 

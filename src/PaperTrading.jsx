@@ -963,6 +963,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           numberOfPuts: s.number_of_puts ?? 3,
           minLongDist: s.min_long_dist ?? 500,
           minStrikeDiff: s.min_strike_diff ?? 800,
+          atmRatioScaling: s.atm_ratio_scaling ?? true,
+          atmRatioPctCall: s.atm_ratio_pct_call ?? 50,
+          atmRatioPctPut: s.atm_ratio_pct_put ?? 25,
+          spotDiff: s.spot_diff ?? 0.5,
           isActive: s.is_active ?? true,
           sort_order: s.sort_order ?? 0,
         }));
@@ -975,6 +979,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           numberOfPuts: s.numberOfPuts,
           minLongDist: s.minLongDist,
           minStrikeDiff: s.minStrikeDiff,
+          atmRatioScaling: s.atmRatioScaling,
+          atmRatioPctCall: s.atmRatioPctCall,
+          atmRatioPctPut: s.atmRatioPctPut,
+          spotDiff: s.spotDiff,
           isActive: s.isActive
         })));
       }
@@ -997,6 +1005,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           number_of_puts: s.numberOfPuts ?? 3,
           min_long_dist: s.minLongDist ?? 500,
           min_strike_diff: s.minStrikeDiff ?? 800,
+          atm_ratio_scaling: s.atmRatioScaling ?? true,
+          atm_ratio_pct_call: s.atmRatioPctCall ?? 50,
+          atm_ratio_pct_put: s.atmRatioPctPut ?? 25,
+          spot_diff: s.spotDiff ?? 0.5,
           is_active: s.isActive ?? true,
           sort_order: i,
           updated_at: new Date().toISOString(),
@@ -1013,6 +1025,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         numberOfPuts: s.numberOfPuts,
         minLongDist: s.minLongDist,
         minStrikeDiff: s.minStrikeDiff,
+        atmRatioScaling: s.atmRatioScaling,
+        atmRatioPctCall: s.atmRatioPctCall,
+        atmRatioPctPut: s.atmRatioPctPut,
+        spotDiff: s.spotDiff,
         isActive: s.isActive
       })));
       lastSavedSchedulesRef.current = savedJson;
@@ -1075,6 +1091,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       numberOfPuts: s.numberOfPuts,
       minLongDist: s.minLongDist,
       minStrikeDiff: s.minStrikeDiff,
+      atmRatioScaling: s.atmRatioScaling,
+      atmRatioPctCall: s.atmRatioPctCall,
+      atmRatioPctPut: s.atmRatioPctPut,
+      spotDiff: s.spotDiff,
       isActive: s.isActive
     })));
 
