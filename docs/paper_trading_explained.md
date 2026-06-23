@@ -17,10 +17,11 @@ This document explains **every** logic and condition in the Paper Trading engine
 9. [Partial Exit / Scaling Logic](#partial-exit--scaling-logic)
 10. [Leg Swap (In-Place Upgrade)](#leg-swap)
 11. [Standard Rotation (Full Replacement)](#standard-rotation)
-12. [Safety Guards Summary](#safety-guards-summary)
-13. [Diagnostic Logging (0 Candidates)](#diagnostic-logging-0-candidates)
-14. [Config Synchronization](#config-synchronization)
-15. [Time-Based Filter Schedules](#time-based-filter-schedules)
+12. [Manual Exit (Liquidation)](#manual-exit-liquidation)
+13. [Safety Guards Summary](#safety-guards-summary)
+14. [Diagnostic Logging (0 Candidates)](#diagnostic-logging-0-candidates)
+15. [Config Synchronization](#config-synchronization)
+16. [Time-Based Filter Schedules](#time-based-filter-schedules)
 
 ---
 
@@ -513,6 +514,44 @@ This prevents the engine from churning through all positions in a single minute.
 ### What "Not in Protected Rank" Means
 
 After scanning and ranking all candidate spreads by distance-to-ATM, the engine takes the top-ranked spreads by type up to the configured limit (**config.numberOfCalls** for calls, **config.numberOfPuts** for puts). If a position's buy strike appears in this top list, it's **protected** from rotation. If not, it's eligible to be replaced.
+
+---
+
+## Manual Exit (Liquidation)
+
+Manual exit (or "Close Position") is a client-initiated override flow allowing traders to manually close any active position directly from the frontend dashboard. 
+
+### Lifecycle of a Manual Exit
+
+```mermaid
+sequenceDiagram
+    participant User as Trader (Frontend)
+    participant Modal as ConfirmExitModal
+    participant DB as Supabase DB
+    participant Engine as paperTradingEngine (VPS)
+    
+    User->>User: Click "Exit" on Active Positions Row
+    User->>Modal: Open ConfirmExitModal (Display pricing/P&L/fees)
+    User->>Modal: Click "Confirm Exit"
+    Modal->>DB: INSERT row in trade_history (exit_reason = 'Manual Exit')
+    Modal->>DB: DELETE row in active_positions (id = T...)
+    DB->>Engine: Postgres realtime notification (DELETE active_positions)
+    Engine->>Engine: Filter out position from memory immediately
+    Modal->>User: Close modal & remove position from frontend UI
+```
+
+1. **Trigger**: The trader clicks the **Exit** button in the **Actions** column of the Active Positions table.
+2. **Review**: The **ConfirmExitModal** opens, showcasing real-time liquidation statistics:
+   - Current long Bid and short Ask prices.
+   - Gross realized P&L and net realized P&L.
+   - Estimated transaction exit fees.
+3. **Execution (Database level)**:
+   - An entry is inserted into the `trade_history` table with `exit_reason` set to `'Manual Exit'`.
+   - The position's corresponding row is deleted from the `active_positions` table.
+4. **Realtime Engine Synchronization**:
+   - The VPS engine has a realtime subscription listening to the `active_positions` table.
+   - Upon receiving the `DELETE` event, the engine instantly filters the position from its in-memory `positions` array, ensuring it doesn't attempt standard evaluation or leg swaps on it.
+   - A redundant check ensures that if the engine's main evaluation loop attempts to exit the same position before the deletion is processed, it queries `trade_history` first and aborts the exit if `trade_id` already exists (preventing double exits).
 
 ---
 

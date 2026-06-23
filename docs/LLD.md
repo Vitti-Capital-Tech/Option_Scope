@@ -12,6 +12,7 @@ This document is the authoritative implementation reference for every module, en
 | `App.jsx` | Interactive charts, greeks tracking, alert manager, SMA overlay, and support/resistance drawing tools. |
 | `RatioSpreadScanner.jsx` | Standalone option-chain scanner. Computes premium-to-delta-notional ratio deviation pairs, publishes top-3 results via `BroadcastChannel` and `localStorage`. Configuration is managed locally in `localStorage` independent of Paper Trading accounts. |
 | `PaperTrading.jsx` | React UI Dashboard for Paper Trading. Reads `active_positions`, `trade_history`, and heartbeat from Supabase. Connects to multi-account creation/management modals and controls configuration updates via a local draft buffer (Apply/Reset buttons). |
+| `ConfirmExitModal.jsx` | Front-end confirmation modal for manual position liquidation. Displays live exit pricing, estimated exit fees, and net realized P&L. |
 | `engine/paperTradingEngine.js` | Headless Node.js engine. Handles entries, dynamic exits (ATM, ITM, OTM with points-based thresholds), rotation, IV tracking, fee calculations, and Supabase persistence. |
 | `ResultTable.jsx` | Reusable grouped table renderer for ratio spread candidates. |
 | `api.js` | Network abstraction: Delta REST calls, `createTickerStream` (WS with auto-reconnect), `createWS` (raw WS), `getTickers` (REST backfill). |
