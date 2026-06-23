@@ -19,6 +19,7 @@ import TradeHistoryTable from './components/PaperTrading/TradeHistoryTable';
 import CreateAccountModal from './components/PaperTrading/CreateAccountModal';
 import EditAccountModal from './components/PaperTrading/EditAccountModal';
 import DeleteAccountModal from './components/PaperTrading/DeleteAccountModal';
+import ConfirmExitModal from './components/PaperTrading/ConfirmExitModal';
 
 const UNDERLYINGS = ['BTC', 'ETH'];
 const HEARTBEAT_ONLINE_THRESHOLD = 60000;
@@ -181,6 +182,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const [includeFees, setIncludeFees] = useState(true);
   const [positions, setPositions] = useState([]);
   const [tradeHistory, setTradeHistory] = useState([]);
+  const [positionToExit, setPositionToExit] = useState(null);
+  const [isExitingPosition, setIsExitingPosition] = useState(false);
 
   const [historyFilterDate, setHistoryFilterDate] = useState(() => {
     const d = new Date();
@@ -1203,6 +1206,103 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     } catch (e) { }
   }, [activeAccountId, underlying]);
 
+  const handleConfirmExitPosition = async (pos) => {
+    if (!pos || !activeAccountId) return;
+    setIsExitingPosition(true);
+    try {
+      const exitTime = new Date().toISOString();
+      const exitBuyPrice = pos.currentBuyPrice !== null ? pos.currentBuyPrice : pos.entryBuyPrice;
+      const exitSellPrice = pos.currentSellPrice !== null ? pos.currentSellPrice : pos.entrySellPrice;
+      const exitSpotPrice = spotPrice || pos.entrySpotPrice; // Fallback to entry spot if current spot is null
+
+      const buyPriceDiff = (exitBuyPrice != null && pos.entryBuyPrice != null) ? (exitBuyPrice - pos.entryBuyPrice) : 0;
+      const sellPriceDiff = (exitSellPrice != null && pos.entrySellPrice != null) ? (pos.entrySellPrice - exitSellPrice) : 0;
+
+      // Calculate gross PnL
+      const grossPnl = (buyPriceDiff * pos.buyLeg.lotSize) + (sellPriceDiff * pos.sellQty * pos.sellLeg.lotSize) + (pos.accumulatedSellPnl || 0);
+
+      // Calculate exit fee and total fees
+      const exitFee = calculateFee(exitBuyPrice, exitSpotPrice, pos.buyLeg.lotSize, pos.buyLeg.originalLotSize || 1) +
+        calculateFee(exitSellPrice, exitSpotPrice, pos.sellQty, pos.sellLeg.lotSize);
+      const totalFees = (pos.entryFee || 0) + exitFee;
+      const netPnl = grossPnl - totalFees;
+
+      // Add exit details to buyLeg and sellLeg JSON
+      const buyLegWithExit = {
+        ...pos.buyLeg,
+        exitIv: pos.currentBuyIv || pos.buyLeg.exitIv || null
+      };
+
+      const sellLegWithExit = {
+        ...pos.sellLeg,
+        exitIv: pos.currentSellIv || pos.sellLeg.exitIv || null
+      };
+
+      // 1. Insert into trade_history
+      const historyRow = {
+        trade_id: pos.id,
+        account_id: activeAccountId,
+        underlying: pos.underlying,
+        expiry: pos.expiry,
+        type: pos.type,
+        buy_leg: JSON.stringify(buyLegWithExit),
+        sell_leg: JSON.stringify(sellLegWithExit),
+        sell_qty: pos.sellQty,
+        strike_diff: pos.strikeDiff,
+        entry_time: pos.entryTime.toISOString(),
+        entry_buy_price: pos.entryBuyPrice,
+        entry_sell_price: pos.entrySellPrice,
+        entry_spot_price: pos.entrySpotPrice,
+        margin: pos.margin,
+        exit_time: exitTime,
+        exit_buy_price: exitBuyPrice,
+        exit_sell_price: exitSellPrice,
+        exit_spot_price: exitSpotPrice,
+        realized_gross_pnl: grossPnl,
+        realized_net_pnl: netPnl,
+        exit_fee: exitFee,
+        total_fees: totalFees,
+        exit_reason: 'Manual Exit',
+        is_partial: false
+      };
+
+      const { error: histError } = await supabase.from('trade_history').insert([historyRow]);
+      if (histError) {
+        console.error('Failed to insert into trade_history:', histError);
+        alert(`Error recording trade history: ${histError.message}`);
+        setIsExitingPosition(false);
+        return;
+      }
+
+      // 2. Delete from active_positions
+      const { error: delError } = await supabase.from('active_positions').delete().eq('id', pos.id);
+      if (delError) {
+        console.error('Failed to delete from active_positions:', delError);
+        alert(`Error deleting active position: ${delError.message}`);
+        setIsExitingPosition(false);
+        return;
+      }
+
+      // 3. Immediately update UI state
+      setPositions(prev => prev.filter(p => p.id !== pos.id));
+
+      // Update last db write ref to prevent immediate auto-fetch clash
+      lastDbWriteRef.current = Date.now();
+
+      // Close the modal
+      setPositionToExit(null);
+
+      // 4. Refresh trade history
+      fetchSupabaseTradeHistory();
+
+    } catch (e) {
+      console.error('Error during manual exit:', e);
+      alert(`An error occurred: ${e.message}`);
+    } finally {
+      setIsExitingPosition(false);
+    }
+  };
+
   // ── Initial data load + Realtime subscription ─────────────────────────
   useEffect(() => {
     if (!activeAccountId) return;
@@ -1844,6 +1944,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                 totalMargin={totalMargin}
                 exitType={config.exitType}
                 exitPoints={config.exitPoints}
+                onExitPosition={(p) => setPositionToExit(p)}
               />
 
               <TradeHistoryTable
@@ -1901,6 +2002,15 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         register={registerEdit}
         errors={errorsEdit}
         isSaving={isSavingAccount}
+      />
+
+      <ConfirmExitModal
+        isOpen={!!positionToExit}
+        onClose={() => setPositionToExit(null)}
+        onConfirm={handleConfirmExitPosition}
+        isExiting={isExitingPosition}
+        position={positionToExit}
+        includeFees={includeFees}
       />
     </div>
   );

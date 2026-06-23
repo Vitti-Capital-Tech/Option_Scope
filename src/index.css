@@ -4452,3 +4452,10 @@ body.light-theme .pt-btn-apply.active {
   cursor: not-allowed;
   background: var(--bg2);
 }
+
+/* ── Manual Exit Button Hover Styling ── */
+.pt-btn-exit-pos:hover {
+  background: #f85149 !important;
+  color: #ffffff !important;
+  border-color: #f85149 !important;
+}

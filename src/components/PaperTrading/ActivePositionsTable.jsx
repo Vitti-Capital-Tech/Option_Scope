@@ -17,7 +17,8 @@ export default function ActivePositionsTable({
   calculatePositionMargin,
   totalMargin,
   exitType = 'ATM',
-  exitPoints = 0
+  exitPoints = 0,
+  onExitPosition
 }) {
 
   const fmtDuration = (ms) => {
@@ -136,6 +137,7 @@ export default function ActivePositionsTable({
               <th>Unrealized P&L</th>
               <th className="hide-xs">Req. Margin</th>
               <th className="hide-mobile">Duration</th>
+              <th>Actions</th>
             </tr></thead>
             <tbody>
               {positions.filter(p => p.underlying === underlying).map(p => {
@@ -207,6 +209,26 @@ export default function ActivePositionsTable({
                       </div>
                     </td>
                     <td className="hide-mobile"><span className="pt-duration">{fmtDuration(now - p.entryTime)}</span></td>
+                    <td>
+                      <button
+                        onClick={() => onExitPosition(p)}
+                        className="pt-btn-exit-pos"
+                        style={{
+                          padding: '4px 8px',
+                          fontSize: '11px',
+                          background: 'rgba(248, 81, 73, 0.15)',
+                          border: '1px solid rgba(248, 81, 73, 0.3)',
+                          color: '#f85149',
+                          borderRadius: '4px',
+                          cursor: 'pointer',
+                          fontWeight: 600,
+                          transition: 'all 0.2s ease',
+                          whiteSpace: 'nowrap'
+                        }}
+                      >
+                        Exit
+                      </button>
+                    </td>
                   </tr>
                 );
               })}
