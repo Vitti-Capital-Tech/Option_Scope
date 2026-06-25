@@ -41,7 +41,8 @@ const ACCOUNT_CONFIG_DEFAULTS = {
   numberOfPuts: 3,
   spotDiff: 0.5,
   exitType: 'ATM',
-  exitPoints: 0
+  exitPoints: 0,
+  legSwapNetPremium: 0
 };
 
 const normalizeAccountDefaultConfig = (config = {}) => {
@@ -122,7 +123,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       numberOfPuts: 3,
       spotDiff: 0.5,
       exitType: 'ATM',
-      exitPoints: 0
+      exitPoints: 0,
+      legSwapNetPremium: 0
     }
   });
 
@@ -154,7 +156,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     numberOfPuts: 3,
     spotDiff: 0.5,
     exitType: 'ATM',
-    exitPoints: 0
+    exitPoints: 0,
+    legSwapNetPremium: 0
   }));
   const [draftConfig, setDraftConfig] = useState(() => ({ ...config }));
   const [isConfigLoaded, setIsConfigLoaded] = useState(false);
@@ -552,7 +555,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       numberOfPuts: data.numberOfPuts,
       spotDiff: data.spotDiff,
       exitType: data.exitType,
-      exitPoints: data.exitPoints
+      exitPoints: data.exitPoints,
+      legSwapNetPremium: data.legSwapNetPremium
     });
 
     setIsCreatingAccount(true);
@@ -595,7 +599,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           number_of_puts: data.numberOfPuts ?? 3,
           spot_diff: data.spotDiff ?? 0.5,
           exit_type: data.exitType ?? 'ATM',
-          exit_points: data.exitPoints ?? 0
+          exit_points: data.exitPoints ?? 0,
+          leg_swap_premium: data.legSwapNetPremium ?? 0
         }]);
 
         // Manually fetch accounts first to update state instantly!
@@ -633,7 +638,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       numberOfPuts: config.numberOfPuts ?? 3,
       spotDiff: config.spotDiff ?? 0.5,
       exitType: config.exitType ?? 'ATM',
-      exitPoints: config.exitPoints ?? 0
+      exitPoints: config.exitPoints ?? 0,
+      legSwapNetPremium: config.legSwapNetPremium ?? 0
     });
     setIsCreateModalOpen(true);
   };
@@ -738,6 +744,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         spot_diff: newCfg.spotDiff ?? 0.5,
         exit_type: newCfg.exitType ?? 'ATM',
         exit_points: newCfg.exitPoints ?? 0,
+        leg_swap_premium: newCfg.legSwapNetPremium ?? 0,
         updated_at: new Date().toISOString()
       }).select();
       if (error) {
@@ -766,7 +773,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     'numberOfPuts',
     'spotDiff',
     'exitType',
-    'exitPoints'
+    'exitPoints',
+    'legSwapNetPremium'
   ];
 
   const updateConfig = (keyOrObj, value) => {
@@ -813,7 +821,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       numberOfPuts: 3,
       spotDiff: 0.5,
       exitType: 'ATM',
-      exitPoints: 0
+      exitPoints: 0,
+      legSwapNetPremium: 0
     };
     if (activeAccount && activeAccount.default_config) {
       return { ...baseFilters, ...activeAccount.default_config };
@@ -881,6 +890,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           spot_diff: 0.5,
           exit_type: 'ATM',
           exit_points: 0,
+          leg_swap_premium: 0,
           updated_at: new Date().toISOString()
         };
         const { data: inserted, error: insertErr } = await supabase
@@ -913,7 +923,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           numberOfPuts: data.number_of_puts ?? 3,
           spotDiff: data.spot_diff ?? 0.5,
           exitType: data.exit_type ?? 'ATM',
-          exitPoints: data.exit_points ?? 0
+          exitPoints: data.exit_points ?? 0,
+          legSwapNetPremium: data.leg_swap_premium ?? 0
         };
         setConfig(loadedConfig);
         setDraftConfig(loadedConfig);

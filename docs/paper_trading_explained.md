@@ -177,6 +177,7 @@ Every candidate pair must pass **all** of these filters to be considered:
 | 15 | **Spot Diff (%)** | `spotDiff` (default: 0.5) | The spot diff required for the next entry in the Active Positions table. |
 | 16 | **Exit Type** | `exitType` (default: 'ATM') | Option exit type parameter: `ATM`, `ITM`, or `OTM` |
 | 17 | **Exit Points** | `exitPoints` (default: 0) | Point offset threshold from the buy strike required to exit the position (applicable for ITM/OTM exit types) |
+| 18 | **Leg Swap Net Premium** | `legSwapNetPremium` (default: 0) | The minimum net premium swap credit required to perform an in-place leg swap. Leg swaps costing more than this threshold (i.e. where netPremiumSwap < legSwapNetPremium) are rejected. |
 
 ### How the Sell Quantity (Ratio) Is Calculated
 
@@ -382,21 +383,6 @@ For PUTS:  if spotPrice ≥ buyStrike - exitPoints → EXIT
 ```
 Exits when the option goes out-of-the-money relative to the strike (e.g. spot falls to or below `buyStrike + exitPoints` for calls, or rises to or above `buyStrike - exitPoints` for puts).
 
-#### Layer 2: 1-Minute Index Candle Validation Fallback (1-Minute Check)
-To resolve discrepancies where the real-time WebSocket tick stream misses sub-second price spikes (wicks) visible on the 1-minute chart, the engine runs a candle validation fallback during full evaluation cycles (every minute):
-
-1. **Fetch index candles**: The engine polls `/v2/history/candles` for the spot index (e.g. `.DEXBTUSD`) for the last 10 minutes.
-2. **Filter by lifetime**: To prevent false exits from price spikes that happened just before a position was opened, the engine only reviews candles whose start time is strictly *after* the position's entry minute.
-3. **Trigger condition**: 
-   - **For Calls**: If the candle `high` price crossed the exit threshold → EXIT
-   - **For Puts**: If the candle `low` price crossed the exit threshold → EXIT
-4. **Execution parameters**: The exit is processed retroactively with:
-   - `exitTime` set to the close timestamp of the candle that triggered it.
-   - `exitSpotPrice` set to the candle's extreme price (the spike level).
-   - `exitReason` recorded as `Full Exit @ <Type> (Candle Fallback: <Price>)`.
-
----
-
 ## Partial Exit / Scaling Logic
 
 **File**: [paperTradingEngine.js:L439-L661](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L439-L661)
@@ -469,10 +455,10 @@ Better candidate: BUY 106000 / SELL 110000 (Call)  ← closer to ATM = better
 | 1 | Same sell strike | The candidate's sell leg must match the existing position's sell strike exactly |
 | 2 | Better buy strike | For calls: new strike < old strike. For puts: new strike > old strike (closer to ATM) |
 | 3 | No conflicts | New buy strike isn't used by any other active position |
-| 4 | **Net debit of 10 is allowed** | `netPremiumSwap ≥ 0` — the swap must not cost money. Formula: `(deltaQty × shortPrice) - (newBuyAsk - oldBuyBid)` |
+| 4 | **Net Premium Swap Guard** | `netPremiumSwap ≥ config.legSwapNetPremium` — the net premium swap credit/debit must meet the configured leg swap net premium threshold. Formula: `(deltaQty × shortPrice) - (newBuyAsk - oldBuyBid)` |
 | 5 | **Spot step valid** | Spot must have moved at least `config.spotDiff` from the entry spot price (rounded to nearest 100) |
 
-### What "No Net Debit" Means
+### What "Net Premium Swap" Means
 
 ```
 netPremiumSwap = (change in sell qty × short price) - (new buy ask - current buy bid)
@@ -481,9 +467,9 @@ Where `short price` is:
 - **`sellBid` (bid price)** if `change in sell qty > 0` (we are selling extra options)
 - **`sellAsk` (ask price)** if `change in sell qty < 0` (we are buying back options to decrease ratio)
 
-- If positive → you **receive** money in the swap (good)
-- If zero → break-even swap (acceptable)
-- If negative → you **pay** money to swap (REJECTED)
+- If `netPremiumSwap ≥ config.legSwapNetPremium` → the swap is allowed.
+- If `netPremiumSwap < config.legSwapNetPremium` → you pay/receive too little to justify the swap (REJECTED).
+- The default value of `config.legSwapNetPremium` is `0`, meaning by default the swap must be at least break-even (no net debit). If set to a positive value, the swap must result in a net credit of at least that amount. If set to a negative value, it allows a net debit (cost) up to that amount.
 
 ### Leg Swap Execution
 
@@ -602,7 +588,7 @@ Here's every safety guard in one table:
 | Expiry buffer (5 min) | `paperTradingEngine.js` | Won't enter if less than 5 minutes to expiry |
 | Scaling floor (50%) | `paperTradingEngine.js` | Buy lot size can never go below 50% of initial |
 | Scaling ATM ratio guard | `paperTradingEngine.js` | Live ATM ratio must justify the lot reduction |
-| Leg swap no-debit | `paperTradingEngine.js` | Leg swaps that cost money are rejected |
+| Leg swap net premium threshold | `paperTradingEngine.js` | Leg swaps costing more than `config.legSwapNetPremium` are rejected |
 | Spot step (`config.spotDiff`%) | `paperTradingEngine.js` | Rotation/swap requires spot to have moved ≥ `config.spotDiff`% (rounded to nearest 100) |
 | Rotation budget | `paperTradingEngine.js` | Max rotations per type per evaluation cycle (`config.numberOfCalls` for calls, `config.numberOfPuts` for puts) |
 | `lastDbWrite` cooldown (3s) | `paperTradingEngine.js` | Skips position refetch for 3s after a DB write |
@@ -808,5 +794,6 @@ flowchart TD
 | ATM strike tolerance (ETH) | 50 points | Fallback tolerance for finding ATM prices |
 | Evaluation hang limit | 60 seconds | Max duration evaluation can run before process is restarted |
 | Days to Expiry | User configured | Minimum days to expiry required for new spreads |
-| Exit Type | ATM | Default option exit type parameter (`ATM`, `ITM`, `OTM`) |
+| Exit Type | ATM | Default option exit type parameter (`ATM`, `ITM`, or `OTM`) |
 | Exit Points | 0 | Default points distance threshold for ITM/OTM exits |
+| Leg Swap Net Premium | 0 | Default minimum credit ($) required to swap buy leg in-place |

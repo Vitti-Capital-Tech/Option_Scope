@@ -236,6 +236,14 @@ export default function FirstAccountCard({
                     className="first-account-input"
                   />
                 </div>
+                <div className="first-account-form-group">
+                  <label className="first-account-label">Leg Swap Net Premium ($)</label>
+                  <CustomInput
+                    type="number"
+                    {...register('legSwapNetPremium', { valueAsNumber: true })}
+                    className="first-account-input"
+                  />
+                </div>
               </div>
             </div>
           </div>

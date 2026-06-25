@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS public.paper_trading_config (
     spot_diff NUMERIC NOT NULL DEFAULT 0.5,
     exit_type TEXT NOT NULL DEFAULT 'ATM',
     exit_points NUMERIC NOT NULL DEFAULT 0,
+    leg_swap_premium NUMERIC NOT NULL DEFAULT 0,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 

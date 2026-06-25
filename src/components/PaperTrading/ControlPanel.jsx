@@ -129,7 +129,8 @@ export default function ControlPanel({
             { label: 'Min Days to Expiry (DTE):', key: 'daysToExpiry', width: 50 },
             { label: 'Max Open Calls:', key: 'numberOfCalls', width: 50 },
             { label: 'Max Open Puts:', key: 'numberOfPuts', width: 50 },
-            { label: 'Re-entry Spot Step (%):', key: 'spotDiff', width: 60, step: '0.1' }
+            { label: 'Re-entry Spot Step (%):', key: 'spotDiff', width: 60, step: '0.1' },
+            { label: 'Leg Swap Net Premium ($):', key: 'legSwapNetPremium', width: 60 }
           ].map(({ label, key, width, step }) => (
             <div key={key} className="form-group">
               <label style={{ marginBottom: 0 }}>{label}</label>

@@ -18,7 +18,7 @@ import { createHeartbeat } from './lib/heartbeat.js';
 import {
   loadProducts, getExpiries, getSpotPrice,
   createTickerStream, buildSymbolMeta, processTickerMessage,
-  backfillTickers, apiGet
+  backfillTickers
 } from './lib/deltaApi.js';
 import {
   safeParseLeg, calculateFee, calcMargin, scanTickers,
@@ -44,7 +44,8 @@ async function startSingleAccountEngine(account) {
     numberOfPuts: 3,
     spotDiff: 0.5,
     exitType: 'ATM',
-    exitPoints: 0
+    exitPoints: 0,
+    legSwapNetPremium: 0
   };
   let products = [];
   let expiries = [];
@@ -115,6 +116,7 @@ async function startSingleAccountEngine(account) {
           spot_diff: 0.5,
           exit_type: 'ATM',
           exit_points: 0,
+          leg_swap_premium: 0,
           updated_at: new Date().toISOString()
         };
         const { data: inserted, error: insertErr } = await supabase
@@ -149,7 +151,8 @@ async function startSingleAccountEngine(account) {
           numberOfPuts: data.number_of_puts ?? 3,
           spotDiff: data.spot_diff ?? 0.5,
           exitType: data.exit_type ?? 'ATM',
-          exitPoints: data.exit_points ?? 0
+          exitPoints: data.exit_points ?? 0,
+          legSwapNetPremium: data.leg_swap_premium ?? 0,
         };
         configDbId = data.id;
         // log(`[${accountState.name}] Config loaded: ${config.underlying} | Expiry: ${config.expiry || 'auto'}`);
@@ -413,33 +416,6 @@ async function startSingleAccountEngine(account) {
 
       const underlying = effectiveConfig.underlying;
       const selExpiry = effectiveConfig.expiry;
-
-      // Fetch 1-minute index candles for retroactive exit check (only during full evaluation cycles)
-      let indexCandles = null;
-      if (!onlyExits) {
-        try {
-          const indexSymbol = `.${underlying}USD`;
-          const nowSec = Math.floor(Date.now() / 1000);
-          const startSec = nowSec - 600; // Last 10 minutes
-          const data = await apiGet('/v2/history/candles', {
-            symbol: indexSymbol,
-            resolution: '1m',
-            start: startSec,
-            end: nowSec
-          });
-          if (Array.isArray(data)) {
-            indexCandles = data.map(c => ({
-              time: parseInt(c.time),
-              open: parseFloat(c.open),
-              high: parseFloat(c.high),
-              low: parseFloat(c.low),
-              close: parseFloat(c.close)
-            })).sort((a, b) => a.time - b.time);
-          }
-        } catch (candleErr) {
-          logError(`[${accountState.name}] Failed to fetch index candles for exit fallback:`, candleErr);
-        }
-      }
 
       function getScaledSellQty(s) {
         const targetLotSize = s.buyLeg.lotSize || 1;
@@ -997,9 +973,9 @@ async function startSingleAccountEngine(account) {
             // Swap PnL guard: net premium swap cost (sell - buy) must be at least 0 (i.e. no debit)
             const deltaQty = getScaledSellQty(s) - pos.sellQty;
             const netPremiumSwap = (deltaQty * (deltaQty > 0 ? liveEntrySell : latestSell)) - (s.buyPrice - latestBuy);
-            if (netPremiumSwap < 0) {
+            if (netPremiumSwap < config.legSwapNetPremium) {
               if (!onlyExits) {
-                logWarn(`[${accountState.name}] Leg Swap candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: net premium swap cost too high ($${netPremiumSwap.toFixed(2)} < $ 0.00 credit/debit)`);
+                logWarn(`[${accountState.name}] Leg Swap candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: net premium swap cost too high ($${netPremiumSwap.toFixed(2)} < $${(config.legSwapNetPremium || 0).toFixed(2)})`);
               }
               return false;
             }
@@ -1046,9 +1022,9 @@ async function startSingleAccountEngine(account) {
               if (sS === Number(pos.sellLeg.strike)) {
                 const deltaQty = getScaledSellQty(s) - pos.sellQty;
                 const netPremiumSwap = (deltaQty * (deltaQty > 0 ? liveEntrySell : latestSell)) - (s.buyPrice - latestBuy);
-                if (netPremiumSwap < 0) {
+                if (netPremiumSwap < config.legSwapNetPremium) {
                   if (!onlyExits) {
-                    logWarn(`[${accountState.name}] Rotation candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: net premium swap cost too high ($${netPremiumSwap.toFixed(2)} < $0.00 credit/debit)`);
+                    logWarn(`[${accountState.name}] Rotation candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: net premium swap cost too high ($${netPremiumSwap.toFixed(2)} < $${(config.legSwapNetPremium || 0).toFixed(2)})`);
                   }
                   return false;
                 }
@@ -1146,29 +1122,6 @@ async function startSingleAccountEngine(account) {
           if (isExitMet) {
             shouldExit = true;
             exitReason = `Full Exit${reasonSuffix}`;
-          } else if (!onlyExits && indexCandles && indexCandles.length > 0) {
-            // Retroactive fallback check using 1-minute index candles
-            // Only check candles strictly starting after the position's entry minute to avoid pre-entry wicks
-            const entryMinuteBound = Math.floor(pos.entryTime.getTime() / 60000) * 60;
-            const validCandles = indexCandles.filter(c => c.time > entryMinuteBound);
-            for (const c of validCandles) {
-              const candlePrice = isCall ? c.high : c.low;
-              let isCandleExitMet = false;
-              if (exitType === 'ITM') {
-                isCandleExitMet = isCall ? (candlePrice >= buyStrike - exitPoints) : (candlePrice <= buyStrike + exitPoints);
-              } else if (exitType === 'OTM') {
-                isCandleExitMet = isCall ? (candlePrice >= buyStrike + exitPoints) : (candlePrice <= buyStrike - exitPoints);
-              } else { // ATM
-                isCandleExitMet = isCall ? (candlePrice >= buyStrike) : (candlePrice <= buyStrike);
-              }
-              if (isCandleExitMet) {
-                shouldExit = true;
-                exitReason = `Full Exit${reasonSuffix} (Candle Fallback: ${candlePrice.toFixed(1)})`;
-                zombieExitTime = new Date((c.time + 60) * 1000).toISOString();
-                pos._candleExitSpotPrice = candlePrice;
-                break;
-              }
-            }
           }
         }
 
@@ -1244,10 +1197,10 @@ async function startSingleAccountEngine(account) {
             },
             sellLeg: finalSellLeg,
             _exitedBuyQty: pos.buyLeg.lotSize,
-            exitTime: zombieExitTime ? new Date(zombieExitTime) : new Date(),
+            exitTime: new Date(),
             exitBuyPrice: latestBuy,
             exitSellPrice: latestSell,
-            exitSpotPrice: pos._candleExitSpotPrice !== undefined ? pos._candleExitSpotPrice : spotPrice,
+            exitSpotPrice: spotPrice,
             realizedGrossPnl: finalGrossPnl,
             realizedNetPnl: finalNetPnl,
             entryFee: finalEntryFee,
