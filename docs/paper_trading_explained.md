@@ -334,8 +334,9 @@ For each position, the engine walks through this **priority tree** from top to b
 │  5. PRIORITY 4: Standard Rotation?           │
 │     → EXIT if not protected + better exists  │
 │                                              │
-│  6. PRIORITY 3: ATM reached?                 │
+│  6. PRIORITY 3: ATM reached / Candle Wick?   │
 │     → EXIT if spot crosses buy strike        │
+│       (via real-time spot or 1m index wick)  │
 │                                              │
 │  7. None of the above                        │
 │     → HOLD (keep position)                   │
@@ -343,7 +344,7 @@ For each position, the engine walks through this **priority tree** from top to b
 ```
 
 > [!NOTE]
-> The priority numbering (2, 3, 4) comes from the code comments. Priority 1 was removed (time-based exit). The check order in code is: Scaling → Expiry → Rotation/LegSwap → ATM.
+> The priority numbering (2, 3, 4) comes from the code comments. Priority 1 was removed (time-based exit). The check order in code is: Scaling → Expiry → Rotation/LegSwap → ATM/Candle.
 
 ### Exit: Expiry Settlement
 
@@ -353,30 +354,46 @@ If current time ≥ expiry time - 2 minutes → EXIT
 
 We exit **2 minutes early** to avoid settlement mechanics. If a position somehow wasn't exited and it's been more than **10 minutes past expiry**, it's treated as a "zombie" and force-exited with the expiry time as the recorded exit time.
 
-### Exit: Dynamic Spot Trigger (ATM, ITM, OTM)
+### Exit: Dynamic Spot Trigger (ATM, ITM, OTM) & Candle Validation Fallback
 
-Depending on the `exitType` configured for the account:
+The engine uses two layers to check exit conditions: **Real-time 1-second ticks** and **1-minute index candle validation**.
 
-#### ATM (Standard)
+#### Layer 1: Real-time Spot Ticker (1-Second Check)
+Every second, the engine checks the latest spot price from the WebSocket stream against the config rules:
+
+##### ATM (Standard)
 ```
 For CALLS: if spotPrice ≥ buyStrike → EXIT
 For PUTS:  if spotPrice ≤ buyStrike → EXIT
 ```
 Exits when the spot price crosses your buy leg's strike.
 
-#### ITM (In The Money)
+##### ITM (In The Money)
 ```
 For CALLS: if spotPrice ≥ buyStrike - exitPoints → EXIT
 For PUTS:  if spotPrice ≤ buyStrike + exitPoints → EXIT
 ```
 Exits when the option goes in-the-money relative to the strike (e.g. spot rises to or above `buyStrike - exitPoints` for calls, or falls to or below `buyStrike + exitPoints` for puts).
 
-#### OTM (Out The Money)
+##### OTM (Out The Money)
 ```
 For CALLS: if spotPrice ≤ buyStrike + exitPoints → EXIT
 For PUTS:  if spotPrice ≥ buyStrike - exitPoints → EXIT
 ```
 Exits when the option goes out-of-the-money relative to the strike (e.g. spot falls to or below `buyStrike + exitPoints` for calls, or rises to or above `buyStrike - exitPoints` for puts).
+
+#### Layer 2: 1-Minute Index Candle Validation Fallback (1-Minute Check)
+To resolve discrepancies where the real-time WebSocket tick stream misses sub-second price spikes (wicks) visible on the 1-minute chart, the engine runs a candle validation fallback during full evaluation cycles (every minute):
+
+1. **Fetch index candles**: The engine polls `/v2/history/candles` for the spot index (e.g. `.DEXBTUSD`) for the last 10 minutes.
+2. **Filter by lifetime**: To prevent false exits from price spikes that happened just before a position was opened, the engine only reviews candles whose start time is strictly *after* the position's entry minute.
+3. **Trigger condition**: 
+   - **For Calls**: If the candle `high` price crossed the exit threshold → EXIT
+   - **For Puts**: If the candle `low` price crossed the exit threshold → EXIT
+4. **Execution parameters**: The exit is processed retroactively with:
+   - `exitTime` set to the close timestamp of the candle that triggered it.
+   - `exitSpotPrice` set to the candle's extreme price (the spike level).
+   - `exitReason` recorded as `Full Exit @ <Type> (Candle Fallback: <Price>)`.
 
 ---
 
@@ -452,7 +469,7 @@ Better candidate: BUY 106000 / SELL 110000 (Call)  ← closer to ATM = better
 | 1 | Same sell strike | The candidate's sell leg must match the existing position's sell strike exactly |
 | 2 | Better buy strike | For calls: new strike < old strike. For puts: new strike > old strike (closer to ATM) |
 | 3 | No conflicts | New buy strike isn't used by any other active position |
-| 4 | **Net debit of 10 is allowed** | `netPremiumSwap ≥ -10` — the swap must not cost money. Formula: `(deltaQty × shortPrice) - (newBuyAsk - oldBuyBid)` |
+| 4 | **Net debit of 10 is allowed** | `netPremiumSwap ≥ 0` — the swap must not cost money. Formula: `(deltaQty × shortPrice) - (newBuyAsk - oldBuyBid)` |
 | 5 | **Spot step valid** | Spot must have moved at least `config.spotDiff` from the entry spot price (rounded to nearest 100) |
 
 ### What "No Net Debit" Means
