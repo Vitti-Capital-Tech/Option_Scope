@@ -1,9 +1,10 @@
+"use client";
 import React, { useState, useEffect, useRef } from 'react';
 
-export default function CustomSelect({ 
-  options, 
-  value, 
-  onChange, 
+export default function CustomSelect({
+  options,
+  value,
+  onChange,
   disabled = false,
   className = '',
   style = {},
@@ -24,11 +25,11 @@ export default function CustomSelect({
     };
   }, []);
 
-  const selectedOption = options.find(opt => opt.value === value) || options[0];
+  const selectedOption = options.find(opt => opt.value === value || (opt.value != null && value != null && String(opt.value) === String(value))) || options[0];
 
   return (
     <div className={`custom-dropdown-container ${className} ${disabled ? 'disabled' : ''} variant-${variant}`} style={style} ref={dropdownRef}>
-      <button 
+      <button
         type="button"
         className={`custom-dropdown-trigger ${variant === 'inline' ? 'inline-trigger' : ''}`}
         onClick={() => !disabled && setIsOpen(!isOpen)}
@@ -37,13 +38,13 @@ export default function CustomSelect({
         <div className="custom-dropdown-trigger-content">
           <span className="custom-dropdown-name">{selectedOption?.label || 'Select...'}</span>
         </div>
-        <svg 
-          className="custom-chevron-icon" 
-          width="12" 
-          height="12" 
-          viewBox="0 0 24 24" 
-          fill="none" 
-          stroke="currentColor" 
+        <svg
+          className="custom-chevron-icon"
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
           strokeWidth="2.5"
           style={{
             transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)',
@@ -58,7 +59,7 @@ export default function CustomSelect({
         <div className="custom-dropdown-menu">
           <div className="custom-dropdown-list">
             {options.map(opt => {
-              const isSelected = opt.value === value;
+              const isSelected = opt.value === value || (opt.value != null && value != null && String(opt.value) === String(value));
               return (
                 <button
                   key={opt.value}
