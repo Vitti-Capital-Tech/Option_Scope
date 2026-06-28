@@ -22,6 +22,7 @@ This document explains **every** logic and condition in the Paper Trading engine
 14. [Diagnostic Logging (0 Candidates)](#diagnostic-logging-0-candidates)
 15. [Config Synchronization](#config-synchronization)
 16. [Time-Based Filter Schedules](#time-based-filter-schedules)
+17. [Frontend Dashboard Architecture](#frontend-dashboard-architecture)
 
 ---
 
@@ -378,10 +379,10 @@ Exits when the option goes in-the-money relative to the strike (e.g. spot rises 
 
 ##### OTM (Out The Money)
 ```
-For CALLS: if spotPrice ≤ buyStrike + exitPoints → EXIT
-For PUTS:  if spotPrice ≥ buyStrike - exitPoints → EXIT
+For CALLS: if spotPrice ≥ buyStrike + exitPoints → EXIT
+For PUTS:  if spotPrice ≤ buyStrike - exitPoints → EXIT
 ```
-Exits when the option goes out-of-the-money relative to the strike (e.g. spot falls to or below `buyStrike + exitPoints` for calls, or rises to or above `buyStrike - exitPoints` for puts).
+Exits when the buy leg has gone ITM by at least `exitPoints` (i.e., spot rises to or above `buyStrike + exitPoints` for calls, or falls to or below `buyStrike - exitPoints` for puts). The sell leg is still OTM at that point. This is a **delayed exit** — it lets the buy leg go deeper into the money before closing the spread.
 
 ## Partial Exit / Scaling Logic
 
@@ -708,6 +709,121 @@ All other filter settings (like `minIvDiff`, `exitType`, etc.) default back to t
 - **Overnight Windows**: The engine correctly handles overnight ranges in IST (e.g. `22:29` to `06:30` IST) by splitting/wrapping time comparisons relative to the 24-hour cycle.
 - **Fallback Behavior**: If the current IST time does not fall into any active scheduled window, the engine automatically falls back to using the base account configuration parameters.
 - **Live Auto-Sync & Real-time Updates**: Changes made in the UI are automatically synced (debounced auto-save) to Supabase. The background engine subscribes to real-time postgres changes on `paper_trading_schedules` and reloads them instantly upon edits.
+
+---
+
+## Frontend Dashboard Architecture
+
+**File**: [PaperTrading.jsx](file:///c:/Users/ASUS/Documents/Option_Scope/src/PaperTrading.jsx)
+
+`PaperTrading.jsx` is the root component of the dashboard. It manages all frontend state and is the single source of truth for config, positions, trade history, and accounts in the browser. The server-side engine (`paperTradingEngine.js`) runs independently and communicates via Supabase DB only — there is no direct API call between the UI and the engine.
+
+### Authentication & RBAC
+
+The dashboard requires a Supabase auth session to load. Login is **email-only** — no password is entered by the user. The password is deterministically derived from the email: `OptionScope_${cleanEmail}_Secure123!`. On first login, a `profiles` row is auto-created with `role: 'client'`.
+
+Two roles exist:
+
+| Role | Capabilities |
+|------|-------------|
+| `client` | Can only see and manage accounts linked to their own `user_id` |
+| `admin` | Can see all accounts across all users; can assign any account owner during creation |
+
+### Account Management
+
+Accounts are rows in `paper_trading_accounts`. Each account has:
+- A **name** (editable via `EditAccountModal`)
+- An **owner** (`user_id`) — only admins can assign a different owner at creation
+- A **`default_config` JSONB column** — stores the "Reset" target for that account's filters. This is set at creation and never changes unless manually updated.
+
+**Account lifecycle:**
+
+| Action | What Happens |
+|--------|-------------|
+| **Create** | Inserts into `paper_trading_accounts` + `paper_trading_config`; the engine starts automatically via Realtime |
+| **Edit** | Renames the account only (config is separate) |
+| **Delete** | Pre-deletes the `engine_heartbeat` row first (prevents zombie heartbeat rows), then deletes the account row; the engine stops via Realtime |
+
+> [!NOTE]
+> On account load, any `default_config` rows missing new fields (e.g., after adding `legSwapNetPremium`) are automatically backfilled to current defaults. This prevents "stale default" bugs after config schema additions.
+
+### Reset Button Behavior
+
+When you click **Reset**, the frontend merges `activeAccount.default_config` (account-specific defaults stored in the DB) with system factory defaults (fallback for missing keys), then immediately upserts the merged config to Supabase. The engine picks it up via Realtime.
+
+```
+Reset target = account.default_config ?? ACCOUNT_CONFIG_DEFAULTS
+```
+
+This means each account can have its own set of "default" filters, not just one global default.
+
+### Phase 1: Real-time P&L Display
+
+The frontend runs a **read-only WebSocket** for P&L display only — it never writes positions. Every 1 second, a `setInterval` loop reads the latest ticker data and recomputes unrealized P&L for each active position:
+
+```
+grossPnl = (buyPriceDiff × buyLotSize) + (sellPriceDiff × sellQty × sellLotSize) + accumulatedSellPnl
+netPnl   = grossPnl - totalFees
+```
+
+**Ticker buffer flush** — to prevent React rendering every time a single ticker updates, incoming WS messages are collected in a `tickerBufferRef` and flushed to state via `setTickerData` on a **50ms timer**. This batches all rapid WS messages into a single React render.
+
+> [!TIP]
+> The frontend WebSocket subscribes to all symbols for the current expiry PLUS all open position symbols (even if they belong to an older expiry), ensuring P&L display works for positions entered on a different day's expiry.
+
+### Heartbeat Status Thresholds
+
+The engine's `engine_heartbeat` row is polled every **30 seconds** (paused when the tab is hidden). The frontend classifies the engine state as:
+
+| Status | Condition | Badge Color |
+|--------|-----------|-------------|
+| **Online** | `age < 60 seconds` | Green (`#0ecb81`) |
+| **Stale** | `60s ≤ age < 120 seconds` | Yellow (`#f0b90b`) |
+| **Offline** | `age ≥ 120 seconds` | Red (`#f85149`) |
+
+### Trade History Date Filter
+
+The trade history table has a day-by-day date filter. The "today" boundary uses a **UTC+12 offset** (not IST):
+
+```js
+d.setUTCHours(d.getUTCHours() + 12); // date flips at noon UTC = 17:30 IST
+```
+
+This means the trading "day" runs from **17:30 IST to 17:30 IST** the next day, matching the Delta Exchange daily rollover time. A trade closed at 18:00 IST and one at 17:00 IST the next morning are counted on the same day.
+
+### Schedule Auto-Save
+
+Schedule changes in the UI are saved automatically with a **1200ms debounce**. However, the auto-save is silently **blocked** if any two active schedule windows overlap in time:
+
+```
+if (hasOverlap) return; // do not write overlapping schedules to DB
+```
+
+A save only proceeds once all windows are non-overlapping. The overlap check handles both normal and overnight windows. Manual overlap resolution is required before changes persist.
+
+### CSV Export
+
+The Trade History table provides a **CSV export** button (`exportCSV`). The export includes:
+
+| Column | Description |
+|--------|-------------|
+| Entry/Exit Time | ISO-formatted timestamps |
+| Expiry | Formatted expiry date |
+| Type | CALL / PUT |
+| Ratio | Current ratio (after partial exits) |
+| Original Ratio | Ratio at entry (before any scaling) |
+| Buy / Sell Strike | Strike prices |
+| Entry / Exit Prices | Buy and sell prices at entry and exit |
+| Entry / Exit Spot | Spot price at entry and exit |
+| Entry / Exit ATM Ratio | ATM ratio snapshot at entry and exit |
+| Entry / Exit ATM Prices | ATM buy/sell prices at entry and exit |
+| Gross PnL | Before fees |
+| Total Fees | Entry + exit fees combined |
+| Net PnL | After fees |
+| Margin | Position margin at time of entry |
+| Exit Reason | Full exit reason string from the engine |
+
+The CSV filename includes the current date filter and a timestamp: `paper_trades_YYYY-MM-DD_<timestamp>.csv`.
 
 ---
 
