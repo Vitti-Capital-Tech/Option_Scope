@@ -3070,7 +3070,6 @@ body.light-theme .pt-live-badge {
   }
 
   .pt-filters-container .form-group {
-    width: calc(50% - 6px);
     display: inline-flex !important;
     justify-content: space-between;
     align-items: center;
@@ -4581,4 +4580,4 @@ body.light-theme .pt-btn-apply.active {
   background: #f85149 !important;
   color: #ffffff !important;
   border-color: #f85149 !important;
-}
+}
