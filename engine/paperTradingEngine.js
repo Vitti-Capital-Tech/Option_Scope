@@ -668,15 +668,14 @@ async function startSingleAccountEngine(account) {
         }
 
         // ── Short-leg-only exit ────────────────────────────────────────────
-        // When the short leg's live ASK reaches exactly $1.1, buy it back (close
+        // When the short leg's live ASK reaches less than $1.1, buy it back (close
         // the short at the ask) and keep holding the long leg. The long leg is
         // then closed later by the normal expiry / ATM-ITM-OTM exit rules.
-        // NOTE: exact-match by design — if the ask gaps past 1.1 (e.g. 1.15 -> 1.05)
         // the short leg will not be closed that cycle.
         const shortLiveAsk = tickerSell?.ask ?? null;
-        if (pos.sellQty > 0 && shortLiveAsk === 1.1) {
+        if (pos.sellQty > 0 && shortLiveAsk <= 1.1) {
           const shortLotSize = pos.sellLeg.lotSize || 1;
-          const exitShortPrice = liveExitSell; // ask (== 1.1)
+          const exitShortPrice = liveExitSell; // ask (<= 1.1)
 
           const shortGrossPnl = (pos.entrySellPrice - exitShortPrice) * pos.sellQty * shortLotSize;
           const shortEntryFee = Math.min(
@@ -687,7 +686,7 @@ async function startSingleAccountEngine(account) {
           const shortTotalFees = shortEntryFee + shortExitFee;
           const shortNetPnl = shortGrossPnl - shortTotalFees;
 
-          const shortExitReason = `Short Leg Exit @ Ask $1.1 (holding long ${pos.buyLeg.strike})`;
+          const shortExitReason = `Short Leg Exit @ Ask $${exitShortPrice.toFixed(2)} (holding long ${pos.buyLeg.strike})`;
           const shortTradeId = `${pos.id}-SE-${Date.now().toString(36).toUpperCase()}`;
 
           // Record the short-leg close as a partial trade_history row.

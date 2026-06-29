@@ -345,7 +345,7 @@ For each position, the engine walks through this **priority tree** from top to b
 │       price (short is gone).                             │
 │                                                          │
 │  2. Short-leg-only exit? (full spreads only)             │
-│     → If short leg's live ASK === 1.1:                   │
+│     → If short leg's live ASK <>= 1.1:                   │
 │       buy back ONLY the short, HOLD the long.            │
 │       Position becomes long-only (sellQty = 0).          │
 │                                                          │
