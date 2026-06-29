@@ -350,8 +350,8 @@ For each position, the engine walks through this **priority tree** from top to b
 │       Position becomes long-only (sellQty = 0).          │
 │                                                          │
 │  3. Long-only laddered exit? (long-only positions)       │
-│     → Exit 1/5 of the long per crossed LTP checkpoint    │
-│       (1.5x/2x/3x/4x/5x of long entry price).            │
+│     → Exit 1/10 of the long per crossed LTP level        │
+│       (10 random levels: current LTP → max(entry,2hr-hi)) │
 │                                                          │
 │  4. Partial Exit / Scaling? (full spreads only)          │
 │     → Scale down buy leg if profitable                   │
@@ -488,33 +488,40 @@ Because the cap counts only full spreads (`sellQty > 0`), this freed slot lets a
 
 ## Long-Only Laddered Exit
 
-Once a position is long-only (short leg gone), the held long leg is scaled out in **5 equal slices** as a profit ladder driven by the long option's own LTP.
+Once a position is long-only (short leg gone), the held long leg is scaled out in **10 slices** as its own LTP recovers toward the entry price.
 
-### How It Works
+### How the levels are built
 
-- **Watched price**: the long option's LTP (`tickerData[buyLeg.symbol].lastPrice`).
-- **Checkpoints**: multiples of the long's entry price → `entryBuyPrice × [1.5, 2, 3, 4, 5]`.
-- **Slice size**: `longExitBaseLot / 5` (the base lot snapshotted when the short exited). Each crossed checkpoint exits one slice.
+At the moment the short leg exits, the engine snapshots the long's current LTP, fetches the long option's **last 1-2hr high** from Delta's historical candles, and builds **10 random price levels** spanning `[current LTP, upperBound]` (sorted ascending). These are stored on the position (`buyLeg.longExitLevels`) along with the base lot (`longExitBaseLot`) and stage (`longExitStage = 0`).
+
+- **Upper bound** = `max(entryBuyPrice, pastHigh)`, where `pastHigh` = max candle high of the long over the last 2 hours (`getOptionHigh(symbol, 2)` → Delta `/v2/history/candles`). If candles are unavailable (API error / newly listed / no data), it **falls back to `entryBuyPrice`**. Using `max` means: when the long traded **above** its entry in the last 1-2hr, the ladder extends into the **profit zone** up to that high; otherwise it caps at entry (breakeven).
+- **Range**: from the long's **current LTP** (low — the long is cheap after the short went worthless) up to that **upper bound**. The long is held expecting a recovery toward the level it recently traded at.
+- **Levels**: 10 **random** points in that range (`buildLongExitLevels()`), not evenly spaced. Each crossed level exits **1/10** of the base lot (`longExitBaseLot / 10`).
+- **One fetch only**: the candle call happens once, when the position becomes long-only; the resulting levels are persisted, so there's no repeated network call and no mid-flight re-randomisation.
+- **Degenerate case**: if current LTP is already ≥ upper bound, all levels collapse to the upper bound, so the whole long exits as soon as it's evaluated.
 
 ```
-entryBuyPrice = $40
-LTP ≥ $60  (1.5x) → exit 1/5 of base long lot
-LTP ≥ $80  (2x)   → exit 1/5
-LTP ≥ $120 (3x)   → exit 1/5
-LTP ≥ $160 (4x)   → exit 1/5
-LTP ≥ $200 (5x)   → exit last 1/5 → position fully closed & deleted
+entryBuyPrice = $70, last 2hr high = $90  →  upper = max(70, 90) = 90
+long LTP at short-exit = $10
+→ 10 random levels in [10, 90], e.g.:
+   14, 22, 31, 40, 49, 58, 66, 75, 83, 90   (sorted)
+Levels above $70 are profit on the long; below are loss-recovery.
+As long LTP rises and crosses each level → exit 1/10 of base lot.
+Crossing the last (10th) level → remaining long exits → position deleted.
+
+(If last 2hr high ≤ entry, e.g. 50 → upper = max(70,50) = 70, capped at entry.)
 ```
 
 ### Details
 
-1. Each slice exits the long by **selling at the bid** (`liveExitBuy`); the LTP is only the **trigger**. Each slice is recorded as a partial `trade_history` row (`is_partial = true`, reason `Long Leg Exit Nx entry ...`), with its apportioned share of the entry fee.
-2. If the LTP crosses several checkpoints in one cycle (e.g. jumps straight to 3x), **all crossed slices exit at once** (a `while` loop advances the stage).
-3. The 5th checkpoint clears any rounding remainder, then the position is **deleted** from `active_positions`.
-4. Progress survives restarts: `longExitStage` (slices done) and `longExitBaseLot` live in the `buy_leg` JSON, so the ladder resumes where it left off — no double exits.
-5. **Catch-all still applies**: if a checkpoint isn't reached, the remaining long still exits via **expiry** or the **ATM/ITM/OTM Full Exit** (spot crossing the buy strike). A partial slice this cycle falls through to those checks for the remaining lot.
+1. Each slice exits the long by **selling at the bid** (`liveExitBuy`); the LTP is only the **trigger**. Each slice is a partial `trade_history` row (`is_partial = true`, reason `Long Leg Exit @ level $X ...`) with its apportioned entry fee.
+2. If the LTP crosses several levels in one cycle (e.g. a sharp move up), **all crossed slices exit at once** (a `while` loop advances the stage).
+3. The final (10th) level clears any rounding remainder, then the position is **deleted** from `active_positions`.
+4. Progress survives restarts: `longExitStage`, `longExitBaseLot`, and the `longExitLevels` array all live in the `buy_leg` JSON, so the ladder resumes where it left off — no double exits and the levels don't get re-randomised mid-flight.
+5. **Catch-all still applies**: if levels aren't reached, the remaining long still exits via **expiry** or the **ATM/ITM/OTM Full Exit** (spot crossing the buy strike). A partial slice this cycle falls through to those checks for the remaining lot.
 
 > [!NOTE]
-> The slice **trigger** is the long LTP; the slice **exit price** (for P&L) is the long's live **bid**. If you'd prefer to exit at the LTP value instead, it's a one-line change.
+> The level **range top is `max(entry, last 1-2hr high)`** (Delta candles, with entry as fallback). When the recent high is above entry, the ladder books **profit on the long leg** up to that high; when it's below entry, the top caps at entry (loss-recovery only). Either way the short leg's buy-back already booked the bulk of the trade's profit. The slice **trigger** is the long LTP; the slice **exit price** (for P&L) is the long's live **bid**.
 
 ---
 
@@ -587,7 +594,7 @@ Here's every safety guard in one table:
 | Scaling floor (50%) | `paperTradingEngine.js` | Buy lot size can never go below 50% of initial (full-spread scaling only) |
 | Scaling ATM ratio guard | `paperTradingEngine.js` | Live ATM ratio must justify the lot reduction (full-spread scaling only) |
 | Short-leg exit trigger | `paperTradingEngine.js` | Short leg bought back when its live ask `=== 1.1`; long leg held |
-| Long-only ladder | `paperTradingEngine.js` | Held long scaled out in 5 slices at `entryBuyPrice × [1.5,2,3,4,5]` (long LTP) |
+| Long-only ladder | `paperTradingEngine.js` | Held long scaled out in 10 slices at 10 random LTP levels spanning [current LTP, max(entry, last 2hr high)] |
 | `lastDbWrite` cooldown (3s) | `paperTradingEngine.js` | Skips position refetch for 3s after a DB write |
 | Heartbeat timer delete | `paperTradingEngine.js` / `heartbeat.js` | Clears interval timer and deletes the DB row on account deletion to prevent zombie row resurrection |
 
@@ -852,10 +859,10 @@ flowchart TD
     
     S --> SA{"Full spread & short ask === 1.1?"}
     SA -->|Yes| SB["EXIT short leg only → hold long (sellQty=0)"]
-    SA -->|No| SC{"Long-only & LTP crossed checkpoint?"}
+    SA -->|No| SC{"Long-only & LTP crossed a level?"}
 
-    SC -->|Yes| SD["Exit 1/5 long slice(s) per checkpoint"]
-    SD --> SE{"All 5 slices done?"}
+    SC -->|Yes| SD["Exit 1/10 long slice(s) per crossed level"]
+    SD --> SE{"All 10 slices done?"}
     SE -->|Yes| AF
     SE -->|No| V
     SC -->|No| T{"Full spread & scaling conditions met?"}
@@ -896,7 +903,7 @@ flowchart TD
 | Zombie threshold | 10 minutes | Past expiry, use expiry time as exit time |
 | Max **full-spread** positions per type | Configurable | Max calls (`config.numberOfCalls`) or puts (`config.numberOfPuts`) per account (default: 3); held long-only positions excluded |
 | Short-leg exit trigger | $1.1 (exact) | Short leg's live ask `=== 1.1` → buy back short, hold long |
-| Long-only exit multiples | `[1.5, 2, 3, 4, 5]` | Long LTP × entry price checkpoints; exit 1/5 long per crossed level |
+| Long-only exit levels | 10 random | Random LTP levels in [current LTP, max(entry, last 2hr high)]; exit 1/10 long per crossed level |
 | $200K cap | $200,000 | Max short notional value |
 | Scaling step | 10% | Lot size reduction per scaling event (full spreads only) |
 | Scaling floor | 50% | Minimum lot size as % of initial (full spreads only) |

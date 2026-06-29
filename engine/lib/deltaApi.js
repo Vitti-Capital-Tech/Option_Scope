@@ -26,6 +26,26 @@ export async function apiGet(path, params = {}) {
 }
 
 /**
+ * Highest traded price of an option over the last `hours` hours, from Delta's
+ * historical OHLC candles. Returns null if unavailable (no candles / API error),
+ * so callers can fall back. Used to bound the long-only laddered exit range.
+ */
+export async function getOptionHigh(symbol, hours = 2, resolution = '5m') {
+  try {
+    const end = Math.floor(Date.now() / 1000);
+    const start = end - Math.round(hours * 3600);
+    const candles = await apiGet('/v2/history/candles', { resolution, symbol, start, end });
+    if (!Array.isArray(candles) || candles.length === 0) return null;
+    const highs = candles.map(c => toFiniteNumber(c.high)).filter(v => v != null && v > 0);
+    if (!highs.length) return null;
+    return Math.max(...highs);
+  } catch (e) {
+    logWarn(`getOptionHigh failed for ${symbol}: ${e.message}`);
+    return null;
+  }
+}
+
+/**
  * Load all live option products for a given underlying.
  */
 export async function loadProducts(underlying) {

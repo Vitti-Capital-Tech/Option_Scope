@@ -146,6 +146,7 @@ export default function ActivePositionsTable({
 
                 const displayBuyQty = p.buyLeg.lotSize;
                 const displaySellQty = p.sellQty;
+                const isLongOnly = (p.sellQty || 0) === 0;
 
                 const origLot = p.buyLeg?.originalLotSize || p.buyLeg?.lotSize || 1;
                 const rawOrigSellQty = p.buyLeg?.originalSellQty !== undefined ? p.buyLeg.originalSellQty : p.sellQty;
@@ -156,19 +157,30 @@ export default function ActivePositionsTable({
                     <td>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                         <span className={`pt-type-badge ${p.type}`}>{p.type.toUpperCase()}</span>
-                        <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 600 }}>
-                          {displayBuyQty.toFixed(2)}:{displaySellQty.toFixed(2)}
-                        </span>
-                        <span style={{ fontSize: '9px', color: 'var(--text-dim)', opacity: 0.8 }}>
-                          (Orig 1:{displayOrigSellQty.toFixed(2)})
-                        </span>
+                        {isLongOnly ? (
+                          <>
+                            <span style={{ fontSize: '9px', fontWeight: 700, color: 'var(--accent)', letterSpacing: '0.3px' }}>LONG ONLY</span>
+                            <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 600 }}>
+                              {displayBuyQty.toFixed(2)} long
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 600 }}>
+                              {displayBuyQty.toFixed(2)}:{displaySellQty.toFixed(2)}
+                            </span>
+                            <span style={{ fontSize: '9px', color: 'var(--text-dim)', opacity: 0.8 }}>
+                              (Orig 1:{displayOrigSellQty.toFixed(2)})
+                            </span>
+                          </>
+                        )}
                       </div>
                     </td>
                     <td><span style={{ fontSize: '11px', fontWeight: 600 }}>{fmtExpiry(p.expiry)}</span></td>
                     <td>
                       <div style={{ display: 'flex', flexDirection: 'column' }}>
                         <span className="pt-strike-buy">{p.buyLeg.strike.toLocaleString()}</span>
-                        <span className="pt-strike-sell" style={{ fontSize: '11px', opacity: 0.8 }}>{p.sellLeg.strike.toLocaleString()}</span>
+                        <span className="pt-strike-sell" style={{ fontSize: '11px', opacity: 0.8 }}>{isLongOnly ? '—' : p.sellLeg.strike.toLocaleString()}</span>
                         <span style={{ fontSize: '9px', color: 'var(--text-dim)', marginTop: 2, display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
                           Exit: <span style={{ color: 'var(--accent)', fontWeight: 700 }}>{getExitTriggerDesc(p, exitType, exitPoints).text}</span> ({getExitTriggerDesc(p, exitType, exitPoints).type})
                         </span>
@@ -178,25 +190,25 @@ export default function ActivePositionsTable({
                     <td>
                       <div style={{ display: 'flex', flexDirection: 'column', fontSize: '12px' }}>
                         <span style={{ color: '#3fb950' }}>{p.entryBuyPrice?.toFixed(2)}</span>
-                        <span style={{ color: '#f85149' }}>{p.entrySellPrice?.toFixed(2)}</span>
+                        <span style={{ color: '#f85149' }}>{isLongOnly ? '—' : p.entrySellPrice?.toFixed(2)}</span>
                       </div>
                     </td>
                     <td className="hide-mobile">
                       <div style={{ display: 'flex', flexDirection: 'column', fontSize: '11px', color: 'var(--text-dim)' }}>
                         <span>{p.entryBuyIv != null ? p.entryBuyIv.toFixed(1) + '%' : '—'}</span>
-                        <span>{p.entrySellIv != null ? p.entrySellIv.toFixed(1) + '%' : '—'}</span>
+                        <span>{isLongOnly ? '—' : (p.entrySellIv != null ? p.entrySellIv.toFixed(1) + '%' : '—')}</span>
                       </div>
                     </td>
                     <td>
                       <div style={{ display: 'flex', flexDirection: 'column', fontSize: '12px' }}>
                         <span style={{ color: '#3fb950' }}>{p.currentBuyPrice != null ? p.currentBuyPrice.toFixed(2) : '—'}</span>
-                        <span style={{ color: '#f85149' }}>{p.currentSellPrice != null ? p.currentSellPrice.toFixed(2) : '—'}</span>
+                        <span style={{ color: '#f85149' }}>{isLongOnly ? '—' : (p.currentSellPrice != null ? p.currentSellPrice.toFixed(2) : '—')}</span>
                       </div>
                     </td>
                     <td className="hide-mobile">
                       <div style={{ display: 'flex', flexDirection: 'column', fontSize: '11px', color: 'var(--accent)' }}>
                         <span>{p.currentBuyIv != null ? p.currentBuyIv.toFixed(1) + '%' : '—'}</span>
-                        <span>{p.currentSellIv != null ? p.currentSellIv.toFixed(1) + '%' : '—'}</span>
+                        <span>{isLongOnly ? '—' : (p.currentSellIv != null ? p.currentSellIv.toFixed(1) + '%' : '—')}</span>
                       </div>
                     </td>
                     <td><span className={`pt-pnl ${pnlClass}`}>{pnlValue > 0 ? '+' : ''}{pnlValue.toFixed(2)}</span></td>

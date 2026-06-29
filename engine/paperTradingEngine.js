@@ -18,13 +18,32 @@ import { createHeartbeat } from './lib/heartbeat.js';
 import {
   loadProducts, getExpiries, getSpotPrice,
   createTickerStream, buildSymbolMeta, processTickerMessage,
-  backfillTickers
+  backfillTickers, getOptionHigh
 } from './lib/deltaApi.js';
 import {
   safeParseLeg, calculateFee, calcMargin, scanTickers,
   computeEntryAtmRatio, computeScaledSellQty,
   pickTopUniqueStrikes, log, logWarn, logError
 } from './lib/utils.js';
+
+/**
+ * Build `count` random exit price levels (sorted ascending) spanning the long
+ * option's current LTP up to `upperBound` (= max(entry, last 1-2hr high)). Used
+ * to scale a held long-only leg out as its price recovers. If the range is
+ * degenerate (current already >= upperBound), every level collapses to the
+ * upper bound so the whole long exits as soon as it's evaluated.
+ */
+function buildLongExitLevels(currentLtp, upperBound, count = 10) {
+  const lo = Math.min(currentLtp ?? upperBound, upperBound);
+  const hi = Math.max(currentLtp ?? upperBound, upperBound);
+  if (!(hi > lo)) return Array(count).fill(Number(hi.toFixed(2)));
+  const levels = [];
+  for (let i = 0; i < count; i++) {
+    levels.push(Number((lo + Math.random() * (hi - lo)).toFixed(2)));
+  }
+  levels.sort((a, b) => a - b);
+  return levels;
+}
 
 async function startSingleAccountEngine(account) {
   let accountState = account;
@@ -45,8 +64,7 @@ async function startSingleAccountEngine(account) {
     numberOfPuts: 3,
     spotDiff: 0.5,
     exitType: 'ATM',
-    exitPoints: 0,
-    legSwapNetPremium: 0
+    exitPoints: 0
   };
   let products = [];
   let expiries = [];
@@ -153,7 +171,6 @@ async function startSingleAccountEngine(account) {
           spotDiff: data.spot_diff ?? 0.5,
           exitType: data.exit_type ?? 'ATM',
           exitPoints: data.exit_points ?? 0,
-          legSwapNetPremium: data.leg_swap_premium ?? 0,
         };
         configDbId = data.id;
         // log(`[${accountState.name}] Config loaded: ${config.underlying} | Expiry: ${config.expiry || 'auto'}`);
@@ -706,12 +723,28 @@ async function startSingleAccountEngine(account) {
           }
 
           // Convert the position to long-only: drop the short leg, recompute margin.
-          // Snapshot the long lot now — it is the base for the 5-slice laddered exit.
+          // Snapshot the long lot (base for the 10-slice laddered exit) and build 10
+          // random exit levels spanning the long's current LTP up to its entry price.
+          const longLtpAtExit = tickerBuy?.lastPrice ?? tickerBuy?.markPrice ?? liveExitBuy;
+          // Upper bound for the laddered exit = max(entry, long's last 1-2hr high)
+          // from Delta candles. Falls back to entry price if history is unavailable.
+          // Using max lets the ladder reach the profit zone when the long traded
+          // above its entry in the last 1-2hr.
+          const longPastHigh = await getOptionHigh(pos.buyLeg.symbol, 2);
+          const longExitUpper = longPastHigh != null
+            ? Math.max(pos.entryBuyPrice, longPastHigh)
+            : pos.entryBuyPrice;
           pos.entryFee = Math.max(0, (pos.entryFee || 0) - shortEntryFee);
           pos.sellLeg = { ...pos.sellLeg, lotSize: 0 };
           pos.sellQty = 0;
-          pos.buyLeg = { ...pos.buyLeg, longExitBaseLot: pos.buyLeg.lotSize, longExitStage: 0 };
+          pos.buyLeg = {
+            ...pos.buyLeg,
+            longExitBaseLot: pos.buyLeg.lotSize,
+            longExitStage: 0,
+            longExitLevels: buildLongExitLevels(longLtpAtExit, longExitUpper, 10),
+          };
           pos.margin = calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, spotPrice, 0, 1);
+          log(`[${accountState.name}] 🎚️ Long ladder set: ${pos.buyLeg.strike} | range [${longLtpAtExit}, ${longExitUpper}] | pastHigh ${longPastHigh ?? 'n/a'} | levels ${JSON.stringify(pos.buyLeg.longExitLevels)}`);
 
           try {
             await supabase.from('active_positions').update({
@@ -732,30 +765,33 @@ async function startSingleAccountEngine(account) {
         }
 
         // ── Long-only laddered profit exit ──────────────────────────────────
-        // Once the short leg is gone, scale the held long out in 5 equal slices
-        // as the long option's own LTP crosses multiples of its entry price:
-        // 1.5x, 2x, 3x, 4x, 5x. Each crossed checkpoint exits 1/5 of the base lot.
+        // Once the short leg is gone, scale the held long out in 10 slices as its
+        // own LTP recovers toward entry. At short-exit we placed 10 random exit
+        // levels spanning [current LTP, entry price]; each crossed level exits
+        // 1/10 of the base lot.
         if (pos.sellQty === 0) {
-          const LONG_EXIT_MULTIPLES = [1.5, 2, 3, 4, 5];
           const longLtp = tickerBuy?.lastPrice ?? tickerBuy?.markPrice ?? liveExitBuy;
 
-          // Base lot = long size when it became long-only (set at short-exit; fall back for older rows).
+          // Base lot + random exit levels are set at short-exit; fall back for older rows.
           if (pos.buyLeg.longExitBaseLot === undefined) {
             pos.buyLeg.longExitBaseLot = pos.buyLeg.lotSize || 0;
             pos.buyLeg.longExitStage = pos.buyLeg.longExitStage || 0;
           }
+          if (!Array.isArray(pos.buyLeg.longExitLevels) || pos.buyLeg.longExitLevels.length === 0) {
+            pos.buyLeg.longExitLevels = buildLongExitLevels(longLtp, pos.entryBuyPrice, 10);
+          }
+          const exitLevels = pos.buyLeg.longExitLevels;
           const baseLot = pos.buyLeg.longExitBaseLot || 0;
-          const sliceLot = Number((baseLot / 5).toFixed(2));
+          const sliceLot = Number((baseLot / exitLevels.length).toFixed(2));
           let stage = pos.buyLeg.longExitStage || 0;
 
           if (longLtp != null && baseLot > 0 && sliceLot > 0 && pos.entryBuyPrice > 0) {
             const longExitSlices = [];
             const exitPrice = liveExitBuy; // close long by selling at bid; LTP only triggers
 
-            // Exit one slice per newly-crossed checkpoint (price may cross several at once).
-            while (stage < LONG_EXIT_MULTIPLES.length &&
-                   longLtp >= pos.entryBuyPrice * LONG_EXIT_MULTIPLES[stage]) {
-              const isLast = (stage === LONG_EXIT_MULTIPLES.length - 1);
+            // Exit one slice per newly-crossed level (price may cross several at once).
+            while (stage < exitLevels.length && longLtp >= exitLevels[stage]) {
+              const isLast = (stage === exitLevels.length - 1);
               // Final checkpoint clears any rounding remainder.
               const exitLot = isLast
                 ? Number(pos.buyLeg.lotSize.toFixed(2))
@@ -793,7 +829,7 @@ async function startSingleAccountEngine(account) {
                 realized_net_pnl: sliceNetPnl,
                 exit_fee: sliceExitFee,
                 total_fees: sliceTotalFees,
-                exit_reason: `Long Leg Exit ${LONG_EXIT_MULTIPLES[stage]}x entry (LTP $${longLtp})`,
+                exit_reason: `Long Leg Exit @ level $${exitLevels[stage]} (LTP $${longLtp})`,
                 is_partial: true,
                 account_id: accountState.id,
               });
@@ -811,7 +847,7 @@ async function startSingleAccountEngine(account) {
                 logError(`Failed to record long-leg laddered exits for position ${pos.id}:`, e);
               }
 
-              const fullyExited = stage >= LONG_EXIT_MULTIPLES.length || pos.buyLeg.lotSize <= 0;
+              const fullyExited = stage >= exitLevels.length || pos.buyLeg.lotSize <= 0;
               if (fullyExited) {
                 try {
                   await supabase.from('active_positions').delete().eq('id', pos.id);

@@ -319,19 +319,6 @@ export default function CreateAccountModal({
                   }}
                 />
               </div>
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Leg Swap Net Premium ($)</label>
-                <CustomInput
-                  type="number"
-                  {...register('legSwapNetPremium', { valueAsNumber: true })}
-                  style={{
-                    padding: '10px 14px',
-                    borderRadius: 8,
-                    fontSize: 13,
-                    outline: 'none'
-                  }}
-                />
-              </div>
             </div>
           </div>
         </div>
