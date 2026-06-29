@@ -352,7 +352,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
   const computeSpreads = useCallback((force = false) => {
     if (!scanning || !spotPrice) return;
 
-    const scanTickers = (tickers) => {
+    const scanTickers = (tickers, atmStrike, getTickerPrice) => {
       if (tickers.length < 2) return [];
 
       const sorted = [...tickers].sort((a, b) => a.strike - b.strike);
@@ -420,7 +420,28 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
 
           const deltaDiff = buyDN - sellQty * sellDN;
 
-          const netPrem = sellQty * sellPrice - buyPrice;
+          // ── Dynamic ATM scaling (applied BEFORE the max-debit check) ──
+          // Mirror the engine: derive the ATM ratio from intrinsic prices at the
+          // ATM strike, then scale the sell qty up toward it by the configured %.
+          const buyIntrinsic = getTickerPrice(atmStrike, buyLeg.type, 'bid');
+          const targetSellStrike = buyLeg.type === 'call'
+            ? atmStrike + strikeDiff
+            : atmStrike - strikeDiff;
+          const sellIntrinsic = getTickerPrice(targetSellStrike, buyLeg.type, 'ask');
+          const atmRatio = (buyIntrinsic != null && sellIntrinsic != null && sellIntrinsic > 0)
+            ? (buyIntrinsic / sellIntrinsic)
+            : null;
+
+          let scaledSellQty = sellQty;
+          if (config.atmRatioScaling && atmRatio != null) {
+            const pct = buyLeg.type === 'call' ? config.atmRatioPctCall : config.atmRatioPctPut;
+            const atmRatioVal = Math.round(atmRatio / 0.25) * 0.25;
+            const diff = Math.max(0, atmRatioVal - sellQty);
+            scaledSellQty = Math.max(sellQty, Math.round((sellQty + (pct / 100) * diff) / 0.25) * 0.25);
+          }
+
+          // Max-debit (maxNetPremium) check on the post-scaling net premium.
+          const netPrem = scaledSellQty * sellPrice - buyPrice;
 
           if (netPrem < -config.maxNetPremium) continue;
 
@@ -433,6 +454,10 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             deltaNotionalRatio: deltaNotionalRatio.toFixed(3),
             ratioDeviation: (ratioDeviation * 100).toFixed(1),
             sellQty,
+            scaledSellQty,
+            atmRatio,
+            buyIntrinsic,
+            sellIntrinsic,
             buyPrice,
             sellPrice,
             buyIv,
@@ -471,8 +496,36 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
     // For Put: ATM or OTM means strike <= atmStrike
     const putTickers = allTickers.filter(t => t.type === 'put' && (atmStrike === null || t.strike <= atmStrike));
 
-    const nextCalls = scanTickers(callTickers);
-    const nextPuts = scanTickers(putTickers);
+    // Find the best price for a given strike + option type, falling back to the
+    // nearest available strike within a tight tolerance (used for ATM scaling).
+    const getTickerPrice = (strike, optType, priceField) => {
+      const lowerType = optType.toLowerCase();
+      const ofType = allTickers.filter(t => t.type === lowerType);
+      if (!ofType.length) return null;
+
+      const exact = ofType.find(t => t.strike === strike);
+      if (exact) {
+        const val = exact[priceField] ?? exact.lastPrice ?? exact.markPrice;
+        return (val != null && val > 0) ? val : null;
+      }
+
+      const maxTolerance = underlying === 'ETH' ? 50 : 500;
+      let nearest = null;
+      let minDist = Infinity;
+      for (const t of ofType) {
+        const dist = Math.abs(t.strike - strike);
+        if (dist < minDist && dist <= maxTolerance) {
+          minDist = dist;
+          nearest = t;
+        }
+      }
+      if (!nearest) return null;
+      const val = nearest[priceField] ?? nearest.lastPrice ?? nearest.markPrice;
+      return (val != null && val > 0) ? val : null;
+    };
+
+    const nextCalls = scanTickers(callTickers, atmStrike, getTickerPrice);
+    const nextPuts = scanTickers(putTickers, atmStrike, getTickerPrice);
     setResultsCall(nextCalls);
     setResultsPut(nextPuts);
     setGlobalAtmStrike(atmStrike);
@@ -480,7 +533,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
 
     setLastRefreshed(Date.now());
 
-  }, [scanning, spotPrice, config, publishTopSpreads]);
+  }, [scanning, spotPrice, config, publishTopSpreads, underlying]);
 
   // Periodic and conditional scanning with 2-second throttling
   useEffect(() => {

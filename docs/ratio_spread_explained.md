@@ -92,8 +92,8 @@ Every candidate pair of options must pass **all** of these filters to be display
 | 7 | **Min Long Distance** | `minLongDist` | Buy strike - Spot price $\ge$ Min | Spot price - Buy strike $\ge$ Min |
 | 8 | **Min Sell Premium** | `minSellPremium` | Sell leg best Bid price $\ge$ Min | Sell leg best Bid price $\ge$ Min |
 | 9 | **Ratio Deviation** | `maxRatioDeviation` | Deviation between premium ratio and delta-notional ratio $\le$ Max Deviation | Deviation between premium ratio and delta-notional ratio $\le$ Max Deviation |
-| 10| **Max Sell Ratio** | `maxSellQty` | Scaled sell quantity $\le$ Max Ratio | Scaled sell quantity $\le$ Max Ratio |
-| 11| **Max Debit** | `maxNetPremium` | Net debit (if debit spread) $\le$ Max Debit (Max net premium $\ge -\text{netPremium}$) | Net debit (if debit spread) $\le$ Max Debit (Max net premium $\ge -\text{netPremium}$) |
+| 10| **Max Sell Ratio** | `maxSellQty` | Base (delta-neutral) sell quantity $\le$ Max Ratio | Base (delta-neutral) sell quantity $\le$ Max Ratio |
+| 11| **Max Debit** | `maxNetPremium` | Checked **after** ATM Ratio Scaling, against the *scaled* short quantity: Net debit (if debit spread) $\le$ Max Debit, i.e. $\text{scaledSellQty} \times \text{sellPrice} - \text{buyPrice} \ge -\text{maxNetPremium}$ | Same — applied to the scaled short quantity |
 
 ---
 
@@ -111,9 +111,10 @@ The raw ratio is then rounded to the nearest **0.25** fraction (minimum 1.00) to
 
 $$\text{sellQty} = \max\left(1.0, \text{round}\left(\frac{\text{Raw Ratio}}{0.25}\right) \times 0.25\right)$$
 
-### ATM Ratio Scaling (Visual Simulation Mode)
+### ATM Ratio Scaling (Applied During the Scan)
 
-When the **ATM Ratio Entry** checkbox (`atmRatioScaling`) is enabled in the configuration bar, the scanner activates an automated visual simulation mode:
+When the **ATM Ratio Entry** checkbox (`atmRatioScaling`) is enabled in the configuration bar, the scaling is computed **inside the scanner** (`scanTickers` in [RatioSpreadScanner.jsx](file:///c:/Users/ASUS/Documents/Option_Scope/src/RatioSpreadScanner.jsx)) as each candidate pair is evaluated — **before** the Max Debit filter runs. The `ResultTable` no longer recomputes the scaling; it simply consumes the `scaledSellQty` produced by the scan.
+
 * **Dynamic Scaling**: The sell quantity (ratio) is scaled up proportionally if the current spread ratio is lower than what is available at ATM strikes:
 
   $$\text{atmRatio} = \frac{\text{ATM Buy Price}}{\text{ATM Sell Price}}$$
@@ -123,6 +124,7 @@ When the **ATM Ratio Entry** checkbox (`atmRatioScaling`) is enabled in the conf
   $$\text{Adjusted Sell Qty} = \text{sellQty} + \left(\frac{\text{ATM Pct}}{100} \times \text{ratioDiff}\right)$$
 
   This is then rounded to the nearest 0.25. The percentage adjustment is set via `atmRatioPctCall` and `atmRatioPctPut` config variables.
+* **Order of Operations**: The base delta-neutral `sellQty` is computed first (and checked against `maxSellQty`), then it is scaled to `scaledSellQty`, and only then is the **Max Debit** (`maxNetPremium`) filter applied to the scaled net premium. Scaling up the short quantity raises the net premium (more credit / less debit), so this ordering lets candidates that would fail the max-debit cap on their natural ratio survive once scaled. The base `sellQty` is preserved alongside the scaled value.
 * **Golden Highlighting**: If the scaled ratio deviates from the natural ratio, the ratio indicator in the table dynamically shifts and is highlighted in **golden text** (`var(--accent)`, `#f0b90b`) to visually emphasize that ATM ratio scaling is active for that candidate.
 * **Portfolio Cap Interactivity**: The adjusted ratio continues to interact with the **$200K Short Value Portfolio Cap**, meaning if the scaled short value exceeds $200,000, both the buy leg lot size and final sell quantity are scaled down proportionally.
 * **Legacy "Base/Extra" Toggle Deprecation**: The legacy, manual dollar-based "Base/Extra" toggle has been completely removed from both the scanner layout and computation logic. The automated ATM Ratio Scaling provides a much cleaner, streamlined approach to simulating ratio shifts.
@@ -158,7 +160,7 @@ $$\text{Margin Requirement} = (\text{Entry Buy Price} \times \text{Adjusted Lot 
 $$\text{ROI} = \left(\frac{\text{ATM PnL}}{\text{Margin Requirement}}\right) \times 100$$
 
 > [!NOTE]
-> When `atmRatioScaling` is enabled, the displayed Net Premium in the scanner table dynamically updates to reflect the scaled short quantity: `(Entry Sell Price * scaledQty) - Entry Buy Price`.
+> When `atmRatioScaling` is enabled, the Net Premium is computed in the scanner from the scaled short quantity — `(Entry Sell Price * scaledSellQty) - Entry Buy Price` — and is the same value used by the Max Debit filter. The `ResultTable` displays this scanner-provided value directly rather than recomputing it.
 
 #### Nearest-Strike ATM Fallback Logic
 
@@ -204,7 +206,7 @@ flowchart TD
     
     E --> G["O(N²) Pair Generation"]
     G --> H["Apply Entry Filters (Strike Diff, IV Diff, Quote Freshness)"]
-    H --> I["Calculate Delta-Neutral Ratios & ATM scaling"]
+    H --> I["Calculate Delta-Neutral Ratio → ATM Scaling → Max Debit Filter"]
     I --> J["Apply 200k Short Value Cap (Scale Lot & Qty)"]
     J --> K["Group by Buy Strike"]
     K --> L["Sort groups by Distance-to-ATM & sub-rows by ROI%"]

@@ -67,10 +67,33 @@ export function pickTopUniqueStrikes(spreads, limit = 3) {
 }
 
 /**
+ * The ATM ratio = (ATM buy intrinsic) / (OTM sell intrinsic), rounded to the
+ * nearest 0.25. Returns null when either intrinsic is unavailable.
+ */
+export function computeEntryAtmRatio(buyIntrinsic, sellIntrinsic) {
+  return (buyIntrinsic != null && sellIntrinsic != null && sellIntrinsic > 0)
+    ? parseFloat((Math.round((buyIntrinsic / sellIntrinsic) / 0.25) * 0.25).toFixed(2))
+    : null;
+}
+
+/**
+ * Dynamic ATM scaling: scale the base (delta-neutral) sell qty up toward the
+ * ATM ratio by the configured percentage, rounded to the nearest 0.25.
+ * Returns the base qty unchanged when scaling is off or the ATM ratio is null.
+ * Single source of truth for the scan filter, the ATM P&L gate, and entry.
+ */
+export function computeScaledSellQty(baseSellQty, atmRatio, optType, config) {
+  if (!config.atmRatioScaling || atmRatio == null) return baseSellQty;
+  const pct = optType === 'call' ? config.atmRatioPctCall : config.atmRatioPctPut;
+  const diff = Math.max(0, atmRatio - baseSellQty);
+  return Math.max(baseSellQty, Math.round((baseSellQty + (pct / 100) * diff) / 0.25) * 0.25);
+}
+
+/**
  * O(N²) pair scanner for ratio spread candidates.
  * Identical logic to PaperTrading.jsx scanTickers.
  */
-export function scanTickers(tickers, config, spotPrice) {
+export function scanTickers(tickers, config, spotPrice, atmStrike = null, getTickerPrice = null) {
   const sorted = [...tickers].sort((a, b) => a.strike - b.strike);
   const validPairs = [];
 
@@ -136,12 +159,30 @@ export function scanTickers(tickers, config, spotPrice) {
       const sellQty = Math.max(1, Math.round(rawQty / 0.25) * 0.25);
       if (sellQty > (config.maxSellQty || 10)) { rejected.maxSellQty++; continue; }
 
-      const netPrem = sellQty * sellPrice - buyPrice;
+      // ── Dynamic ATM scaling (applied BEFORE the max-debit check) ──
+      // Mirrors calculateAtmPnlAndRoi / entry scaling in the engine: derive the
+      // ATM ratio from intrinsic prices at the ATM strike and scale the sell qty
+      // up toward it. `sellQty` itself stays natural — entry re-derives the
+      // scaled qty — only the max-debit filter uses the scaled value.
+      let scaledSellQty = sellQty;
+      let atmRatio = null;
+      if (getTickerPrice && atmStrike != null) {
+        const buyIntrinsic = getTickerPrice(atmStrike, buyLeg.type, 'bid', config.expiry);
+        const targetSellStrike = buyLeg.type === 'call'
+          ? atmStrike + strikeDiff
+          : atmStrike - strikeDiff;
+        const sellIntrinsic = getTickerPrice(targetSellStrike, buyLeg.type, 'ask', config.expiry);
+        atmRatio = computeEntryAtmRatio(buyIntrinsic, sellIntrinsic);
+        scaledSellQty = computeScaledSellQty(sellQty, atmRatio, buyLeg.type, config);
+      }
+
+      // Max-debit (maxNetPremium) check on the post-scaling net premium.
+      const netPrem = scaledSellQty * sellPrice - buyPrice;
 
       if (netPrem < -config.maxNetPremium) { rejected.netPrem++; continue; }
 
       validPairs.push({
-        buyLeg, sellLeg, strikeDiff, sellQty,
+        buyLeg, sellLeg, strikeDiff, sellQty, scaledSellQty, atmRatio,
         netPremium: netPrem, buyPrice, sellPrice, buyIv, sellIv
       });
     }

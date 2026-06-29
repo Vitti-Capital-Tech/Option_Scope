@@ -157,7 +157,7 @@ export default function ResultTable({
                   // Margin calculation matching paper trading leverage tiers
                   const sellLotSize = r.sellLeg.lotSize || lotSize;
 
-                  const { atmRatioScaling, atmRatioPctCall, atmRatioPctPut } = config || {};
+                  const { atmRatioScaling } = config || {};
 
                   const atmRatio = (buyIntrinsic != null && sellIntrinsic != null && sellIntrinsic > 0)
                     ? (buyIntrinsic / sellIntrinsic)
@@ -166,14 +166,9 @@ export default function ResultTable({
                     ? (Math.round(atmRatio / 0.25) * 0.25).toFixed(2)
                     : '—';
 
-                  let totalSellQty = r.sellQty;
-                  if (atmRatioScaling && atmRatio != null) {
-                    const pct = type.toLowerCase() === 'call' ? atmRatioPctCall : atmRatioPctPut;
-                    const originalRatio = r.sellQty;
-                    const atmRatioVal = Math.round(atmRatio / 0.25) * 0.25;
-                    const diff = Math.max(0, atmRatioVal - originalRatio);
-                    totalSellQty = Math.max(originalRatio, Math.round((originalRatio + (pct / 100) * diff) / 0.25) * 0.25);
-                  }
+                  // Scaling now happens in the scanner (before the max-debit filter);
+                  // consume the scaled qty directly instead of recomputing it here.
+                  const totalSellQty = r.scaledSellQty ?? r.sellQty;
 
                   let shortValue = currentSpot * totalSellQty * sellLotSize;
 
@@ -198,10 +193,8 @@ export default function ResultTable({
                   const margin = (r.buyPrice * adjustedLotSize) + (shortValue / leverage);
                   const roi = (atAtmPnl != null && margin > 0) ? (atAtmPnl / margin) * 100 : null;
 
-                  const rawNetPremium = (atmRatioScaling && atmRatio != null)
-                    ? ((r.sellPrice * totalSellQty) - r.buyPrice)
-                    : r.netPremium;
-
+                  // Net premium is computed in the scanner from the scaled qty.
+                  const rawNetPremium = r.netPremium;
 
                   const isRatioChanged = atmRatioScaling && totalSellQty !== r.sellQty;
 

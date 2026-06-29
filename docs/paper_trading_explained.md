@@ -134,7 +134,7 @@ Before any evaluation runs, these guards must pass:
 
 ## How Spreads Are Found (Scanning)
 
-**File**: [utils.js:L73-L147](file:///c:/Users/ASUS/Documents/Option_Scope/engine/lib/utils.js#L73-L147)
+**File**: [utils.js:L73-L182](file:///c:/Users/ASUS/Documents/Option_Scope/engine/lib/utils.js#L73-L182)
 
 The `scanTickers()` function is the **spread finder**. It works like this:
 
@@ -168,7 +168,7 @@ Every candidate pair must pass **all** of these filters to be considered:
 | 5 | **Min Sell Premium** | `minSellPremium` (default: $10) | The sell leg's bid price must be at least $10 |
 | 6 | **Ratio Deviation** | `maxRatioDeviation` (default: 0.25) | The premium ratio and delta notional ratio must not deviate by more than 25% |
 | 7 | **Max Sell Qty** | `maxSellQty` (default: 10) | The sell quantity (ratio) must not exceed 10 |
-| 8 | **Max Net Premium** | `maxNetPremium` (default: $20) | The net premium debit cannot exceed $20 (i.e., `sellQty × sellPrice - buyPrice ≥ -$20`) |
+| 8 | **Max Net Premium** | `maxNetPremium` (default: $20) | The net premium debit cannot exceed $20. **ATM Ratio Scaling is applied first**, so this is checked against the *scaled* short quantity (i.e., `scaledSellQty × sellPrice - buyPrice ≥ -$20`). When scaling is disabled, `scaledSellQty` equals the natural `sellQty`. |
 | 9 | **Days to Expiry** | `daysToExpiry` (default: 0) | The option expiry date must be at least this many days away from the current time. Options closer to expiry are rejected. |
 | 10 | **Max Calls (#)** | `numberOfCalls` (default: 3) | Maximum active calls allowed concurrently. Also sets call rotation thresholds and call protection slices dynamically. |
 | 11 | **Max Puts (#)** | `numberOfPuts` (default: 3) | Maximum active puts allowed concurrently. Also sets put rotation thresholds and put protection slices dynamically. |
@@ -188,6 +188,26 @@ sellQty = round to nearest 0.25, minimum 1
 ```
 
 This gives a **delta-neutral** ratio. If the buy leg has 3× the delta notional of the sell leg, you'd sell ~3 contracts.
+
+#### ATM Ratio Scaling Happens Inside the Scan (Before the Max Net Premium Check)
+
+**File**: [utils.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/lib/utils.js) (`scanTickers`)
+
+When `atmRatioScaling` is enabled, `scanTickers` derives the ATM ratio from the intrinsic prices at the ATM strike and scales the sell quantity up toward it — **before** applying the Max Net Premium (max debit) filter:
+
+```
+buyIntrinsic   = price at ATM strike (bid)
+sellIntrinsic  = price at (ATM strike ± strikeDiff) (ask)
+atmRatio       = round(buyIntrinsic / sellIntrinsic to nearest 0.25)
+pct            = call ? atmRatioPctCall : atmRatioPctPut
+diff           = max(0, atmRatio - sellQty)
+scaledSellQty  = max(sellQty, round(sellQty + (pct/100) × diff to nearest 0.25))
+```
+
+The Max Net Premium check then uses `scaledSellQty × sellPrice - buyPrice`. Because scaling up the short quantity raises the net premium (more credit / less debit), this ordering lets candidates that would otherwise fail the max-debit cap on their natural ratio survive once scaled.
+
+> [!NOTE]
+> The natural `sellQty` is **kept unchanged** in the candidate. The scaled value is used only for the max-debit filter here. The actual entry quantity is recomputed from the natural `sellQty` at entry time using **fresh** ATM prices (see [Entry pricing](#after-scanning-atm-pnl-filter) and the entry block in `paperTradingEngine.js`), so there is **no double-scaling** — the scale formula is evaluated independently per stage, never compounded.
 
 ### After Scanning: ATM PnL Filter
 
@@ -267,6 +287,9 @@ diff = max(0, liveAtmRatio - baseRatio)
 adjustedRatio = baseRatio + (pct% × diff)
 ```
 This lets you capture a percentage (e.g. 50%) of the extra ratio available at ATM strikes.
+
+> [!NOTE]
+> This is the **entry-time** scaling, computed from the natural `sellQty` using **fresh** ATM prices at the moment of entry. It is the same formula used during the scan for the [Max Net Premium filter](#how-the-sell-quantity-ratio-is-calculated), but evaluated independently — both stages start from the natural `sellQty`, so the scale is never compounded.
 
 ### Guard 7: $200K Short Value Cap
 ```

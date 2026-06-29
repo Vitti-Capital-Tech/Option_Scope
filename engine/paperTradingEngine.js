@@ -22,6 +22,7 @@ import {
 } from './lib/deltaApi.js';
 import {
   safeParseLeg, calculateFee, calcMargin, scanTickers,
+  computeEntryAtmRatio, computeScaledSellQty,
   pickTopUniqueStrikes, log, logWarn, logError
 } from './lib/utils.js';
 
@@ -453,8 +454,8 @@ async function startSingleAccountEngine(account) {
         }
       }
 
-      const { pairs: localTopCalls, rejected: callRej } = scanTickers(callTickers, effectiveConfig, spotPrice);
-      const { pairs: localTopPuts, rejected: putRej } = scanTickers(putTickers, effectiveConfig, spotPrice);
+      const { pairs: localTopCalls, rejected: callRej } = scanTickers(callTickers, effectiveConfig, spotPrice, atmStrike, getTickerPrice);
+      const { pairs: localTopPuts, rejected: putRej } = scanTickers(putTickers, effectiveConfig, spotPrice, atmStrike, getTickerPrice);
       const topSpreads = [...localTopCalls, ...localTopPuts];
 
       // Merge rejection counts from calls + puts
@@ -499,17 +500,8 @@ async function startSingleAccountEngine(account) {
           return { atmPnl: null, roi: null };
         }
 
-        const entryAtmRatio = (buyIntrinsic != null && sellIntrinsic != null && sellIntrinsic > 0)
-          ? parseFloat((Math.round((buyIntrinsic / sellIntrinsic) / 0.25) * 0.25).toFixed(2))
-          : null;
-
-        let ratioToUse = spread.sellQty;
-        if (effectiveConfig.atmRatioScaling && entryAtmRatio != null) {
-          const pct = spread.buyLeg.type === 'call' ? effectiveConfig.atmRatioPctCall : effectiveConfig.atmRatioPctPut;
-          const originalRatio = spread.sellQty;
-          const diff = Math.max(0, entryAtmRatio - originalRatio);
-          ratioToUse = Math.max(originalRatio, Math.round((originalRatio + (pct / 100) * diff) / 0.25) * 0.25);
-        }
+        const entryAtmRatio = computeEntryAtmRatio(buyIntrinsic, sellIntrinsic);
+        const ratioToUse = computeScaledSellQty(spread.sellQty, entryAtmRatio, spread.buyLeg.type, effectiveConfig);
 
         const sellLotSize = spread.sellLeg.lotSize || lotSize;
         let shortValue = spotPrice * ratioToUse * sellLotSize;
@@ -1385,17 +1377,8 @@ async function startSingleAccountEngine(account) {
           const targetSellStrike = spreadType === 'call' ? atmStrike + spread.strikeDiff : atmStrike - spread.strikeDiff;
           const sellIntrinsic = getTickerPrice(targetSellStrike, spreadType, 'ask', config.expiry);
 
-          const entryAtmRatio = (buyIntrinsic != null && sellIntrinsic != null && sellIntrinsic > 0)
-            ? parseFloat((Math.round((buyIntrinsic / sellIntrinsic) / 0.25) * 0.25).toFixed(2))
-            : null;
-
-          let ratioToUse = spread.sellQty;
-          if (effectiveConfig.atmRatioScaling && entryAtmRatio != null) {
-            const pct = spreadType === 'call' ? effectiveConfig.atmRatioPctCall : effectiveConfig.atmRatioPctPut;
-            const originalRatio = spread.sellQty;
-            const diff = Math.max(0, entryAtmRatio - originalRatio);
-            ratioToUse = Math.max(originalRatio, Math.round((originalRatio + (pct / 100) * diff) / 0.25) * 0.25);
-          }
+          const entryAtmRatio = computeEntryAtmRatio(buyIntrinsic, sellIntrinsic);
+          const ratioToUse = computeScaledSellQty(spread.sellQty, entryAtmRatio, spreadType, effectiveConfig);
 
           const originalLotSize = spread.buyLeg.lotSize || 1;
 
