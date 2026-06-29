@@ -3286,7 +3286,6 @@ body.light-theme .pt-live-badge {
   }
 
   .scanner-filters-container .form-group.row-inline {
-    width: calc(50% - 6px);
     display: inline-flex !important;
     justify-content: space-between;
   }

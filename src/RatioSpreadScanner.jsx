@@ -671,6 +671,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
               <label>Min Spread Width</label>
               <CustomInput
                 type="number" prefix="$" showStepper width={110}
+                step='50'
                 value={config.minStrikeDiff}
                 onChange={e => updateConfig('minStrikeDiff', Number(e.target.value))}
               />
@@ -679,6 +680,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
               <label>Min IV Edge</label>
               <CustomInput
                 type="number" suffix="%" showStepper width={100}
+                step='0.25'
                 value={config.minIvDiff}
                 onChange={e => updateConfig('minIvDiff', Number(e.target.value))}
               />
@@ -713,6 +715,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
               <label>Min Spot Distance</label>
               <CustomInput
                 type="number" prefix="$" showStepper width={110}
+                step='50'
                 value={config.minLongDist}
                 onChange={e => updateConfig('minLongDist', Number(e.target.value))}
               />
@@ -735,13 +738,13 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
               <>
                 <div key="atmRatioPctCall" className="form-group row-inline">
                   <label>Call Scaling</label>
-                  <CustomInput type="number" step="1" suffix="%" showStepper width={100} value={config.atmRatioPctCall ?? 50}
+                  <CustomInput type="number" step="5" suffix="%" showStepper width={100} value={config.atmRatioPctCall ?? 50}
                     onChange={e => updateConfig('atmRatioPctCall', Number(e.target.value))}
                   />
                 </div>
                 <div key="atmRatioPctPut" className="form-group row-inline">
                   <label>Put Scaling</label>
-                  <CustomInput type="number" step="1" suffix="%" showStepper width={100} value={config.atmRatioPctPut ?? 50}
+                  <CustomInput type="number" step="5" suffix="%" showStepper width={100} value={config.atmRatioPctPut ?? 50}
                     onChange={e => updateConfig('atmRatioPctPut', Number(e.target.value))}
                   />
                 </div>

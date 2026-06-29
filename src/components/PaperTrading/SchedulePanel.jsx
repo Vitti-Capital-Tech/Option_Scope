@@ -442,6 +442,7 @@ export default function SchedulePanel({
                   min="0"
                   prefix="$"
                   showStepper
+                  step="50"
                   value={s.minStrikeDiff}
                   onChange={e => handleChange(s.id, 'minStrikeDiff', Number(e.target.value))}
                 />
@@ -455,6 +456,7 @@ export default function SchedulePanel({
                   min="0"
                   prefix="$"
                   showStepper
+                  step="50"
                   value={s.minLongDist}
                   onChange={e => handleChange(s.id, 'minLongDist', Number(e.target.value))}
                 />
@@ -483,6 +485,7 @@ export default function SchedulePanel({
                   max="100"
                   suffix="%"
                   showStepper
+                  step="5"
                   value={s.atmRatioPctCall ?? 50}
                   disabled={!(s.atmRatioScaling ?? true)}
                   onChange={e => handleChange(s.id, 'atmRatioPctCall', Number(e.target.value))}
@@ -498,6 +501,7 @@ export default function SchedulePanel({
                   max="100"
                   suffix="%"
                   showStepper
+                  step="5"
                   value={s.atmRatioPctPut ?? 25}
                   disabled={!(s.atmRatioScaling ?? true)}
                   onChange={e => handleChange(s.id, 'atmRatioPctPut', Number(e.target.value))}

@@ -119,12 +119,12 @@ export default function ControlPanel({
         <div className={`pt-filters-container ${isFiltersCollapsed ? 'collapsed' : 'expanded'}`}>
           <span className="pt-control-label">Filters</span>
           {[
-            { label: 'Min Spread Width', key: 'minStrikeDiff', width: 110, prefix: '$' },
-            { label: 'Min IV Edge', key: 'minIvDiff', width: 100, suffix: '%' },
+            { label: 'Min Spread Width', key: 'minStrikeDiff', width: 110, step: '50', prefix: '$' },
+            { label: 'Min IV Edge', key: 'minIvDiff', width: 100, step: '0.25', suffix: '%' },
             { label: 'Max Delta Deviation', key: 'maxRatioDeviation', width: 110, step: '0.01' },
             { label: 'Min Short Premium', key: 'minSellPremium', width: 110, prefix: '$' },
             { label: 'Max Net Debit', key: 'maxNetPremium', width: 110, prefix: '$' },
-            { label: 'Min Spot Distance', key: 'minLongDist', width: 110, prefix: '$' },
+            { label: 'Min Spot Distance', key: 'minLongDist', width: 110, step: '50', prefix: '$' },
             { label: 'Max Short Ratio', key: 'maxSellQty', width: 110, step: '0.25', prefix: '1:' },
             { label: 'Min Days to Expiry', key: 'daysToExpiry', width: 100 },
             { label: 'Max Open Calls', key: 'numberOfCalls', width: 100 },
