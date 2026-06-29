@@ -1626,16 +1626,18 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           // If we don't have any price at all for both legs, skip this position's updates
           if (latestBuy == null && latestSell == null) return pos;
 
-          const hasBothPrices = latestBuy != null && latestSell != null;
-          const buyPnl = hasBothPrices ? ((latestBuy - pos.entryBuyPrice) || 0) : 0; // Sell - Buy
-          const sellPnl = hasBothPrices ? (((pos.entrySellPrice - latestSell) * pos.sellQty) || 0) : 0; // Sell - Buy
-          const grossPnl = hasBothPrices
-            ? (buyPnl * pos.buyLeg.lotSize) + (sellPnl * pos.sellLeg.lotSize) + (pos.accumulatedSellPnl || 0)
+          // Long-only held positions (short leg already exited) only need the long price.
+          const isLongOnly = (pos.sellQty || 0) === 0;
+          const canCompute = isLongOnly ? (latestBuy != null) : (latestBuy != null && latestSell != null);
+          const buyPnl = canCompute ? ((latestBuy - pos.entryBuyPrice) || 0) : 0; // Sell - Buy
+          const sellPnl = (canCompute && !isLongOnly) ? (((pos.entrySellPrice - latestSell) * pos.sellQty) || 0) : 0;
+          const grossPnl = canCompute
+            ? (buyPnl * pos.buyLeg.lotSize) + (sellPnl * (pos.sellLeg.lotSize || 0)) + (pos.accumulatedSellPnl || 0)
             : pos.unrealizedGrossPnl;
-          const exitFee = hasBothPrices
+          const exitFee = canCompute
             ? calculateFee(latestBuy, spotPrice, pos.buyLeg.lotSize, pos.buyLeg.originalLotSize || 1) + calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize)
             : pos.currentExitFee;
-          const totalFees = hasBothPrices ? ((pos.entryFee || 0) + exitFee) : pos.currentTotalFees;
+          const totalFees = canCompute ? ((pos.entryFee || 0) + exitFee) : pos.currentTotalFees;
 
           return {
             ...pos,

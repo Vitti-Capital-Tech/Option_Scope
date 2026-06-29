@@ -416,18 +416,6 @@ async function startSingleAccountEngine(account) {
       // }
 
       const underlying = effectiveConfig.underlying;
-      const selExpiry = effectiveConfig.expiry;
-
-      function getScaledSellQty(s) {
-        const targetLotSize = s.buyLeg.lotSize || 1;
-        const targetSellLotSize = s.sellLeg.lotSize || targetLotSize;
-        const targetShortValue = spotPrice * s.sellQty * targetSellLotSize;
-        if (targetShortValue >= 200000) {
-          const swapScale = 200000 / targetShortValue;
-          return Number((s.sellQty * swapScale).toFixed(2));
-        }
-        return s.sellQty;
-      }
 
       // Identify ATM strike
       let atmStrike = null;
@@ -633,18 +621,8 @@ async function startSingleAccountEngine(account) {
       }
 
       // Count active positions
-      const activeCallsCount = positions.filter(p => p.type === 'call' && p.underlying === underlying).length;
-      const activePutsCount = positions.filter(p => p.type === 'put' && p.underlying === underlying).length;
-
-      let callRotationsApproved = 0;
-      let putRotationsApproved = 0;
-      const maxCallRotations = effectiveConfig.numberOfCalls;
-      const maxPutRotations = effectiveConfig.numberOfPuts;
-
       const remaining = [];
       const exited = [];
-      const reservedTargets = new Set();
-      const reservedSellTargets = new Set();
 
       // Sort worst-first (farthest from ATM)
       const sortedPositions = [...positions].sort((a, b) => {
@@ -665,15 +643,203 @@ async function startSingleAccountEngine(account) {
         const tickerSell = tickerData[pos.sellLeg.symbol];
         const liveExitBuy = tickerBuy?.bid ?? tickerBuy?.lastPrice ?? tickerBuy?.markPrice;
         const liveExitSell = tickerSell?.ask ?? tickerSell?.lastPrice ?? tickerSell?.markPrice;
-        const liveEntrySell = tickerSell?.bid ?? tickerSell?.lastPrice ?? tickerSell?.markPrice ?? liveExitSell;
 
-        if (liveExitBuy == null || liveExitSell == null) {
+        // Long-only positions (short already exited) only need the long's price.
+        if (liveExitBuy == null || (pos.sellQty > 0 && liveExitSell == null)) {
           remaining.push(pos);
           continue;
         }
 
-        // Dynamic ATM ratio-based scaling
-        if (atmStrike !== null) {
+        // ── Short-leg-only exit ────────────────────────────────────────────
+        // When the short leg's live ASK reaches exactly $1.1, buy it back (close
+        // the short at the ask) and keep holding the long leg. The long leg is
+        // then closed later by the normal expiry / ATM-ITM-OTM exit rules.
+        // NOTE: exact-match by design — if the ask gaps past 1.1 (e.g. 1.15 -> 1.05)
+        // the short leg will not be closed that cycle.
+        const shortLiveAsk = tickerSell?.ask ?? null;
+        if (pos.sellQty > 0 && shortLiveAsk === 1.1) {
+          const shortLotSize = pos.sellLeg.lotSize || 1;
+          const exitShortPrice = liveExitSell; // ask (== 1.1)
+
+          const shortGrossPnl = (pos.entrySellPrice - exitShortPrice) * pos.sellQty * shortLotSize;
+          const shortEntryFee = Math.min(
+            pos.entryFee || 0,
+            calculateFee(pos.entrySellPrice, pos.entrySpotPrice, pos.sellQty, shortLotSize)
+          );
+          const shortExitFee = calculateFee(exitShortPrice, spotPrice, pos.sellQty, shortLotSize);
+          const shortTotalFees = shortEntryFee + shortExitFee;
+          const shortNetPnl = shortGrossPnl - shortTotalFees;
+
+          const shortExitReason = `Short Leg Exit @ Ask $1.1 (holding long ${pos.buyLeg.strike})`;
+          const shortTradeId = `${pos.id}-SE-${Date.now().toString(36).toUpperCase()}`;
+
+          // Record the short-leg close as a partial trade_history row.
+          try {
+            await supabase.from('trade_history').insert([{
+              trade_id: shortTradeId,
+              underlying: pos.underlying,
+              expiry: pos.expiry,
+              type: pos.type,
+              buy_leg: JSON.stringify({ ...pos.buyLeg, lotSize: 0 }),
+              sell_leg: JSON.stringify({ ...pos.sellLeg, exitIv: tickerSell?.askIv ?? tickerSell?.iv ?? null }),
+              sell_qty: pos.sellQty,
+              strike_diff: pos.strikeDiff,
+              entry_time: pos.entryTime.toISOString(),
+              entry_buy_price: pos.entryBuyPrice,
+              entry_sell_price: pos.entrySellPrice,
+              entry_spot_price: pos.entrySpotPrice,
+              margin: pos.margin,
+              exit_time: new Date().toISOString(),
+              exit_buy_price: liveExitBuy,
+              exit_sell_price: exitShortPrice,
+              exit_spot_price: spotPrice,
+              realized_gross_pnl: shortGrossPnl,
+              realized_net_pnl: shortNetPnl,
+              exit_fee: shortExitFee,
+              total_fees: shortTotalFees,
+              exit_reason: shortExitReason,
+              is_partial: true,
+              account_id: accountState.id,
+            }]);
+          } catch (e) {
+            logError(`Failed to record short-leg exit for position ${pos.id}:`, e);
+          }
+
+          // Convert the position to long-only: drop the short leg, recompute margin.
+          // Snapshot the long lot now — it is the base for the 5-slice laddered exit.
+          pos.entryFee = Math.max(0, (pos.entryFee || 0) - shortEntryFee);
+          pos.sellLeg = { ...pos.sellLeg, lotSize: 0 };
+          pos.sellQty = 0;
+          pos.buyLeg = { ...pos.buyLeg, longExitBaseLot: pos.buyLeg.lotSize, longExitStage: 0 };
+          pos.margin = calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, spotPrice, 0, 1);
+
+          try {
+            await supabase.from('active_positions').update({
+              buy_leg: JSON.stringify(pos.buyLeg),
+              sell_leg: JSON.stringify(pos.sellLeg),
+              sell_qty: 0,
+              entry_fee: pos.entryFee,
+              margin: pos.margin,
+            }).eq('id', pos.id);
+          } catch (e) {
+            logError(`Failed to persist short-leg exit for position ${pos.id}:`, e);
+          }
+
+          log(`[${accountState.name}] ✂️ SHORT EXIT: ${pos.type.toUpperCase()} ${pos.buyLeg.strike}/${pos.sellLeg.strike} | Short bought back @ $${exitShortPrice} | PnL: $${shortNetPnl.toFixed(2)} | Holding long ${pos.buyLeg.strike}`);
+
+          remaining.push(pos);
+          continue;
+        }
+
+        // ── Long-only laddered profit exit ──────────────────────────────────
+        // Once the short leg is gone, scale the held long out in 5 equal slices
+        // as the long option's own LTP crosses multiples of its entry price:
+        // 1.5x, 2x, 3x, 4x, 5x. Each crossed checkpoint exits 1/5 of the base lot.
+        if (pos.sellQty === 0) {
+          const LONG_EXIT_MULTIPLES = [1.5, 2, 3, 4, 5];
+          const longLtp = tickerBuy?.lastPrice ?? tickerBuy?.markPrice ?? liveExitBuy;
+
+          // Base lot = long size when it became long-only (set at short-exit; fall back for older rows).
+          if (pos.buyLeg.longExitBaseLot === undefined) {
+            pos.buyLeg.longExitBaseLot = pos.buyLeg.lotSize || 0;
+            pos.buyLeg.longExitStage = pos.buyLeg.longExitStage || 0;
+          }
+          const baseLot = pos.buyLeg.longExitBaseLot || 0;
+          const sliceLot = Number((baseLot / 5).toFixed(2));
+          let stage = pos.buyLeg.longExitStage || 0;
+
+          if (longLtp != null && baseLot > 0 && sliceLot > 0 && pos.entryBuyPrice > 0) {
+            const longExitSlices = [];
+            const exitPrice = liveExitBuy; // close long by selling at bid; LTP only triggers
+
+            // Exit one slice per newly-crossed checkpoint (price may cross several at once).
+            while (stage < LONG_EXIT_MULTIPLES.length &&
+                   longLtp >= pos.entryBuyPrice * LONG_EXIT_MULTIPLES[stage]) {
+              const isLast = (stage === LONG_EXIT_MULTIPLES.length - 1);
+              // Final checkpoint clears any rounding remainder.
+              const exitLot = isLast
+                ? Number(pos.buyLeg.lotSize.toFixed(2))
+                : Math.min(sliceLot, Number(pos.buyLeg.lotSize.toFixed(2)));
+              if (exitLot <= 0) { stage++; continue; }
+
+              const sliceGrossPnl = (exitPrice - pos.entryBuyPrice) * exitLot;
+              const sliceEntryFee = Math.min(
+                pos.entryFee || 0,
+                calculateFee(pos.entryBuyPrice, pos.entrySpotPrice, exitLot, pos.buyLeg.originalLotSize || 1)
+              );
+              const sliceExitFee = calculateFee(exitPrice, spotPrice, exitLot, pos.buyLeg.originalLotSize || 1);
+              const sliceTotalFees = sliceEntryFee + sliceExitFee;
+              const sliceNetPnl = sliceGrossPnl - sliceTotalFees;
+
+              longExitSlices.push({
+                trade_id: `${pos.id}-LE-${Date.now().toString(36).toUpperCase()}-${stage}`,
+                underlying: pos.underlying,
+                expiry: pos.expiry,
+                type: pos.type,
+                buy_leg: JSON.stringify({ ...pos.buyLeg, lotSize: exitLot, exitIv: tickerBuy?.bidIv ?? tickerBuy?.iv ?? null }),
+                sell_leg: JSON.stringify({ ...pos.sellLeg, lotSize: 0 }),
+                sell_qty: 0,
+                strike_diff: pos.strikeDiff,
+                entry_time: pos.entryTime.toISOString(),
+                entry_buy_price: pos.entryBuyPrice,
+                entry_sell_price: pos.entrySellPrice,
+                entry_spot_price: pos.entrySpotPrice,
+                margin: pos.margin,
+                exit_time: new Date().toISOString(),
+                exit_buy_price: exitPrice,
+                exit_sell_price: null,
+                exit_spot_price: spotPrice,
+                realized_gross_pnl: sliceGrossPnl,
+                realized_net_pnl: sliceNetPnl,
+                exit_fee: sliceExitFee,
+                total_fees: sliceTotalFees,
+                exit_reason: `Long Leg Exit ${LONG_EXIT_MULTIPLES[stage]}x entry (LTP $${longLtp})`,
+                is_partial: true,
+                account_id: accountState.id,
+              });
+
+              pos.entryFee = Math.max(0, (pos.entryFee || 0) - sliceEntryFee);
+              pos.buyLeg.lotSize = Number((pos.buyLeg.lotSize - exitLot).toFixed(2));
+              stage++;
+            }
+
+            if (longExitSlices.length > 0) {
+              pos.buyLeg.longExitStage = stage;
+              try {
+                await supabase.from('trade_history').insert(longExitSlices);
+              } catch (e) {
+                logError(`Failed to record long-leg laddered exits for position ${pos.id}:`, e);
+              }
+
+              const fullyExited = stage >= LONG_EXIT_MULTIPLES.length || pos.buyLeg.lotSize <= 0;
+              if (fullyExited) {
+                try {
+                  await supabase.from('active_positions').delete().eq('id', pos.id);
+                } catch (e) {
+                  logError(`Failed to delete fully-laddered long position ${pos.id}:`, e);
+                }
+                log(`[${accountState.name}] 🪜 LONG FULLY EXITED: ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | ${longExitSlices.length} slice(s) | LTP $${longLtp}`);
+                continue;
+              }
+
+              pos.margin = calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, spotPrice, 0, 1);
+              try {
+                await supabase.from('active_positions').update({
+                  buy_leg: JSON.stringify(pos.buyLeg),
+                  entry_fee: pos.entryFee,
+                  margin: pos.margin,
+                }).eq('id', pos.id);
+              } catch (e) {
+                logError(`Failed to persist long-leg laddered exit for position ${pos.id}:`, e);
+              }
+              log(`[${accountState.name}] 🪜 LONG SLICE EXIT: ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | ${longExitSlices.length} slice(s) | remaining lot ${pos.buyLeg.lotSize} | stage ${stage}/5`);
+            }
+          }
+          // remaining long lot (if any) still falls through to expiry / ATM-ITM-OTM exit below
+        }
+
+        // Dynamic ATM ratio-based scaling (full spreads only — skipped once long-only)
+        if (atmStrike !== null && pos.sellQty > 0) {
           // Initialize missing fields for older positions
           if (pos.buyLeg && (pos.buyLeg.originalLotSize === undefined || pos.buyLeg.originalSellQty === undefined || pos.buyLeg.initialScaledLotSize === undefined)) {
             pos.buyLeg.originalLotSize = pos.buyLeg.originalLotSize ?? (pos.buyLeg.lotSize || 1);
@@ -925,171 +1091,6 @@ async function startSingleAccountEngine(account) {
           calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
         const totalFees = (pos.entryFee || 0) + exitFee;
 
-        // Check top-rank protection ranking
-        const maxActiveAllowed = pos.type === 'call' ? effectiveConfig.numberOfCalls : effectiveConfig.numberOfPuts;
-        const protectedSpreadsOfType = uniqueTopSpreads
-          .filter(s => s.buyLeg.type === pos.type)
-          .slice(0, maxActiveAllowed);
-        const isProtected = protectedSpreadsOfType.some(s =>
-          Number(s.buyLeg.strike) === Number(pos.buyLeg.strike)
-        );
-
-        // Priority 4: Rotation
-        if (!shouldExit && pos.expiry === selExpiry && uniqueTopSpreads.length > 0) {
-          const otherActiveBuyStrikes = sortedPositions
-            .filter(p => p.id !== pos.id && p.underlying === underlying && p.type === pos.type)
-            .map(p => Number(p.buyLeg.strike));
-          const otherActiveSellStrikes = sortedPositions
-            .filter(p => p.id !== pos.id && p.underlying === underlying && p.type === pos.type)
-            .map(p => Number(p.sellLeg.strike));
-
-          // 1. Check for Leg Swap (same sell strike, better buy strike)
-          const bestSwapTarget = uniqueTopSpreads.filter(s => s.buyLeg.type === pos.type).find(s => {
-            const bS = Number(s.buyLeg.strike);
-            const sS = Number(s.sellLeg.strike);
-
-            // Must match the exact sell strike of the active position
-            if (sS !== Number(pos.sellLeg.strike)) return false;
-
-            // Check buy/sell conflicts
-            const buyConflict = otherActiveBuyStrikes.includes(bS);
-            const sellConflict = otherActiveSellStrikes.includes(sS);
-            if (buyConflict || sellConflict || reservedTargets.has(bS) || reservedSellTargets.has(sS)) return false;
-
-            // Must be a better buy strike (closer to ATM)
-            const currentStrike = Number(pos.buyLeg.strike);
-            const isPut = pos.type === 'put';
-            const isBetter = isPut ? (bS > currentStrike) : (bS < currentStrike);
-            if (!isBetter) return false;
-
-            // Swap PnL guard: net premium swap cost (sell - buy) must be at least 0 (i.e. no debit)
-            const deltaQty = getScaledSellQty(s) - pos.sellQty;
-            const netPremiumSwap = (deltaQty * (deltaQty > 0 ? liveEntrySell : latestSell)) - (s.buyPrice - latestBuy);
-            if (netPremiumSwap < config.legSwapNetPremium) {
-              if (!onlyExits) {
-                logWarn(`[${accountState.name}] Leg Swap candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: net premium swap cost too high ($${netPremiumSwap.toFixed(2)} < $${(config.legSwapNetPremium || 0).toFixed(2)})`);
-              }
-              return false;
-            }
-
-            // Spot step movement guard
-            const oldSpotBase = pos.entrySpotPrice || pos.entryBuyPrice || spotPrice;
-            const spotDiff = effectiveConfig.spotDiff ?? 0.5;
-            const oldThresh = Math.round((oldSpotBase * spotDiff * 0.01) / 100) * 100;
-            const spotStepValid = Math.abs(spotPrice - oldSpotBase) >= oldThresh;
-            if (!spotStepValid) {
-              if (!onlyExits) {
-                logWarn(`[${accountState.name}] Leg Swap candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: spot step invalid (Spot: ${spotPrice}, Entry Spot Base: ${oldSpotBase}, Required movement: ${oldThresh})`);
-              }
-              return false;
-            }
-            return true;
-          });
-
-          if (bestSwapTarget) {
-            const targetStrike = Number(bestSwapTarget.buyLeg.strike);
-            const targetSellStrike = Number(bestSwapTarget.sellLeg.strike);
-            const currentStrike = Number(pos.buyLeg.strike);
-            if (!onlyExits) {
-              log(`[${accountState.name}] Leg Swap target found: ${bestSwapTarget.buyLeg.type.toUpperCase()} ${targetStrike}/${targetSellStrike}. Upgrading buy strike from ${currentStrike}`);
-            }
-            pos._pendingLegSwap = bestSwapTarget;
-            shouldExit = true;
-            const deltaQty = getScaledSellQty(bestSwapTarget) - pos.sellQty;
-            const netPremiumSwap = (deltaQty * (deltaQty > 0 ? liveEntrySell : latestSell)) - (bestSwapTarget.buyPrice - latestBuy);
-            exitReason = `Leg Swap: Buy ${currentStrike} -> ${targetStrike} | Old Buy: $${latestBuy.toFixed(2)} | New Buy: $${bestSwapTarget.buyPrice.toFixed(2)} | Old Sell Qty: ${pos.sellQty} | New Sell Qty: ${getScaledSellQty(bestSwapTarget)} | Sell Price: $${(deltaQty > 0 ? liveEntrySell : latestSell).toFixed(2)} | Net Premium Swap: $${netPremiumSwap.toFixed(2)}`;
-            reservedTargets.add(targetStrike);
-            reservedSellTargets.add(targetSellStrike);
-          } else if (!onlyExits && !isProtected) {
-            // 2. Fallback to standard rotation (only for positions not in Top 3 during a full cycle)
-            const bestTarget = uniqueTopSpreads.filter(s => s.buyLeg.type === pos.type).find(s => {
-              const bS = Number(s.buyLeg.strike);
-              const sS = Number(s.sellLeg.strike);
-
-              const buyConflict = otherActiveBuyStrikes.includes(bS);
-              const sellConflict = otherActiveSellStrikes.includes(sS);
-              if (buyConflict || sellConflict || reservedTargets.has(bS) || reservedSellTargets.has(sS)) return false;
-
-              // If it's a leg swap (same sell strike), check swap cost based on net premium
-              if (sS === Number(pos.sellLeg.strike)) {
-                const deltaQty = getScaledSellQty(s) - pos.sellQty;
-                const netPremiumSwap = (deltaQty * (deltaQty > 0 ? liveEntrySell : latestSell)) - (s.buyPrice - latestBuy);
-                if (netPremiumSwap < config.legSwapNetPremium) {
-                  if (!onlyExits) {
-                    logWarn(`[${accountState.name}] Rotation candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: net premium swap cost too high ($${netPremiumSwap.toFixed(2)} < $${(config.legSwapNetPremium || 0).toFixed(2)})`);
-                  }
-                  return false;
-                }
-              }
-
-              const oldSpotBase = pos.entrySpotPrice || pos.entryBuyPrice || spotPrice;
-              const spotDiff = effectiveConfig.spotDiff ?? 0.5;
-              const oldThresh = Math.round((oldSpotBase * spotDiff * 0.01) / 100) * 100;
-              const spotStepValid = Math.abs(spotPrice - oldSpotBase) >= oldThresh;
-              if (!spotStepValid) {
-                if (!onlyExits) {
-                  logWarn(`[${accountState.name}] Rotation candidate target ${s.buyLeg.type.toUpperCase()} ${bS}/${sS} rejected: spot step invalid (Spot: ${spotPrice}, Entry Spot Base: ${oldSpotBase}, Required movement: ${oldThresh})`);
-                }
-                return false;
-              }
-
-              return true;
-            });
-
-            if (bestTarget) {
-              const targetStrike = Number(bestTarget.buyLeg.strike);
-              const targetSellStrike = Number(bestTarget.sellLeg.strike);
-              const currentStrike = Number(pos.buyLeg.strike);
-              const isPut = pos.type === 'put';
-              const isBetter = isPut ? (targetStrike > currentStrike) : (targetStrike < currentStrike);
-              if (!onlyExits) {
-                log(`  Best target found: ${bestTarget.buyLeg.type.toUpperCase()} ${targetStrike}/${targetSellStrike}. Is Better (closer to ATM): ${isBetter}`);
-              }
-
-              if (isBetter) {
-                const isSellStrikeMatch = Number(bestTarget.sellLeg.strike) === Number(pos.sellLeg.strike);
-                if (isSellStrikeMatch) {
-                  pos._pendingLegSwap = bestTarget;
-                  shouldExit = true;
-                  const deltaQty = getScaledSellQty(bestTarget) - pos.sellQty;
-                  const netPremiumSwap = (deltaQty * (deltaQty > 0 ? liveEntrySell : latestSell)) - (bestTarget.buyPrice - latestBuy);
-                  exitReason = `Leg Swap: Buy ${currentStrike} -> ${targetStrike} | Old Buy: $${latestBuy.toFixed(2)} | New Buy: $${bestTarget.buyPrice.toFixed(2)} | Old Sell Qty: ${pos.sellQty} | New Sell Qty: ${getScaledSellQty(bestTarget)} | Sell Price: $${(deltaQty > 0 ? liveEntrySell : latestSell).toFixed(2)} | Net Premium Swap: $${netPremiumSwap.toFixed(2)}`;
-                  reservedTargets.add(targetStrike);
-                  reservedSellTargets.add(targetSellStrike);
-                } else {
-                  // Standard rotation: Verify DB-level uniqueness checks before exiting
-                  let hasConflict = false;
-                  try {
-                    const { data: dbBuyConflict } = await supabase.from('active_positions').select('id')
-                      .eq('account_id', accountState.id)
-                      .eq('underlying', underlying).eq('type', pos.type)
-                      .eq('buy_strike', targetStrike).limit(1);
-                    const { data: dbSellConflict } = await supabase.from('active_positions').select('id')
-                      .eq('account_id', accountState.id)
-                      .eq('underlying', underlying).eq('type', pos.type)
-                      .eq('sell_strike', targetSellStrike).limit(1);
-
-                    if ((dbBuyConflict && dbBuyConflict.length > 0) || (dbSellConflict && dbSellConflict.length > 0)) {
-                      hasConflict = true;
-                      log(`[${accountState.name}] Rotation target ${bestTarget.buyLeg.type.toUpperCase()} ${targetStrike}/${targetSellStrike} skipped: DB strike conflict exists.`);
-                    }
-                  } catch (dbErr) {
-                    hasConflict = true;
-                    logError(`[${accountState.name}] Failed to verify DB strike conflict for rotation:`, dbErr);
-                  }
-
-                  if (!hasConflict) {
-                    shouldExit = true;
-                    exitReason = `Lost Protected Rank (Top ${maxActiveAllowed}) and Rank 1 better target available (${targetStrike})`;
-                    reservedTargets.add(targetStrike);
-                    reservedSellTargets.add(targetSellStrike);
-                  }
-                }
-              }
-            }
-          }
-        }
-
         // Priority 3: Dynamic ATM/ITM/OTM exit
         if (!shouldExit) {
           const isCall = pos.type === 'call';
@@ -1117,52 +1118,14 @@ async function startSingleAccountEngine(account) {
           }
         }
 
-        // Threshold guard for rotations
-        const canRotateThisType = pos.type === 'call'
-          ? (activeCallsCount >= effectiveConfig.numberOfCalls && callRotationsApproved < maxCallRotations)
-          : (activePutsCount >= effectiveConfig.numberOfPuts && putRotationsApproved < maxPutRotations);
-
-        let rotationApproved = false;
-        if (!canRotateThisType && exitReason.includes('Lost Protected Rank')) {
-          if (shouldExit) { shouldExit = false; }
-        } else if (canRotateThisType && exitReason.includes('Lost Protected Rank')) {
-          if (shouldExit) {
-            rotationApproved = true;
-            if (pos.type === 'call') callRotationsApproved++; else putRotationsApproved++;
-          }
-        }
-
         if (shouldExit) {
-          // Final guard for unapproved rotation exits
-          if (exitReason.includes('Lost Protected Rank') && !rotationApproved) {
-            shouldExit = false;
-            remaining.push(pos);
-            continue;
-          }
-
-          let finalGrossPnl = grossPnl;
-          let finalExitFee = exitFee;
-          let finalEntryFee = pos.entryFee || 0;
-          let finalTotalFees = totalFees;
-          let finalNetPnl = grossPnl - totalFees;
-          let finalSellQty = pos.sellQty;
-          let finalSellLeg = { ...pos.sellLeg, exitIv: latestSellIv };
-
-          const isLegSwap = exitReason.startsWith('Leg Swap');
-          if (isLegSwap) {
-            // Gross PNL based on change in buyQty (only long leg)
-            finalGrossPnl = (latestBuy - pos.entryBuyPrice) * pos.buyLeg.lotSize;
-            // Exit fee based on long leg exit only
-            finalExitFee = calculateFee(latestBuy, spotPrice, pos.buyLeg.lotSize, pos.buyLeg.originalLotSize || 1);
-            // Entry fee apportioned to long leg based on exact entry values
-            const longEntryFee = Math.min(pos.entryFee || 0, calculateFee(pos.entryBuyPrice, pos.entrySpotPrice, pos.buyLeg.lotSize, pos.buyLeg.originalLotSize || 1));
-            finalEntryFee = longEntryFee;
-            finalTotalFees = finalEntryFee + finalExitFee;
-            finalNetPnl = finalGrossPnl - finalTotalFees;
-            // sellQty should be 0 when exiting
-            finalSellQty = 0;
-            finalSellLeg = { ...pos.sellLeg, lotSize: 0, exitIv: latestSellIv };
-          }
+          const finalGrossPnl = grossPnl;
+          const finalExitFee = exitFee;
+          const finalEntryFee = pos.entryFee || 0;
+          const finalTotalFees = totalFees;
+          const finalNetPnl = grossPnl - totalFees;
+          const finalSellQty = pos.sellQty;
+          const finalSellLeg = { ...pos.sellLeg, exitIv: latestSellIv };
 
           let exitBuyAtmPrice = null;
           let exitSellAtmPrice = null;
@@ -1178,7 +1141,7 @@ async function startSingleAccountEngine(account) {
 
           const tradeRecord = {
             ...pos,
-            id: pos._pendingLegSwap ? `${pos.id}-LS-${Date.now().toString(36).toUpperCase()}` : pos.id,
+            id: pos.id,
             sellQty: finalSellQty,
             buyLeg: {
               ...pos.buyLeg,
@@ -1205,102 +1168,6 @@ async function startSingleAccountEngine(account) {
             zombieExitTime,
           };
           exited.push(tradeRecord);
-
-          if (pos._pendingLegSwap) {
-            // Leg swap execution
-            const target = pos._pendingLegSwap;
-            const longPnl = finalGrossPnl;
-            const longExitFee = finalExitFee;
-            const longEntryFee = finalEntryFee;
-
-            // Apply $200,000 cap scaling to the target spread
-            const targetLotSize = target.buyLeg.lotSize || 1;
-            const targetSellLotSize = target.sellLeg.lotSize || targetLotSize;
-            let targetShortValue = spotPrice * target.sellQty * targetSellLotSize;
-
-            let adjustedTargetLotSize = targetLotSize;
-            let adjustedTargetSellQty = target.sellQty;
-            let swapScale = 1;
-
-            if (targetShortValue >= 200000) {
-              swapScale = 200000 / targetShortValue;
-              adjustedTargetLotSize = Number((targetLotSize * swapScale).toFixed(2));
-              adjustedTargetSellQty = Number((target.sellQty * swapScale).toFixed(2));
-              targetShortValue = 200000;
-            }
-
-            const deltaQty = adjustedTargetSellQty - pos.sellQty;
-            let adjustedSellEntryPrice = pos.entrySellPrice;
-            let shortAdjustmentFee = 0;
-            let shortAdjustmentPnl = 0;
-
-            if (deltaQty > 0) {
-              adjustedSellEntryPrice = ((pos.sellQty * pos.entrySellPrice) + (deltaQty * liveEntrySell)) / adjustedTargetSellQty;
-              shortAdjustmentFee = calculateFee(liveEntrySell, spotPrice, Math.abs(deltaQty), pos.sellLeg.lotSize || 1);
-            } else if (deltaQty < 0) {
-              shortAdjustmentFee = calculateFee(latestSell, spotPrice, Math.abs(deltaQty), pos.sellLeg.lotSize || 1);
-              shortAdjustmentPnl = (pos.entrySellPrice - latestSell) * Math.abs(deltaQty) * (pos.sellLeg.lotSize || 1);
-            }
-
-            const newLongEntryFee = calculateFee(target.buyPrice, spotPrice, adjustedTargetLotSize, target.buyLeg.lotSize || 1);
-            const newActiveEntryFee = (pos.entryFee || 0) - longEntryFee + newLongEntryFee + shortAdjustmentFee;
-
-            let newEntryAtmRatio = null;
-            let entryBuyAtmPrice = null;
-            let entrySellAtmPrice = null;
-            if (atmStrike !== null) {
-              entryBuyAtmPrice = getTickerPrice(atmStrike, pos.type, 'bid', pos.expiry);
-              const targetSellStrike = pos.type === 'call' ? atmStrike + target.strikeDiff : atmStrike - target.strikeDiff;
-              entrySellAtmPrice = getTickerPrice(targetSellStrike, pos.type, 'ask', pos.expiry);
-              if (entryBuyAtmPrice != null && entrySellAtmPrice != null && entrySellAtmPrice > 0) {
-                newEntryAtmRatio = parseFloat((Math.round((entryBuyAtmPrice / entrySellAtmPrice) / 0.25) * 0.25).toFixed(2));
-              }
-            }
-
-            const tickerNewBuy = tickerData[target.buyLeg.symbol];
-            const newBuyLeg = {
-              ...target.buyLeg,
-              lotSize: adjustedTargetLotSize,
-              entryIv: tickerNewBuy?.askIv ?? tickerNewBuy?.iv ?? null,
-              entryAtmRatio: newEntryAtmRatio,
-              entryBuyAtmPrice,
-              entrySellAtmPrice,
-              maxAtmRatio: newEntryAtmRatio,
-              originalLotSize: target.buyLeg.lotSize || 1,
-              originalSellQty: target.sellQty,
-              initialScaledLotSize: adjustedTargetLotSize
-            };
-
-            const swappedPos = {
-              ...pos,
-              buyLeg: newBuyLeg,
-              sellQty: adjustedTargetSellQty,
-              entryBuyPrice: target.buyPrice,
-              entrySellPrice: adjustedSellEntryPrice,
-              entryFee: newActiveEntryFee,
-              accumulatedSellPnl: (pos.accumulatedSellPnl || 0) + (longPnl - longExitFee) + shortAdjustmentPnl,
-              entryTime: new Date(),
-              entrySpotPrice: spotPrice,
-              margin: calcMargin(target.buyPrice, adjustedTargetLotSize, spotPrice, adjustedTargetSellQty, target.sellLeg.lotSize || 1),
-            };
-            remaining.push(swappedPos);
-
-            // Sync leg swap to Supabase
-            try {
-              await supabase.from('active_positions').update({
-                buy_leg: JSON.stringify(newBuyLeg),
-                buy_strike: newBuyLeg.strike,
-                sell_qty: adjustedTargetSellQty,
-                entry_buy_price: target.buyPrice,
-                entry_sell_price: adjustedSellEntryPrice,
-                entry_fee: newActiveEntryFee,
-                accumulated_sell_pnl: swappedPos.accumulatedSellPnl,
-                entry_time: swappedPos.entryTime.toISOString(),
-                entry_spot_price: spotPrice,
-                margin: swappedPos.margin,
-              }).eq('id', pos.id);
-            } catch (e) { logError('Leg swap sync error:', e); }
-          }
         } else {
           remaining.push(pos);
         }
@@ -1337,9 +1204,9 @@ async function startSingleAccountEngine(account) {
             p => p.underlying === underlying && p.type === spreadType && Number(p.buyLeg.strike) === bStrike
           );
 
-          // Sell strike conflict check
+          // Sell strike conflict check (ignore long-only held positions — their short leg is gone)
           const sellConflictPos = remaining.find(
-            p => p.underlying === underlying && p.type === spreadType && Number(p.sellLeg.strike) === sStrike
+            p => p.underlying === underlying && p.type === spreadType && p.sellQty > 0 && Number(p.sellLeg.strike) === sStrike
           ) || newEntries.find(
             p => p.underlying === underlying && p.type === spreadType && Number(p.sellLeg.strike) === sStrike
           );
@@ -1353,8 +1220,9 @@ async function startSingleAccountEngine(account) {
             continue;
           }
 
-          // Portfolio cap
-          let count = remaining.filter(p => p.underlying === underlying && p.type === spreadType).length +
+          // Portfolio cap — count only full spreads (positions with an active short leg).
+          // Long-only held positions (sellQty === 0) free up a slot for new entries.
+          let count = remaining.filter(p => p.underlying === underlying && p.type === spreadType && p.sellQty > 0).length +
             newEntries.filter(p => p.underlying === underlying && p.type === spreadType).length;
           const typeCap = spreadType === 'call' ? effectiveConfig.numberOfCalls : effectiveConfig.numberOfPuts;
           if (count >= typeCap) {
@@ -1461,10 +1329,8 @@ async function startSingleAccountEngine(account) {
             if (histError) logError(`[${accountState.name}] History insert error:`, histError.message);
           }
 
-          // Delete from active (skip for leg swaps — they were updated in-place above)
-          if (!t.exitReason?.startsWith('Leg Swap')) {
-            await supabase.from('active_positions').delete().eq('id', t.id);
-          }
+          // Delete from active
+          await supabase.from('active_positions').delete().eq('id', t.id);
 
           log(`[${accountState.name}] 📤 EXIT: ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} | ${t.exitReason} | PnL: $${t.realizedNetPnl?.toFixed(2)}`);
         } catch (err) { logError(`[${accountState.name}] Exit persistence error:`, err); }
@@ -1474,11 +1340,13 @@ async function startSingleAccountEngine(account) {
       if (!onlyExits) {
         for (const t of newEntries) {
           try {
-            // DB-level count guard per account
+            // DB-level count guard per account — count only full spreads (active short leg).
+            // Long-only held positions (sell_qty === 0) don't count toward the cap.
             const { data: activeOfType, error: countError } = await supabase
               .from('active_positions').select('id')
               .eq('account_id', accountState.id)
-              .eq('underlying', underlying).eq('type', t.type);
+              .eq('underlying', underlying).eq('type', t.type)
+              .gt('sell_qty', 0);
             const typeCap = t.type === 'call' ? effectiveConfig.numberOfCalls : effectiveConfig.numberOfPuts;
             if (!countError && (activeOfType?.length ?? 0) >= typeCap) {
               logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} blocked. Active count on DB: ${activeOfType?.length ?? 0}`);
@@ -1497,11 +1365,11 @@ async function startSingleAccountEngine(account) {
               continue;
             }
 
-            // Sell strike uniqueness per account
+            // Sell strike uniqueness per account (ignore long-only held positions)
             const { data: sellConflict } = await supabase.from('active_positions').select('id')
               .eq('account_id', accountState.id)
               .eq('underlying', underlying).eq('type', t.type)
-              .eq('sell_strike', t.sellLeg.strike).limit(1);
+              .eq('sell_strike', t.sellLeg.strike).gt('sell_qty', 0).limit(1);
             if (sellConflict && sellConflict.length > 0) {
               logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} blocked. Sell strike conflict on DB.`);
               continue;

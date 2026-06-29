@@ -15,8 +15,8 @@ This document explains **every** logic and condition in the Paper Trading engine
 7. [How Entries Are Placed](#how-entries-are-placed)
 8. [Exit Priority Tree](#exit-priority-tree)
 9. [Partial Exit / Scaling Logic](#partial-exit--scaling-logic)
-10. [Leg Swap (In-Place Upgrade)](#leg-swap)
-11. [Standard Rotation (Full Replacement)](#standard-rotation)
+10. [Short-Leg-Only Exit ($1.1)](#short-leg-only-exit)
+11. [Long-Only Laddered Exit](#long-only-laddered-exit)
 12. [Manual Exit (Liquidation)](#manual-exit-liquidation)
 13. [Safety Guards Summary](#safety-guards-summary)
 14. [Diagnostic Logging (0 Candidates)](#diagnostic-logging-0-candidates)
@@ -170,15 +170,15 @@ Every candidate pair must pass **all** of these filters to be considered:
 | 7 | **Max Sell Qty** | `maxSellQty` (default: 10) | The sell quantity (ratio) must not exceed 10 |
 | 8 | **Max Net Premium** | `maxNetPremium` (default: $20) | The net premium debit cannot exceed $20. **ATM Ratio Scaling is applied first**, so this is checked against the *scaled* short quantity (i.e., `scaledSellQty × sellPrice - buyPrice ≥ -$20`). When scaling is disabled, `scaledSellQty` equals the natural `sellQty`. |
 | 9 | **Days to Expiry** | `daysToExpiry` (default: 0) | The option expiry date must be at least this many days away from the current time. Options closer to expiry are rejected. |
-| 10 | **Max Calls (#)** | `numberOfCalls` (default: 3) | Maximum active calls allowed concurrently. Also sets call rotation thresholds and call protection slices dynamically. |
-| 11 | **Max Puts (#)** | `numberOfPuts` (default: 3) | Maximum active puts allowed concurrently. Also sets put rotation thresholds and put protection slices dynamically. |
+| 10 | **Max Calls (#)** | `numberOfCalls` (default: 3) | Maximum **full-spread** calls allowed concurrently. Only positions with an active short leg (`sellQty > 0`) count — long-only held positions do **not** count toward the cap. Re-applied at entry and whenever a schedule window changes the value. |
+| 11 | **Max Puts (#)** | `numberOfPuts` (default: 3) | Maximum **full-spread** puts allowed concurrently. Same counting rule as Max Calls — held long-only positions are excluded from the cap. |
 | 12 | **ATM Ratio Entry** | `atmRatioScaling` (default: true) | Checkbox toggle to enable scaling of entry sell quantities based on ATM strike option prices. |
 | 13 | **Call ATM Pct (%)** | `atmRatioPctCall` (default: 50) | The scaling percentage for ATM ratio adjustments on call spreads. |
 | 14 | **Put ATM Pct (%)** | `atmRatioPctPut` (default: 25) | The scaling percentage for ATM ratio adjustments on put spreads. |
 | 15 | **Spot Diff (%)** | `spotDiff` (default: 0.5) | The spot diff required for the next entry in the Active Positions table. |
 | 16 | **Exit Type** | `exitType` (default: 'ATM') | Option exit type parameter: `ATM`, `ITM`, or `OTM` |
 | 17 | **Exit Points** | `exitPoints` (default: 0) | Point offset threshold from the buy strike required to exit the position (applicable for ITM/OTM exit types) |
-| 18 | **Leg Swap Net Premium** | `legSwapNetPremium` (default: 0) | The minimum net premium swap credit required to perform an in-place leg swap. Leg swaps costing more than this threshold (i.e. where netPremiumSwap < legSwapNetPremium) are rejected. |
+| 18 | **Leg Swap Net Premium** | `legSwapNetPremium` (default: 0) | ⚠️ **Deprecated / unused.** Leg swaps have been removed from the engine. The config field is still loaded for backward compatibility but no longer affects behaviour. |
 
 ### How the Sell Quantity (Ratio) Is Calculated
 
@@ -230,16 +230,13 @@ Only spreads that meet this adjusted minimum floor survive the filter.
 ### Deduplication & Ranking
 
 1. Group by buy strike — if multiple spreads share the same buy strike:
-   - Keep the one with the **highest ROI** (primary candidate, essential for Leg Swaps).
+   - Keep the one with the **highest ROI** (primary candidate).
    - If this highest ROI candidate conflicts with any of your currently active positions (other than itself), ALSO keep the next best **non-conflicting fallback candidate** for that same buy strike (if one exists). This allows normal entries to execute on non-conflicting spreads even when the primary highest ROI spread is blocked by active positions.
 2. Sort by **distance to ATM** (closest first)
 3. Take the top **10 calls + 10 puts** maximum (or higher if the configured `numberOfCalls`/`numberOfPuts` is set to more than 10, ensuring candidates always cover your max limits).
 
 > [!IMPORTANT]
-> **Why we keep both the primary (potentially conflicting) and fallback (non-conflicting) candidates:**
-> - **Leg Swaps** require candidates that share the **same sell strike** as an active position. Since this sell strike is already active, the candidate will naturally trigger a "sell strike conflict" check. If we filtered out conflicting candidates before grouping, we would never find candidate upgrades for Leg Swaps.
-> - **Normal Entries** require candidates that do **not** conflict with any active position strikes. If we only kept the highest ROI candidate per buy strike and it had a conflict, we would be locked out of entering any trades for that buy strike even if other non-conflicting spreads on that strike existed.
-> - **The Solution**: We keep the primary highest-ROI candidate (preserving it for Leg Swaps) *and* dynamically append the next best non-conflicting fallback candidate for the same buy strike (enabling normal entries). This prevents trade lockouts.
+> **Why we keep both the primary and a non-conflicting fallback candidate:** normal entries require candidates that do **not** conflict with any active position strikes. If we only kept the single highest-ROI candidate per buy strike and it conflicted with an active position, we'd be locked out of entering any trade on that buy strike even when other non-conflicting spreads existed. Keeping a fallback prevents that lockout. (This is also what lets a freed slot — after a short-leg exit — be filled by the next-best closest-to-ATM spread.)
 
 ---
 
@@ -269,15 +266,15 @@ Prevents duplicate buy strikes within the same option type.
 
 ### Guard 4: Sell Strike Conflict (Local)
 ```
-If any existing or newly-staged position already has this sell strike → SKIP
+If any existing FULL-SPREAD or newly-staged position already has this sell strike → SKIP
 ```
-Prevents duplicate sell strikes within the same option type.
+Prevents duplicate sell strikes within the same option type. **Long-only held positions are ignored here** (`sellQty > 0` filter) — their short leg is gone, so their old sell strike no longer blocks new entries. (The buy-strike conflict above still applies to held longs, since their long leg is still live at that strike.)
 
 ### Guard 5: Portfolio Cap (Local)
 ```
-If there are already `config.numberOfCalls` (for calls) or `config.numberOfPuts` (for puts) active positions of this type → SKIP
+If there are already `config.numberOfCalls` (calls) / `config.numberOfPuts` (puts) FULL-SPREAD positions of this type → SKIP
 ```
-Maximum **config.numberOfCalls calls + config.numberOfPuts puts** per account (defaulting to 3 each).
+The cap counts only **full spreads** (`sellQty > 0`). Long-only held positions do **not** count, so each short-leg exit frees a slot for a new closer-to-ATM spread. The total rows in the Active Positions table can therefore exceed the cap (full spreads + held longs); the cap limits only the full spreads. The same `sellQty > 0` rule is enforced again at the DB level (`.gt('sell_qty', 0)`) before insert.
 
 ### Guard 6: ATM Ratio Scaling (Optional)
 If `atmRatioScaling` is enabled in config:
@@ -340,36 +337,41 @@ When evaluating exits, positions are processed in a specific order: **worst-firs
 For each position, the engine walks through this **priority tree** from top to bottom. The first matching condition triggers the exit:
 
 ```
-┌─────────────────────────────────────────────┐
-│         For each position (worst-first):     │
-│                                              │
-│  1. Data gap? (no live quotes)               │
-│     → SKIP (keep position, can't evaluate)   │
-│                                              │
-│  2. Partial Exit / Scaling?                  │
-│     → Scale down buy leg if profitable       │
-│     (does NOT exit the position)             │
-│                                              │
-│  3. PRIORITY 2: Expiry?                      │
-│     → EXIT if ≤ 2 minutes to expiry          │
-│                                              │
-│  4. PRIORITY 4: Leg Swap available?          │
-│     → EXIT + re-enter with better buy leg    │
-│                                              │
-│  5. PRIORITY 4: Standard Rotation?           │
-│     → EXIT if not protected + better exists  │
-│                                              │
-│  6. PRIORITY 3: ATM reached / Candle Wick?   │
-│     → EXIT if spot crosses buy strike        │
-│       (via real-time spot or 1m index wick)  │
-│                                              │
-│  7. None of the above                        │
-│     → HOLD (keep position)                   │
-└─────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│         For each position (worst-first):                 │
+│                                                          │
+│  1. Data gap? (no live quotes)                           │
+│     → SKIP. Long-only positions only need the long       │
+│       price (short is gone).                             │
+│                                                          │
+│  2. Short-leg-only exit? (full spreads only)             │
+│     → If short leg's live ASK === 1.1:                   │
+│       buy back ONLY the short, HOLD the long.            │
+│       Position becomes long-only (sellQty = 0).          │
+│                                                          │
+│  3. Long-only laddered exit? (long-only positions)       │
+│     → Exit 1/5 of the long per crossed LTP checkpoint    │
+│       (1.5x/2x/3x/4x/5x of long entry price).            │
+│                                                          │
+│  4. Partial Exit / Scaling? (full spreads only)          │
+│     → Scale down buy leg if profitable                   │
+│       (does NOT exit the position)                       │
+│                                                          │
+│  5. PRIORITY 2: Expiry?                                  │
+│     → EXIT if ≤ 2 minutes to expiry                      │
+│                                                          │
+│  6. PRIORITY 3: ATM reached / Candle Wick?               │
+│     → EXIT if spot crosses buy strike                    │
+│       (via real-time spot or 1m index wick).             │
+│       For long-only, this closes the remaining long.     │
+│                                                          │
+│  7. None of the above                                    │
+│     → HOLD (keep position)                               │
+└─────────────────────────────────────────────────────────┘
 ```
 
 > [!NOTE]
-> The priority numbering (2, 3, 4) comes from the code comments. Priority 1 was removed (time-based exit). The check order in code is: Scaling → Expiry → Rotation/LegSwap → ATM/Candle.
+> **Leg Swap, Standard Rotation, and "Lost Protected Rank" have been removed.** A position is now closed in two phases: the **short leg** exits on its own ($1.1 ask trigger) and the **held long leg** is then scaled out by the laddered exit, with expiry / ATM-ITM-OTM as the catch-all. The priority numbering (2, 3) still reflects the code comments; Priority 1 (time-based) and Priority 4 (rotation/leg-swap) no longer exist.
 
 ### Exit: Expiry Settlement
 
@@ -409,9 +411,10 @@ Exits when the buy leg has gone ITM by at least `exitPoints` (i.e., spot rises t
 
 ## Partial Exit / Scaling Logic
 
-**File**: [paperTradingEngine.js:L439-L661](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L439-L661)
-
 This is the most complex part. Think of it as **gradually taking profit** by reducing the buy leg's lot size in steps while keeping the short leg untouched.
+
+> [!IMPORTANT]
+> This buy-leg scaling runs for **full spreads only** (`atmStrike !== null && pos.sellQty > 0`). Once the short leg has exited and the position is **long-only** (`sellQty === 0`), this scaling is skipped — the held long is instead managed by the [Long-Only Laddered Exit](#long-only-laddered-exit). (The ratio math here degenerates without a short leg.)
 
 ### The Concept
 
@@ -456,91 +459,62 @@ STOP:   Can't go below 0.50 (50% floor of initial scaled lot size)
 
 ---
 
-## Leg Swap
+## Short-Leg-Only Exit
 
-**File**: [paperTradingEngine.js:L708-L763](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L708-L763)
-
-A leg swap is an **in-place upgrade** of the buy leg while keeping the sell leg the same.
+A ratio spread is no longer closed as a single unit. Instead, the **short leg exits on its own**, leaving a held long leg.
 
 ### When Does It Happen?
 
-A leg swap fires when a **better buy strike** is available at the **same sell strike**:
+For a full spread (`sellQty > 0`), every cycle the engine checks the short leg's **live ask** price:
 
 ```
-Current position: BUY 108000 / SELL 110000 (Call)
-Better candidate: BUY 106000 / SELL 110000 (Call)  ← closer to ATM = better
-→ Leg Swap: replace buy 108000 with buy 106000
+If shortLeg liveAsk === 1.1  → buy back ONLY the short leg, HOLD the long
 ```
 
-### Leg Swap Conditions (ALL must pass)
+> [!WARNING]
+> This is an **exact** match (`=== 1.1`) by design. If the ask gaps past 1.1 (e.g. 1.15 → 1.05 between cycles), the short leg is **not** closed that cycle.
 
-| # | Condition | Meaning |
-|---|-----------|---------|
-| 1 | Same sell strike | The candidate's sell leg must match the existing position's sell strike exactly |
-| 2 | Better buy strike | For calls: new strike < old strike. For puts: new strike > old strike (closer to ATM) |
-| 3 | No conflicts | New buy strike isn't used by any other active position |
-| 4 | **Net Premium Swap Guard** | `netPremiumSwap ≥ config.legSwapNetPremium` — the net premium swap credit/debit must meet the configured leg swap net premium threshold. Formula: `(deltaQty × shortPrice) - (newBuyAsk - oldBuyBid)` |
-| 5 | **Spot step valid** | Spot must have moved at least `config.spotDiff` from the entry spot price (rounded to nearest 100) |
+### What Happens
 
-### What "Net Premium Swap" Means
+1. The short leg is **bought back at the ask** (`liveExitSell`, which is 1.1). Its P&L is recorded in `trade_history` as a partial row (`is_partial = true`, reason `Short Leg Exit @ Ask $1.1 ...`).
+2. The short's share of the entry fee is apportioned out: `calculateFee(entrySellPrice, entrySpotPrice, sellQty, sellLotSize)` (capped to the remaining entry fee).
+3. The position becomes **long-only**: `sellQty = 0`, `sellLeg.lotSize = 0`, margin recomputed (`calcMargin(entryBuyPrice, buyLot, spot, 0, 1)`).
+4. The current long lot is **snapshotted** as `buyLeg.longExitBaseLot` (with `longExitStage = 0`) — this is the base for the laddered long exit below. Both are persisted in `buy_leg`.
+5. The position is **kept** in `active_positions` (not deleted) — the long leg continues to be held.
 
-```
-netPremiumSwap = (change in sell qty × short price) - (new buy ask - current buy bid)
-```
-Where `short price` is:
-- **`sellBid` (bid price)** if `change in sell qty > 0` (we are selling extra options)
-- **`sellAsk` (ask price)** if `change in sell qty < 0` (we are buying back options to decrease ratio)
-
-- If `netPremiumSwap ≥ config.legSwapNetPremium` → the swap is allowed.
-- If `netPremiumSwap < config.legSwapNetPremium` → you pay/receive too little to justify the swap (REJECTED).
-- The default value of `config.legSwapNetPremium` is `0`, meaning by default the swap must be at least break-even (no net debit). If set to a positive value, the swap must result in a net credit of at least that amount. If set to a negative value, it allows a net debit (cost) up to that amount.
-
-### Leg Swap Execution
-
-When a leg swap fires:
-
-1. The **old buy leg** is "exited" → recorded in `trade_history` (PnL is only the buy leg's profit).
-   - **Entry Fee (`longEntryFee`)**: The entry fee allocated to the exited buy leg is calculated exactly based on its initial entry parameters: `calculateFee(pos.entryBuyPrice, pos.entrySpotPrice, pos.buyLeg.lotSize, pos.buyLeg.originalLotSize || 1)` (capped to `pos.entryFee`). This prevents allocating any of the Sell Leg's entry fee to the exited Buy Leg.
-2. The **sell leg stays untouched** (no exit fee on the sell side).
-3. The position is **updated in-place** in `active_positions` with the new buy leg.
-4. If the sell quantity changes (due to different delta notional ratios):
-   - **Increase** (`deltaQty > 0`): Extra short contracts are sold at the market **bid** price. The sell entry price is **weighted-averaged** using this bid price.
-   - **Decrease** (`deltaQty < 0`): Excess short contracts are bought back at the market **ask** price. Realized PnL is recorded in `accumulated_sell_pnl`.
-5. The new active entry fee is updated as: `(pos.entryFee - longEntryFee) + newLongEntryFee + shortAdjustmentFee`, perfectly preserving the Sell Leg's initial entry fee.
+Because the cap counts only full spreads (`sellQty > 0`), this freed slot lets a new closer-to-ATM spread enter. See [How Entries Are Placed](#how-entries-are-placed).
 
 ---
 
-## Standard Rotation
+## Long-Only Laddered Exit
 
-**File**: [paperTradingEngine.js:L764-L820](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L764-L820)
+Once a position is long-only (short leg gone), the held long leg is scaled out in **5 equal slices** as a profit ladder driven by the long option's own LTP.
 
-A standard rotation is a **full replacement** — both legs are exited and a new spread is entered.
+### How It Works
 
-### When Does It Happen?
+- **Watched price**: the long option's LTP (`tickerData[buyLeg.symbol].lastPrice`).
+- **Checkpoints**: multiples of the long's entry price → `entryBuyPrice × [1.5, 2, 3, 4, 5]`.
+- **Slice size**: `longExitBaseLot / 5` (the base lot snapshotted when the short exited). Each crossed checkpoint exits one slice.
 
-Only when **all** of these are true:
+```
+entryBuyPrice = $40
+LTP ≥ $60  (1.5x) → exit 1/5 of base long lot
+LTP ≥ $80  (2x)   → exit 1/5
+LTP ≥ $120 (3x)   → exit 1/5
+LTP ≥ $160 (4x)   → exit 1/5
+LTP ≥ $200 (5x)   → exit last 1/5 → position fully closed & deleted
+```
 
-1. **Full Evaluation Cycle**: The current run is a full evaluation cycle (`onlyExits = false`), ensuring the entry code runs in the same tick and processes the replacement immediately.
-2. The position is **NOT in the top protected** ranked spreads for its type (`config.numberOfCalls` for calls, `config.numberOfPuts` for puts).
-3. A better target exists (closer to ATM, no strike conflicts).
-4. **Rotation budget available**: at least `config.numberOfCalls` (for calls) or `config.numberOfPuts` (for puts) active positions of this type exist, and fewer than `maxCallRotations`/`maxPutRotations` rotations have happened this cycle.
-5. The spot step guard passes (`config.spotDiff`% movement from entry).
-6. If the target happens to share the same sell strike, the net premium swap must be ≥ 0.
-7. **No DB Strike Conflicts**: A pre-exit query checks Supabase to ensure the replacement target's strikes do not conflict with existing active positions. If a conflict is found, the exit is aborted.
+### Details
 
-### Rotation Budget
+1. Each slice exits the long by **selling at the bid** (`liveExitBuy`); the LTP is only the **trigger**. Each slice is recorded as a partial `trade_history` row (`is_partial = true`, reason `Long Leg Exit Nx entry ...`), with its apportioned share of the entry fee.
+2. If the LTP crosses several checkpoints in one cycle (e.g. jumps straight to 3x), **all crossed slices exit at once** (a `while` loop advances the stage).
+3. The 5th checkpoint clears any rounding remainder, then the position is **deleted** from `active_positions`.
+4. Progress survives restarts: `longExitStage` (slices done) and `longExitBaseLot` live in the `buy_leg` JSON, so the ladder resumes where it left off — no double exits.
+5. **Catch-all still applies**: if a checkpoint isn't reached, the remaining long still exits via **expiry** or the **ATM/ITM/OTM Full Exit** (spot crossing the buy strike). A partial slice this cycle falls through to those checks for the remaining lot.
 
-The maximum number of rotations per cycle is dynamic and equals the configured portfolio cap for each option type:
-- Calls: Max rotations per cycle = `config.numberOfCalls`
-- Puts: Max rotations per cycle = `config.numberOfPuts`
-
-Can rotate? = (active positions of this type ≥ config.numberOfCalls/Puts) AND (rotations this cycle < maxCallRotations/maxPutRotations)
-
-This prevents the engine from churning through all positions in a single minute. At most **config.numberOfCalls calls and config.numberOfPuts puts** can rotate per evaluation cycle.
-
-### What "Not in Protected Rank" Means
-
-After scanning and ranking all candidate spreads by distance-to-ATM, the engine takes the top-ranked spreads by type up to the configured limit (**config.numberOfCalls** for calls, **config.numberOfPuts** for puts). If a position's buy strike appears in this top list, it's **protected** from rotation. If not, it's eligible to be replaced.
+> [!NOTE]
+> The slice **trigger** is the long LTP; the slice **exit price** (for P&L) is the long's live **bid**. If you'd prefer to exit at the LTP value instead, it's a one-line change.
 
 ---
 
@@ -577,7 +551,7 @@ sequenceDiagram
    - The position's corresponding row is deleted from the `active_positions` table.
 4. **Realtime Engine Synchronization**:
    - The VPS engine has a realtime subscription listening to the `active_positions` table.
-   - Upon receiving the `DELETE` event, the engine instantly filters the position from its in-memory `positions` array, ensuring it doesn't attempt standard evaluation or leg swaps on it.
+   - Upon receiving the `DELETE` event, the engine instantly filters the position from its in-memory `positions` array, ensuring it doesn't attempt any further exit evaluation on it.
    - A redundant check ensures that if the engine's main evaluation loop attempts to exit the same position before the deletion is processed, it queries `trade_history` first and aborts the exit if `trade_id` already exists (preventing double exits).
 
 ---
@@ -604,17 +578,16 @@ Here's every safety guard in one table:
 | Max net premium debit | `utils.js` | Limits how much net debit is acceptable |
 | ATM PnL ≥ $50 | `paperTradingEngine.js` | Only enters spreads that would profit $50+ at ATM |
 | Days to Expiry | `paperTradingEngine.js` | Rejects candidates whose expiry is fewer than `daysToExpiry` days away |
-| Portfolio cap | `paperTradingEngine.js` | Max calls (`config.numberOfCalls`) and puts (`config.numberOfPuts`) per account |
+| Portfolio cap | `paperTradingEngine.js` | Max **full-spread** calls (`config.numberOfCalls`) and puts (`config.numberOfPuts`) per account — held long-only positions (`sellQty = 0`) excluded |
 | $200K short value cap | `paperTradingEngine.js` | Scales down lot sizes if short notional ≥ $200K |
-| DB count guard | `paperTradingEngine.js` | Database-level check: max `config.numberOfCalls` calls / `config.numberOfPuts` puts |
+| DB count guard | `paperTradingEngine.js` | Database-level check: max `config.numberOfCalls`/`config.numberOfPuts` **full spreads** (`.gt('sell_qty', 0)`) |
 | DB buy strike uniqueness | `paperTradingEngine.js` | Database-level: no duplicate buy strikes |
-| DB sell strike uniqueness | `paperTradingEngine.js` | Database-level: no duplicate sell strikes |
+| DB sell strike uniqueness | `paperTradingEngine.js` | Database-level: no duplicate sell strikes among full spreads (`.gt('sell_qty', 0)`) |
 | Expiry buffer (5 min) | `paperTradingEngine.js` | Won't enter if less than 5 minutes to expiry |
-| Scaling floor (50%) | `paperTradingEngine.js` | Buy lot size can never go below 50% of initial |
-| Scaling ATM ratio guard | `paperTradingEngine.js` | Live ATM ratio must justify the lot reduction |
-| Leg swap net premium threshold | `paperTradingEngine.js` | Leg swaps costing more than `config.legSwapNetPremium` are rejected |
-| Spot step (`config.spotDiff`%) | `paperTradingEngine.js` | Rotation/swap requires spot to have moved ≥ `config.spotDiff`% (rounded to nearest 100) |
-| Rotation budget | `paperTradingEngine.js` | Max rotations per type per evaluation cycle (`config.numberOfCalls` for calls, `config.numberOfPuts` for puts) |
+| Scaling floor (50%) | `paperTradingEngine.js` | Buy lot size can never go below 50% of initial (full-spread scaling only) |
+| Scaling ATM ratio guard | `paperTradingEngine.js` | Live ATM ratio must justify the lot reduction (full-spread scaling only) |
+| Short-leg exit trigger | `paperTradingEngine.js` | Short leg bought back when its live ask `=== 1.1`; long leg held |
+| Long-only ladder | `paperTradingEngine.js` | Held long scaled out in 5 slices at `entryBuyPrice × [1.5,2,3,4,5]` (long LTP) |
 | `lastDbWrite` cooldown (3s) | `paperTradingEngine.js` | Skips position refetch for 3s after a DB write |
 | Heartbeat timer delete | `paperTradingEngine.js` / `heartbeat.js` | Clears interval timer and deletes the DB row on account deletion to prevent zombie row resurrection |
 
@@ -877,31 +850,30 @@ flowchart TD
     
     O --> S
     
-    S --> T{"Scaling conditions met?"}
+    S --> SA{"Full spread & short ask === 1.1?"}
+    SA -->|Yes| SB["EXIT short leg only → hold long (sellQty=0)"]
+    SA -->|No| SC{"Long-only & LTP crossed checkpoint?"}
+
+    SC -->|Yes| SD["Exit 1/5 long slice(s) per checkpoint"]
+    SD --> SE{"All 5 slices done?"}
+    SE -->|Yes| AF
+    SE -->|No| V
+    SC -->|No| T{"Full spread & scaling conditions met?"}
     T -->|Yes| U["Partial exit: reduce buy lot 10%"]
     T -->|No| V{"Expiry <= 2 min?"}
-    
+
     V -->|Yes| W["EXIT: Expiry settlement"]
-    V -->|No| X{"Leg swap available?"}
-    
-    X -->|Yes| Y["EXIT + re-enter with new buy leg"]
-    X -->|No| Z{"Lost Rank Protection + better target?"}
-    
-    Z -->|Yes| AA{"Rotation budget available?"}
-    AA -->|Yes| AB["EXIT: Standard rotation"]
-    AA -->|No| AC["HOLD"]
-    Z -->|No| AD{"Spot >= buy strike?"}
-    
-    AD -->|Yes| AE["EXIT: ATM reached"]
-    AD -->|No| AC
-    
+    V -->|No| AD{"Spot crosses buy strike (ATM/ITM/OTM)?"}
+
+    AD -->|Yes| AE["EXIT: Full exit (closes remaining long/spread)"]
+    AD -->|No| AC["HOLD"]
+
     W --> AF["Write to trade_history + delete from active_positions"]
-    AB --> AF
     AE --> AF
-    Y --> AG["Write to trade_history + update active_positions in-place"]
-    
-    AF --> AH["Process new entries with all guards"]
-    AG --> AH
+    SB --> AH["Process new entries with all guards"]
+    U --> AH
+
+    AF --> AH
     AC --> AH
     AH --> AI["Update heartbeat"]
     AI --> L
@@ -922,17 +894,17 @@ flowchart TD
 | Quote freshness limit | 120 seconds | Max age of option quotes for entry |
 | Expiry exit buffer | 2 minutes | How early before expiry to force-exit |
 | Zombie threshold | 10 minutes | Past expiry, use expiry time as exit time |
-| Max positions per type | Configurable | Max calls (`config.numberOfCalls`) or puts (`config.numberOfPuts`) per account (default: 3) |
-| Max rotations per cycle | Configurable | Max rotations per type per eval cycle (`config.numberOfCalls` for calls, `config.numberOfPuts` for puts) |
+| Max **full-spread** positions per type | Configurable | Max calls (`config.numberOfCalls`) or puts (`config.numberOfPuts`) per account (default: 3); held long-only positions excluded |
+| Short-leg exit trigger | $1.1 (exact) | Short leg's live ask `=== 1.1` → buy back short, hold long |
+| Long-only exit multiples | `[1.5, 2, 3, 4, 5]` | Long LTP × entry price checkpoints; exit 1/5 long per crossed level |
 | $200K cap | $200,000 | Max short notional value |
-| Scaling step | 10% | Lot size reduction per scaling event |
-| Scaling floor | 50% | Minimum lot size as % of initial |
+| Scaling step | 10% | Lot size reduction per scaling event (full spreads only) |
+| Scaling floor | 50% | Minimum lot size as % of initial (full spreads only) |
 | ATM PnL minimum | $50 | Min simulated ATM profit for entry |
-| Spot step threshold | `config.spotDiff`% | Min spot movement for rotation/swap (rounded to nearest 100) |
 | ATM strike tolerance (BTC) | 500 points | Fallback tolerance for finding ATM prices |
 | ATM strike tolerance (ETH) | 50 points | Fallback tolerance for finding ATM prices |
 | Evaluation hang limit | 60 seconds | Max duration evaluation can run before process is restarted |
 | Days to Expiry | User configured | Minimum days to expiry required for new spreads |
 | Exit Type | ATM | Default option exit type parameter (`ATM`, `ITM`, or `OTM`) |
 | Exit Points | 0 | Default points distance threshold for ITM/OTM exits |
-| Leg Swap Net Premium | 0 | Default minimum credit ($) required to swap buy leg in-place |
+| Leg Swap Net Premium | 0 | ⚠️ Deprecated/unused — leg swaps removed (config still loaded for back-compat) |
