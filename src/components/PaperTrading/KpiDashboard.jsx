@@ -14,69 +14,69 @@ export default function KpiDashboard({
   activePutsCount,
   totalMargin
 }) {
+  const fmt = (n) => `${n > 0 ? '+' : ''}${n.toFixed(2)}`;
+  const cls = (n) => (n > 0 ? 'positive' : n < 0 ? 'negative' : 'neutral');
+  const losses = Math.max(0, tradeHistoryLength - wins);
+  const wrNum = winRate === '—' ? 0 : parseFloat(winRate);
+
   return (
     <div className="pt-kpi-strip">
-      <div className={`pt-kpi-card ${todayPnl >= 0 ? 'accent-green' : 'accent-red'}`}>
-        <span className="pt-kpi-label">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2v20M17 7l-5-5-5 5" /></svg>
-          Daily P&L
-        </span>
-        <span className={`pt-kpi-value ${todayPnl > 0 ? 'positive' : todayPnl < 0 ? 'negative' : 'neutral'}`}>
-          {todayPnl > 0 ? '+' : ''}{todayPnl.toFixed(2)}
-        </span>
-        <span className="pt-kpi-sub">Realized: {todayRealizedPnl.toFixed(2)} | Unrl: {totalUnrealizedPnl.toFixed(2)}</span>
+      {/* Hero: the two P&L figures lead */}
+      <div className="pt-kpi-hero-row">
+        <div className={`pt-kpi-hero ${todayPnl >= 0 ? 'up' : 'down'}`}>
+          <span className="pt-kpi-label">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2v20M17 7l-5-5-5 5" /></svg>
+            Daily P&amp;L
+          </span>
+          <span className={`pt-kpi-hero-value ${cls(todayPnl)}`}>{fmt(todayPnl)}</span>
+          <div className="pt-kpi-pills">
+            <span className="pt-kpi-pill">Realized <b className={cls(todayRealizedPnl)}>{fmt(todayRealizedPnl)}</b></span>
+            <span className="pt-kpi-pill">Unrealized <b className={cls(totalUnrealizedPnl)}>{fmt(totalUnrealizedPnl)}</b></span>
+          </div>
+        </div>
+
+        <div className="pt-kpi-hero gold">
+          <span className="pt-kpi-label">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3v18h18" /><path d="M7 14l4-4 4 4 4-6" /></svg>
+            Cumulative P&amp;L
+          </span>
+          <span className={`pt-kpi-hero-value ${cls(totalPnl)}`}>{fmt(totalPnl)}</span>
+          <div className="pt-kpi-pills">
+            <span className="pt-kpi-pill">Realized <b className={cls(totalRealizedPnl)}>{fmt(totalRealizedPnl)}</b></span>
+          </div>
+        </div>
       </div>
 
-      <div className={`pt-kpi-card ${totalPnl >= 0 ? 'accent-blue' : 'accent-red'}`} style={{ borderLeft: '4px solid var(--accent)' }}>
-        <span className="pt-kpi-label">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2v20M17 7l-5-5-5 5" /></svg>
-          Cumulative P&L
-        </span>
-        <span className={`pt-kpi-value ${totalPnl > 0 ? 'positive' : totalPnl < 0 ? 'negative' : 'neutral'}`}>
-          {totalPnl > 0 ? '+' : ''}{totalPnl.toFixed(2)}
-        </span>
-        <span className="pt-kpi-sub">Total Realized: {totalRealizedPnl.toFixed(2)}</span>
-      </div>
+      {/* Compact secondary metrics */}
+      <div className="pt-kpi-mini-row">
+        <div className="pt-kpi-mini">
+          <span className="pt-kpi-mini-label">Win Rate</span>
+          <span className="pt-kpi-mini-value">{winRate}{winRate !== '—' ? '%' : ''}</span>
+          <div className="pt-kpi-wr">
+            <div className="pt-kpi-wr-fill" style={{ width: `${wrNum}%` }} />
+          </div>
+          <span className="pt-kpi-mini-sub">{wins}W / {losses}L of {tradeHistoryLength}</span>
+        </div>
 
-      <div className="pt-kpi-card accent-gold">
-        <span className="pt-kpi-label">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" /><path d="M8 12l3 3 5-5" /></svg>
-          Win Rate
-        </span>
-        <span className="pt-kpi-value neutral">{winRate}{winRate !== '—' ? '%' : ''}</span>
-        <span className="pt-kpi-sub">{wins}W / {tradeHistoryLength - wins}L of {tradeHistoryLength}</span>
-      </div>
+        <div className="pt-kpi-mini">
+          <span className="pt-kpi-mini-label">Open Positions</span>
+          <span className="pt-kpi-mini-value">{activePositionsCount}</span>
+          <span className="pt-kpi-mini-sub">
+            <span style={{ color: 'var(--call)' }}>{activeCallsCount}C</span> · <span style={{ color: 'var(--put)' }}>{activePutsCount}P</span>
+          </span>
+        </div>
 
-      <div className="pt-kpi-card accent-blue">
-        <span className="pt-kpi-label">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18" /></svg>
-          Open Positions
-        </span>
-        <span className="pt-kpi-value neutral">{activePositionsCount}</span>
-        <span className="pt-kpi-sub">
-          {activeCallsCount} calls /&nbsp;
-          {activePutsCount} puts
-        </span>
-      </div>
+        <div className="pt-kpi-mini">
+          <span className="pt-kpi-mini-label">Completed</span>
+          <span className="pt-kpi-mini-value">{tradeHistoryLength}</span>
+          <span className="pt-kpi-mini-sub">Closed trades</span>
+        </div>
 
-      <div className="pt-kpi-card accent-purple">
-        <span className="pt-kpi-label">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 8v4l3 3" /><circle cx="12" cy="12" r="10" /></svg>
-          Completed Trades
-        </span>
-        <span className="pt-kpi-value neutral">{tradeHistoryLength}</span>
-        <span className="pt-kpi-sub">Closed positions</span>
-      </div>
-
-      <div className="pt-kpi-card accent-blue">
-        <span className="pt-kpi-label">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /></svg>
-          Margin Utilization
-        </span>
-        <span className="pt-kpi-value neutral">${totalMargin.toFixed(0)}</span>
-        <span className="pt-kpi-sub">
-          Across {activePositionsCount} position{activePositionsCount !== 1 ? 's' : ''}
-        </span>
+        <div className="pt-kpi-mini">
+          <span className="pt-kpi-mini-label">Margin Used</span>
+          <span className="pt-kpi-mini-value">${totalMargin.toFixed(0)}</span>
+          <span className="pt-kpi-mini-sub">Across {activePositionsCount} position{activePositionsCount !== 1 ? 's' : ''}</span>
+        </div>
       </div>
     </div>
   );

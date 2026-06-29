@@ -14,6 +14,7 @@ export default function ConfirmExitModal({
   const p = position;
   const pnlValue = includeFees ? (p.unrealizedNetPnl || 0) : (p.unrealizedGrossPnl || 0);
   const pnlClass = pnlValue > 0 ? 'positive' : pnlValue < 0 ? 'negative' : 'zero';
+  const isLongOnly = (p.sellQty || 0) === 0;
 
   return (
     <div className="modal-overlay-wrapper" style={{ animation: 'fadeIn 0.15s ease-out' }}>
@@ -56,20 +57,24 @@ export default function ConfirmExitModal({
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
             <span style={{ color: 'var(--text-dim)' }}>Strikes (Long/Short):</span>
-            <span style={{ fontWeight: 600, color: 'var(--text)' }}>{p.buyLeg.strike.toLocaleString()} / {p.sellLeg.strike.toLocaleString()}</span>
+            <span style={{ fontWeight: 600, color: 'var(--text)' }}>
+              {p.buyLeg.strike.toLocaleString()} / {isLongOnly ? <span style={{ color: 'var(--accent)' }}>Long only</span> : p.sellLeg.strike.toLocaleString()}
+            </span>
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
             <span style={{ color: 'var(--text-dim)' }}>Ratio:</span>
-            <span style={{ fontWeight: 600, color: 'var(--text)' }}>{p.buyLeg.lotSize.toFixed(2)} : {p.sellQty.toFixed(2)}</span>
+            <span style={{ fontWeight: 600, color: 'var(--text)' }}>{isLongOnly ? `${p.buyLeg.lotSize.toFixed(2)} long` : `${p.buyLeg.lotSize.toFixed(2)} : ${p.sellQty.toFixed(2)}`}</span>
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid var(--border)', paddingTop: '6px' }}>
             <span style={{ color: 'var(--text-dim)' }}>Current Long Price (Bid):</span>
             <span style={{ color: '#3fb950', fontWeight: 600 }}>${p.currentBuyPrice != null ? p.currentBuyPrice.toFixed(2) : '—'}</span>
           </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span style={{ color: 'var(--text-dim)' }}>Current Short Price (Ask):</span>
-            <span style={{ color: '#f85149', fontWeight: 600 }}>${p.currentSellPrice != null ? p.currentSellPrice.toFixed(2) : '—'}</span>
-          </div>
+          {!isLongOnly && (
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span style={{ color: 'var(--text-dim)' }}>Current Short Price (Ask):</span>
+              <span style={{ color: '#f85149', fontWeight: 600 }}>${p.currentSellPrice != null ? p.currentSellPrice.toFixed(2) : '—'}</span>
+            </div>
+          )}
           <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid var(--border)', paddingTop: '6px' }}>
             <span style={{ color: 'var(--text-dim)' }}>Unrealized Gross P&L:</span>
             <span className={`pt-pnl ${p.unrealizedGrossPnl > 0 ? 'positive' : p.unrealizedGrossPnl < 0 ? 'negative' : 'zero'}`} style={{ fontWeight: 600 }}>
