@@ -415,7 +415,7 @@ export default function SchedulePanel({
                   type="number"
                   min="0"
                   max="20"
-                  className="schedule-inline-input"
+                  showStepper
                   value={s.numberOfCalls}
                   onChange={e => handleChange(s.id, 'numberOfCalls', Number(e.target.value))}
                 />
@@ -428,7 +428,7 @@ export default function SchedulePanel({
                   type="number"
                   min="0"
                   max="20"
-                  className="schedule-inline-input"
+                  showStepper
                   value={s.numberOfPuts}
                   onChange={e => handleChange(s.id, 'numberOfPuts', Number(e.target.value))}
                 />
@@ -440,7 +440,8 @@ export default function SchedulePanel({
                 <CustomInput
                   type="number"
                   min="0"
-                  className="schedule-inline-input"
+                  prefix="$"
+                  showStepper
                   value={s.minStrikeDiff}
                   onChange={e => handleChange(s.id, 'minStrikeDiff', Number(e.target.value))}
                 />
@@ -452,7 +453,8 @@ export default function SchedulePanel({
                 <CustomInput
                   type="number"
                   min="0"
-                  className="schedule-inline-input"
+                  prefix="$"
+                  showStepper
                   value={s.minLongDist}
                   onChange={e => handleChange(s.id, 'minLongDist', Number(e.target.value))}
                 />
@@ -474,12 +476,13 @@ export default function SchedulePanel({
 
               {/* ATM Ratio % Call */}
               <div className="schedule-item-block schedule-item-num-block">
-                <span className="schedule-item-label">Call Scaling (%)</span>
+                <span className="schedule-item-label">Call Scaling</span>
                 <CustomInput
                   type="number"
                   min="0"
                   max="100"
-                  className="schedule-inline-input"
+                  suffix="%"
+                  showStepper
                   value={s.atmRatioPctCall ?? 50}
                   disabled={!(s.atmRatioScaling ?? true)}
                   onChange={e => handleChange(s.id, 'atmRatioPctCall', Number(e.target.value))}
@@ -488,12 +491,13 @@ export default function SchedulePanel({
 
               {/* ATM Ratio % Put */}
               <div className="schedule-item-block schedule-item-num-block">
-                <span className="schedule-item-label">Put Scaling (%)</span>
+                <span className="schedule-item-label">Put Scaling</span>
                 <CustomInput
                   type="number"
                   min="0"
                   max="100"
-                  className="schedule-inline-input"
+                  suffix="%"
+                  showStepper
                   value={s.atmRatioPctPut ?? 25}
                   disabled={!(s.atmRatioScaling ?? true)}
                   onChange={e => handleChange(s.id, 'atmRatioPctPut', Number(e.target.value))}
@@ -502,12 +506,13 @@ export default function SchedulePanel({
 
               {/* Spot Diff % */}
               <div className="schedule-item-block schedule-item-num-block">
-                <span className="schedule-item-label">Re-entry Spot Step (%)</span>
+                <span className="schedule-item-label">Re-entry Spot Step</span>
                 <CustomInput
                   type="number"
                   min="0"
                   step="0.1"
-                  className="schedule-inline-input"
+                  suffix="%"
+                  showStepper
                   value={s.spotDiff ?? 0.5}
                   onChange={e => handleChange(s.id, 'spotDiff', Number(e.target.value))}
                 />

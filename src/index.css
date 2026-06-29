@@ -4453,6 +4453,129 @@ body.light-theme .pt-btn-apply.active {
   background: var(--bg2);
 }
 
+/* ── Adorned input (CustomInput with prefix / suffix / stepper) ── */
+.uin {
+  display: inline-flex;
+  align-items: stretch;
+  width: 100%;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: 'Inter', sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 0.15s ease;
+  overflow: hidden;
+}
+
+.uin:hover:not(.disabled) {
+  border-color: var(--text-dim);
+  background: var(--bg2);
+}
+
+.uin:focus-within:not(.disabled) {
+  border-color: var(--accent);
+  background: var(--bg);
+  box-shadow: 0 0 0 2px rgba(240, 185, 11, 0.15);
+}
+
+.uin.error {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 2px rgba(246, 70, 93, 0.15);
+}
+
+.uin.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: var(--bg2);
+}
+
+.uin-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: inherit;
+  font: inherit;
+  padding: 8px 10px;
+  cursor: text;
+}
+
+.uin-input:disabled {
+  cursor: not-allowed;
+}
+
+.uin-pre,
+.uin-suf {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.uin-pre {
+  padding-left: 10px;
+}
+
+.uin-suf {
+  padding-right: 10px;
+}
+
+/* Hide native number spinners — the custom stepper replaces them */
+.uin-input[type='number']::-webkit-outer-spin-button,
+.uin-input[type='number']::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.uin-input[type='number'] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.uin-step {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  border-left: 1px solid var(--border);
+}
+
+.uin-step button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  flex: 1 1 0;
+  min-height: 0;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+
+.uin-step button:first-child {
+  border-bottom: 1px solid var(--border);
+}
+
+.uin-step button:hover:not(:disabled) {
+  color: var(--accent);
+  background: var(--bg2);
+}
+
+.uin-step button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
 /* ── Manual Exit Button Hover Styling ── */
 .pt-btn-exit-pos:hover {
   background: #f85149 !important;

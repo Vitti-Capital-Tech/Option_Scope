@@ -119,23 +119,23 @@ export default function ControlPanel({
         <div className={`pt-filters-container ${isFiltersCollapsed ? 'collapsed' : 'expanded'}`}>
           <span className="pt-control-label">Filters</span>
           {[
-            { label: 'Min Spread Width ($):', key: 'minStrikeDiff', width: 60 },
-            { label: 'Min IV Edge (%):', key: 'minIvDiff', width: 50 },
-            { label: 'Max Delta Deviation:', key: 'maxRatioDeviation', width: 60, step: '0.01' },
-            { label: 'Min Short Premium ($):', key: 'minSellPremium', width: 60 },
-            { label: 'Max Net Debit ($):', key: 'maxNetPremium', width: 60 },
-            { label: 'Min Spot Distance ($):', key: 'minLongDist', width: 60 },
-            { label: 'Max Short Ratio (1:X):', key: 'maxSellQty', width: 65, step: '0.25' },
-            { label: 'Min Days to Expiry (DTE):', key: 'daysToExpiry', width: 50 },
-            { label: 'Max Open Calls:', key: 'numberOfCalls', width: 50 },
-            { label: 'Max Open Puts:', key: 'numberOfPuts', width: 50 },
-            { label: 'Re-entry Spot Step (%):', key: 'spotDiff', width: 60, step: '0.1' }
-          ].map(({ label, key, width, step }) => (
+            { label: 'Min Spread Width', key: 'minStrikeDiff', width: 110, prefix: '$' },
+            { label: 'Min IV Edge', key: 'minIvDiff', width: 100, suffix: '%' },
+            { label: 'Max Delta Deviation', key: 'maxRatioDeviation', width: 110, step: '0.01' },
+            { label: 'Min Short Premium', key: 'minSellPremium', width: 110, prefix: '$' },
+            { label: 'Max Net Debit', key: 'maxNetPremium', width: 110, prefix: '$' },
+            { label: 'Min Spot Distance', key: 'minLongDist', width: 110, prefix: '$' },
+            { label: 'Max Short Ratio', key: 'maxSellQty', width: 110, step: '0.25', prefix: '1:' },
+            { label: 'Min Days to Expiry', key: 'daysToExpiry', width: 100 },
+            { label: 'Max Open Calls', key: 'numberOfCalls', width: 100 },
+            { label: 'Max Open Puts', key: 'numberOfPuts', width: 100 },
+            { label: 'Re-entry Spot Step', key: 'spotDiff', width: 100, step: '0.1', suffix: '%' }
+          ].map(({ label, key, width, step, prefix, suffix }) => (
             <div key={key} className="form-group">
               <label style={{ marginBottom: 0 }}>{label}</label>
-              <CustomInput type="number" step={step} value={draftConfig?.[key] ?? ''}
-                onChange={e => updateDraftConfig(key, Number(e.target.value))}
-                style={{ width, padding: '4px 8px', fontSize: '13px' }} />
+              <CustomInput type="number" step={step} prefix={prefix} suffix={suffix} showStepper
+                width={width} value={draftConfig?.[key] ?? ''}
+                onChange={e => updateDraftConfig(key, Number(e.target.value))} />
             </div>
           ))}
           <div key="exitType" className="form-group" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -153,10 +153,9 @@ export default function ControlPanel({
           </div>
           {(draftConfig?.exitType === 'ITM' || draftConfig?.exitType === 'OTM') && (
             <div key="exitPoints" className="form-group">
-              <label style={{ marginBottom: 0 }}>Exit Points:</label>
-              <CustomInput type="number" step="1" value={draftConfig.exitPoints ?? 0}
-                onChange={e => updateDraftConfig('exitPoints', Number(e.target.value))}
-                style={{ width: 60, padding: '4px 8px', fontSize: '13px' }} />
+              <label style={{ marginBottom: 0 }}>Exit Points</label>
+              <CustomInput type="number" step="1" showStepper width={100} value={draftConfig.exitPoints ?? 0}
+                onChange={e => updateDraftConfig('exitPoints', Number(e.target.value))} />
             </div>
           )}
           <div key="atmRatioScaling" className="form-group" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -167,16 +166,14 @@ export default function ControlPanel({
           {draftConfig?.atmRatioScaling && (
             <>
               <div key="atmRatioPctCall" className="form-group">
-                <label style={{ marginBottom: 0 }}>Call Scaling (%):</label>
-                <CustomInput type="number" step="1" value={draftConfig.atmRatioPctCall ?? 50}
-                  onChange={e => updateDraftConfig('atmRatioPctCall', Number(e.target.value))}
-                  style={{ width: 50, padding: '4px 8px', fontSize: '13px' }} />
+                <label style={{ marginBottom: 0 }}>Call Scaling</label>
+                <CustomInput type="number" step="1" suffix="%" showStepper width={100} value={draftConfig.atmRatioPctCall ?? 50}
+                  onChange={e => updateDraftConfig('atmRatioPctCall', Number(e.target.value))} />
               </div>
               <div key="atmRatioPctPut" className="form-group">
-                <label style={{ marginBottom: 0 }}>Put Scaling (%):</label>
-                <CustomInput type="number" step="1" value={draftConfig.atmRatioPctPut ?? 25}
-                  onChange={e => updateDraftConfig('atmRatioPctPut', Number(e.target.value))}
-                  style={{ width: 50, padding: '4px 8px', fontSize: '13px' }} />
+                <label style={{ marginBottom: 0 }}>Put Scaling</label>
+                <CustomInput type="number" step="1" suffix="%" showStepper width={100} value={draftConfig.atmRatioPctPut ?? 25}
+                  onChange={e => updateDraftConfig('atmRatioPctPut', Number(e.target.value))} />
               </div>
             </>
           )}

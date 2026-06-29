@@ -668,69 +668,62 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
           <div className={`scanner-filters-container ${isFiltersCollapsed ? 'collapsed' : 'expanded'}`}>
             <span className="scanner-config-title filter-title">FILTERS</span>
             <div className="form-group row-inline">
-              <label>Min Spread Width ($):</label>
+              <label>Min Spread Width</label>
               <CustomInput
-                type="number"
+                type="number" prefix="$" showStepper width={110}
                 value={config.minStrikeDiff}
                 onChange={e => updateConfig('minStrikeDiff', Number(e.target.value))}
-                style={{ width: 60 }}
               />
             </div>
             <div className="form-group row-inline">
-              <label>Min IV Edge (%):</label>
+              <label>Min IV Edge</label>
               <CustomInput
-                type="number"
+                type="number" suffix="%" showStepper width={100}
                 value={config.minIvDiff}
                 onChange={e => updateConfig('minIvDiff', Number(e.target.value))}
-                style={{ width: 50 }}
               />
             </div>
             <div className="form-group row-inline">
-              <label>Max Delta Deviation:</label>
+              <label>Max Delta Deviation</label>
               <CustomInput
                 type="number"
-                step="0.01"
+                step="0.01" showStepper width={110}
                 value={config.maxRatioDeviation}
                 onChange={e => updateConfig('maxRatioDeviation', Number(e.target.value))}
-                style={{ width: 60 }}
               />
             </div>
             <div className="form-group row-inline">
-              <label>Min Short Premium ($):</label>
+              <label>Min Short Premium</label>
               <CustomInput
-                type="number"
+                type="number" prefix="$" showStepper width={110}
                 value={config.minSellPremium}
                 onChange={e => updateConfig('minSellPremium', Number(e.target.value))}
-                style={{ width: 60 }}
               />
             </div>
 
             <div className="form-group row-inline">
-              <label>Max Net Debit ($):</label>
+              <label>Max Net Debit</label>
               <CustomInput
-                type="number"
+                type="number" prefix="$" showStepper width={110}
                 value={config.maxNetPremium}
                 onChange={e => updateConfig('maxNetPremium', Number(e.target.value))}
-                style={{ width: 60 }}
               />
             </div>
             <div className="form-group row-inline">
-              <label>Min Spot Distance ($):</label>
+              <label>Min Spot Distance</label>
               <CustomInput
-                type="number"
+                type="number" prefix="$" showStepper width={110}
                 value={config.minLongDist}
                 onChange={e => updateConfig('minLongDist', Number(e.target.value))}
-                style={{ width: 60 }}
               />
             </div>
             <div className="form-group row-inline">
-              <label>Max Short Ratio (1:X):</label>
+              <label>Max Short Ratio</label>
               <CustomInput
                 type="number"
-                step="0.25"
+                step="0.25" prefix="1:" showStepper width={110}
                 value={config.maxSellQty}
                 onChange={e => updateConfig('maxSellQty', Number(e.target.value))}
-                style={{ width: 65 }}
               />
             </div>
             <div key="atmRatioScaling" className="form-group row-inline" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -741,17 +734,15 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             {config.atmRatioScaling && (
               <>
                 <div key="atmRatioPctCall" className="form-group row-inline">
-                  <label>Call Scaling (%):</label>
-                  <CustomInput type="number" step="1" value={config.atmRatioPctCall ?? 50}
+                  <label>Call Scaling</label>
+                  <CustomInput type="number" step="1" suffix="%" showStepper width={100} value={config.atmRatioPctCall ?? 50}
                     onChange={e => updateConfig('atmRatioPctCall', Number(e.target.value))}
-                    style={{ width: 50 }}
                   />
                 </div>
                 <div key="atmRatioPctPut" className="form-group row-inline">
-                  <label>Put Scaling (%):</label>
-                  <CustomInput type="number" step="1" value={config.atmRatioPctPut ?? 50}
+                  <label>Put Scaling</label>
+                  <CustomInput type="number" step="1" suffix="%" showStepper width={100} value={config.atmRatioPctPut ?? 50}
                     onChange={e => updateConfig('atmRatioPctPut', Number(e.target.value))}
-                    style={{ width: 50 }}
                   />
                 </div>
               </>
