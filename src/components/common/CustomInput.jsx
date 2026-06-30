@@ -12,7 +12,7 @@ const CustomInput = React.forwardRef(({
   suffix,        // inline unit shown after the value, e.g. "%"
   showStepper = false,
   step = 1,
-  min = 0,
+  min,
   width,         // convenience: sets wrapper width when adorned
   value,
   onChange,
