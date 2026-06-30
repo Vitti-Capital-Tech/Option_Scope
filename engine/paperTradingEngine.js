@@ -1506,19 +1506,19 @@ async function startSingleAccountEngine(account) {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'active_positions', filter: `account_id=eq.${accountState.id}` },
-        async (payload) => {
-          const relevantRecord = payload.new || payload.old;
-          if (!relevantRecord) return;
-          log(`[${accountState.name}] Active position change detected via Realtime (${payload.eventType}): ${relevantRecord.id}. Syncing positions...`);
-
-          // Temporarily bypass 3-second fetchActivePositions throttle
-          const savedLastDbWrite = lastDbWrite;
-          lastDbWrite = 0;
-          await fetchActivePositions();
-          // Restore lastDbWrite if it was within the last 3s
-          if (Date.now() - savedLastDbWrite < 3000) {
-            lastDbWrite = savedLastDbWrite;
-          }
+        (payload) => {
+          // The engine is the authoritative writer of active_positions — entries, exits
+          // and scaling are applied to the in-memory `positions` array directly by the
+          // evaluation loop, so its own INSERT/UPDATE echoes need no DB refetch. The only
+          // external mutation is a UI manual exit (DELETE); patch that out of memory
+          // instead of re-downloading the whole position set (with JSON legs) on every
+          // change. The periodic positionsTimer remains the drift safety net.
+          if ((payload.eventType || payload.type) !== 'DELETE') return;
+          const deletedId = payload.old?.id;
+          if (!deletedId || !positions.some(p => p.id === deletedId)) return;
+          positions = positions.filter(p => p.id !== deletedId);
+          heartbeat.update({ active_positions: positions.length });
+          log(`[${accountState.name}] Active position DELETE via Realtime: ${deletedId}. Removed from memory (no refetch).`);
         }
       )
       .subscribe();
@@ -1615,7 +1615,10 @@ async function startSingleAccountEngine(account) {
     }
   }, 5 * 60 * 1000);
 
-  // Active positions and config refresh — every 2 minutes (fallback sync; Realtime handles real-time updates)
+  // Active positions, config and schedules refresh — every 5 minutes. This is only a
+  // drift safety net now that Realtime reliably delivers account-scoped changes (config,
+  // schedules and external position deletes), so a longer interval cuts redundant egress
+  // (each cycle reads config + schedules + all positions-with-legs, per account).
   const positionsTimer = setInterval(async () => {
     try {
       await reloadConfigAndSync();
@@ -1624,7 +1627,7 @@ async function startSingleAccountEngine(account) {
     } catch (e) {
       logError(`[${accountState.name}] Error in positionsTimer:`, e);
     }
-  }, 120000);
+  }, 300000);
 
 
   log(`[${accountState.name}] Paper Trading Engine is LIVE`);
