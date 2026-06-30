@@ -182,6 +182,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const [includeFees, setIncludeFees] = useState(true);
   const [positions, setPositions] = useState([]);
   const [tradeHistory, setTradeHistory] = useState([]);
+  // Lightweight all-time aggregates (no JSON legs) for cumulative KPIs.
+  const [historyStats, setHistoryStats] = useState([]);
   const [positionToExit, setPositionToExit] = useState(null);
   const [isExitingPosition, setIsExitingPosition] = useState(false);
 
@@ -190,6 +192,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     d.setUTCHours(d.getUTCHours() + 12);
     return d.toISOString().split('T')[0];
   });
+  // Holds the latest selected day so fetchSupabaseTradeHistory stays stable
+  // (date changes refetch via a dedicated effect, not by re-subscribing Realtime).
+  const historyFilterDateRef = useRef(historyFilterDate);
 
   const [lastEvaluated, setLastEvaluated] = useState(0);
   const [now, setNow] = useState(Date.now());
@@ -1117,6 +1122,59 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   }, [schedules, activeAccountId, saveSupabaseSchedules]);
 
   // ── Supabase reads ────────────────────────────────────────────────────
+  // Shared DB-row → position mapper (preserves client-computed live fields).
+  const mapDbPosition = useCallback((p, existing) => {
+    const buyLeg = safeParseLeg(p.buy_leg);
+    const sellLeg = safeParseLeg(p.sell_leg);
+    if (!buyLeg || !sellLeg) return null;
+    return {
+      id: p.id, underlying: p.underlying, expiry: p.expiry, type: p.type,
+      buyLeg, sellLeg,
+      sellQty: p.sell_qty, strikeDiff: p.strike_diff,
+      entryTime: new Date(p.entry_time),
+      entryBuyPrice: p.entry_buy_price, entrySellPrice: p.entry_sell_price,
+      entrySpotPrice: p.entry_spot_price,
+      stagesExited: p.stages_exited || 0,
+      margin: p.margin || 0, entryFee: p.entry_fee || 0,
+      accumulatedSellPnl: p.accumulated_sell_pnl || 0,
+      // Preserve live display data from current state
+      currentBuyPrice: existing?.currentBuyPrice ?? null,
+      currentSellPrice: existing?.currentSellPrice ?? null,
+      currentBuyIv: existing?.currentBuyIv ?? null,
+      currentSellIv: existing?.currentSellIv ?? null,
+      entryBuyIv: buyLeg?.entryIv || null,
+      entrySellIv: sellLeg?.entryIv || null,
+      unrealizedGrossPnl: existing?.unrealizedGrossPnl ?? 0,
+      unrealizedNetPnl: existing?.unrealizedNetPnl ?? -(p.entry_fee || 0),
+      currentExitFee: existing?.currentExitFee ?? 0,
+      currentTotalFees: existing?.currentTotalFees ?? (p.entry_fee || 0),
+    };
+  }, []);
+
+  const sortActivePositions = useCallback((arr) => {
+    return [...arr].sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'call' ? -1 : 1;
+      if (a.type === 'call') return a.buyLeg.strike - b.buyLeg.strike;
+      return b.buyLeg.strike - a.buyLeg.strike;
+    });
+  }, []);
+
+  // Patch one position from a Realtime payload (no full-table refetch).
+  const applyPositionRealtimeChange = useCallback((payload) => {
+    const eventType = payload.eventType || payload.type;
+    setPositions(prev => {
+      if (eventType === 'DELETE') {
+        const id = payload.old?.id;
+        return id ? prev.filter(p => p.id !== id) : prev;
+      }
+      const row = payload.new;
+      if (!row) return prev;
+      const mapped = mapDbPosition(row, prev.find(p => p.id === row.id));
+      if (!mapped) return prev;
+      return sortActivePositions([...prev.filter(p => p.id !== row.id), mapped]);
+    });
+  }, [mapDbPosition, sortActivePositions]);
+
   const fetchSupabaseActivePositions = useCallback(async () => {
     if (!activeAccountId) return;
     try {
@@ -1132,38 +1190,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       if (data && data.length > 0) {
         setPositions(prev => {
           const prevMap = new Map(prev.map(p => [p.id, p]));
-          const mapped = data.map(p => {
-            const existing = prevMap.get(p.id);
-            const buyLeg = safeParseLeg(p.buy_leg);
-            const sellLeg = safeParseLeg(p.sell_leg);
-            return {
-              id: p.id, underlying: p.underlying, expiry: p.expiry, type: p.type,
-              buyLeg, sellLeg,
-              sellQty: p.sell_qty, strikeDiff: p.strike_diff,
-              entryTime: new Date(p.entry_time),
-              entryBuyPrice: p.entry_buy_price, entrySellPrice: p.entry_sell_price,
-              entrySpotPrice: p.entry_spot_price,
-              stagesExited: p.stages_exited || 0,
-              margin: p.margin || 0, entryFee: p.entry_fee || 0,
-              accumulatedSellPnl: p.accumulated_sell_pnl || 0,
-              // Preserve live display data from current state
-              currentBuyPrice: existing?.currentBuyPrice ?? null,
-              currentSellPrice: existing?.currentSellPrice ?? null,
-              currentBuyIv: existing?.currentBuyIv ?? null,
-              currentSellIv: existing?.currentSellIv ?? null,
-              entryBuyIv: buyLeg?.entryIv || null,
-              entrySellIv: sellLeg?.entryIv || null,
-              unrealizedGrossPnl: existing?.unrealizedGrossPnl ?? 0,
-              unrealizedNetPnl: existing?.unrealizedNetPnl ?? -(p.entry_fee || 0),
-              currentExitFee: existing?.currentExitFee ?? 0,
-              currentTotalFees: existing?.currentTotalFees ?? (p.entry_fee || 0),
-            };
-          });
-          return mapped.filter(p => p.buyLeg && p.sellLeg).sort((a, b) => {
-            if (a.type !== b.type) return a.type === 'call' ? -1 : 1;
-            if (a.type === 'call') return a.buyLeg.strike - b.buyLeg.strike;
-            return b.buyLeg.strike - a.buyLeg.strike;
-          });
+          const mapped = data.map(p => mapDbPosition(p, prevMap.get(p.id))).filter(Boolean);
+          return sortActivePositions(mapped);
         });
       } else if (data) {
         setPositions([]);
@@ -1171,15 +1199,48 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     } catch (e) { console.error('Fetch Active Error:', e); }
   }, [activeAccountId]);
 
-  const fetchSupabaseTradeHistory = useCallback(async () => {
+  // Lightweight all-time aggregates for the cumulative KPIs — no heavy JSON legs.
+  const fetchHistoryStats = useCallback(async () => {
     if (!activeAccountId) return;
     try {
       const { data, error } = await supabase
+        .from('trade_history')
+        .select('trade_id, realized_gross_pnl, realized_net_pnl, exit_time')
+        .eq('account_id', activeAccountId)
+        .eq('underlying', underlying);
+      if (error || !data) return;
+      setHistoryStats(data.map(t => ({
+        id: t.trade_id,
+        realizedGrossPnl: t.realized_gross_pnl || 0,
+        realizedNetPnl: t.realized_net_pnl || 0,
+        exitTime: t.exit_time ? new Date(t.exit_time) : null,
+      })));
+    } catch (e) { /* non-fatal */ }
+  }, [activeAccountId, underlying]);
+
+  const fetchSupabaseTradeHistory = useCallback(async () => {
+    if (!activeAccountId) return;
+    try {
+      let query = supabase
         .from('trade_history')
         .select('id, trade_id, underlying, expiry, type, buy_leg, sell_leg, sell_qty, strike_diff, entry_time, exit_time, entry_buy_price, entry_sell_price, exit_buy_price, exit_sell_price, entry_spot_price, exit_spot_price, margin, realized_gross_pnl, realized_net_pnl, exit_fee, total_fees, exit_reason, is_partial, lot_size, account_id')
         .eq('account_id', activeAccountId)
         .eq('underlying', underlying)
         .order('exit_time', { ascending: false });
+
+      // Server-side fetch of just the selected day (matches the UTC+12 day bucket
+      // used by filteredTradeHistory) — keeps egress tiny regardless of history size.
+      const day = historyFilterDateRef.current;
+      if (day) {
+        const base = new Date(`${day}T00:00:00.000Z`).getTime();
+        const startISO = new Date(base - 12 * 3600 * 1000).toISOString();
+        const endISO = new Date(base + 12 * 3600 * 1000).toISOString();
+        query = query.gte('exit_time', startISO).lt('exit_time', endISO).limit(1000);
+      } else {
+        query = query.limit(300);
+      }
+
+      const { data, error } = await query;
 
       if (error) return;
       if (data) {
@@ -1208,6 +1269,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       }
     } catch (e) { }
   }, [activeAccountId, underlying]);
+
+  // Refetch just the selected day's trades from the server whenever the date
+  // changes (also covers mount + account/underlying changes via the fn identity).
+  useEffect(() => {
+    historyFilterDateRef.current = historyFilterDate;
+    fetchSupabaseTradeHistory();
+  }, [historyFilterDate, fetchSupabaseTradeHistory]);
 
   const handleConfirmExitPosition = async (pos) => {
     if (!pos || !activeAccountId) return;
@@ -1297,6 +1365,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
       // 4. Refresh trade history
       fetchSupabaseTradeHistory();
+      fetchHistoryStats();
 
     } catch (e) {
       console.error('Error during manual exit:', e);
@@ -1311,7 +1380,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     if (!activeAccountId) return;
 
     fetchSupabaseActivePositions();
-    fetchSupabaseTradeHistory();
+    fetchHistoryStats();
     fetchSupabaseConfig();
     fetchSupabaseSchedules();
 
@@ -1320,7 +1389,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'active_positions', filter: `account_id=eq.${activeAccountId}` },
-        () => { fetchSupabaseActivePositions(); }
+        (payload) => { applyPositionRealtimeChange(payload); }
       )
       .subscribe();
 
@@ -1357,6 +1426,17 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             _exitedBuyQty: t.lot_size ?? parsedBuyLeg?.lotSize ?? 1,
           };
           setTradeHistory(prev => [newTrade, ...prev]);
+          // Keep all-time aggregates live too (dedup by trade id).
+          setHistoryStats(prev => {
+            const id = t.trade_id || t.id;
+            if (prev.some(s => s.id === id)) return prev;
+            return [...prev, {
+              id,
+              realizedGrossPnl: t.realized_gross_pnl || 0,
+              realizedNetPnl: t.realized_net_pnl || 0,
+              exitTime: t.exit_time ? new Date(t.exit_time) : null,
+            }];
+          });
         }
       )
       .subscribe();
@@ -1365,6 +1445,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       if (document.visibilityState === 'visible') {
         fetchSupabaseActivePositions();
         fetchSupabaseTradeHistory();
+        fetchHistoryStats();
       }
     };
 
@@ -1375,7 +1456,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       supabase.removeChannel(historyChannel);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [fetchSupabaseActivePositions, fetchSupabaseTradeHistory, fetchSupabaseConfig, activeAccountId]);
+  }, [fetchSupabaseActivePositions, fetchSupabaseTradeHistory, fetchHistoryStats, fetchSupabaseConfig, applyPositionRealtimeChange, activeAccountId]);
 
   // ── Engine heartbeat ──────────────────────────────────────────────────
   const fetchHeartbeat = useCallback(async () => {
@@ -1740,7 +1821,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     .filter(p => p.underlying === underlying)
     .reduce((s, p) => s + (includeFees ? (p.unrealizedNetPnl || 0) : (p.unrealizedGrossPnl || 0)), 0);
 
-  const totalRealizedPnl = tradeHistory.reduce((s, t) => s + (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || 0)), 0);
+  // Cumulative KPIs read from the lightweight all-time aggregates (historyStats),
+  // not the bounded detail list (tradeHistory), so totals stay accurate without egress.
+  const totalRealizedPnl = historyStats.reduce((s, t) => s + (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || 0)), 0);
 
   const totalPnl = totalRealizedPnl + totalUnrealizedPnl;
 
@@ -1748,7 +1831,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     const d = new Date();
     d.setUTCHours(d.getUTCHours() + 12);
     const todayUtc = d.toISOString().split('T')[0];
-    return tradeHistory.reduce((s, t) => {
+    return historyStats.reduce((s, t) => {
       if (!t.exitTime) return s;
       const dTrade = new Date(t.exitTime);
       if (isNaN(dTrade.getTime())) return s;
@@ -1756,14 +1839,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       if (dTrade.toISOString().split('T')[0] !== todayUtc) return s;
       return s + (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || 0));
     }, 0);
-  }, [tradeHistory, includeFees]);
+  }, [historyStats, includeFees]);
 
   const todayPnl = todayRealizedPnl + totalUnrealizedPnl;
-  const wins = tradeHistory.filter(t =>
+  const wins = historyStats.filter(t =>
     (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || 0)) > 0
   ).length;
-  const winRate = tradeHistory.length > 0
-    ? ((wins / tradeHistory.length) * 100).toFixed(1) : '—';
+  const winRate = historyStats.length > 0
+    ? ((wins / historyStats.length) * 100).toFixed(1) : '—';
   const calculatePositionMargin = useCallback((p) => {
     const buyPrice = p.currentBuyPrice != null ? p.currentBuyPrice : (p.entryBuyPrice || 0);
     const buyLot = p.buyLeg?.lotSize || 1;
@@ -1924,7 +2007,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               totalRealizedPnl={totalRealizedPnl}
               winRate={winRate}
               wins={wins}
-              tradeHistoryLength={tradeHistory.length}
+              tradeHistoryLength={historyStats.length}
               activePositionsCount={positions.filter(p => p.underlying === underlying).length}
               activeCallsCount={positions.filter(p => p.type === 'call' && p.underlying === underlying).length}
               activePutsCount={positions.filter(p => p.type === 'put' && p.underlying === underlying).length}
