@@ -723,8 +723,8 @@ async function startSingleAccountEngine(account) {
 
           // Convert the position to long-only: drop the short leg, recompute margin.
           // Snapshot the long lot (base for the 10-slice laddered exit) and build 10
-          // random exit levels spanning the long's current LTP up to its entry price.
-          const longLtpAtExit = tickerBuy?.lastPrice ?? tickerBuy?.markPrice ?? liveExitBuy;
+          // random exit levels spanning the long's current bid up to its entry price.
+          const longBidAtExit = liveExitBuy; // long leg's live bid (the realistic sell price)
           // Upper bound for the laddered exit = max(entry, long's last 1-2hr high)
           // from Delta candles. Falls back to entry price if history is unavailable.
           // Using max lets the ladder reach the profit zone when the long traded
@@ -740,10 +740,10 @@ async function startSingleAccountEngine(account) {
             ...pos.buyLeg,
             longExitBaseLot: pos.buyLeg.lotSize,
             longExitStage: 0,
-            longExitLevels: buildLongExitLevels(longLtpAtExit, longExitUpper, 10),
+            longExitLevels: buildLongExitLevels(longBidAtExit, longExitUpper, 10),
           };
           pos.margin = calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, spotPrice, 0, 1);
-          log(`[${accountState.name}] 🎚️ Long ladder set: ${pos.buyLeg.strike} | range [${longLtpAtExit}, ${longExitUpper}] | pastHigh ${longPastHigh ?? 'n/a'} | levels ${JSON.stringify(pos.buyLeg.longExitLevels)}`);
+          log(`[${accountState.name}] 🎚️ Long ladder set: ${pos.buyLeg.strike} | range [${longBidAtExit}, ${longExitUpper}] | pastHigh ${longPastHigh ?? 'n/a'} | levels ${JSON.stringify(pos.buyLeg.longExitLevels)}`);
 
           try {
             await supabase.from('active_positions').update({
@@ -765,11 +765,11 @@ async function startSingleAccountEngine(account) {
 
         // ── Long-only laddered profit exit ──────────────────────────────────
         // Once the short leg is gone, scale the held long out in 10 slices as its
-        // own LTP recovers toward entry. At short-exit we placed 10 random exit
-        // levels spanning [current LTP, entry price]; each crossed level exits
-        // 1/10 of the base lot.
+        // own BID recovers toward entry. At short-exit we placed 10 random exit
+        // levels spanning [current bid, entry price]; each crossed level exits
+        // 1/10 of the base lot. Trigger and exit price are both the live bid.
         if (pos.sellQty === 0) {
-          const longLtp = tickerBuy?.lastPrice ?? tickerBuy?.markPrice ?? liveExitBuy;
+          const longBid = liveExitBuy; // long leg's live bid (the price we can sell at)
 
           // Base lot + random exit levels are set at short-exit; fall back for older rows.
           if (pos.buyLeg.longExitBaseLot === undefined) {
@@ -777,19 +777,19 @@ async function startSingleAccountEngine(account) {
             pos.buyLeg.longExitStage = pos.buyLeg.longExitStage || 0;
           }
           if (!Array.isArray(pos.buyLeg.longExitLevels) || pos.buyLeg.longExitLevels.length === 0) {
-            pos.buyLeg.longExitLevels = buildLongExitLevels(longLtp, pos.entryBuyPrice, 10);
+            pos.buyLeg.longExitLevels = buildLongExitLevels(longBid, pos.entryBuyPrice, 10);
           }
           const exitLevels = pos.buyLeg.longExitLevels;
           const baseLot = pos.buyLeg.longExitBaseLot || 0;
           const sliceLot = Number((baseLot / exitLevels.length).toFixed(2));
           let stage = pos.buyLeg.longExitStage || 0;
 
-          if (longLtp != null && baseLot > 0 && sliceLot > 0 && pos.entryBuyPrice > 0) {
+          if (longBid != null && baseLot > 0 && sliceLot > 0 && pos.entryBuyPrice > 0) {
             const longExitSlices = [];
-            const exitPrice = liveExitBuy; // close long by selling at bid; LTP only triggers
+            const exitPrice = liveExitBuy; // close long by selling at the bid
 
-            // Exit one slice per newly-crossed level (price may cross several at once).
-            while (stage < exitLevels.length && longLtp >= exitLevels[stage]) {
+            // Exit one slice per newly-crossed level (bid may cross several at once).
+            while (stage < exitLevels.length && longBid >= exitLevels[stage]) {
               const isLast = (stage === exitLevels.length - 1);
               // Final checkpoint clears any rounding remainder.
               const exitLot = isLast
@@ -828,7 +828,7 @@ async function startSingleAccountEngine(account) {
                 realized_net_pnl: sliceNetPnl,
                 exit_fee: sliceExitFee,
                 total_fees: sliceTotalFees,
-                exit_reason: `Long Leg Exit @ level $${exitLevels[stage]} (LTP $${longLtp})`,
+                exit_reason: `Long Leg Exit @ level $${exitLevels[stage]} (Bid $${longBid})`,
                 is_partial: true,
                 account_id: accountState.id,
               });
@@ -853,7 +853,7 @@ async function startSingleAccountEngine(account) {
                 } catch (e) {
                   logError(`Failed to delete fully-laddered long position ${pos.id}:`, e);
                 }
-                log(`[${accountState.name}] 🪜 LONG FULLY EXITED: ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | ${longExitSlices.length} slice(s) | LTP $${longLtp}`);
+                log(`[${accountState.name}] 🪜 LONG FULLY EXITED: ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | ${longExitSlices.length} slice(s) | Bid $${longBid}`);
                 continue;
               }
 
