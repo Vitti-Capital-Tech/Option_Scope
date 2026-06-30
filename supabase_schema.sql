@@ -253,12 +253,22 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_active_positions_buy_strike_unique
 CREATE UNIQUE INDEX IF NOT EXISTS idx_active_positions_sell_strike_unique
     ON public.active_positions(account_id, underlying, type, sell_strike);
 
--- Required so account-scoped Realtime subscriptions (filter: account_id=eq.X) also
--- receive DELETE events: under default replica identity the old row carries only the
--- primary key, so a filter on account_id can't match a delete and the event is dropped.
--- FULL makes the whole old row available. Both the UI (PaperTrading.jsx) and the engine
--- (paperTradingEngine.js) rely on this to learn about closed positions in real time.
-ALTER TABLE public.active_positions REPLICA IDENTITY FULL;
+-- Account-scoped Realtime subscriptions (filter: account_id=eq.X) must also receive
+-- DELETE events. Under default replica identity the old row carries only the primary
+-- key, so a filter on account_id can't match a delete and the event is dropped.
+-- Instead of REPLICA IDENTITY FULL (which would put the entire old row — including the
+-- heavy buy_leg/sell_leg JSON — into every UPDATE/DELETE payload), use a tiny unique
+-- index carrying just (id, account_id): enough for the filter to match on account_id
+-- and for delete handlers to read payload.old.id, with minimal Realtime egress.
+-- Both the UI (PaperTrading.jsx) and the engine (paperTradingEngine.js) rely on this
+-- to learn about closed positions in real time.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_active_positions_id_account
+    ON public.active_positions (id, account_id);
+-- REPLICA IDENTITY USING INDEX requires every index column to be NOT NULL. account_id is
+-- declared NOT NULL above, but enforce it explicitly here so the migration also works on
+-- existing databases where the column may have drifted to nullable.
+ALTER TABLE public.active_positions ALTER COLUMN account_id SET NOT NULL;
+ALTER TABLE public.active_positions REPLICA IDENTITY USING INDEX idx_active_positions_id_account;
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
