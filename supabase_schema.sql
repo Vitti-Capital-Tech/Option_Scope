@@ -324,6 +324,39 @@ CREATE POLICY "Service role full access on trade history"
 CREATE INDEX IF NOT EXISTS idx_trade_history_account ON public.trade_history(account_id);
 CREATE INDEX IF NOT EXISTS idx_trade_history_exit_time ON public.trade_history(account_id, exit_time DESC);
 
+-- Server-side aggregation for the cumulative KPIs (total/today PnL, win counts).
+-- The UI calls this instead of downloading the whole trade_history table on every
+-- stats refresh, so egress stays O(1) row regardless of how large the history grows.
+-- "today" uses the same UTC+12 day bucket as the client. SECURITY INVOKER (default)
+-- so existing RLS on trade_history still gates access.
+CREATE OR REPLACE FUNCTION public.get_trade_stats(p_account_id uuid, p_underlying text)
+RETURNS TABLE (
+  total_gross numeric,
+  total_net   numeric,
+  total_count bigint,
+  win_gross   bigint,
+  win_net     bigint,
+  today_gross numeric,
+  today_net   numeric
+)
+LANGUAGE sql STABLE
+AS $$
+  SELECT
+    COALESCE(SUM(realized_gross_pnl), 0),
+    COALESCE(SUM(realized_net_pnl),   0),
+    COUNT(*),
+    COUNT(*) FILTER (WHERE COALESCE(realized_gross_pnl, 0) > 0),
+    COUNT(*) FILTER (WHERE COALESCE(realized_net_pnl,   0) > 0),
+    COALESCE(SUM(realized_gross_pnl) FILTER (
+      WHERE (exit_time + interval '12 hours')::date = (now() + interval '12 hours')::date), 0),
+    COALESCE(SUM(realized_net_pnl) FILTER (
+      WHERE (exit_time + interval '12 hours')::date = (now() + interval '12 hours')::date), 0)
+  FROM public.trade_history
+  WHERE account_id = p_account_id AND underlying = p_underlying;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_trade_stats(uuid, text) TO anon, authenticated;
+
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 7. ENGINE HEARTBEAT TABLE

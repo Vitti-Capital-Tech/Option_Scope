@@ -182,8 +182,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const [includeFees, setIncludeFees] = useState(true);
   const [positions, setPositions] = useState([]);
   const [tradeHistory, setTradeHistory] = useState([]);
-  // Lightweight all-time aggregates (no JSON legs) for cumulative KPIs.
-  const [historyStats, setHistoryStats] = useState([]);
+  // Server-aggregated all-time KPIs (single row via get_trade_stats RPC) — no
+  // full-table scan, so egress stays fixed regardless of trade history size.
+  const [historyStats, setHistoryStats] = useState({
+    totalGross: 0, totalNet: 0, totalCount: 0,
+    winGross: 0, winNet: 0, todayGross: 0, todayNet: 0,
+  });
   const [positionToExit, setPositionToExit] = useState(null);
   const [isExitingPosition, setIsExitingPosition] = useState(false);
 
@@ -1203,18 +1207,21 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const fetchHistoryStats = useCallback(async () => {
     if (!activeAccountId) return;
     try {
+      // Server-side aggregation returns ONE row (sums, counts, today buckets),
+      // replacing what used to be a full trade_history download per refresh.
       const { data, error } = await supabase
-        .from('trade_history')
-        .select('trade_id, realized_gross_pnl, realized_net_pnl, exit_time')
-        .eq('account_id', activeAccountId)
-        .eq('underlying', underlying);
+        .rpc('get_trade_stats', { p_account_id: activeAccountId, p_underlying: underlying })
+        .single();
       if (error || !data) return;
-      setHistoryStats(data.map(t => ({
-        id: t.trade_id,
-        realizedGrossPnl: t.realized_gross_pnl || 0,
-        realizedNetPnl: t.realized_net_pnl || 0,
-        exitTime: t.exit_time ? new Date(t.exit_time) : null,
-      })));
+      setHistoryStats({
+        totalGross: data.total_gross || 0,
+        totalNet: data.total_net || 0,
+        totalCount: data.total_count || 0,
+        winGross: data.win_gross || 0,
+        winNet: data.win_net || 0,
+        todayGross: data.today_gross || 0,
+        todayNet: data.today_net || 0,
+      });
     } catch (e) { /* non-fatal */ }
   }, [activeAccountId, underlying]);
 
@@ -1426,17 +1433,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             _exitedBuyQty: t.lot_size ?? parsedBuyLeg?.lotSize ?? 1,
           };
           setTradeHistory(prev => [newTrade, ...prev]);
-          // Keep all-time aggregates live too (dedup by trade id).
-          setHistoryStats(prev => {
-            const id = t.trade_id || t.id;
-            if (prev.some(s => s.id === id)) return prev;
-            return [...prev, {
-              id,
-              realizedGrossPnl: t.realized_gross_pnl || 0,
-              realizedNetPnl: t.realized_net_pnl || 0,
-              exitTime: t.exit_time ? new Date(t.exit_time) : null,
-            }];
-          });
+          // Refresh the all-time aggregates from the server (single row) so the
+          // KPIs stay correct without re-deriving sums/today-bucket on the client.
+          fetchHistoryStats();
         }
       )
       .subscribe();
@@ -1821,32 +1820,19 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     .filter(p => p.underlying === underlying)
     .reduce((s, p) => s + (includeFees ? (p.unrealizedNetPnl || 0) : (p.unrealizedGrossPnl || 0)), 0);
 
-  // Cumulative KPIs read from the lightweight all-time aggregates (historyStats),
-  // not the bounded detail list (tradeHistory), so totals stay accurate without egress.
-  const totalRealizedPnl = historyStats.reduce((s, t) => s + (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || 0)), 0);
+  // Cumulative KPIs read straight off the server-aggregated historyStats object
+  // (sums/counts/today buckets computed in get_trade_stats), so no per-trade math
+  // or full-history download is needed. gross/net is selected by the includeFees toggle.
+  const totalRealizedPnl = includeFees ? historyStats.totalNet : historyStats.totalGross;
 
   const totalPnl = totalRealizedPnl + totalUnrealizedPnl;
 
-  const todayRealizedPnl = React.useMemo(() => {
-    const d = new Date();
-    d.setUTCHours(d.getUTCHours() + 12);
-    const todayUtc = d.toISOString().split('T')[0];
-    return historyStats.reduce((s, t) => {
-      if (!t.exitTime) return s;
-      const dTrade = new Date(t.exitTime);
-      if (isNaN(dTrade.getTime())) return s;
-      dTrade.setUTCHours(dTrade.getUTCHours() + 12);
-      if (dTrade.toISOString().split('T')[0] !== todayUtc) return s;
-      return s + (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || 0));
-    }, 0);
-  }, [historyStats, includeFees]);
+  const todayRealizedPnl = includeFees ? historyStats.todayNet : historyStats.todayGross;
 
   const todayPnl = todayRealizedPnl + totalUnrealizedPnl;
-  const wins = historyStats.filter(t =>
-    (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || 0)) > 0
-  ).length;
-  const winRate = historyStats.length > 0
-    ? ((wins / historyStats.length) * 100).toFixed(1) : '—';
+  const wins = includeFees ? historyStats.winNet : historyStats.winGross;
+  const winRate = historyStats.totalCount > 0
+    ? ((wins / historyStats.totalCount) * 100).toFixed(1) : '—';
   const calculatePositionMargin = useCallback((p) => {
     const buyPrice = p.currentBuyPrice != null ? p.currentBuyPrice : (p.entryBuyPrice || 0);
     const buyLot = p.buyLeg?.lotSize || 1;
@@ -2007,7 +1993,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               totalRealizedPnl={totalRealizedPnl}
               winRate={winRate}
               wins={wins}
-              tradeHistoryLength={historyStats.length}
+              tradeHistoryLength={historyStats.totalCount}
               activePositionsCount={positions.filter(p => p.underlying === underlying).length}
               activeCallsCount={positions.filter(p => p.type === 'call' && p.underlying === underlying).length}
               activePutsCount={positions.filter(p => p.type === 'put' && p.underlying === underlying).length}
