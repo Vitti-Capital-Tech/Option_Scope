@@ -1487,56 +1487,37 @@ async function startSingleAccountEngine(account) {
       .channel(`paper_config_changes_${accountState.id}`)
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'paper_trading_config' },
-        async (payload) => {
-          const newRecord = payload.new;
-          const oldRecord = payload.old;
-          const relevantRecord = newRecord || oldRecord;
-          if (relevantRecord && relevantRecord.account_id !== accountState.id) {
-            return;
-          }
-
+        // Server-side filter on account_id keeps Realtime egress scoped to this
+        // engine's account (avoids cross-account fan-out when multiple engines run).
+        { event: '*', schema: 'public', table: 'paper_trading_config', filter: `account_id=eq.${accountState.id}` },
+        async () => {
           log(`[${accountState.name}] Config change detected — reloading...`);
           await reloadConfigAndSync();
         }
       )
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'paper_trading_schedules' },
-        async (payload) => {
-          const newRecord = payload.new;
-          const oldRecord = payload.old;
-          const relevantRecord = newRecord || oldRecord;
-          if (relevantRecord && relevantRecord.account_id !== accountState.id) {
-            return;
-          }
-
+        { event: '*', schema: 'public', table: 'paper_trading_schedules', filter: `account_id=eq.${accountState.id}` },
+        async () => {
           log(`[${accountState.name}] Schedules change detected — reloading...`);
           await fetchSchedules();
         }
       )
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'active_positions' },
+        { event: '*', schema: 'public', table: 'active_positions', filter: `account_id=eq.${accountState.id}` },
         async (payload) => {
-          const newRecord = payload.new;
-          const oldRecord = payload.old;
-          const relevantRecord = newRecord || oldRecord;
-          if (relevantRecord) {
-            const hasPosition = positions.some(p => p.id === relevantRecord.id);
-            const isOurAccount = relevantRecord.account_id === accountState.id;
-            if (hasPosition || isOurAccount) {
-              log(`[${accountState.name}] Active position change detected via Realtime (${payload.eventType}): ${relevantRecord.id}. Syncing positions...`);
+          const relevantRecord = payload.new || payload.old;
+          if (!relevantRecord) return;
+          log(`[${accountState.name}] Active position change detected via Realtime (${payload.eventType}): ${relevantRecord.id}. Syncing positions...`);
 
-              // Temporarily bypass 3-second fetchActivePositions throttle
-              const savedLastDbWrite = lastDbWrite;
-              lastDbWrite = 0;
-              await fetchActivePositions();
-              // Restore lastDbWrite if it was within the last 3s
-              if (Date.now() - savedLastDbWrite < 3000) {
-                lastDbWrite = savedLastDbWrite;
-              }
-            }
+          // Temporarily bypass 3-second fetchActivePositions throttle
+          const savedLastDbWrite = lastDbWrite;
+          lastDbWrite = 0;
+          await fetchActivePositions();
+          // Restore lastDbWrite if it was within the last 3s
+          if (Date.now() - savedLastDbWrite < 3000) {
+            lastDbWrite = savedLastDbWrite;
           }
         }
       )

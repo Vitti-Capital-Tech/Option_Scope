@@ -250,8 +250,15 @@ CREATE INDEX IF NOT EXISTS idx_active_positions_type ON public.active_positions(
 -- Unique constraints to prevent duplicate buy/sell strikes per account/underlying/type
 CREATE UNIQUE INDEX IF NOT EXISTS idx_active_positions_buy_strike_unique 
     ON public.active_positions(account_id, underlying, type, buy_strike);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_active_positions_sell_strike_unique 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_active_positions_sell_strike_unique
     ON public.active_positions(account_id, underlying, type, sell_strike);
+
+-- Required so account-scoped Realtime subscriptions (filter: account_id=eq.X) also
+-- receive DELETE events: under default replica identity the old row carries only the
+-- primary key, so a filter on account_id can't match a delete and the event is dropped.
+-- FULL makes the whole old row available. Both the UI (PaperTrading.jsx) and the engine
+-- (paperTradingEngine.js) rely on this to learn about closed positions in real time.
+ALTER TABLE public.active_positions REPLICA IDENTITY FULL;
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
