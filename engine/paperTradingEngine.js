@@ -27,21 +27,23 @@ import {
 } from './lib/utils.js';
 
 /**
- * Build `count` random exit price levels (sorted ascending) spanning the long
- * option's current LTP up to `upperBound` (= max(entry, last 1-2hr high)). Used
- * to scale a held long-only leg out as its price recovers. If the range is
- * degenerate (current already >= upperBound), every level collapses to the
- * upper bound so the whole long exits as soon as it's evaluated.
+ * Build `count` equidistant exit price levels (sorted ascending) spanning the
+ * long option's current bid up to `upperBound` (= max(entry, last 1-2hr high)).
+ * Used to scale a held long-only leg out as its bid recovers. Levels are evenly
+ * spaced: the first sits one step above the current bid and the last lands on
+ * the upper bound, so each slice needs a distinct price move (no clustering).
+ * If the range is degenerate (current already >= upperBound), every level
+ * collapses to the upper bound so the whole long exits as soon as it's evaluated.
  */
-function buildLongExitLevels(currentLtp, upperBound, count = 10) {
-  const lo = Math.min(currentLtp ?? upperBound, upperBound);
-  const hi = Math.max(currentLtp ?? upperBound, upperBound);
+function buildLongExitLevels(currentBid, upperBound, count = 10) {
+  const lo = Math.min(currentBid ?? upperBound, upperBound);
+  const hi = Math.max(currentBid ?? upperBound, upperBound);
   if (!(hi > lo)) return Array(count).fill(Number(hi.toFixed(2)));
+  const step = (hi - lo) / count;
   const levels = [];
-  for (let i = 0; i < count; i++) {
-    levels.push(Number((lo + Math.random() * (hi - lo)).toFixed(2)));
+  for (let i = 1; i <= count; i++) {
+    levels.push(Number((lo + i * step).toFixed(2)));
   }
-  levels.sort((a, b) => a - b);
   return levels;
 }
 
@@ -723,7 +725,7 @@ async function startSingleAccountEngine(account) {
 
           // Convert the position to long-only: drop the short leg, recompute margin.
           // Snapshot the long lot (base for the 10-slice laddered exit) and build 10
-          // random exit levels spanning the long's current bid up to its entry price.
+          // equidistant exit levels spanning the long's current bid up to its entry price.
           const longBidAtExit = liveExitBuy; // long leg's live bid (the realistic sell price)
           // Upper bound for the laddered exit = max(entry, long's last 1-2hr high)
           // from Delta candles. Falls back to entry price if history is unavailable.
@@ -765,13 +767,13 @@ async function startSingleAccountEngine(account) {
 
         // ── Long-only laddered profit exit ──────────────────────────────────
         // Once the short leg is gone, scale the held long out in 10 slices as its
-        // own BID recovers toward entry. At short-exit we placed 10 random exit
-        // levels spanning [current bid, entry price]; each crossed level exits
+        // own BID recovers toward entry. At short-exit we placed 10 equidistant
+        // exit levels spanning [current bid, entry price]; each crossed level exits
         // 1/10 of the base lot. Trigger and exit price are both the live bid.
         if (pos.sellQty === 0) {
           const longBid = liveExitBuy; // long leg's live bid (the price we can sell at)
 
-          // Base lot + random exit levels are set at short-exit; fall back for older rows.
+          // Base lot + equidistant exit levels are set at short-exit; fall back for older rows.
           if (pos.buyLeg.longExitBaseLot === undefined) {
             pos.buyLeg.longExitBaseLot = pos.buyLeg.lotSize || 0;
             pos.buyLeg.longExitStage = pos.buyLeg.longExitStage || 0;

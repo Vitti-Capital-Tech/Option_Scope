@@ -4545,6 +4545,19 @@ body.light-theme .pt-btn-apply.active {
   white-space: nowrap;
 }
 
+/* Sort select (Active Positions): fixed width so trigger and menu match exactly */
+.custom-dropdown-container.pt-sort-select {
+  width: 170px;
+}
+.custom-dropdown-container.pt-sort-select .custom-dropdown-menu {
+  width: 100%;
+  min-width: 0;
+}
+
+.custom-dropdown-container.pt-sort-select .inline-trigger {
+  padding: 10px;
+  border: 1px solid var(--border);
+}
 
 
 /* -- Schedule Panel ----------------------------------------------------- */

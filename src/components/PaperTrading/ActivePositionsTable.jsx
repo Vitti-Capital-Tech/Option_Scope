@@ -154,6 +154,7 @@ export default function ActivePositionsTable({
             <span>Sort</span>
             <CustomSelect
               variant="inline"
+              className="pt-sort-select"
               value={sortKey}
               onChange={setSortKey}
               options={[
