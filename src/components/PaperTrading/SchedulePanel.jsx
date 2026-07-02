@@ -136,121 +136,7 @@ export default function SchedulePanel({
   currentUnderlying = 'BTC',
 }) {
   const avgUtilMap = React.useMemo(() => {
-    if (!positions || !tradeHistory || !schedules || schedules.length === 0) return {};
-
-    // Helper to get IST date string
-    const getIstDateStr = (ms) => {
-      const d = new Date(ms + 5.5 * 60 * 60 * 1000);
-      return d.toISOString().split('T')[0];
-    };
-
-    // Helper to get next day
-    const getNextDayStr = (dStr) => {
-      const nextD = new Date(dStr + 'T12:00:00+05:30');
-      nextD.setDate(nextD.getDate() + 1);
-      return nextD.toISOString().split('T')[0];
-    };
-
-    // Pre-calculate which original position IDs have a short exit record in history
-    const shortExitIds = new Set();
-    tradeHistory.forEach(r => {
-      if (r.trade_id?.includes('-SE-') || r.exit_reason?.toLowerCase().includes('short leg exit')) {
-        const rOrigId = r.trade_id ? (r.trade_id.length >= 36 ? r.trade_id.substring(0, 36) : r.trade_id) : r.id;
-        shortExitIds.add(rOrigId);
-      }
-    });
-
-    const intervals = {};
-
-    // 1. Process active positions
-    positions.forEach(pos => {
-      const entry = new Date(pos.entryTime || pos.entry_time).getTime();
-      if (isNaN(entry)) return;
-      const hasShort = pos.sellQty > 0;
-      intervals[pos.id] = {
-        id: pos.id,
-        type: pos.type,
-        underlying: pos.underlying,
-        entryTime: entry,
-        exitTime: hasShort ? null : entry,
-        isCurrentlyActiveFull: hasShort
-      };
-    });
-
-    // 2. Process trade history rows
-    tradeHistory.forEach(row => {
-      const origId = row.trade_id ? (row.trade_id.length >= 36 ? row.trade_id.substring(0, 36) : row.trade_id) : row.id;
-      const entry = new Date(row.entry_time || row.entryTime).getTime();
-      const exit = new Date(row.exit_time || row.exitTime).getTime();
-      if (isNaN(entry) || isNaN(exit)) return;
-
-      const isShortExit = row.trade_id?.includes('-SE-') || 
-                          row.exit_reason?.toLowerCase().includes('short leg exit') || 
-                          row.exit_reason?.toLowerCase().includes('short exit');
-
-      if (!intervals[origId]) {
-        intervals[origId] = {
-          id: origId,
-          type: row.type,
-          underlying: row.underlying,
-          entryTime: entry,
-          exitTime: exit,
-          isCurrentlyActiveFull: false
-        };
-      } else {
-        if (entry < intervals[origId].entryTime) {
-          intervals[origId].entryTime = entry;
-        }
-
-        const currentActive = intervals[origId].isCurrentlyActiveFull;
-        if (!currentActive) {
-          if (isShortExit) {
-            intervals[origId].exitTime = exit;
-          } else {
-            const hasShortExit = shortExitIds.has(origId);
-            if (!hasShortExit) {
-              if (!intervals[origId].exitTime || exit > intervals[origId].exitTime) {
-                intervals[origId].exitTime = exit;
-              }
-            }
-          }
-        }
-      }
-    });
-
-    const intervalsList = Object.values(intervals);
-    if (intervalsList.length === 0) return {};
-
-    const entryTimes = intervalsList.map(p => p.entryTime).filter(t => !isNaN(t));
-    if (entryTimes.length === 0) return {};
-
-    let earliestMs = Math.min(...entryTimes);
-    const latestMs = Date.now();
-    // Cap to past 180 days to avoid performance lag with very large histories
-    const maxHistoryRange = 180 * 24 * 60 * 60 * 1000;
-    if (latestMs - earliestMs > maxHistoryRange) {
-      earliestMs = latestMs - maxHistoryRange;
-    }
-
-    const startIstDateStr = getIstDateStr(earliestMs);
-    const endIstDateStr = getIstDateStr(latestMs);
-
-    const dates = [];
-    let curr = new Date(startIstDateStr + 'T12:00:00+05:30');
-    const end = new Date(endIstDateStr + 'T12:00:00+05:30');
-    while (curr <= end) {
-      dates.push(curr.toISOString().split('T')[0]);
-      curr.setDate(curr.getDate() + 1);
-    }
-
-    const nextDayMap = {};
-    dates.forEach((dStr, idx) => {
-      if (idx < dates.length - 1) {
-        nextDayMap[dStr] = dates[idx + 1];
-      } else {
-        nextDayMap[dStr] = getNextDayStr(dStr);
-      }
-    });
+    if (!positions || !schedules || schedules.length === 0) return {};
 
     const result = {};
 
@@ -262,102 +148,50 @@ export default function SchedulePanel({
         return;
       }
 
-      let totalDurationAllDays = 0;
-      let weightedUtilSumAllDays = 0;
-      const isOvernight = toMin(s.startTime) > toMin(s.endTime);
+      // Count currently active full spreads for this window
+      let activeCalls = 0;
+      let activePuts = 0;
 
-      dates.forEach(dStr => {
-        let W_start, W_end;
-        try {
-          W_start = new Date(`${dStr}T${s.startTime}:00+05:30`).getTime();
-          if (isOvernight) {
-            const nextDayStr = nextDayMap[dStr] || dStr;
-            W_end = new Date(`${nextDayStr}T${s.endTime}:00+05:30`).getTime();
-          } else {
-            W_end = new Date(`${dStr}T${s.endTime}:00+05:30`).getTime();
-          }
-        } catch (e) {
-          return;
+      positions.forEach(pos => {
+        if (pos.underlying !== currentUnderlying) return;
+        if (pos.sellQty <= 0) return; // Only count full spreads, not long-only
+
+        const entryTime = new Date(pos.entryTime || pos.entry_time).getTime();
+        if (isNaN(entryTime)) return;
+
+        // Check if the position's entry time falls within this window's daily IST range
+        const d = new Date(entryTime + 5.5 * 60 * 60 * 1000);
+        const h = d.getUTCHours();
+        const m = d.getUTCMinutes();
+        const timeVal = h * 60 + m;
+
+        const startVal = toMin(s.startTime);
+        const endVal = toMin(s.endTime);
+
+        let match = false;
+        if (startVal > endVal) {
+          // Overnight window
+          match = timeVal >= startVal || timeVal < endVal;
+        } else {
+          match = timeVal >= startVal && timeVal < endVal;
         }
 
-        if (isNaN(W_start) || isNaN(W_end) || W_start >= W_end) return;
-
-        const windowEvents = [];
-        let initialCalls = 0;
-        let initialPuts = 0;
-
-        intervalsList.forEach(p => {
-          if (p.underlying !== currentUnderlying) return;
-
-          const entry = p.entryTime;
-          const exit = p.exitTime;
-
-          if (entry <= W_start && (exit === null || exit > W_start)) {
-            if (p.type === 'call') initialCalls++;
-            else if (p.type === 'put') initialPuts++;
-          }
-
-          if (entry > W_start && entry < W_end) {
-            windowEvents.push({ time: entry, type: p.type, change: 1 });
-          }
-
-          if (exit !== null && exit > W_start && exit < W_end) {
-            windowEvents.push({ time: exit, type: p.type, change: -1 });
-          }
-        });
-
-        windowEvents.sort((a, b) => a.time - b.time);
-
-        let currentCalls = initialCalls;
-        let currentPuts = initialPuts;
-        let lastTime = W_start;
-        const subIntervals = [];
-
-        windowEvents.forEach(ev => {
-          const duration = ev.time - lastTime;
-          if (duration > 0) {
-            subIntervals.push({
-              calls: currentCalls,
-              puts: currentPuts,
-              duration
-            });
-          }
-          if (ev.type === 'call') currentCalls += ev.change;
-          else if (ev.type === 'put') currentPuts += ev.change;
-          currentCalls = Math.max(0, currentCalls);
-          currentPuts = Math.max(0, currentPuts);
-          lastTime = ev.time;
-        });
-
-        const finalDuration = W_end - lastTime;
-        if (finalDuration > 0) {
-          subIntervals.push({
-            calls: currentCalls,
-            puts: currentPuts,
-            duration: finalDuration
-          });
+        if (match) {
+          if (pos.type === 'call') activeCalls++;
+          else if (pos.type === 'put') activePuts++;
         }
-
-        subIntervals.forEach(sub => {
-          const callsCount = Math.min(s.numberOfCalls, sub.calls);
-          const putsCount = Math.min(s.numberOfPuts, sub.puts);
-          const util = (callsCount + putsCount) / cap;
-
-          totalDurationAllDays += sub.duration;
-          weightedUtilSumAllDays += sub.duration * util;
-        });
       });
 
-      if (totalDurationAllDays > 0) {
-        const avg = (weightedUtilSumAllDays / totalDurationAllDays) * 100;
-        result[s.id] = Math.round(avg * 100) / 100;
-      } else {
-        result[s.id] = 0;
-      }
+      // Utilization is (activeCalls + activePuts) / cap, capped at 100%
+      const callsCount = Math.min(s.numberOfCalls, activeCalls);
+      const putsCount = Math.min(s.numberOfPuts, activePuts);
+      const util = ((callsCount + putsCount) / cap) * 100;
+
+      result[s.id] = Math.round(util * 100) / 100;
     });
 
     return result;
-  }, [positions, tradeHistory, schedules, currentUnderlying]);
+  }, [positions, schedules, currentUnderlying]);
 
   const [deletingId, setDeletingId] = useState(null); // id of schedule window pending deletion
 
@@ -749,9 +583,9 @@ export default function SchedulePanel({
                 />
               </div>
 
-              {/* Avg Utilization */}
+              {/* Live Utilization */}
               <div className="schedule-item-block schedule-item-num-block" style={{ minWidth: 80 }}>
-                <span className="schedule-item-label">Avg Utilized</span>
+                <span className="schedule-item-label">Live Utilized</span>
                 <div style={{
                   fontSize: '12px',
                   fontWeight: '700',
@@ -766,7 +600,7 @@ export default function SchedulePanel({
                   padding: '0 10px',
                   fontFamily: 'JetBrains Mono, monospace',
                   boxSizing: 'border-box'
-                }} title="Time-weighted average utilization of calls + puts caps during this window (only counts full spreads, not long-only legs).">
+                }} title="Current live utilization of active full-spread positions (calls + puts) divided by the window's total cap. Long-only positions are excluded.">
                   {avgUtilMap[s.id] !== undefined ? `${avgUtilMap[s.id]}%` : '—'}
                 </div>
               </div>
