@@ -172,7 +172,7 @@ export default function SchedulePanel({
         type: pos.type,
         underlying: pos.underlying,
         entryTime: entry,
-        exitTime: null,
+        exitTime: hasShort ? null : entry,
         isCurrentlyActiveFull: hasShort
       };
     });
