@@ -704,6 +704,12 @@ All other filter settings (like `minIvDiff`, `exitType`, etc.) default back to t
 - **Watchlist Style**: The configuration interface (`SchedulePanel.jsx`) features a compact, horizontal, inline-editable list styled like the Charts Watchlist. Users can edit window names, times, and overrides directly within the row.
 - **Visual Timeline**: A 24-hour horizontal bar visualizes active windows, gaps, and overrides. The timeline boundary starts/ends at `05:30` IST (representing the `00:00` UTC Delta Exchange daily rollover/day boundary). This ensures that any empty slots wrap around `05:30` IST and display at the end of the bar.
 - **Permanent Activation**: All configured schedule windows are permanently active/enabled (`is_active = true`), and the checkbox toggle has been removed.
+- **Average Utilized Percentage**: Displays a time-weighted average of slot utilization (calls + puts) over all history.
+  - *Full Spreads Only*: Only positions that are active as full spreads (both long and short legs active) are counted. Long-only held positions are excluded.
+  - *Capped Calculations*: The active counts are capped by the window's `numberOfCalls` and `numberOfPuts` limits to prevent greater than 100% utilization.
+  - *IST-Aware Calculations*: Boundaries are evaluated relative to IST (UTC+5:30) for every calendar day, correctly handling overnight ranges.
+  - *Formula*:
+    $$\text{Average Utilized} = \frac{\sum (\text{Sub-Interval Duration} \times \text{Sub-Interval Utilization})}{\text{Total Elapsed Window Duration}}$$
 
 ### Execution, Timezones & Evaluation
 - **Database (IST)**: All times in the database `paper_trading_schedules` table (columns `start_time` and `end_time`) are stored directly as IST values in `TIME` type columns.

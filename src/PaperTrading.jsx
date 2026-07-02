@@ -1982,6 +1982,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               setSchedules={setSchedules}
               onSaveSchedules={saveSupabaseSchedules}
               isSavingSchedules={isSavingSchedules}
+              positions={positions}
+              tradeHistory={tradeHistory}
             />
 
 

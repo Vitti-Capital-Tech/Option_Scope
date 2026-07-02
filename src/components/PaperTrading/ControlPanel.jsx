@@ -27,6 +27,8 @@ export default function ControlPanel({
   setSchedules,
   onSaveSchedules,
   isSavingSchedules,
+  positions,
+  tradeHistory,
 }) {
   const UNDERLYINGS = ['BTC', 'ETH'];
 
@@ -228,6 +230,9 @@ export default function ControlPanel({
           setSchedules={setSchedules}
           onSave={onSaveSchedules}
           isSaving={isSavingSchedules}
+          positions={positions}
+          tradeHistory={tradeHistory}
+          currentUnderlying={underlying}
         />
       </div>
     </>
