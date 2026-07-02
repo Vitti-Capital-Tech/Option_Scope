@@ -707,7 +707,7 @@ All other filter settings (like `minIvDiff`, `exitType`, etc.) default back to t
 - **Live Utilized Percentage**: Displays the current real-time utilization of slot capacity (calls + puts) for active full spreads in that window.
   - *Full Spreads Only*: Only positions that are active as full spreads (both long and short legs active) are counted. Long-only held positions are excluded.
   - *Capped Calculations*: The active counts are capped by the window's `numberOfCalls` and `numberOfPuts` limits to prevent greater than 100% utilization.
-  - *IST-Aware Mapping*: Positions are assigned to a window based on whether their entry timestamp (translated to IST UTC+5:30) falls within the window's daily start and end times.
+  - *Account-wide Counting*: All active full-spread positions in the account are checked against the window's capacity rules, ensuring the metric reflects current portfolio occupancy relative to that window's caps.
   - *Formula*:
     $$\text{Live Utilized} = \frac{\min(\text{numberOfCalls}, \text{activeCalls}) + \min(\text{numberOfPuts}, \text{activePuts})}{\text{numberOfCalls} + \text{numberOfPuts}} \times 100$$
 

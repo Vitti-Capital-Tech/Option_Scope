@@ -156,30 +156,8 @@ export default function SchedulePanel({
         if (pos.underlying !== currentUnderlying) return;
         if (pos.sellQty <= 0) return; // Only count full spreads, not long-only
 
-        const entryTime = new Date(pos.entryTime || pos.entry_time).getTime();
-        if (isNaN(entryTime)) return;
-
-        // Check if the position's entry time falls within this window's daily IST range
-        const d = new Date(entryTime + 5.5 * 60 * 60 * 1000);
-        const h = d.getUTCHours();
-        const m = d.getUTCMinutes();
-        const timeVal = h * 60 + m;
-
-        const startVal = toMin(s.startTime);
-        const endVal = toMin(s.endTime);
-
-        let match = false;
-        if (startVal > endVal) {
-          // Overnight window
-          match = timeVal >= startVal || timeVal < endVal;
-        } else {
-          match = timeVal >= startVal && timeVal < endVal;
-        }
-
-        if (match) {
-          if (pos.type === 'call') activeCalls++;
-          else if (pos.type === 'put') activePuts++;
-        }
+        if (pos.type === 'call') activeCalls++;
+        else if (pos.type === 'put') activePuts++;
       });
 
       // Utilization is (activeCalls + activePuts) / cap, capped at 100%
