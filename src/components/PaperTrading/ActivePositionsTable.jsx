@@ -195,6 +195,11 @@ export default function ActivePositionsTable({
                 const rawOrigSellQty = p.buyLeg?.originalSellQty !== undefined ? p.buyLeg.originalSellQty : p.sellQty;
                 const displayOrigSellQty = Math.round((rawOrigSellQty / origLot) * 4) / 4;
 
+                const initBuyQty = p.buyLeg?.initialScaledLotSize ?? p.buyLeg?.lotSize ?? 0;
+                const initSellQty = p.buyLeg?.initialScaledLotSize !== undefined && p.buyLeg?.originalSellQty !== undefined
+                  ? (p.buyLeg.initialScaledLotSize * p.buyLeg.originalSellQty)
+                  : p.sellQty;
+
                 // ── Distance-to-exit meter (spot vs the buy-strike trigger) ──
                 const { distPct, away } = exitMeter(p);
                 const distNear = distPct >= 85;
@@ -225,6 +230,9 @@ export default function ActivePositionsTable({
                               <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 600 }}>
                                 {displayBuyQty.toFixed(2)} long
                               </span>
+                              <span style={{ fontSize: '9px', color: 'var(--text-dim)', opacity: 0.8 }}>
+                                Init: {initBuyQty.toFixed(2)}L / {initSellQty.toFixed(2)}S
+                              </span>
                             </>
                           ) : (
                             <>
@@ -233,6 +241,9 @@ export default function ActivePositionsTable({
                               </span>
                               <span style={{ fontSize: '9px', color: 'var(--text-dim)', opacity: 0.8 }}>
                                 (Orig 1:{displayOrigSellQty.toFixed(2)})
+                              </span>
+                              <span style={{ fontSize: '9px', color: 'var(--text-dim)', opacity: 0.8 }}>
+                                Init: {initBuyQty.toFixed(2)}L / {initSellQty.toFixed(2)}S
                               </span>
                             </>
                           )}

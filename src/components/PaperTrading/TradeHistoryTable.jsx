@@ -170,6 +170,11 @@ export default function TradeHistoryTable({
                 const rawOrigSellQty = t.buyLeg?.originalSellQty !== undefined ? t.buyLeg.originalSellQty : t.sellQty;
                 const displayOrigSellQty = Math.round((rawOrigSellQty / origLot) * 4) / 4;
 
+                const initBuyQty = t.buyLeg?.initialScaledLotSize ?? t.buyLeg?.lotSize ?? 0;
+                const initSellQty = t.buyLeg?.initialScaledLotSize !== undefined && t.buyLeg?.originalSellQty !== undefined
+                  ? (t.buyLeg.initialScaledLotSize * t.buyLeg.originalSellQty)
+                  : t.sellQty;
+
                 return (
                   <tr key={i}>
                     <td className="hide-mobile" style={{ color: 'var(--text-dim)', fontSize: '11px', whiteSpace: 'nowrap' }}>{formatDateTime(t.entryTime)}</td>
@@ -191,6 +196,9 @@ export default function TradeHistoryTable({
                         </span>
                         <span style={{ fontSize: '9px', color: 'var(--text-dim)', opacity: 0.8 }}>
                           (Orig 1:{displayOrigSellQty.toFixed(2)})
+                        </span>
+                        <span style={{ fontSize: '9px', color: 'var(--text-dim)', opacity: 0.8 }}>
+                          Init: {initBuyQty.toFixed(2)}L / {initSellQty.toFixed(2)}S
                         </span>
                       </div>
                     </td>
