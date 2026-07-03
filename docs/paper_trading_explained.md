@@ -179,6 +179,8 @@ Every candidate pair must pass **all** of these filters to be considered:
 | 16 | **Exit Type** | `exitType` (default: 'ATM') | Option exit type parameter: `ATM`, `ITM`, or `OTM` |
 | 17 | **Exit Points** | `exitPoints` (default: 0) | Point offset threshold from the buy strike required to exit the position (applicable for ITM/OTM exit types) |
 | 18 | **Leg Swap Net Premium** | `legSwapNetPremium` (default: 0) | ⚠️ **Deprecated / unused.** Leg swaps have been removed from the engine. The config field is still loaded for backward compatibility but no longer affects behaviour. |
+| 19 | **Short Exit Price** | `shortExitPrice` (default: 1.1) | The short option's live ASK price threshold below which the short leg is automatically bought back (holding the long leg). |
+| 20 | **Long Exit Slices** | `longExitSlices` (default: 10) | The number of scale-out levels/slices the held long leg is exited in as its own BID price recovers. |
 
 ### How the Sell Quantity (Ratio) Is Calculated
 
@@ -468,55 +470,52 @@ A ratio spread is no longer closed as a single unit. Instead, the **short leg ex
 For a full spread (`sellQty > 0`), every cycle the engine checks the short leg's **live ask** price:
 
 ```
-If shortLeg liveAsk ≤ 1.1  → buy back ONLY the short leg, HOLD the long
+If shortLeg liveAsk ≤ shortExitPrice (default: 1.1) → buy back ONLY the short leg, HOLD the long
 ```
 
 > [!NOTE]
-> The trigger is `≤ 1.1`, so it is **gap-safe** — even if the ask jumps past 1.1 (e.g. 1.15 → 1.05 between cycles) it still fires. It only ever fires **once** per position: once the short is bought back, `sellQty` becomes 0 and the `sellQty > 0` guard blocks any re-trigger.
+> The trigger is gap-safe — even if the ask jumps past the threshold (e.g. 1.15 → 1.05 when `shortExitPrice` is 1.1) between cycles it still fires. It only ever fires **once** per position: once the short is bought back, `sellQty` becomes 0 and the `sellQty > 0` guard blocks any re-trigger.
 
 ### What Happens
 
-1. The short leg is **bought back at the ask** (`liveExitSell`, ≤ 1.1). Its P&L is recorded in `trade_history` as a partial row (`is_partial = true`, reason `Short Leg Exit @ Ask $1.1 ...`).
+1. The short leg is **bought back at the ask** (`liveExitSell`, ≤ `shortExitPrice`). Its P&L is recorded in `trade_history` as a partial row (`is_partial = true`, reason `Short Leg Exit @ Ask $...`).
 2. The short's share of the entry fee is apportioned out: `calculateFee(entrySellPrice, entrySpotPrice, sellQty, sellLotSize)` (capped to the remaining entry fee).
 3. The position becomes **long-only**: `sellQty = 0`, `sellLeg.lotSize = 0`, margin recomputed (`calcMargin(entryBuyPrice, buyLot, spot, 0, 1)`).
 4. The current long lot is **snapshotted** as `buyLeg.longExitBaseLot` (with `longExitStage = 0`) — this is the base for the laddered long exit below. Both are persisted in `buy_leg`.
 5. The position is **kept** in `active_positions` (not deleted) — the long leg continues to be held.
 
-Because the cap counts only full spreads (`sellQty > 0`), this freed slot lets a new closer-to-ATM spread enter. See [How Entries Are Placed](#how-entries-are-placed).
-
 ---
 
 ## Long-Only Laddered Exit
 
-Once a position is long-only (short leg gone), the held long leg is scaled out in **10 slices** as its own **bid** recovers toward the entry price.
+Once a position is long-only (short leg gone), the held long leg is scaled out in **`longExitSlices` slices** (default: 10) as its own **bid** recovers toward the entry price.
 
 ### How the levels are built
 
-At the moment the short leg exits, the engine snapshots the long's current **bid** (`liveExitBuy`), fetches the long option's **last 1-2hr high** from Delta's historical candles, and builds **10 equidistant price levels** spanning `[current bid, upperBound]`. These are stored on the position (`buyLeg.longExitLevels`) along with the base lot (`longExitBaseLot`) and stage (`longExitStage = 0`).
+At the moment the short leg exits, the engine snapshots the long's current **bid** (`liveExitBuy`), fetches the long option's **last 1-2hr high** from Delta's historical candles, and builds **`longExitSlices` equidistant price levels** spanning `[current bid, upperBound]`. These are stored on the position (`buyLeg.longExitLevels`) along with the base lot (`longExitBaseLot`) and stage (`longExitStage = 0`).
 
 - **Upper bound** = `max(entryBuyPrice, pastHigh)`, where `pastHigh` = max candle high of the long over the last 2 hours (`getOptionHigh(symbol, 2)` → Delta `/v2/history/candles`). If candles are unavailable (API error / newly listed / no data), it **falls back to `entryBuyPrice`**. Using `max` means: when the long traded **above** its entry in the last 1-2hr, the ladder extends into the **profit zone** up to that high; otherwise it caps at entry (breakeven).
 - **Range**: from the long's **current bid** (low — the long is cheap after the short went worthless) up to that **upper bound**. The long is held expecting a recovery toward the level it recently traded at.
-- **Levels**: 10 **equidistant** points (`buildLongExitLevels()`) — `step = (upperBound − currentBid) / 10`; the first sits one step above the current bid and the last lands exactly on the upper bound, so each slice needs a distinct price move (no clustering / simultaneous exits). Each crossed level exits **1/10** of the base lot (`longExitBaseLot / 10`).
+- **Levels**: `longExitSlices` **equidistant** points (`buildLongExitLevels()`) — `step = (upperBound − currentBid) / longExitSlices`; the first sits one step above the current bid and the last lands exactly on the upper bound, so each slice needs a distinct price move (no clustering / simultaneous exits). Each crossed level exits a fraction of the base lot (`longExitBaseLot / longExitSlices`).
 - **One fetch only**: the candle call happens once, when the position becomes long-only; the resulting levels are persisted, so there's no repeated network call and no mid-flight recomputation.
 - **Degenerate case**: if current bid is already ≥ upper bound, all levels collapse to the upper bound, so the whole long exits as soon as it's evaluated.
 
 ```
 entryBuyPrice = $70, last 2hr high = $90  →  upper = max(70, 90) = 90
 long bid at short-exit = $10
+With longExitSlices = 10:
 → step = (90 − 10) / 10 = 8 → 10 equidistant levels:
    18, 26, 34, 42, 50, 58, 66, 74, 82, 90
 Levels above $70 are profit on the long; below are loss-recovery.
 As the long's bid rises and crosses each level → exit 1/10 of base lot.
-Crossing the last (10th) level → remaining long exits → position deleted.
-
-(If last 2hr high ≤ entry, e.g. 50 → upper = max(70,50) = 70, capped at entry.)
+Crossing the last level → remaining long exits → position deleted.
 ```
 
 ### Details
 
 1. Each slice exits the long by **selling at the bid** (`liveExitBuy`) — the **same bid** is both the trigger and the exit price, so the booked P&L matches the level that fired. Each slice is a partial `trade_history` row (`is_partial = true`, reason `Long Leg Exit @ level $X (Bid $Y)`) with its apportioned entry fee.
 2. If the bid crosses several levels in one cycle (e.g. a sharp move up), **all crossed slices exit at once** (a `while` loop advances the stage).
-3. The final (10th) level clears any rounding remainder, then the position is **deleted** from `active_positions`.
+3. The final level clears any rounding remainder, then the position is **deleted** from `active_positions`.
 4. Progress survives restarts: `longExitStage`, `longExitBaseLot`, and the `longExitLevels` array all live in the `buy_leg` JSON, so the ladder resumes where it left off — no double exits and the levels don't get recomputed mid-flight.
 5. **Catch-all still applies**: if levels aren't reached, the remaining long still exits via **expiry** or the **ATM/ITM/OTM Full Exit** (spot crossing the buy strike). A partial slice this cycle falls through to those checks for the remaining lot.
 
