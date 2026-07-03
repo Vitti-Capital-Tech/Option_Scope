@@ -320,6 +320,37 @@ export default function CreateAccountModal({
                 />
               </div>
             </div>
+
+            <div style={{ display: 'flex', gap: '16px', marginTop: '12px' }}>
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Short Exit Price ($)</label>
+                <CustomInput
+                  type="number"
+                  step="0.1"
+                  {...register('shortExitPrice', { valueAsNumber: true })}
+                  style={{
+                    padding: '10px 14px',
+                    borderRadius: 8,
+                    fontSize: 13,
+                    outline: 'none'
+                  }}
+                />
+              </div>
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Long Exit Slices</label>
+                <CustomInput
+                  type="number"
+                  step="1"
+                  {...register('longExitSlices', { valueAsNumber: true })}
+                  style={{
+                    padding: '10px 14px',
+                    borderRadius: 8,
+                    fontSize: 13,
+                    outline: 'none'
+                  }}
+                />
+              </div>
+            </div>
           </div>
         </div>
 

@@ -107,6 +107,8 @@ CREATE TABLE IF NOT EXISTS public.paper_trading_config (
     exit_type TEXT NOT NULL DEFAULT 'ATM',
     exit_points NUMERIC NOT NULL DEFAULT 0,
     leg_swap_premium NUMERIC NOT NULL DEFAULT 0,
+    short_exit_price NUMERIC NOT NULL DEFAULT 1.1,
+    long_exit_slices INTEGER NOT NULL DEFAULT 10,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 

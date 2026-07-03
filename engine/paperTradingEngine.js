@@ -66,7 +66,9 @@ async function startSingleAccountEngine(account) {
     numberOfPuts: 3,
     spotDiff: 0.5,
     exitType: 'ATM',
-    exitPoints: 0
+    exitPoints: 0,
+    shortExitPrice: 1.1,
+    longExitSlices: 10
   };
   let products = [];
   let expiries = [];
@@ -138,6 +140,8 @@ async function startSingleAccountEngine(account) {
           exit_type: 'ATM',
           exit_points: 0,
           leg_swap_premium: 0,
+          short_exit_price: 1.1,
+          long_exit_slices: 10,
           updated_at: new Date().toISOString()
         };
         const { data: inserted, error: insertErr } = await supabase
@@ -173,6 +177,8 @@ async function startSingleAccountEngine(account) {
           spotDiff: data.spot_diff ?? 0.5,
           exitType: data.exit_type ?? 'ATM',
           exitPoints: data.exit_points ?? 0,
+          shortExitPrice: data.short_exit_price ?? 1.1,
+          longExitSlices: data.long_exit_slices ?? 10
         };
         configDbId = data.id;
         // log(`[${accountState.name}] Config loaded: ${config.underlying} | Expiry: ${config.expiry || 'auto'}`);
@@ -670,14 +676,15 @@ async function startSingleAccountEngine(account) {
         }
 
         // ── Short-leg-only exit ────────────────────────────────────────────
-        // When the short leg's live ASK reaches less than $1.1, buy it back (close
-        // the short at the ask) and keep holding the long leg. The long leg is
+        // When the short leg's live ASK reaches less than the configured shortExitPrice (default 1.1),
+        // buy it back (close the short at the ask) and keep holding the long leg. The long leg is
         // then closed later by the normal expiry / ATM-ITM-OTM exit rules.
         // the short leg will not be closed that cycle.
         const shortLiveAsk = tickerSell?.ask ?? null;
-        if (pos.sellQty > 0 && shortLiveAsk <= 1.1) {
+        const targetShortExitPrice = config.shortExitPrice ?? 1.1;
+        if (pos.sellQty > 0 && shortLiveAsk <= targetShortExitPrice) {
           const shortLotSize = pos.sellLeg.lotSize || 1;
-          const exitShortPrice = liveExitSell; // ask (<= 1.1)
+          const exitShortPrice = liveExitSell; // ask (<= targetShortExitPrice)
 
           const shortGrossPnl = (pos.entrySellPrice - exitShortPrice) * pos.sellQty * shortLotSize;
           const shortEntryFee = Math.min(
@@ -742,7 +749,7 @@ async function startSingleAccountEngine(account) {
             ...pos.buyLeg,
             longExitBaseLot: pos.buyLeg.lotSize,
             longExitStage: 0,
-            longExitLevels: buildLongExitLevels(longBidAtExit, longExitUpper, 10),
+            longExitLevels: buildLongExitLevels(longBidAtExit, longExitUpper, config.longExitSlices ?? 10),
           };
           pos.margin = calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, spotPrice, 0, 1);
           log(`[${accountState.name}] 🎚️ Long ladder set: ${pos.buyLeg.strike} | range [${longBidAtExit}, ${longExitUpper}] | pastHigh ${longPastHigh ?? 'n/a'} | levels ${JSON.stringify(pos.buyLeg.longExitLevels)}`);
@@ -766,10 +773,10 @@ async function startSingleAccountEngine(account) {
         }
 
         // ── Long-only laddered profit exit ──────────────────────────────────
-        // Once the short leg is gone, scale the held long out in 10 slices as its
-        // own BID recovers toward entry. At short-exit we placed 10 equidistant
+        // Once the short leg is gone, scale the held long out in slices as its
+        // own BID recovers toward entry. At short-exit we placed equidistant
         // exit levels spanning [current bid, entry price]; each crossed level exits
-        // 1/10 of the base lot. Trigger and exit price are both the live bid.
+        // a slice of the base lot. Trigger and exit price are both the live bid.
         if (pos.sellQty === 0) {
           const longBid = liveExitBuy; // long leg's live bid (the price we can sell at)
 
@@ -779,7 +786,7 @@ async function startSingleAccountEngine(account) {
             pos.buyLeg.longExitStage = pos.buyLeg.longExitStage || 0;
           }
           if (!Array.isArray(pos.buyLeg.longExitLevels) || pos.buyLeg.longExitLevels.length === 0) {
-            pos.buyLeg.longExitLevels = buildLongExitLevels(longBid, pos.entryBuyPrice, 10);
+            pos.buyLeg.longExitLevels = buildLongExitLevels(longBid, pos.entryBuyPrice, config.longExitSlices ?? 10);
           }
           const exitLevels = pos.buyLeg.longExitLevels;
           const baseLot = pos.buyLeg.longExitBaseLot || 0;

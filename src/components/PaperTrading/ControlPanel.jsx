@@ -131,7 +131,9 @@ export default function ControlPanel({
             { label: 'Min Days to Expiry', key: 'daysToExpiry', width: 100 },
             { label: 'Max Open Calls', key: 'numberOfCalls', width: 100 },
             { label: 'Max Open Puts', key: 'numberOfPuts', width: 100 },
-            { label: 'Re-entry Spot Step', key: 'spotDiff', width: 100, step: '0.1', suffix: '%' }
+            { label: 'Re-entry Spot Step', key: 'spotDiff', width: 100, step: '0.1', suffix: '%' },
+            { label: 'Short Exit Price', key: 'shortExitPrice', width: 100, step: '0.1', prefix: '$' },
+            { label: 'Long Exit Slices', key: 'longExitSlices', width: 100, step: '1' }
           ].map(({ label, key, width, step, prefix, suffix }) => (
             <div key={key} className="form-group">
               <label style={{ marginBottom: 0 }}>{label}</label>

@@ -237,6 +237,27 @@ export default function FirstAccountCard({
                   />
                 </div>
               </div>
+
+              <div className="first-account-row">
+                <div className="first-account-form-group">
+                  <label className="first-account-label">Short Exit Price ($)</label>
+                  <CustomInput
+                    type="number"
+                    step="0.1"
+                    {...register('shortExitPrice', { valueAsNumber: true })}
+                    className="first-account-input"
+                  />
+                </div>
+                <div className="first-account-form-group">
+                  <label className="first-account-label">Long Exit Slices</label>
+                  <CustomInput
+                    type="number"
+                    step="1"
+                    {...register('longExitSlices', { valueAsNumber: true })}
+                    className="first-account-input"
+                  />
+                </div>
+              </div>
             </div>
           </div>
 
