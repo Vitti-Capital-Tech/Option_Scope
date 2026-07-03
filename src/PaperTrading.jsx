@@ -43,7 +43,8 @@ const ACCOUNT_CONFIG_DEFAULTS = {
   exitType: 'ATM',
   exitPoints: 0,
   shortExitPrice: 1.1,
-  longExitSlices: 10
+  longExitSlices: 10,
+  variableExitSlices: false
 };
 
 const normalizeAccountDefaultConfig = (config = {}) => {
@@ -126,7 +127,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       exitType: 'ATM',
       exitPoints: 0,
       shortExitPrice: 1.1,
-      longExitSlices: 10
+      longExitSlices: 10,
+      variableExitSlices: false
     }
   });
 
@@ -160,7 +162,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     exitType: 'ATM',
     exitPoints: 0,
     shortExitPrice: 1.1,
-    longExitSlices: 10
+    longExitSlices: 10,
+    variableExitSlices: false
   }));
   const [draftConfig, setDraftConfig] = useState(() => ({ ...config }));
   const [isConfigLoaded, setIsConfigLoaded] = useState(false);
@@ -569,7 +572,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       exitType: data.exitType,
       exitPoints: data.exitPoints,
       shortExitPrice: data.shortExitPrice,
-      longExitSlices: data.longExitSlices
+      longExitSlices: data.longExitSlices,
+      variableExitSlices: data.variableExitSlices
     });
 
     setIsCreatingAccount(true);
@@ -615,7 +619,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           exit_points: data.exitPoints ?? 0,
           leg_swap_premium: 0,
           short_exit_price: data.shortExitPrice ?? 1.1,
-          long_exit_slices: data.longExitSlices ?? 10
+          long_exit_slices: data.longExitSlices ?? 10,
+          variable_exit_slices: data.variableExitSlices ?? false
         }]);
 
         // Manually fetch accounts first to update state instantly!
@@ -655,7 +660,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       exitType: config.exitType ?? 'ATM',
       exitPoints: config.exitPoints ?? 0,
       shortExitPrice: config.shortExitPrice ?? 1.1,
-      longExitSlices: config.longExitSlices ?? 10
+      longExitSlices: config.longExitSlices ?? 10,
+      variableExitSlices: config.variableExitSlices ?? false
     });
     setIsCreateModalOpen(true);
   };
@@ -763,6 +769,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         leg_swap_premium: 0,
         short_exit_price: newCfg.shortExitPrice ?? 1.1,
         long_exit_slices: newCfg.longExitSlices ?? 10,
+        variable_exit_slices: newCfg.variableExitSlices ?? false,
         updated_at: new Date().toISOString()
       }).select();
       if (error) {
@@ -793,7 +800,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     'exitType',
     'exitPoints',
     'shortExitPrice',
-    'longExitSlices'
+    'longExitSlices',
+    'variableExitSlices'
   ];
 
   const updateConfig = (keyOrObj, value) => {
@@ -909,6 +917,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           exit_type: 'ATM',
           exit_points: 0,
           leg_swap_premium: 0,
+          variable_exit_slices: false,
           updated_at: new Date().toISOString()
         };
         const { data: inserted, error: insertErr } = await supabase
@@ -943,7 +952,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           exitType: data.exit_type ?? 'ATM',
           exitPoints: data.exit_points ?? 0,
           shortExitPrice: data.short_exit_price ?? 1.1,
-          longExitSlices: data.long_exit_slices ?? 10
+          longExitSlices: data.long_exit_slices ?? 10,
+          variableExitSlices: data.variable_exit_slices ?? false
         };
         setConfig(loadedConfig);
         setDraftConfig(loadedConfig);
@@ -1783,6 +1793,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     }
     const headers = [
       'Entry Time', 'Exit Time', 'Expiry', 'Type', 'Ratio', 'Original Ratio',
+      'Initial Buy Qty', 'Initial Sell Qty',
       'Buy Strike', 'Sell Strike', 'Entry Buy Price', 'Entry Sell Price',
       'Exit Buy Price', 'Exit Sell Price', 'Entry Spot', 'Exit Spot',
       'Entry ATM Ratio', 'Entry ATM Buy Price', 'Entry ATM Sell Price',
@@ -1795,10 +1806,17 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       const netPnl = t.realizedNetPnl || 0;
       const buyLot = t.buyLeg?.lotSize || 1;
       const margin = t.margin || 0;
+
+      const initBuyQty = t.buyLeg?.initialScaledLotSize ?? t.buyLeg?.lotSize ?? 0;
+      const initSellQty = t.buyLeg?.initialScaledLotSize !== undefined && t.buyLeg?.originalSellQty !== undefined
+        ? (t.buyLeg.initialScaledLotSize * t.buyLeg.originalSellQty)
+        : t.sellQty;
+
       return [
         formatDateTime(t.entryTime), formatDateTime(t.exitTime), fmtExpiry(t.expiry),
         t.type.toUpperCase(), `${buyLot.toFixed(2)}:${sellQty.toFixed(2)}`,
         `${(t.buyLeg?.originalLotSize || t.buyLeg.lotSize).toFixed(2)}:${(t.buyLeg?.originalSellQty || t.sellQty).toFixed(2)}`,
+        initBuyQty.toFixed(2), initSellQty.toFixed(2),
         t.buyLeg.strike, t.sellLeg.strike,
         t.entryBuyPrice || '', t.entrySellPrice || '',
         t.exitBuyPrice || '', t.exitSellPrice || '',

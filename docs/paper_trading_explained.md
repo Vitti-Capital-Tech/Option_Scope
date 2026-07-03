@@ -488,27 +488,28 @@ If shortLeg liveAsk ≤ shortExitPrice (default: 1.1) → buy back ONLY the shor
 
 ## Long-Only Laddered Exit
 
-Once a position is long-only (short leg gone), the held long leg is scaled out in **`longExitSlices` slices** (default: 10) as its own **bid** recovers toward the entry price.
+Once a position is long-only (short leg gone), the held long leg is scaled out in slices as its own **bid** recovers. The ladder levels are built based on the **Variable Exit Slices** configuration:
 
-### How the levels are built
+### 1. Constant Mode (Variable Exit Slices = OFF)
+Predefined exit tiers are constructed with exactly **5 slices** depending on the long option's current bid (`liveExitBuy`):
+- **If current bid < 25**: Slices are placed at fixed levels: `[10, 20, 30, 40, 50]`.
+- **If current bid ≥ 25**: Slices are placed at fixed levels: `[25, 50, 75, 100, 125]`.
 
-At the moment the short leg exits, the engine snapshots the long's current **bid** (`liveExitBuy`), fetches the long option's **last 1-2hr high** from Delta's historical candles, and builds **`longExitSlices` equidistant price levels** spanning `[current bid, upperBound]`. These are stored on the position (`buyLeg.longExitLevels`) along with the base lot (`longExitBaseLot`) and stage (`longExitStage = 0`).
-
-- **Upper bound** = `max(entryBuyPrice, pastHigh)`, where `pastHigh` = max candle high of the long over the last 2 hours (`getOptionHigh(symbol, 2)` → Delta `/v2/history/candles`). If candles are unavailable (API error / newly listed / no data), it **falls back to `entryBuyPrice`**. Using `max` means: when the long traded **above** its entry in the last 1-2hr, the ladder extends into the **profit zone** up to that high; otherwise it caps at entry (breakeven).
-- **Range**: from the long's **current bid** (low — the long is cheap after the short went worthless) up to that **upper bound**. The long is held expecting a recovery toward the level it recently traded at.
-- **Levels**: `longExitSlices` **equidistant** points (`buildLongExitLevels()`) — `step = (upperBound − currentBid) / longExitSlices`; the first sits one step above the current bid and the last lands exactly on the upper bound, so each slice needs a distinct price move (no clustering / simultaneous exits). Each crossed level exits a fraction of the base lot (`longExitBaseLot / longExitSlices`).
-- **One fetch only**: the candle call happens once, when the position becomes long-only; the resulting levels are persisted, so there's no repeated network call and no mid-flight recomputation.
-- **Degenerate case**: if current bid is already ≥ upper bound, all levels collapse to the upper bound, so the whole long exits as soon as it's evaluated.
+### 2. Variable Mode (Variable Exit Slices = ON)
+Custom number of equidistant price levels (`longExitSlices`, default 10) are built spanning from the current bid up to the **last 4 hours high** target:
+- **Upper bound** = `pastHigh`, where `pastHigh` is the max candle high of the long option over the last 4 hours (`getOptionHigh(symbol, 4)`). If candles are unavailable, it falls back to the option's entry buy price.
+- **Ladder generation**: The first slice exits immediately at the **current long bid price** (`lo`). The remaining $N-1$ slices are distributed equidistantly up to the upper bound.
+- **Spacing**: `step = (upperBound − currentBid) / (longExitSlices − 1)`; levels are generated as `currentBid + i * step` for $i = 0$ to $N-1$.
 
 ```
-entryBuyPrice = $70, last 2hr high = $90  →  upper = max(70, 90) = 90
+Example (Variable Mode):
+entryBuyPrice = $70, last 4hr high = $90  →  upper = 90
 long bid at short-exit = $10
 With longExitSlices = 10:
-→ step = (90 − 10) / 10 = 8 → 10 equidistant levels:
-   18, 26, 34, 42, 50, 58, 66, 74, 82, 90
-Levels above $70 are profit on the long; below are loss-recovery.
+→ step = (90 − 10) / 9 = 8.89 → 10 equidistant levels starting at current bid:
+   10, 18.89, 27.78, 36.67, 45.56, 54.44, 63.33, 72.22, 81.11, 90
 As the long's bid rises and crosses each level → exit 1/10 of base lot.
-Crossing the last level → remaining long exits → position deleted.
+The first level (10) exits immediately when the ladder is created.
 ```
 
 ### Details

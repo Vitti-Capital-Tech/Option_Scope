@@ -13,6 +13,8 @@ export default function FirstAccountCard({
   setValue,
   watch
 }) {
+  const watchVariableExitSlices = watch('variableExitSlices');
+
   return (
     <div className="first-account-wrapper">
       <div className="first-account-card">
@@ -249,15 +251,33 @@ export default function FirstAccountCard({
                   />
                 </div>
                 <div className="first-account-form-group">
-                  <label className="first-account-label">Long Exit Slices</label>
-                  <CustomInput
-                    type="number"
-                    step="1"
-                    {...register('longExitSlices', { valueAsNumber: true })}
-                    className="first-account-input"
-                  />
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', height: '100%', marginTop: '24px' }}>
+                    <input
+                      type="checkbox"
+                      id="variableExitSlices_first"
+                      {...register('variableExitSlices')}
+                    />
+                    <label htmlFor="variableExitSlices_first" className="first-account-label" style={{ cursor: 'pointer', marginBottom: 0 }}>
+                      Variable Exit Slices
+                    </label>
+                  </div>
                 </div>
               </div>
+
+              {watchVariableExitSlices && (
+                <div className="first-account-row">
+                  <div className="first-account-form-group">
+                    <label className="first-account-label">Long Exit Slices</label>
+                    <CustomInput
+                      type="number"
+                      step="1"
+                      {...register('longExitSlices', { valueAsNumber: true })}
+                      className="first-account-input"
+                    />
+                  </div>
+                  <div className="first-account-form-group" />
+                </div>
+              )}
             </div>
           </div>
 

@@ -18,6 +18,8 @@ export default function CreateAccountModal({
 }) {
   if (!isOpen) return null;
 
+  const watchVariableExitSlices = watch('variableExitSlices');
+
   return (
     <div className="modal-overlay-wrapper">
       <form onSubmit={onSubmit} className="modal-form-create">
@@ -337,20 +339,38 @@ export default function CreateAccountModal({
                 />
               </div>
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Long Exit Slices</label>
-                <CustomInput
-                  type="number"
-                  step="1"
-                  {...register('longExitSlices', { valueAsNumber: true })}
-                  style={{
-                    padding: '10px 14px',
-                    borderRadius: 8,
-                    fontSize: 13,
-                    outline: 'none'
-                  }}
-                />
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', height: '100%', marginTop: '20px' }}>
+                  <input
+                    type="checkbox"
+                    id="variableExitSlices"
+                    {...register('variableExitSlices')}
+                  />
+                  <label htmlFor="variableExitSlices" style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)', cursor: 'pointer', marginBottom: 0 }}>
+                    Variable Exit Slices
+                  </label>
+                </div>
               </div>
             </div>
+
+            {watchVariableExitSlices && (
+              <div style={{ display: 'flex', gap: '16px', marginTop: '12px' }}>
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Long Exit Slices</label>
+                  <CustomInput
+                    type="number"
+                    step="1"
+                    {...register('longExitSlices', { valueAsNumber: true })}
+                    style={{
+                      padding: '10px 14px',
+                      borderRadius: 8,
+                      fontSize: 13,
+                      outline: 'none'
+                    }}
+                  />
+                </div>
+                <div style={{ flex: 1 }} />
+              </div>
+            )}
           </div>
         </div>
 

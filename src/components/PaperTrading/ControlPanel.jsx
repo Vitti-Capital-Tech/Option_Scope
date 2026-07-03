@@ -132,8 +132,7 @@ export default function ControlPanel({
             { label: 'Max Open Calls', key: 'numberOfCalls', width: 100 },
             { label: 'Max Open Puts', key: 'numberOfPuts', width: 100 },
             { label: 'Re-entry Spot Step', key: 'spotDiff', width: 100, step: '0.1', suffix: '%' },
-            { label: 'Short Exit Price', key: 'shortExitPrice', width: 100, step: '0.1', prefix: '$' },
-            { label: 'Long Exit Slices', key: 'longExitSlices', width: 100, step: '1' }
+            { label: 'Short Exit Price', key: 'shortExitPrice', width: 100, step: '0.1', prefix: '$' }
           ].map(({ label, key, width, step, prefix, suffix }) => (
             <div key={key} className="form-group">
               <label style={{ marginBottom: 0 }}>{label}</label>
@@ -142,6 +141,18 @@ export default function ControlPanel({
                 onChange={e => updateDraftConfig(key, Number(e.target.value))} />
             </div>
           ))}
+          <div key="variableExitSlices" className="form-group" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <input type="checkbox" id="variableExitSlices" checked={draftConfig?.variableExitSlices ?? false}
+              onChange={e => updateDraftConfig('variableExitSlices', e.target.checked)} />
+            <label htmlFor="variableExitSlices" style={{ marginBottom: 0, cursor: 'pointer' }}>Variable Exit Slices</label>
+          </div>
+          {draftConfig?.variableExitSlices && (
+            <div key="longExitSlices" className="form-group">
+              <label style={{ marginBottom: 0 }}>Long Exit Slices</label>
+              <CustomInput type="number" step="1" showStepper width={100} value={draftConfig.longExitSlices ?? 10}
+                onChange={e => updateDraftConfig('longExitSlices', Number(e.target.value))} />
+            </div>
+          )}
           <div key="exitType" className="form-group" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <label style={{ marginBottom: 0 }}>Exit Type:</label>
             <CustomSelect

@@ -36,15 +36,41 @@ import {
  * collapses to the upper bound so the whole long exits as soon as it's evaluated.
  */
 function buildLongExitLevels(currentBid, upperBound, count = 10) {
-  const lo = Math.min(currentBid ?? upperBound, upperBound);
-  const hi = Math.max(currentBid ?? upperBound, upperBound);
-  if (!(hi > lo)) return Array(count).fill(Number(hi.toFixed(2)));
-  const step = (hi - lo) / count;
+  const lo = currentBid ?? 0;
+  const hi = Math.max(lo, upperBound);
+  if (count <= 1) {
+    return [Number(hi.toFixed(2))];
+  }
+  if (!(hi > lo)) {
+    return Array(count).fill(Number(hi.toFixed(2)));
+  }
+  const step = (hi - lo) / (count - 1);
   const levels = [];
-  for (let i = 1; i <= count; i++) {
+  for (let i = 0; i < count; i++) {
     levels.push(Number((lo + i * step).toFixed(2)));
   }
   return levels;
+}
+
+async function getOrBuildLongExitLevels(longBid, pos, config) {
+  if (config.variableExitSlices) {
+    let upper = pos.entryBuyPrice;
+    try {
+      const pastHigh = await getOptionHigh(pos.buyLeg.symbol, 4);
+      if (pastHigh != null) {
+        upper = pastHigh;
+      }
+    } catch (e) {
+      logWarn(`Failed to fetch 4h high for ${pos.buyLeg.symbol}: ${e.message}`);
+    }
+    return buildLongExitLevels(longBid, upper, config.longExitSlices ?? 10);
+  } else {
+    if (longBid < 25) {
+      return [10, 20, 30, 40, 50];
+    } else {
+      return [25, 50, 75, 100, 125];
+    }
+  }
 }
 
 async function startSingleAccountEngine(account) {
@@ -142,6 +168,7 @@ async function startSingleAccountEngine(account) {
           leg_swap_premium: 0,
           short_exit_price: 1.1,
           long_exit_slices: 10,
+          variable_exit_slices: false,
           updated_at: new Date().toISOString()
         };
         const { data: inserted, error: insertErr } = await supabase
@@ -178,7 +205,8 @@ async function startSingleAccountEngine(account) {
           exitType: data.exit_type ?? 'ATM',
           exitPoints: data.exit_points ?? 0,
           shortExitPrice: data.short_exit_price ?? 1.1,
-          longExitSlices: data.long_exit_slices ?? 10
+          longExitSlices: data.long_exit_slices ?? 10,
+          variableExitSlices: data.variable_exit_slices ?? false
         };
         configDbId = data.id;
         // log(`[${accountState.name}] Config loaded: ${config.underlying} | Expiry: ${config.expiry || 'auto'}`);
@@ -734,14 +762,8 @@ async function startSingleAccountEngine(account) {
           // Snapshot the long lot (base for the 10-slice laddered exit) and build 10
           // equidistant exit levels spanning the long's current bid up to its entry price.
           const longBidAtExit = liveExitBuy; // long leg's live bid (the realistic sell price)
-          // Upper bound for the laddered exit = max(entry, long's last 1-2hr high)
-          // from Delta candles. Falls back to entry price if history is unavailable.
-          // Using max lets the ladder reach the profit zone when the long traded
-          // above its entry in the last 1-2hr.
-          const longPastHigh = await getOptionHigh(pos.buyLeg.symbol, 2);
-          const longExitUpper = longPastHigh != null
-            ? Math.max(pos.entryBuyPrice, longPastHigh)
-            : pos.entryBuyPrice;
+          const generatedLevels = await getOrBuildLongExitLevels(longBidAtExit, pos, config);
+
           pos.entryFee = Math.max(0, (pos.entryFee || 0) - shortEntryFee);
           pos.sellLeg = { ...pos.sellLeg, lotSize: 0 };
           pos.sellQty = 0;
@@ -749,10 +771,10 @@ async function startSingleAccountEngine(account) {
             ...pos.buyLeg,
             longExitBaseLot: pos.buyLeg.lotSize,
             longExitStage: 0,
-            longExitLevels: buildLongExitLevels(longBidAtExit, longExitUpper, config.longExitSlices ?? 10),
+            longExitLevels: generatedLevels,
           };
           pos.margin = calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, spotPrice, 0, 1);
-          log(`[${accountState.name}] 🎚️ Long ladder set: ${pos.buyLeg.strike} | range [${longBidAtExit}, ${longExitUpper}] | pastHigh ${longPastHigh ?? 'n/a'} | levels ${JSON.stringify(pos.buyLeg.longExitLevels)}`);
+          log(`[${accountState.name}] 🎚️ Long ladder set: ${pos.buyLeg.strike} | bid at exit: ${longBidAtExit} | config variable: ${config.variableExitSlices} | levels ${JSON.stringify(pos.buyLeg.longExitLevels)}`);
 
           try {
             await supabase.from('active_positions').update({
@@ -786,7 +808,7 @@ async function startSingleAccountEngine(account) {
             pos.buyLeg.longExitStage = pos.buyLeg.longExitStage || 0;
           }
           if (!Array.isArray(pos.buyLeg.longExitLevels) || pos.buyLeg.longExitLevels.length === 0) {
-            pos.buyLeg.longExitLevels = buildLongExitLevels(longBid, pos.entryBuyPrice, config.longExitSlices ?? 10);
+            pos.buyLeg.longExitLevels = await getOrBuildLongExitLevels(longBid, pos, config);
           }
           const exitLevels = pos.buyLeg.longExitLevels;
           const baseLot = pos.buyLeg.longExitBaseLot || 0;

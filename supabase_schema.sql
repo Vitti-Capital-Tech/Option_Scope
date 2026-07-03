@@ -109,6 +109,7 @@ CREATE TABLE IF NOT EXISTS public.paper_trading_config (
     leg_swap_premium NUMERIC NOT NULL DEFAULT 0,
     short_exit_price NUMERIC NOT NULL DEFAULT 1.1,
     long_exit_slices INTEGER NOT NULL DEFAULT 10,
+    variable_exit_slices BOOLEAN NOT NULL DEFAULT false,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
