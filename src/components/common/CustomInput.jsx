@@ -29,6 +29,8 @@ const CustomInput = React.forwardRef(({
         disabled={disabled}
         className={`custom-input-field ${error ? 'error' : ''} ${className}`}
         style={style}
+        step={type === 'number' ? step : undefined}
+        min={min}
         value={value}
         onChange={onChange}
         {...props}
@@ -64,6 +66,8 @@ const CustomInput = React.forwardRef(({
         type={type}
         disabled={disabled}
         className="uin-input"
+        step={type === 'number' ? step : undefined}
+        min={min}
         value={value}
         onChange={onChange}
         {...props}
