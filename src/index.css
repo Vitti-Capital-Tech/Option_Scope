@@ -1631,9 +1631,12 @@ body.light-theme .scanner-logs-body::-webkit-scrollbar-thumb:hover {
   gap: 12px;
 }
 
-/* Controls without a top label (account chip, filters toggle) share the
-   control baseline, so they need to sit on a 34px line to match the inputs. */
+/* Controls without a top label (spot tile, account chip, live badge, filters
+   toggle) share the control baseline, so they sit on a 34px line to match
+   the inputs. */
 .pt-control-section > .pt-account-chip,
+.pt-control-section > .pt-spot-display,
+.pt-control-section > .pt-status-badge,
 .pt-control-section > .pt-filters-toggle-btn {
   height: 34px;
   box-sizing: border-box;

@@ -62,6 +62,12 @@ export default function ControlPanel({
               style={{ width: '160px' }}
             />
           </div>
+          {spotPrice && (
+            <div className="pt-spot-display pt-spot-inline">
+              <span className="pt-spot-label">SPOT</span>
+              <span className="pt-spot-value">${spotPrice.toLocaleString()}</span>
+            </div>
+          )}
           {activeAccountId && (
             <div className="pt-account-chip" style={{ display: 'flex', alignItems: 'center', gap: 12, background: 'var(--bg)', padding: '6px 12px', borderRadius: '6px', border: '1px solid var(--border)' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -97,6 +103,10 @@ export default function ControlPanel({
               </button>
             </div>
           )}
+          <div className="pt-status-badge live pt-algo-inline">
+            <span className="pt-pulse"></span>
+            LIVE ALGO
+          </div>
           <button
             className="pt-filters-toggle-btn"
             onClick={() => setIsFiltersCollapsed(!isFiltersCollapsed)}
@@ -223,20 +233,6 @@ export default function ControlPanel({
           </div>
         </div>
       </div>
-      <div className='flex justify-between mt-3! px-10! mb-3!'>
-        {spotPrice && (
-          <div className="pt-spot-display">
-            <span className="pt-spot-label">SPOT</span>
-            <span className="pt-spot-value">${spotPrice.toLocaleString()}</span>
-          </div>
-        )}
-
-        <div className="pt-status-badge live ml-10">
-          <span className="pt-pulse"></span>
-          LIVE ALGO
-        </div>
-      </div>
-
       {/* ── Time-based Schedules ─────────────────────────────── */}
       <div className="pt-schedules-panel">
         <SchedulePanel
