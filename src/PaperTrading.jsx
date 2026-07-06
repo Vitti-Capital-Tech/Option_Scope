@@ -109,6 +109,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     defaultValues: {
       name: '',
       ownerId: '',
+      mode: 'paper',
+      apiKey: '',
+      apiSecret: '',
+      credVerified: false,
       underlying: 'BTC',
       minStrikeDiff: 800,
       minIvDiff: 5,
@@ -139,8 +143,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     register: registerEdit,
     handleSubmit: handleSubmitEdit,
     formState: { errors: errorsEdit },
-    reset: resetEdit
+    reset: resetEdit,
+    watch: watchEdit,
+    setValue: setValueEdit
   } = useForm();
+
+  // Delta credential metadata for the account currently open in the edit modal
+  const [editCredentialsMeta, setEditCredentialsMeta] = useState(null);
 
   const [config, setConfig] = useState(() => ({
     underlying: 'BTC',
@@ -548,6 +557,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
   const handleModalSubmit = async (data) => {
     const trimmedName = data.name.trim();
+    const accountMode = data.mode === 'live' ? 'live' : 'paper';
 
     // Determine the owner: admin can pick any profile, client defaults to self
     const ownerUserId = userProfile?.role === 'admin' && data.ownerId
@@ -584,6 +594,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           name: trimmedName,
           is_active: true,
           user_id: ownerUserId,
+          mode: accountMode,
+          live_enabled: false, // kill-switch stays off; arm explicitly later
           default_config: defaultConfigVal
         }])
         .select('*');
@@ -623,6 +635,20 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           variable_exit_slices: data.variableExitSlices ?? false
         }]);
 
+        // For live accounts, store the (encrypted) Delta credentials via RPC.
+        if (accountMode === 'live' && data.apiKey?.trim() && data.apiSecret?.trim()) {
+          const { error: credErr } = await supabase.rpc('upsert_delta_credentials', {
+            p_account_id: accData.id,
+            p_api_key: data.apiKey.trim(),
+            p_api_secret: data.apiSecret.trim(),
+            p_verified: !!data.credVerified
+          });
+          if (credErr) {
+            console.error('Failed to store Delta credentials:', credErr);
+            alert(`Account created, but storing Delta credentials failed: ${credErr.message}\nYou can add them later via Edit Account.`);
+          }
+        }
+
         // Manually fetch accounts first to update state instantly!
         await fetchAccounts();
 
@@ -642,6 +668,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const triggerCreateAccount = () => {
     resetCreate({
       name: `Account ${accounts.length + 1}`,
+      mode: 'paper',
+      apiKey: '',
+      apiSecret: '',
+      credVerified: false,
       underlying: config.underlying,
       minStrikeDiff: config.minStrikeDiff,
       minIvDiff: config.minIvDiff,
@@ -666,30 +696,65 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     setIsCreateModalOpen(true);
   };
 
-  const triggerEditAccount = () => {
+  const triggerEditAccount = async () => {
     const activeAccount = accounts.find(a => a.id === activeAccountId);
     if (!activeAccount) return;
     resetEdit({
-      name: activeAccount.name
+      name: activeAccount.name,
+      mode: activeAccount.mode || 'paper',
+      apiKey: '',
+      apiSecret: '',
+      credVerified: false
     });
+    setEditCredentialsMeta(null);
     setIsEditModalOpen(true);
+
+    // Pull (non-secret) credential metadata for display, if any.
+    if ((activeAccount.mode || 'paper') === 'live') {
+      try {
+        const { data, error } = await supabase.rpc('get_delta_credentials_meta', {
+          p_account_id: activeAccount.id
+        });
+        if (!error && data && data[0]) setEditCredentialsMeta(data[0]);
+      } catch (e) { /* no credentials yet */ }
+    }
   };
 
   const handleEditSubmit = async (data) => {
     const trimmedName = data.name.trim();
+    const accountMode = data.mode === 'live' ? 'live' : 'paper';
 
     setIsSavingAccount(true);
     try {
-      setAccounts(prev => prev.map(a => a.id === activeAccountId ? { ...a, name: trimmedName } : a));
+      // Switching back to paper also disarms the live kill-switch.
+      const updatePayload = accountMode === 'live'
+        ? { name: trimmedName, mode: 'live' }
+        : { name: trimmedName, mode: 'paper', live_enabled: false };
+
+      setAccounts(prev => prev.map(a => a.id === activeAccountId ? { ...a, ...updatePayload } : a));
       const { error } = await supabase
         .from('paper_trading_accounts')
-        .update({ name: trimmedName })
+        .update(updatePayload)
         .eq('id', activeAccountId);
 
       if (error) {
         console.error('Failed to update account:', error);
         alert(`Failed to update account: ${error.message}`);
         return;
+      }
+
+      // If live and a new key/secret were entered, replace stored credentials.
+      if (accountMode === 'live' && data.apiKey?.trim() && data.apiSecret?.trim()) {
+        const { error: credErr } = await supabase.rpc('upsert_delta_credentials', {
+          p_account_id: activeAccountId,
+          p_api_key: data.apiKey.trim(),
+          p_api_secret: data.apiSecret.trim(),
+          p_verified: !!data.credVerified
+        });
+        if (credErr) {
+          console.error('Failed to update Delta credentials:', credErr);
+          alert(`Account saved, but updating Delta credentials failed: ${credErr.message}`);
+        }
       }
 
       await fetchAccounts();
@@ -2114,6 +2179,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         register={registerEdit}
         errors={errorsEdit}
         isSaving={isSavingAccount}
+        watch={watchEdit}
+        setValue={setValueEdit}
+        credentialsMeta={editCredentialsMeta}
       />
 
       <ConfirmExitModal

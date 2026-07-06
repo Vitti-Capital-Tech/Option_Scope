@@ -13,8 +13,9 @@
  * - Expiry settlement (2 min early)
  * - Product refresh every 5 minutes
  */
-import { supabase } from './lib/supabase.js';
+import { supabase, hasServiceRole } from './lib/supabase.js';
 import { createHeartbeat } from './lib/heartbeat.js';
+import { createLiveExecutor, isLiveDryRun, longContracts, shortContracts } from './lib/liveExecution.js';
 import {
   loadProducts, getExpiries, getSpotPrice,
   createTickerStream, buildSymbolMeta, processTickerMessage,
@@ -110,6 +111,46 @@ async function startSingleAccountEngine(account) {
   let lastWsReconnectTime = 0;
   let lastDbWrite = 0;
   let schedules = []; // Time-based schedule windows
+
+  // ── Live trading (Delta Exchange) ─────────────────────────────────────
+  let liveCreds = null; // { apiKey, apiSecret } for mode==='live', else null
+  const live = createLiveExecutor(() => ({
+    accountName: accountState.name,
+    mode: accountState.mode,
+    liveEnabled: accountState.live_enabled,
+    creds: liveCreds,
+  }));
+
+  // Load + decrypt Delta credentials for live accounts. Requires the engine to
+  // run with the service_role key; otherwise live trading stays disabled.
+  async function loadCredentials() {
+    if (accountState.mode !== 'live') { liveCreds = null; return; }
+    if (!hasServiceRole) {
+      liveCreds = null;
+      logWarn(`[${accountState.name}] Live account but engine lacks service_role key — live trading disabled.`);
+      return;
+    }
+    try {
+      const { data, error } = await supabase.rpc('get_delta_credentials_decrypted', {
+        p_account_id: accountState.id,
+      });
+      if (error) {
+        liveCreds = null;
+        logError(`[${accountState.name}] Failed to load Delta credentials:`, error.message);
+        return;
+      }
+      if (data && data[0] && data[0].api_key && data[0].api_secret) {
+        liveCreds = { apiKey: data[0].api_key, apiSecret: data[0].api_secret };
+        log(`[${accountState.name}] Delta credentials loaded. Armed: ${accountState.live_enabled ? 'YES' : 'no (kill-switch off)'} | Dry-run: ${isLiveDryRun() ? 'ON' : 'OFF'}`);
+      } else {
+        liveCreds = null;
+        logWarn(`[${accountState.name}] Live mode but no stored credentials found.`);
+      }
+    } catch (e) {
+      liveCreds = null;
+      logError(`[${accountState.name}] Credential load exception:`, e);
+    }
+  }
 
   // ── Supabase data fetchers ────────────────────────────────────────────
 
@@ -758,6 +799,13 @@ async function startSingleAccountEngine(account) {
             logError(`Failed to record short-leg exit for position ${pos.id}:`, e);
           }
 
+          // LIVE: buy back the short leg to close it (reduce_only).
+          await live.closeLeg({
+            symbol: pos.sellLeg.symbol, side: 'buy',
+            contracts: shortContracts(pos.sellQty),
+            price: exitShortPrice, tag: `${pos.id}-SEX`,
+          });
+
           // Convert the position to long-only: drop the short leg, recompute margin.
           // Snapshot the long lot (base for the 10-slice laddered exit) and build 10
           // equidistant exit levels spanning the long's current bid up to its entry price.
@@ -817,6 +865,7 @@ async function startSingleAccountEngine(account) {
 
           if (longBid != null && baseLot > 0 && sliceLot > 0 && pos.entryBuyPrice > 0) {
             const longExitSlices = [];
+            let cycleExitLot = 0; // total long lot closed this cycle (for the live order)
             const exitPrice = liveExitBuy; // close long by selling at the bid
 
             // Exit one slice per newly-crossed level (bid may cross several at once).
@@ -866,11 +915,20 @@ async function startSingleAccountEngine(account) {
 
               pos.entryFee = Math.max(0, (pos.entryFee || 0) - sliceEntryFee);
               pos.buyLeg.lotSize = Number((pos.buyLeg.lotSize - exitLot).toFixed(2));
+              cycleExitLot += exitLot;
               stage++;
             }
 
             if (longExitSlices.length > 0) {
               pos.buyLeg.longExitStage = stage;
+
+              // LIVE: sell the closed long lot (reduce_only) at the bid.
+              await live.closeLeg({
+                symbol: pos.buyLeg.symbol, side: 'sell',
+                contracts: longContracts(pos.buyLeg, cycleExitLot),
+                price: exitPrice, tag: `${pos.id}-LEX-${stage}`,
+              });
+
               try {
                 await supabase.from('trade_history').insert(longExitSlices);
               } catch (e) {
@@ -1107,6 +1165,14 @@ async function startSingleAccountEngine(account) {
                 pos.sellQty,
                 pos.sellLeg.lotSize || 1
               );
+
+              // LIVE: sell the reduced buy-leg lot (reduce_only) at the current bid.
+              const totalReducedLot = partialExitsToRecord.length * deltaBuyQty;
+              await live.closeLeg({
+                symbol: pos.buyLeg.symbol, side: 'sell',
+                contracts: longContracts(pos.buyLeg, totalReducedLot),
+                price: liveExitBuy, tag: `${pos.id}-PEX-${pos.buyLeg.lotSize}`,
+              });
 
               // FIX B6: batched insert
               try {
@@ -1395,6 +1461,26 @@ async function startSingleAccountEngine(account) {
             if (histError) logError(`[${accountState.name}] History insert error:`, histError.message);
           }
 
+          // LIVE: close remaining legs. Skip on expiry — Delta cash-settles expired
+          // options exchange-side, and orders that close to expiry are rejected.
+          const isExpirySettlement = /expiry/i.test(t.exitReason || '');
+          if (!isExpirySettlement) {
+            if (t.buyLeg?.lotSize > 0) {
+              await live.closeLeg({
+                symbol: t.buyLeg.symbol, side: 'sell',
+                contracts: longContracts(t.buyLeg),
+                price: t._latestBuy, tag: `${t.id}-XB`,
+              });
+            }
+            if (t.sellQty > 0) {
+              await live.closeLeg({
+                symbol: t.sellLeg.symbol, side: 'buy',
+                contracts: shortContracts(t.sellQty),
+                price: t._latestSell, tag: `${t.id}-XS`,
+              });
+            }
+          }
+
           // Delete from active
           await supabase.from('active_positions').delete().eq('id', t.id);
 
@@ -1438,6 +1524,17 @@ async function startSingleAccountEngine(account) {
               .eq('sell_strike', t.sellLeg.strike).gt('sell_qty', 0).limit(1);
             if (sellConflict && sellConflict.length > 0) {
               logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} blocked. Sell strike conflict on DB.`);
+              continue;
+            }
+
+            // LIVE: place real orders before persisting. Paper/dry-run/disarmed
+            // returns ok immediately; armed-live only persists if the orders succeed.
+            const liveEntry = await live.openSpread(t, {
+              long: longContracts(t.buyLeg),
+              short: shortContracts(t.sellQty),
+            });
+            if (!liveEntry.ok) {
+              logError(`[${accountState.name}] LIVE entry aborted (${liveEntry.legFailed} leg: ${liveEntry.error}) — not persisting ${t.buyLeg.strike}/${t.sellLeg.strike}`);
               continue;
             }
 
@@ -1564,6 +1661,7 @@ async function startSingleAccountEngine(account) {
 
   // 1. Load config + schedules
   await fetchConfig();
+  await loadCredentials();
   await fetchSchedules();
   log(`[${accountState.name}] Schedules loaded: ${schedules.length} window(s)`);
 
@@ -1653,6 +1751,8 @@ async function startSingleAccountEngine(account) {
       await reloadConfigAndSync();
       await fetchSchedules(); // Refresh schedules periodically
       await fetchActivePositions();
+      // LIVE: log-only drift check against the exchange (no-op unless armed + live).
+      await live.reconcile(positions.length);
     } catch (e) {
       logError(`[${accountState.name}] Error in positionsTimer:`, e);
     }
@@ -1677,8 +1777,15 @@ async function startSingleAccountEngine(account) {
       log(`[${accountState.name}] Paper Trading Engine stopped.`);
     },
     updateAccount(newAccount) {
+      const prevMode = accountState.mode;
       accountState = newAccount;
-      log(`[${accountState.name}] Account state updated`);
+      log(`[${accountState.name}] Account state updated (mode: ${accountState.mode}, live_enabled: ${accountState.live_enabled})`);
+      // Reload credentials if the account switched into live mode or lost them.
+      if (accountState.mode === 'live' && (prevMode !== 'live' || !liveCreds)) {
+        loadCredentials().catch(e => logError(`[${accountState.name}] updateAccount credential reload failed:`, e));
+      } else if (accountState.mode !== 'live') {
+        liveCreds = null;
+      }
     }
   };
 }

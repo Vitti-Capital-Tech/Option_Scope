@@ -1,5 +1,6 @@
 import React from 'react';
 import CustomInput from '../common/CustomInput';
+import DeltaCredentialsSection from './DeltaCredentialsSection';
 
 export default function EditAccountModal({
   isOpen,
@@ -7,7 +8,10 @@ export default function EditAccountModal({
   onSubmit,
   register,
   errors,
-  isSaving
+  isSaving,
+  watch,
+  setValue,
+  credentialsMeta
 }) {
   if (!isOpen) return null;
 
@@ -39,6 +43,14 @@ export default function EditAccountModal({
           )}
         </div>
 
+        {watch && setValue && (
+          <DeltaCredentialsSection
+            register={register}
+            watch={watch}
+            setValue={setValue}
+            existingMeta={credentialsMeta}
+          />
+        )}
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '8px' }}>
           <button
