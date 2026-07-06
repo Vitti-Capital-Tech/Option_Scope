@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { fmtExpiry } from '../../api';
+import { formatDateTime } from '../../scannerUtils';
 import CustomSelect from '../common/CustomSelect';
 
 export default function ActivePositionsTable({
@@ -16,7 +17,6 @@ export default function ActivePositionsTable({
   engineStatusColor,
   engineStatusLabel,
   calculatePositionMargin,
-  totalMargin,
   exitType = 'ATM',
   exitPoints = 0,
   onExitPosition,
@@ -32,6 +32,25 @@ export default function ActivePositionsTable({
     if (m < 60) return `${m}m ${s % 60}s`;
     return `${Math.floor(m / 60)}h ${m % 60}m`;
   };
+
+  // Trader-friendly instrument label, e.g. "BTC-CALL 98k/100k" (or single strike
+  // for a long-only leg). Strikes shown in k-notation to keep it compact.
+  const kStrike = (s) => `${Number((Number(s) / 1000).toFixed(2))}k`;
+  const instrumentName = (p) => {
+    const base = `${p.underlying}-${p.type.toUpperCase()}`;
+    return (p.sellQty || 0) === 0
+      ? `${base} ${kStrike(p.buyLeg.strike)}`
+      : `${base} ${kStrike(p.buyLeg.strike)}/${kStrike(p.sellLeg.strike)}`;
+  };
+
+  // A "long / short" value pair, coloured green/red (or dimmed for IV).
+  const legPair = (l, s, { longOnly = false, dim = false } = {}) => (
+    <span className={`pt-ls${dim ? ' dim' : ''}`}>
+      <span className="pt-ls-l">{l ?? '—'}</span>
+      <span className="pt-ls-sep">/</span>
+      <span className="pt-ls-s">{longOnly ? '—' : (s ?? '—')}</span>
+    </span>
+  );
 
   const secsSinceEval = lastEvaluated > 0 ? Math.max(0, Math.round((now - lastEvaluated) / 1000)) : null;
   const isStale = secsSinceEval != null && secsSinceEval > 30;
@@ -86,14 +105,12 @@ export default function ActivePositionsTable({
 
   return (
     <div className={embedded ? 'pt-embedded live' : 'pt-section live'}>
-      <div className={`pt-section-header${embedded ? ' pt-embedded-header' : ''}`}>
-        {!embedded && (
-          <div className="pt-section-title">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></svg>
-            Active Positions ({underlying})
-            <span className="pt-section-count">{positions.filter(p => p.underlying === underlying).length}</span>
-          </div>
-        )}
+      <div className={`pt-section-header pt-pos-header${embedded ? ' pt-embedded-header' : ''}`}>
+        <div className="pt-section-title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></svg>
+          Open Positions · {underlying}
+          <span className="pt-section-count">{visiblePositions.length}</span>
+        </div>
 
         <div className="pt-section-controls">
           <div className={`pt-statusbar ${isStale ? 'stale' : ''}`}>
@@ -126,14 +143,29 @@ export default function ActivePositionsTable({
             </button>
           </div>
 
-          <div className="pt-fee-toggle-container">
-            <span className={`pt-fee-toggle-label ${!includeFees ? 'active' : ''}`} onClick={() => setIncludeFees(false)}>Gross</span>
-            <label className="pt-switch">
-              <input type="checkbox" checked={includeFees} onChange={e => setIncludeFees(e.target.checked)} />
-              <span className="pt-slider"></span>
-            </label>
-            <span className={`pt-fee-toggle-label ${includeFees ? 'active' : ''}`} onClick={() => setIncludeFees(true)}>Net</span>
+          <div className="pt-gn-toggle" role="group" aria-label="P&L basis">
+            <span className={`pt-gn-opt ${!includeFees ? 'on' : ''}`} onClick={() => setIncludeFees(false)}>Gross</span>
+            <span className="pt-gn-sep">/</span>
+            <span className={`pt-gn-opt ${includeFees ? 'on' : ''}`} onClick={() => setIncludeFees(true)}>Net</span>
           </div>
+
+          {visiblePositions.length > 0 && (
+            <div className="pt-sort">
+              <span>Sort:</span>
+              <CustomSelect
+                variant="inline"
+                className="pt-sort-select"
+                value={sortKey}
+                onChange={setSortKey}
+                options={[
+                  { label: 'Default', value: 'none' },
+                  { label: 'Unrealized P&L', value: 'pnl' },
+                  { label: 'Closest to exit', value: 'exit' },
+                  { label: 'Margin', value: 'margin' }
+                ]}
+              />
+            </div>
+          )}
         </div>
       </div>
 
@@ -151,39 +183,27 @@ export default function ActivePositionsTable({
           <span className="pt-empty-desc">The server engine is scanning for entries. Positions appear here automatically when entered.</span>
         </div>
       ) : (
-        <>
-        <div className="pt-table-toolbar">
-          <div className="pt-sort">
-            <span>Sort</span>
-            <CustomSelect
-              variant="inline"
-              className="pt-sort-select"
-              value={sortKey}
-              onChange={setSortKey}
-              options={[
-                { label: 'Default', value: 'none' },
-                { label: 'Unrealized P&L', value: 'pnl' },
-                { label: 'Closest to exit', value: 'exit' },
-                { label: 'Margin', value: 'margin' }
-              ]}
-            />
-          </div>
-        </div>
         <div className="pt-table-scroll">
-          <table className="pt-table">
+          <table className="pt-table pt-lean">
             <thead><tr>
-              <th>Position / Ratio</th>
+              <th>Position</th>
+              <th>Ratio (L/S)</th>
+              <th>Init. Ratio</th>
+              <th>Init. Scaled (L/S)</th>
               <th>Expiry</th>
-              <th>Strikes (Long/Short)</th>
-              <th className="hide-mobile">Entry Spot</th>
-              <th>Entry Premium (L/S)</th>
-              <th className="hide-mobile">Entry IV (L/S)</th>
-              <th>Current Premium (L/S)</th>
-              <th className="hide-mobile">Current IV (L/S)</th>
+              <th>Strikes L/S</th>
+              <th>Entry Spot</th>
+              <th>Entry Prem.</th>
+              <th>Entry IV (L/S)</th>
+              <th>Mark Prem.</th>
+              <th>Mark IV (L/S)</th>
+              <th>Dist. to Exit</th>
+              <th>Scale-Out</th>
               <th>Unrealized P&L</th>
-              <th className="hide-xs">Req. Margin</th>
-              <th className="hide-mobile">Duration</th>
-              <th>Actions</th>
+              <th>Margin</th>
+              <th>Entry Time</th>
+              <th>Age</th>
+              <th></th>
             </tr></thead>
             <tbody>
               {sortedPositions.map(p => {
@@ -194,10 +214,10 @@ export default function ActivePositionsTable({
                 const displaySellQty = p.sellQty;
                 const isLongOnly = (p.sellQty || 0) === 0;
 
+                // ── Original & initial-scaled ratios (shown in the detail drawer) ──
                 const origLot = p.buyLeg?.originalLotSize || p.buyLeg?.lotSize || 1;
                 const rawOrigSellQty = p.buyLeg?.originalSellQty !== undefined ? p.buyLeg.originalSellQty : p.sellQty;
                 const displayOrigSellQty = Math.round((rawOrigSellQty / origLot) * 4) / 4;
-
                 const initBuyQty = p.buyLeg?.initialScaledLotSize ?? p.buyLeg?.lotSize ?? 0;
                 const initSellQty = p.buyLeg?.initialScaledLotSize !== undefined && p.buyLeg?.originalSellQty !== undefined
                   ? (p.buyLeg.initialScaledLotSize * p.buyLeg.originalSellQty)
@@ -220,80 +240,64 @@ export default function ActivePositionsTable({
                 const showLadder = isLongOnly && exitLevels.length > 0;
 
                 return (
-                  <React.Fragment key={p.id}>
-                  <tr className={`pt-row-${p.type}`}>
+                  <tr key={p.id} className={`pt-row-${p.type}`}>
                     <td>
-                      <div style={{ display: 'flex', gap: 8 }}>
+                      <div className="pt-pos-cell">
                         <span className={`pt-legrail ${isLongOnly ? 'long' : p.type}`} />
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                          <span className={`pt-type-badge ${p.type}`}>{p.type.toUpperCase()}</span>
-                          {isLongOnly ? (
-                            <>
-                              <span style={{ fontSize: '9px', fontWeight: 700, color: 'var(--accent)', letterSpacing: '0.3px' }}>LONG ONLY</span>
-                              <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 600 }}>
-                                {displayBuyQty.toFixed(2)} long
-                              </span>
-                              <span style={{ fontSize: '9px', color: 'var(--text-dim)', opacity: 0.8 }}>
-                                Init: {initBuyQty.toFixed(2)}L / {initSellQty.toFixed(2)}S
-                              </span>
-                            </>
-                          ) : (
-                            <>
-                              <span style={{ fontSize: '10px', color: 'var(--text-dim)', fontWeight: 600 }}>
-                                {displayBuyQty.toFixed(2)}:{displaySellQty.toFixed(2)}
-                              </span>
-                              <span style={{ fontSize: '9px', color: 'var(--text-dim)', opacity: 0.8 }}>
-                                (Orig 1:{displayOrigSellQty.toFixed(2)})
-                              </span>
-                              <span style={{ fontSize: '9px', color: 'var(--text-dim)', opacity: 0.8 }}>
-                                Init: {initBuyQty.toFixed(2)}L / {initSellQty.toFixed(2)}S
-                              </span>
-                            </>
-                          )}
+                        <div className="pt-pos-id">
+                          <span className="pt-instrument">{instrumentName(p)}</span>
+                          <span className="pt-pos-meta">
+                            {isLongOnly ? (
+                              <>
+                                <span className="pt-type-badge long">LONG ONLY</span>
+                                <span className="pt-pos-note">· short exited</span>
+                              </>
+                            ) : (
+                              <>
+                                <span className={`pt-type-badge ${p.type}`}>{p.type.toUpperCase()}</span>
+                                <span className="pt-pos-note">spread</span>
+                              </>
+                            )}
+                          </span>
                         </div>
                       </div>
                     </td>
-                    <td><span style={{ fontSize: '11px', fontWeight: 600 }}>{fmtExpiry(p.expiry)}</span></td>
+                    <td>{legPair(displayBuyQty.toFixed(2), displaySellQty.toFixed(2), { longOnly: isLongOnly })}</td>
+                    <td><span className="pt-mono pt-dim">1:{displayOrigSellQty.toFixed(2)}</span></td>
+                    <td>{legPair(initBuyQty.toFixed(2), initSellQty.toFixed(2))}</td>
+                    <td><span className="pt-mono">{fmtExpiry(p.expiry)}</span></td>
+                    <td>{legPair(p.buyLeg.strike.toLocaleString(), isLongOnly ? null : p.sellLeg.strike.toLocaleString(), { longOnly: isLongOnly })}</td>
+                    <td><span className="pt-mono pt-dim">{p.entrySpotPrice ? p.entrySpotPrice.toLocaleString() : '—'}</span></td>
+                    <td>{legPair(p.entryBuyPrice != null ? p.entryBuyPrice.toFixed(2) : null, p.entrySellPrice != null ? p.entrySellPrice.toFixed(2) : null, { longOnly: isLongOnly })}</td>
+                    <td>{legPair(p.entryBuyIv != null ? p.entryBuyIv.toFixed(1) : null, p.entrySellIv != null ? p.entrySellIv.toFixed(1) : null, { longOnly: isLongOnly, dim: true })}</td>
+                    <td>{legPair(p.currentBuyPrice != null ? p.currentBuyPrice.toFixed(2) : null, p.currentSellPrice != null ? p.currentSellPrice.toFixed(2) : null, { longOnly: isLongOnly })}</td>
+                    <td>{legPair(p.currentBuyIv != null ? p.currentBuyIv.toFixed(1) : null, p.currentSellIv != null ? p.currentSellIv.toFixed(1) : null, { longOnly: isLongOnly, dim: true })}</td>
                     <td>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                        <span className="pt-strike-buy">{p.buyLeg.strike.toLocaleString()}</span>
-                        <span className="pt-strike-sell" style={{ fontSize: '11px', opacity: 0.8 }}>{isLongOnly ? '—' : p.sellLeg.strike.toLocaleString()}</span>
-                        <div className="pt-dist" title={`Spot ${liveSpot.toLocaleString()} · exits ${getExitTriggerDesc(p, exitType, exitPoints).text}`}>
-                          <div className="pt-dist-top">
-                            <span style={{ color: 'var(--accent)', fontWeight: 700 }}>{getExitTriggerDesc(p, exitType, exitPoints).text}</span>
-                            <span>{Math.round(away).toLocaleString()} away</span>
-                          </div>
-                          <div className="pt-track">
-                            <i className={distNear ? 'near' : ''} style={{ width: `${distPct}%` }} />
-                            <span className="pt-track-mk" style={{ left: `${distPct}%` }} />
-                          </div>
+                      <div className="pt-dist" title={`Spot ${liveSpot.toLocaleString()} vs exit ${getExitTriggerDesc(p, exitType, exitPoints).text} (${exitType})`}>
+                        <span className="pt-dist-trigger">{getExitTriggerDesc(p, exitType, exitPoints).text}</span>
+                        <div className="pt-track">
+                          <i className={distNear ? 'near' : ''} style={{ width: `${distPct}%` }} />
+                          <span className="pt-track-mk" style={{ left: `${distPct}%` }} />
                         </div>
-                      </div>
-                    </td>
-                    <td className="hide-mobile"><span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-dim)' }}>{p.entrySpotPrice ? p.entrySpotPrice.toLocaleString() : '—'}</span></td>
-                    <td>
-                      <div style={{ display: 'flex', flexDirection: 'column', fontSize: '12px' }}>
-                        <span style={{ color: '#3fb950' }}>{p.entryBuyPrice?.toFixed(2)}</span>
-                        <span style={{ color: '#f85149' }}>{isLongOnly ? '—' : p.entrySellPrice?.toFixed(2)}</span>
-                      </div>
-                    </td>
-                    <td className="hide-mobile">
-                      <div style={{ display: 'flex', flexDirection: 'column', fontSize: '11px', color: 'var(--text-dim)' }}>
-                        <span>{p.entryBuyIv != null ? p.entryBuyIv.toFixed(1) + '%' : '—'}</span>
-                        <span>{isLongOnly ? '—' : (p.entrySellIv != null ? p.entrySellIv.toFixed(1) + '%' : '—')}</span>
+                        <span className="pt-dist-away">spot {liveSpot.toLocaleString()} · {Math.round(away).toLocaleString()} away</span>
                       </div>
                     </td>
                     <td>
-                      <div style={{ display: 'flex', flexDirection: 'column', fontSize: '12px' }}>
-                        <span style={{ color: '#3fb950' }}>{p.currentBuyPrice != null ? p.currentBuyPrice.toFixed(2) : '—'}</span>
-                        <span style={{ color: '#f85149' }}>{isLongOnly ? '—' : (p.currentSellPrice != null ? p.currentSellPrice.toFixed(2) : '—')}</span>
-                      </div>
-                    </td>
-                    <td className="hide-mobile">
-                      <div style={{ display: 'flex', flexDirection: 'column', fontSize: '11px', color: 'var(--accent)' }}>
-                        <span>{p.currentBuyIv != null ? p.currentBuyIv.toFixed(1) + '%' : '—'}</span>
-                        <span>{isLongOnly ? '—' : (p.currentSellIv != null ? p.currentSellIv.toFixed(1) + '%' : '—')}</span>
-                      </div>
+                      {showLadder ? (
+                        <div className="pt-scaleout"
+                          title={`Scale-out ${ladderStage}/${exitLevels.length} · entry $${Number(p.entryBuyPrice).toFixed(2)}${nextLevel != null ? ` · next $${Number(nextLevel).toFixed(2)}` : ''} · now ${p.currentBuyPrice != null ? `$${p.currentBuyPrice.toFixed(2)}` : '—'}${rangeTop != null ? ` · range top $${Number(rangeTop).toFixed(2)}` : ''}`}>
+                          <div className="pt-rungs">
+                            {exitLevels.map((lvl, i) => (
+                              <span key={i} className={`pt-rung ${i < ladderStage ? 'hit' : i === ladderStage ? 'next' : ''}`} />
+                            ))}
+                          </div>
+                          <span className="pt-dist-away">
+                            {ladderStage} / {exitLevels.length} slices{nextLevel != null ? ` · next $${Number(nextLevel).toFixed(2)}` : ''}
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="pt-mono pt-dim">—</span>
+                      )}
                     </td>
                     <td>
                       <div className="pt-pnlcell">
@@ -301,73 +305,18 @@ export default function ActivePositionsTable({
                         <span className="pt-roibar"><i style={{ width: `${pnlPct}%`, background: pnlValue >= 0 ? 'var(--call)' : 'var(--put)' }} /></span>
                       </div>
                     </td>
-                    <td className="hide-xs">
-                      <div className="pt-margin-cell">
-                        <span>${calculatePositionMargin(p).toFixed(0)}</span>
-                        <div className="pt-margin-bar">
-                          <div className="pt-margin-fill" style={{ width: `${Math.min(100, (calculatePositionMargin(p) / (totalMargin || 1)) * 100)}%` }} />
-                        </div>
-                      </div>
-                    </td>
-                    <td className="hide-mobile"><span className="pt-duration">{fmtDuration(now - p.entryTime)}</span></td>
+                    <td><span className="pt-margin-val">${calculatePositionMargin(p).toFixed(0)}</span></td>
+                    <td><span className="pt-mono pt-dim">{formatDateTime(p.entryTime)}</span></td>
+                    <td><span className="pt-duration">{fmtDuration(now - p.entryTime)}</span></td>
                     <td>
-                      <button
-                        onClick={() => onExitPosition(p)}
-                        className="pt-btn-exit-pos"
-                        style={{
-                          padding: '4px 8px',
-                          fontSize: '11px',
-                          background: 'rgba(248, 81, 73, 0.15)',
-                          border: '1px solid rgba(248, 81, 73, 0.3)',
-                          color: '#f85149',
-                          borderRadius: '4px',
-                          cursor: 'pointer',
-                          fontWeight: 600,
-                          transition: 'all 0.2s ease',
-                          whiteSpace: 'nowrap'
-                        }}
-                      >
-                        Exit
-                      </button>
+                      <button onClick={() => onExitPosition(p)} className="pt-btn-close">Close</button>
                     </td>
                   </tr>
-                  {showLadder && (
-                    <tr className="pt-ladder-row">
-                      <td colSpan={12}>
-                        <div className="pt-ladder">
-                          <div className="pt-ladder-head">
-                            <span className="pt-ladder-title">
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 20h16M7 16V8M12 16V4M17 16v-6" /></svg>
-                              Long scale-out ladder
-                            </span>
-                            <span className="pt-ladder-count">{ladderStage} / {exitLevels.length} slices exited</span>
-                          </div>
-                          <div className="pt-rungs">
-                            {exitLevels.map((lvl, i) => (
-                              <span
-                                key={i}
-                                className={`pt-rung ${i < ladderStage ? 'hit' : i === ladderStage ? 'next' : ''}`}
-                                title={`Level ${i + 1}: $${Number(lvl).toFixed(2)}${i < ladderStage ? ' — exited' : i === ladderStage ? ' — next' : ''}`}
-                              />
-                            ))}
-                          </div>
-                          <div className="pt-ladder-meta">
-                            <span>entry <b>${Number(p.entryBuyPrice).toFixed(2)}</b></span>
-                            {nextLevel != null && <span>next level <b style={{ color: 'var(--accent)' }}>${Number(nextLevel).toFixed(2)}</b></span>}
-                            <span>now <b>{p.currentBuyPrice != null ? `$${p.currentBuyPrice.toFixed(2)}` : '—'}</b></span>
-                            {rangeTop != null && <span>range top <b>${Number(rangeTop).toFixed(2)}</b></span>}
-                          </div>
-                        </div>
-                      </td>
-                    </tr>
-                  )}
-                  </React.Fragment>
                 );
               })}
             </tbody>
           </table>
         </div>
-        </>
       )}
     </div>
   );

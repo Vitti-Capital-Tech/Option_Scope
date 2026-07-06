@@ -2033,18 +2033,14 @@ body.light-theme .scanner-logs-body::-webkit-scrollbar-thumb:hover {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 5px 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg3);
+  padding: 0;
+  border: none;
+  background: transparent;
   font-size: 12px;
   color: var(--text-dim);
   flex-wrap: wrap;
 }
-.pt-statusbar.stale {
-  border-color: rgba(246, 70, 93, 0.45);
-  background: rgba(246, 70, 93, 0.06);
-}
+/* Stale = a subtle text cue (handled by .pt-status-fresh), not a filled box. */
 .pt-status-live {
   display: flex;
   align-items: center;
@@ -3454,8 +3450,10 @@ body.light-theme .pt-live-badge {
 .pt-history-row-1 {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px 16px;
   width: 100%;
-  position: relative;
   min-height: 36px;
 }
 
@@ -3466,9 +3464,6 @@ body.light-theme .pt-live-badge {
 }
 
 .pt-history-date-filter {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
   display: flex;
   align-items: center;
   gap: 4px;
@@ -3477,14 +3472,14 @@ body.light-theme .pt-live-badge {
   border-radius: 12px;
   border: 1px solid var(--border);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  z-index: 5;
 }
 
 .pt-history-row-2 {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 24px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px 24px;
   padding: 0 4px;
 }
 
@@ -5091,7 +5086,17 @@ body.light-theme .pt-btn-apply.active {
 
 /* Embedded tables: no outer card, tab bar owns the identity */
 .pt-embedded { background: transparent; }
-.pt-embedded-header { justify-content: flex-end; }
+
+/* Positions header: title left, live status + controls grouped right, one row */
+.pt-pos-header {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+}
+.pt-pos-header .pt-section-controls {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
 
 /* ── Stop-order status pill ── */
 .pt-stop-status {
@@ -5150,6 +5155,211 @@ body.light-theme .pt-btn-apply.active {
   overflow: hidden;
 }
 .pt-meter i { display: block; height: 100%; border-radius: 3px; }
+
+/* ── KPI strip: flat 5-cell row with hairline dividers ── */
+.pt-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 1px;
+  background: var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.pt-kpi-cell {
+  background: var(--bg2);
+  padding: 12px 18px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  justify-content: center;
+}
+.pt-kpi-cell.hero {
+  background: linear-gradient(180deg, rgba(240, 185, 11, 0.05), var(--bg2));
+}
+.pt-kpi-cell .pt-k-lbl {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.pt-kpi-cell .pt-k-lbl svg { opacity: 0.7; }
+.pt-kpi-cell .pt-k-val {
+  font-family: 'Inter', sans-serif;
+  font-variant-numeric: tabular-nums;
+  font-size: 19px;
+  font-weight: 750;
+  letter-spacing: -0.3px;
+  color: var(--text);
+}
+.pt-kpi-cell.hero .pt-k-val { font-size: 21px; }
+.pt-k-val.positive { color: var(--call); }
+.pt-k-val.negative { color: var(--put); }
+.pt-k-val.neutral { color: var(--text); }
+.pt-kpi-cell .pt-k-sub {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.pt-kpi-cell .pt-k-sub b { font-weight: 700; color: var(--text); }
+.pt-kpi-cell .pt-k-sub b.positive { color: var(--call); }
+.pt-kpi-cell .pt-k-sub b.negative { color: var(--put); }
+.pt-kpi-cell .pt-k-sub b.neutral { color: var(--text); }
+.pt-k-wr {
+  height: 4px;
+  background: var(--bg3);
+  border-radius: 2px;
+  overflow: hidden;
+  margin: 2px 0 1px;
+}
+.pt-k-wr i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), #fcd535);
+  transition: width 0.5s ease;
+}
+
+/* ── Lean (Delta-style) positions table ── */
+.pt-mono, .pt-lean tbody td, .pt-instrument {
+  font-family: ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+}
+.pt-lean tbody td {
+  font-variant-numeric: tabular-nums;
+  font-size: 12.5px;
+  vertical-align: middle;
+}
+
+/* Instrument label (leads the Position column in both tables) */
+.pt-instrument {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.2px;
+  white-space: nowrap;
+}
+
+.pt-pos-cell { display: flex; gap: 10px; align-items: center; }
+.pt-pos-id { display: flex; flex-direction: column; gap: 3px; }
+.pt-pos-meta { display: inline-flex; align-items: center; gap: 7px; }
+.pt-pos-note {
+  font-family: 'Inter', sans-serif;
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+
+/* Long / short value pairs */
+.pt-ls { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pt-ls-l { color: var(--call); font-weight: 600; }
+.pt-ls-s { color: var(--put); font-weight: 600; }
+.pt-ls-sep { color: var(--text-dim); opacity: 0.55; margin: 0 5px; }
+.pt-ls.dim .pt-ls-l,
+.pt-ls.dim .pt-ls-s { color: var(--text-dim); font-weight: 500; }
+
+/* Distance-to-exit cell */
+.pt-dist-trigger {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  white-space: nowrap;
+}
+.pt-dist-trigger.dim { color: var(--text-dim); font-weight: 600; }
+.pt-dist-away {
+  font-family: 'Inter', sans-serif;
+  font-size: 10px;
+  color: var(--text-dim);
+  align-self: flex-end;
+}
+
+.pt-margin-val { font-weight: 600; color: var(--text); }
+
+/* Scale-out ladder as a compact column cell */
+.pt-scaleout { display: flex; flex-direction: column; gap: 5px; min-width: 130px; }
+.pt-scaleout .pt-rung { height: 6px; }
+
+/* Dimmed mono cells (secondary numeric detail) */
+.pt-dim { color: var(--text-dim); }
+
+/* Order History lean cells */
+.pt-hist-time {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.pt-ratio { font-weight: 600; color: var(--text); }
+.pt-io { display: flex; flex-direction: column; gap: 2px; white-space: nowrap; }
+.pt-io .pt-ls-l { color: var(--call); font-weight: 600; }
+.pt-io .pt-ls-s { color: var(--put); font-weight: 600; }
+.pt-hist-margin {
+  font-family: 'Inter', sans-serif;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+/* Close button (mockup style) */
+.pt-btn-close {
+  font-family: 'Inter', sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 5px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  color: var(--put);
+  background: rgba(246, 70, 93, 0.13);
+  border: 1px solid rgba(246, 70, 93, 0.3);
+  transition: all 0.15s ease;
+}
+.pt-btn-close:hover {
+  background: var(--put);
+  color: #fff;
+  border-color: var(--put);
+}
+
+/* Long-only badge variant, to sit alongside call/put */
+.pt-type-badge.long {
+  color: var(--accent);
+  background: rgba(240, 185, 11, 0.1);
+  border: 1px solid rgba(240, 185, 11, 0.25);
+}
+
+/* ── Gross / Net text toggle (mockup style, gold active) ── */
+.pt-gn-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  font-family: 'Inter', sans-serif;
+  font-size: 12.5px;
+  font-weight: 700;
+}
+.pt-gn-opt {
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.15s;
+}
+.pt-gn-opt:hover { color: var(--text); }
+.pt-gn-opt.on { color: var(--accent); }
+.pt-gn-sep { color: var(--text-dim); opacity: 0.5; }
+
+/* ── Positions toolbar: title left, sort pill right ── */
+.pt-toolbar-title {
+  font-family: 'Inter', sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: 0.02em;
+}
+.pt-table-toolbar .pt-sort {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 5px 10px;
+  font-weight: 600;
+}
+.pt-table-toolbar .pt-sort > span { color: var(--text-dim); }
 
 @media (max-width: 900px) {
   .pt-filter-cluster { width: 100%; }
