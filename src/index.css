@@ -5000,6 +5000,57 @@ body.light-theme .pt-btn-apply.active {
 .pt-seg-btn:hover { color: var(--text); }
 .pt-seg-btn.on { background: var(--accent); color: #0d1117; }
 
+/* ── Spot session change ── */
+.pt-spot-chg { font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.pt-spot-chg.up { color: var(--call); }
+.pt-spot-chg.down { color: var(--put); }
+
+/* ── Account chip (avatar + name + LIVE badge) ── */
+.pt-account-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 12px;
+}
+.pt-account-avatar { color: var(--text-dim); flex-shrink: 0; }
+.pt-account-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+}
+.pt-account-edit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+  transition: color 0.2s;
+}
+.pt-account-edit:hover { color: var(--accent); }
+.pt-live-tag {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: #e3b341;
+  border: 1px solid #e3b341;
+  background: transparent;
+}
+.pt-live-tag.armed {
+  color: #0d1117;
+  background: #3fb950;
+  border-color: transparent;
+}
+
 /* ── Filter clusters (grouped, spaced) ── */
 .pt-filter-cluster {
   display: flex;
