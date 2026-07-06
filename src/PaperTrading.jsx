@@ -70,6 +70,28 @@ const safeParseLeg = (value) => {
   return null;
 };
 
+// Window 1 — the permanent, non-deletable first window. Auto-created (seeded from
+// the account's base/initial config) for any account that has no windows yet, so
+// the initial sizing/scaling values are always visible and editable. Spans the
+// full day by default (17:30 → 17:29 IST wraps ~24h) so it behaves like the base
+// config until the user narrows it and adds more windows.
+const makeFirstWindow = (cfg = {}) => ({
+  id: 'seed-window-1',
+  label: 'Window 1',
+  startTime: '17:30',
+  endTime: '17:29',
+  numberOfCalls: cfg.numberOfCalls ?? 3,
+  numberOfPuts: cfg.numberOfPuts ?? 3,
+  minLongDist: cfg.minLongDist ?? 500,
+  minStrikeDiff: cfg.minStrikeDiff ?? 800,
+  atmRatioScaling: cfg.atmRatioScaling ?? true,
+  atmRatioPctCall: cfg.atmRatioPctCall ?? 50,
+  atmRatioPctPut: cfg.atmRatioPctPut ?? 25,
+  spotDiff: cfg.spotDiff ?? 0.5,
+  isActive: true,
+  sort_order: 0,
+});
+
 export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const [accounts, setAccounts] = useState([]);
   const [activeAccountId, setActiveAccountId] = useState(null);
@@ -182,6 +204,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
   const underlying = config.underlying;
   const selExpiry = config.expiry;
+
+  // Always-current config in a ref so the schedule fetch (deps: activeAccountId
+  // only) can seed Window 1 from real values (see makeFirstWindow).
+  const configRef = useRef(config);
+  configRef.current = config;
 
   const [products, setProducts] = useState([]);
   const [expiries, setExpiries] = useState([]);
@@ -1083,7 +1110,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           isActive: s.is_active ?? true,
           sort_order: s.sort_order ?? 0,
         }));
-        setSchedules(mapped);
+        // Guarantee a permanent Window 1. Accounts with no windows get one
+        // seeded from base config (so the initial values are visible/editable);
+        // it persists on the next auto-save (lastSaved snapshot excludes it).
+        const finalList = mapped.length > 0
+          ? mapped
+          : [makeFirstWindow(configRef.current)];
+        setSchedules(finalList);
         lastSavedSchedulesRef.current = JSON.stringify(mapped.map(s => ({
           label: s.label,
           startTime: s.startTime,
@@ -2140,7 +2173,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                 exportCSV={exportCSV}
                 includeFees={includeFees}
                 schedules={schedules}
-                config={config}
               />
             </div>
           </>

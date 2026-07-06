@@ -20,8 +20,7 @@ export default function TradeHistoryTable({
   filteredWins,
   exportCSV,
   includeFees,
-  schedules = [],
-  config = null
+  schedules = []
 }) {
 
   const fmtDuration = (ms) => {
@@ -106,10 +105,9 @@ export default function TradeHistoryTable({
           </div>
         </div>
 
-        {/* Row 1.5: Capacity per window. The Base chip is the 24/7 backup (base
-            config values used whenever no time window is active); each time
-            window overrides during its range. */}
-        {(config || schedules.length > 0) && (
+        {/* Row 1.5: Per-window capacity (max calls/puts). One chip per window,
+            colored to match the Schedule Panel timeline. */}
+        {schedules.length > 0 && (
           <div className="pt-history-windows" style={{
             display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
             borderTop: '1px solid var(--border)', paddingTop: 12
@@ -117,24 +115,6 @@ export default function TradeHistoryTable({
             <span style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)', fontWeight: 700 }}>
               Window Capacity:
             </span>
-
-            {config && (
-              <div
-                title={`Base (24/7 backup) — max ${config.numberOfCalls} calls / ${config.numberOfPuts} puts. Used whenever no time window is active.`}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 6,
-                  background: 'var(--bg3)', border: '1px dashed var(--border)',
-                  borderRadius: 20, padding: '3px 10px',
-                }}
-              >
-                <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--text-dim)', flexShrink: 0 }} />
-                <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text)' }}>Base</span>
-                <span style={{ fontSize: '9px', fontWeight: 700, color: 'var(--text-dim)' }}>24/7</span>
-                <span style={{ fontSize: '10px', fontWeight: 600, color: 'var(--text-dim)' }}>
-                  C:{config.numberOfCalls} · P:{config.numberOfPuts}
-                </span>
-              </div>
-            )}
 
             {schedules.map((s, i) => {
               const dot = WINDOW_COLORS[i % WINDOW_COLORS.length];

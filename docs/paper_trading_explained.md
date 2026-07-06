@@ -704,7 +704,7 @@ Only the following 8 parameters are scheduled:
 All other filter settings (like `minIvDiff`, `exitType`, etc.) default back to the base account config.
 
 > [!NOTE]
-> **These 8 fields are not shown in the Control Panel filter bar.** They are set once at **account creation** (stored on `paper_trading_config` — the "base/initial config") and can be **overridden per time window** in the Schedule Panel. The base-config values act as the fixed **24/7 backup**: whenever the current IST time falls outside every window, the engine uses them (see [Fallback Behavior](#execution-timezones--evaluation)). There is no dedicated "default window" — the backup lives on the base config itself.
+> **These 8 fields are not shown in the Control Panel filter bar** — they are configured per time window in the Schedule Panel. Every account has a permanent **Window 1** that holds the account's initial values: it is **auto-created** (seeded from the account's `paper_trading_config` base values) for any account that has no windows yet, and it **cannot be deleted** (only Window 1 — Windows 2, 3, … are deletable). Window 1 is otherwise a normal window: its name, time range, and values are all editable, and it defaults to a full-day range (`17:30`→`17:29` IST). The base config still acts as the engine's gap fallback (see [Fallback Behavior](#execution-timezones--evaluation)); since Window 1 spans the full day by default, there are normally no gaps.
 
 ### Layout & UI
 - **Watchlist Style**: The configuration interface (`SchedulePanel.jsx`) features a compact, horizontal, inline-editable list styled like the Charts Watchlist. Users can edit window names, times, and overrides directly within the row.
@@ -818,12 +818,11 @@ A save only proceeds once all windows are non-overlapping. The overlap check han
 
 ### Window Capacity Row
 
-The Trade History header (`TradeHistoryTable.jsx`) shows a **Window Capacity** row above the Net Realized / Win-Loss / Export stats. It lists the max caps (`C:` = Max Open Calls, `P:` = Max Open Puts) for each capacity source:
+The Trade History header (`TradeHistoryTable.jsx`) shows a **Window Capacity** row above the Net Realized / Win-Loss / Export stats. It renders one chip per schedule window (Window 1, Window 2, Window 3, …) with the window's name and its max caps (`C:` = Max Open Calls, `P:` = Max Open Puts):
 
-- A **Base · 24/7** chip (dashed border) shows the base config caps — the backup used whenever no time window is active.
-- One chip per **time window**, colored with the **same palette and index order as the Schedule Panel timeline**, so a chip lines up visually with its band. Inactive windows are dimmed.
-- Hover tooltips show the full detail: name, time range (or "24/7 backup" for Base), and `max N calls / N puts`.
-- The row shows whenever a base config or any windows exist (independent of whether trades are present). `schedules` and `config` are passed down from `PaperTrading.jsx`.
+- Each chip's color dot uses the **same palette and index order as the Schedule Panel timeline**, so a chip lines up visually with its band. Inactive windows are dimmed.
+- Hover tooltips show the full detail: name, time range, and `max N calls / N puts`.
+- The row shows whenever any windows exist (independent of whether trades are present). `schedules` is passed down from `PaperTrading.jsx`.
 
 ### CSV Export
 

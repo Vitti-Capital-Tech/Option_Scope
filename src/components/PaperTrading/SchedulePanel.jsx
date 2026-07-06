@@ -608,42 +608,54 @@ export default function SchedulePanel({
                 </div>
               )}
 
-              {/* Quick Delete Trash Button */}
+              {/* Quick Delete Trash Button — hidden for Window 1 (permanent) */}
               <div className="schedule-item-block schedule-item-delete-block" style={{ justifyContent: 'center' }}>
                 <span className="schedule-item-label" style={{ opacity: 0 }}>Delete</span>
-                <button
-                  type="button"
-                  className="watch-delete-btn"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (s.isNew) {
-                      handleDelete(s.id);
-                    } else {
-                      setDeletingId(s.id);
-                    }
-                  }}
-                  style={{
-                    background: 'none', border: 'none', color: 'var(--text-dim)',
-                    cursor: 'pointer', display: 'flex', alignItems: 'center',
-                    padding: 5, borderRadius: 5, transition: 'all 0.15s',
-                    marginTop: 3
-                  }}
-                  onMouseOver={e => {
-                    e.currentTarget.style.color = '#f85149';
-                    e.currentTarget.style.background = 'rgba(248,81,73,0.1)';
-                  }}
-                  onMouseOut={e => {
-                    e.currentTarget.style.color = 'var(--text-dim)';
-                    e.currentTarget.style.background = 'none';
-                  }}
-                  title={s.isNew ? "Cancel window" : "Delete schedule window"}
-                >
-                  {s.isNew ? (
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-                  ) : (
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14H6L5 6" /><path d="M10 11v6M14 11v6" /><path d="M9 6V4h6v2" /></svg>
-                  )}
-                </button>
+                {i === 0 ? (
+                  <div
+                    title="Window 1 is permanent and cannot be deleted (it holds the account's default filters). You can still edit its time and values."
+                    style={{
+                      display: 'flex', alignItems: 'center', color: 'var(--border)',
+                      padding: 5, marginTop: 3, cursor: 'not-allowed',
+                    }}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="watch-delete-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (s.isNew) {
+                        handleDelete(s.id);
+                      } else {
+                        setDeletingId(s.id);
+                      }
+                    }}
+                    style={{
+                      background: 'none', border: 'none', color: 'var(--text-dim)',
+                      cursor: 'pointer', display: 'flex', alignItems: 'center',
+                      padding: 5, borderRadius: 5, transition: 'all 0.15s',
+                      marginTop: 3
+                    }}
+                    onMouseOver={e => {
+                      e.currentTarget.style.color = '#f85149';
+                      e.currentTarget.style.background = 'rgba(248,81,73,0.1)';
+                    }}
+                    onMouseOut={e => {
+                      e.currentTarget.style.color = 'var(--text-dim)';
+                      e.currentTarget.style.background = 'none';
+                    }}
+                    title={s.isNew ? "Cancel window" : "Delete schedule window"}
+                  >
+                    {s.isNew ? (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                    ) : (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14H6L5 6" /><path d="M10 11v6M14 11v6" /><path d="M9 6V4h6v2" /></svg>
+                    )}
+                  </button>
+                )}
               </div>
             </div>
           );
