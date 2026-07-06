@@ -142,6 +142,76 @@ scale-downs up to a minimum of 1 contract.
 intended sizing differs (e.g. you trade fixed contract counts), the mapping needs to
 be adjusted to your convention first.
 
+### Live exit model — resting index SL/TP (Sub-stage B)
+
+For **armed live accounts**, the engine's per-second simulated exits (short
+cheap-buyback, long ladder, ATM/ITM/OTM, partial scaling) are **bypassed** and
+replaced by exchange-resting, index-triggered stop orders. Paper and *disarmed*
+live accounts keep the simulated exits unchanged.
+
+- **One trigger level, shared by SL and TP:** derived from the account's
+  `exitType`/`exitPoints` vs the buy strike (ATM = buy strike; ITM/OTM = ± points).
+  Enforced on the exchange with `stop_trigger_method: spot_price` (the index).
+- **At entry:** after the long+short fill, punch the **short-leg SL** — a
+  `reduce_only` spot-triggered stop. Its trigger level is persisted on the position.
+- **When the short SL fills:** book the short exit and punch the **long-leg TP**
+  (`reduce_only`) at the *same* index level. Short always closes before the long.
+- **When the long TP fills:** book the long exit and close the position.
+- **Fill detection:** armed → poll `GET /v2/positions` once per cycle and watch each
+  leg's size drop to 0. Dry-run → the index crossing the trigger level *is* the
+  simulated fill (booked at live option quotes), so the whole SL→TP flow is
+  observable in logs (`🛑 LIVE SL armed`, `✂️ LIVE SHORT SL`, `🎯 LIVE LONG TP`)
+  without sending anything.
+- **Expiry:** left to Delta's cash settlement; the handler books any still-open
+  position as `Live Expiry Settlement` so no row lingers.
+
+All exit/stop orders are `reduce_only`; entry orders open the position. Bookkeeping
+(`trade_history` / `active_positions`) for live accounts is written from these fills.
+Known limitation: fills are booked at current option quotes (not the exact exchange
+fill price) — the 5-minute reconciliation flags gross drift.
+
+### Live position sizing — balance allocation (Sub-stage A)
+
+Live accounts size positions from the **live Delta USDT wallet balance**, not the
+paper `$200k` notional cap:
+
+- Each account has a **`balance_allocation_pct`** (default **90**, set at creation,
+  editable) — the share of wallet balance used for trading; the rest is buffer.
+- **max positions** = peak concurrent positions across the base config and all active
+  schedule windows (`max(numberOfCalls + numberOfPuts)`).
+- **part** = `(balance × allocation%) ÷ max positions`. At entry the spread is scaled
+  so its estimated margin is **≤ 1 part**. This replaces the `$200k` cap for live only.
+
+Paper accounts keep the `$200k` / 200× branch **unchanged** — the entire sizing branch
+is gated on `mode==='live' && live_enabled`. Dry-run logs the full breakdown
+(`💰 LIVE sizing…` and `💰 LIVE size…`) so the numbers can be validated before arming.
+The fractional-lot → integer-contract rounding still applies at order time.
+
+### IP whitelisting & the Verify proxy
+
+Delta API keys are IP-whitelisted. There are two distinct egress points:
+
+- **Engine (orders, balance, positions, stops):** calls Delta directly from the
+  server. Give that box a **static Elastic IP** and whitelist it. Done.
+- **Browser "Verify Connection":** by default routes through the Vercel `/api`
+  rewrite, so Delta sees **Vercel's dynamic egress IP** — an IP-locked key rejects
+  it (`ip_not_whitelisted_for_api_key`) and the IP keeps changing. This cannot be
+  fixed by whitelisting.
+
+To make Verify egress from the whitelisted server instead (Option B):
+
+1. Run the engine with **`DELTA_PROXY_PORT`** set (e.g. `8787`). `engine/proxyServer.js`
+   then forwards `/v2/*` to Delta verbatim from the server's IP. Set
+   `DELTA_PROXY_ALLOW_ORIGIN=https://trade.vitticapital.ai`.
+2. Put **TLS + a stable hostname** in front of it (nginx/Caddy on the Elastic IP),
+   e.g. `https://delta-proxy.vitticapital.ai`. Caddy gives automatic HTTPS.
+3. Set the frontend env **`VITE_DELTA_PROXY_URL=https://delta-proxy.vitticapital.ai`**
+   (no path suffix) and redeploy. Verify now goes browser → your server → Delta,
+   egressing from the whitelisted IP. Leaving the var unset keeps the old Vercel path.
+
+The proxy only relays `/v2/*` to `api.india.delta.exchange` (not an open proxy) and
+forwards the signed headers unchanged, so the browser's HMAC stays valid.
+
 ### Rollout checklist
 
 1. Set `SUPABASE_SERVICE_ROLE_KEY` in the engine env; keep `DELTA_LIVE_DRYRUN=true`.

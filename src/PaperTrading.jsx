@@ -44,7 +44,8 @@ const ACCOUNT_CONFIG_DEFAULTS = {
   exitPoints: 0,
   shortExitPrice: 1.1,
   longExitSlices: 10,
-  variableExitSlices: false
+  variableExitSlices: false,
+  balanceAllocationPct: 90
 };
 
 const normalizeAccountDefaultConfig = (config = {}) => {
@@ -132,7 +133,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       exitPoints: 0,
       shortExitPrice: 1.1,
       longExitSlices: 10,
-      variableExitSlices: false
+      variableExitSlices: false,
+      balanceAllocationPct: 90
     }
   });
 
@@ -583,7 +585,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       exitPoints: data.exitPoints,
       shortExitPrice: data.shortExitPrice,
       longExitSlices: data.longExitSlices,
-      variableExitSlices: data.variableExitSlices
+      variableExitSlices: data.variableExitSlices,
+      balanceAllocationPct: data.balanceAllocationPct
     });
 
     setIsCreatingAccount(true);
@@ -632,7 +635,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           leg_swap_premium: 0,
           short_exit_price: data.shortExitPrice ?? 1.1,
           long_exit_slices: data.longExitSlices ?? 10,
-          variable_exit_slices: data.variableExitSlices ?? false
+          variable_exit_slices: data.variableExitSlices ?? false,
+          balance_allocation_pct: data.balanceAllocationPct ?? 90
         }]);
 
         // For live accounts, store the (encrypted) Delta credentials via RPC.
@@ -704,7 +708,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       mode: activeAccount.mode || 'paper',
       apiKey: '',
       apiSecret: '',
-      credVerified: false
+      credVerified: false,
+      balanceAllocationPct: activeAccount.default_config?.balanceAllocationPct ?? 90
     });
     setEditCredentialsMeta(null);
     setIsEditModalOpen(true);
@@ -731,6 +736,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         ? { name: trimmedName, mode: 'live' }
         : { name: trimmedName, mode: 'paper', live_enabled: false };
 
+      // Persist balance allocation % into default_config (used by live sizing).
+      const allocPct = Number.isFinite(data.balanceAllocationPct) ? data.balanceAllocationPct : 90;
+      const activeAccount = accounts.find(a => a.id === activeAccountId);
+      if (activeAccount?.default_config) {
+        updatePayload.default_config = { ...activeAccount.default_config, balanceAllocationPct: allocPct };
+      }
+
       setAccounts(prev => prev.map(a => a.id === activeAccountId ? { ...a, ...updatePayload } : a));
       const { error } = await supabase
         .from('paper_trading_accounts')
@@ -742,6 +754,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         alert(`Failed to update account: ${error.message}`);
         return;
       }
+
+      // Mirror allocation into paper_trading_config so the engine reads it live.
+      await supabase.from('paper_trading_config')
+        .update({ balance_allocation_pct: allocPct, updated_at: new Date().toISOString() })
+        .eq('account_id', activeAccountId);
 
       // If live and a new key/secret were entered, replace stored credentials.
       if (accountMode === 'live' && data.apiKey?.trim() && data.apiSecret?.trim()) {
