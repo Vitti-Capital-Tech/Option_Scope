@@ -29,7 +29,7 @@ export default function FirstAccountCard({
           </div>
           <h3 className="first-account-title">Create Your First Account</h3>
           <p className="first-account-desc">
-            To start paper trading, you must create a trading account first. Set up your account name and default strategy filters below. The sizing &amp; scaling values (open calls/puts, spread width, spot distance, ATM scaling, re-entry step) seed your permanent <strong>Default (24/7) window</strong> — you can add time-based windows later.
+            To start paper trading, you must create a trading account first. Set up your account name and default strategy filters below.
           </p>
         </div>
 
@@ -117,7 +117,7 @@ export default function FirstAccountCard({
 
             {/* Right Column: Default Strategy Filters */}
             <div className="first-account-col-right">
-              <h4 className="first-account-section-title">Default Strategy Filters &amp; Window</h4>
+              <h4 className="first-account-section-title">Default Strategy Filters</h4>
 
               <div className="first-account-row">
                 <div className="first-account-form-group">

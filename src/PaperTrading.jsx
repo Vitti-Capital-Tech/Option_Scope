@@ -70,45 +70,6 @@ const safeParseLeg = (value) => {
   return null;
 };
 
-// The 8 windowed strategy fields live on schedule windows (not base config). The
-// permanent "Default" window is the 24/7 fallback used whenever no time-bound
-// window is active.
-const makeDefaultWindow = (cfg = {}) => ({
-  id: 'default',
-  label: 'Default',
-  isDefault: true,
-  startTime: '00:00',
-  endTime: '00:00',
-  numberOfCalls: cfg.numberOfCalls ?? 3,
-  numberOfPuts: cfg.numberOfPuts ?? 3,
-  minLongDist: cfg.minLongDist ?? 500,
-  minStrikeDiff: cfg.minStrikeDiff ?? 800,
-  atmRatioScaling: cfg.atmRatioScaling ?? true,
-  atmRatioPctCall: cfg.atmRatioPctCall ?? 50,
-  atmRatioPctPut: cfg.atmRatioPctPut ?? 25,
-  spotDiff: cfg.spotDiff ?? 0.5,
-  isActive: true,
-  sort_order: 0,
-});
-
-// Canonical JSON snapshot of a schedules list — used to detect real changes
-// before auto-saving. Kept identical across fetch/save/auto-save paths.
-const scheduleSnapshot = (list) => JSON.stringify((list || []).map(s => ({
-  label: s.label,
-  isDefault: !!s.isDefault,
-  startTime: s.startTime,
-  endTime: s.endTime,
-  numberOfCalls: s.numberOfCalls,
-  numberOfPuts: s.numberOfPuts,
-  minLongDist: s.minLongDist,
-  minStrikeDiff: s.minStrikeDiff,
-  atmRatioScaling: s.atmRatioScaling,
-  atmRatioPctCall: s.atmRatioPctCall,
-  atmRatioPctPut: s.atmRatioPctPut,
-  spotDiff: s.spotDiff,
-  isActive: s.isActive
-})));
-
 export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const [accounts, setAccounts] = useState([]);
   const [activeAccountId, setActiveAccountId] = useState(null);
@@ -454,11 +415,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const latestSpotPriceRef = useRef(null);
   const lastDaysToExpiryRef = useRef(null);
   const lastSavedSchedulesRef = useRef(null);
-  // Always-current config, so schedule fetch (which only depends on
-  // activeAccountId) can seed a Default window from real values without
-  // re-subscribing on every config change.
-  const configRef = useRef(config);
-  useEffect(() => { configRef.current = config; }, [config]);
 
   const flushTickerBuffer = useCallback(() => {
     flushTimerRef.current = null;
@@ -682,28 +638,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           variable_exit_slices: data.variableExitSlices ?? false,
           balance_allocation_pct: data.balanceAllocationPct ?? 90
         }]);
-
-        // Seed the permanent Default (24/7) window from the create form. This is
-        // where the 8 windowed fields now live; the engine falls back to it
-        // whenever no time-bound window is active.
-        const { error: schedErr } = await supabase.from('paper_trading_schedules').insert([{
-          account_id: accData.id,
-          label: 'Default',
-          is_default: true,
-          start_time: '00:00',
-          end_time: '00:00',
-          number_of_calls: data.numberOfCalls ?? 3,
-          number_of_puts: data.numberOfPuts ?? 3,
-          min_long_dist: data.minLongDist ?? 500,
-          min_strike_diff: data.minStrikeDiff ?? 800,
-          atm_ratio_scaling: data.atmRatioScaling ?? true,
-          atm_ratio_distance_call: data.atmRatioPctCall ?? 50,
-          atm_ratio_distance_put: data.atmRatioPctPut ?? 25,
-          spot_diff: data.spotDiff ?? 0.5,
-          is_active: true,
-          sort_order: 0,
-        }]);
-        if (schedErr) console.error('Failed to create default window:', schedErr);
 
         // For live accounts, store the (encrypted) Delta credentials via RPC.
         if (accountMode === 'live' && data.apiKey?.trim() && data.apiSecret?.trim()) {
@@ -930,8 +864,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     }
   }, [activeAccountId, configDbId]);
 
-  // The 8 windowed fields (calls/puts, spread width, spot distance, ATM scaling +
-  // call/put %, re-entry step) are configured per schedule window, not here.
+  // The 8 sizing/scaling fields (calls/puts, spread width, spot distance, ATM
+  // scaling + call/put %, re-entry step) are not shown in the Control Panel.
+  // They are set at account creation (base config = the 24/7 backup) and
+  // overridden per time window in the Schedule Panel.
   const FILTER_KEYS = [
     'minIvDiff',
     'maxRatioDeviation',
@@ -1134,7 +1070,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         const mapped = data.map(s => ({
           id: s.id,
           label: s.label || 'Window',
-          isDefault: s.is_default ?? false,
           startTime: s.start_time ? s.start_time.substring(0, 5) : '17:30',
           endTime: s.end_time ? s.end_time.substring(0, 5) : '17:29',
           numberOfCalls: s.number_of_calls ?? 3,
@@ -1148,14 +1083,21 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           isActive: s.is_active ?? true,
           sort_order: s.sort_order ?? 0,
         }));
-        // Guarantee a permanent Default (24/7) window. Legacy accounts whose DB
-        // backfill hasn't run get one synthesized from base config; it persists
-        // on the next auto-save (lastSaved snapshot excludes it below).
-        const finalList = mapped.some(s => s.isDefault)
-          ? mapped
-          : [makeDefaultWindow(configRef.current), ...mapped];
-        setSchedules(finalList);
-        lastSavedSchedulesRef.current = scheduleSnapshot(mapped);
+        setSchedules(mapped);
+        lastSavedSchedulesRef.current = JSON.stringify(mapped.map(s => ({
+          label: s.label,
+          startTime: s.startTime,
+          endTime: s.endTime,
+          numberOfCalls: s.numberOfCalls,
+          numberOfPuts: s.numberOfPuts,
+          minLongDist: s.minLongDist,
+          minStrikeDiff: s.minStrikeDiff,
+          atmRatioScaling: s.atmRatioScaling,
+          atmRatioPctCall: s.atmRatioPctCall,
+          atmRatioPctPut: s.atmRatioPctPut,
+          spotDiff: s.spotDiff,
+          isActive: s.isActive
+        })));
       }
     } catch (e) { console.error('Schedule fetch error', e); }
   }, [activeAccountId]);
@@ -1167,14 +1109,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       const { error: delErr } = await supabase.from('paper_trading_schedules').delete().eq('account_id', activeAccountId);
       if (delErr) console.error('Delete schedules error:', delErr);
       if (schedules.length > 0) {
-        // Default window always sorts first (sort_order 0). Time-bound windows follow.
-        const ordered = [...schedules].sort((a, b) => (b.isDefault ? 1 : 0) - (a.isDefault ? 1 : 0));
-        const rows = ordered.map((s, i) => ({
+        const rows = schedules.map((s, i) => ({
           account_id: activeAccountId,
-          label: s.isDefault ? 'Default' : (s.label || 'Window'),
-          is_default: !!s.isDefault,
-          start_time: s.isDefault ? '00:00' : s.startTime,
-          end_time: s.isDefault ? '00:00' : s.endTime,
+          label: s.label || 'Window',
+          start_time: s.startTime,
+          end_time: s.endTime,
           number_of_calls: s.numberOfCalls ?? 3,
           number_of_puts: s.numberOfPuts ?? 3,
           min_long_dist: s.minLongDist ?? 500,
@@ -1183,7 +1122,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           atm_ratio_distance_call: s.atmRatioPctCall ?? 50,
           atm_ratio_distance_put: s.atmRatioPctPut ?? 25,
           spot_diff: s.spotDiff ?? 0.5,
-          is_active: s.isDefault ? true : (s.isActive ?? true),
+          is_active: s.isActive ?? true,
           sort_order: i,
           updated_at: new Date().toISOString(),
         }));
@@ -1191,7 +1130,21 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         if (insErr) console.error('Insert schedules error:', insErr);
       }
 
-      lastSavedSchedulesRef.current = scheduleSnapshot(schedules);
+      const savedJson = JSON.stringify(schedules.map(s => ({
+        label: s.label,
+        startTime: s.startTime,
+        endTime: s.endTime,
+        numberOfCalls: s.numberOfCalls,
+        numberOfPuts: s.numberOfPuts,
+        minLongDist: s.minLongDist,
+        minStrikeDiff: s.minStrikeDiff,
+        atmRatioScaling: s.atmRatioScaling,
+        atmRatioPctCall: s.atmRatioPctCall,
+        atmRatioPctPut: s.atmRatioPctPut,
+        spotDiff: s.spotDiff,
+        isActive: s.isActive
+      })));
+      lastSavedSchedulesRef.current = savedJson;
 
       await fetchSupabaseSchedules();
     } catch (e) { console.error('Schedule save error', e); }
@@ -1209,14 +1162,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       return h * 60 + m;
     };
     const checkOverlapLocal = (list, current) => {
-      if (current.isDefault || !current.isActive) return null;
+      if (!current.isActive) return null;
       const curStart = toMin(current.startTime);
       const curEnd = toMin(current.endTime);
       const curIsOvernight = curStart > curEnd;
       const overlaps = (s1, e1, s2, e2) => Math.max(s1, s2) < Math.min(e1, e2);
 
       for (const s of list) {
-        if (s.id === current.id || s.isDefault || !s.isActive) continue;
+        if (s.id === current.id || !s.isActive) continue;
         const start = toMin(s.startTime);
         const end = toMin(s.endTime);
         const isOvernight = start > end;
@@ -1243,7 +1196,20 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     const hasOverlap = schedules.some(s => s.isActive && checkOverlapLocal(schedules, s) !== null);
     if (hasOverlap) return; // Do not auto-save if they overlap
 
-    const currentJson = scheduleSnapshot(schedules);
+    const currentJson = JSON.stringify(schedules.map(s => ({
+      label: s.label,
+      startTime: s.startTime,
+      endTime: s.endTime,
+      numberOfCalls: s.numberOfCalls,
+      numberOfPuts: s.numberOfPuts,
+      minLongDist: s.minLongDist,
+      minStrikeDiff: s.minStrikeDiff,
+      atmRatioScaling: s.atmRatioScaling,
+      atmRatioPctCall: s.atmRatioPctCall,
+      atmRatioPctPut: s.atmRatioPctPut,
+      spotDiff: s.spotDiff,
+      isActive: s.isActive
+    })));
 
     if (lastSavedSchedulesRef.current === currentJson) {
       return; // Skip if it matches the DB version
@@ -2174,6 +2140,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                 exportCSV={exportCSV}
                 includeFees={includeFees}
                 schedules={schedules}
+                config={config}
               />
             </div>
           </>

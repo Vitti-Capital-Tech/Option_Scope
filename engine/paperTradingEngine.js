@@ -307,7 +307,6 @@ async function startSingleAccountEngine(account) {
           atmRatioPctPut: s.atm_ratio_distance_put ?? 25,
           spotDiff: s.spot_diff ?? 0.5,
           isActive: s.is_active ?? true,
-          isDefault: s.is_default ?? false,
         }));
       }
     } catch (e) { logError(`[${accountState.name}] Schedule fetch error`, e); }
@@ -452,19 +451,13 @@ async function startSingleAccountEngine(account) {
 
   // ── Core strategy evaluation (Phase 2) ────────────────────────────────
 
-  // Returns the schedule window in effect for the current IST time (UTC + 5:30).
-  // A time-bound (non-default) active window takes precedence; if none match, the
-  // permanent Default window (is_default) is the 24/7 fallback. Returns null only
-  // for legacy accounts that have no windows at all (engine then falls back to
-  // base config).
+  // Returns active schedule window for current IST time (UTC + 5:30), or null if none match
   function getActiveSchedule() {
     const now = new Date();
     // Convert current UTC time to IST (UTC + 5:30)
     const istMin = (now.getUTCHours() * 60 + now.getUTCMinutes() + 330) % 1440;
 
-    let defaultWin = null;
     for (const s of schedules) {
-      if (s.isDefault) { defaultWin = s; continue; }
       if (!s.isActive) continue;
       const [sh, sm] = s.startTime.split(':').map(Number);
       const [eh, em] = s.endTime.split(':').map(Number);
@@ -477,21 +470,18 @@ async function startSingleAccountEngine(account) {
         if (istMin >= startMin && istMin < endMin) return s;
       }
     }
-    return defaultWin;
+    return null;
   }
 
   // Peak concurrent positions the account can hold — the max of (calls + puts)
-  // across every window (the always-on Default plus each active time-bound
-  // window). Used to divide the allocated balance into equal "parts" (1 part of
-  // margin per position). Falls back to base config only for legacy accounts
-  // that have no windows.
+  // across the base config and every active schedule window. Used to divide the
+  // allocated balance into equal "parts" (1 part of margin per position).
   function computeMaxPositions() {
-    let mx = 0;
+    let mx = (config.numberOfCalls || 0) + (config.numberOfPuts || 0);
     for (const s of schedules) {
-      if (!s.isDefault && !s.isActive) continue;
+      if (!s.isActive) continue;
       mx = Math.max(mx, (s.numberOfCalls || 0) + (s.numberOfPuts || 0));
     }
-    if (mx === 0) mx = (config.numberOfCalls || 0) + (config.numberOfPuts || 0);
     return Math.max(1, mx);
   }
 
