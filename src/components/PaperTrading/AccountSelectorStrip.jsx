@@ -1,5 +1,28 @@
 import React, { useState, useEffect, useRef } from 'react';
 
+function LiveBadge({ account }) {
+  if (!account || account.mode !== 'live') return null;
+  const armed = !!account.live_enabled;
+  return (
+    <span
+      title={armed ? 'Live — real orders armed' : 'Live — credentials linked, orders disarmed'}
+      style={{
+        fontSize: 9,
+        fontWeight: 700,
+        letterSpacing: '0.06em',
+        padding: '1px 5px',
+        borderRadius: 4,
+        marginLeft: 6,
+        color: armed ? '#0d1117' : '#e3b341',
+        background: armed ? '#3fb950' : 'transparent',
+        border: armed ? 'none' : '1px solid #e3b341'
+      }}
+    >
+      {armed ? 'LIVE ●' : 'LIVE'}
+    </span>
+  );
+}
+
 export default function AccountSelectorStrip({
   accounts,
   activeAccountId,
@@ -47,6 +70,7 @@ export default function AccountSelectorStrip({
                 <circle cx="12" cy="7" r="4"></circle>
               </svg>
               <span className="account-dropdown-name">{activeAccount?.name || 'Select Account'}</span>
+              <LiveBadge account={activeAccount} />
             </div>
             <svg 
               className="account-chevron-icon" 
@@ -87,6 +111,7 @@ export default function AccountSelectorStrip({
                           <line x1="9" y1="3" x2="9" y2="21"></line>
                         </svg>
                         <span>{acc.name}</span>
+                        <LiveBadge account={acc} />
                       </div>
                       {isSelected && (
                         <svg className="account-selected-checkmark" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="3">

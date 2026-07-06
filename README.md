@@ -9,6 +9,7 @@ The app is built around four workflows:
 - **Charts**: Monitor call, put, or combined premium structures with live candles, Greeks, and alerting.
 - **Ratio Spread Scanner**: A standalone options discovery scanner. Discovers call/put ratio spread opportunities using lot-size-aware delta notional alignment and execution-realistic pricing (Long @ Ask, Short @ Bid). Persists configuration locally in `localStorage` independent of Paper Trading database states. Features real-time ATM projections displaying the **At ATM Ask/Bid** and the projected **At ATM P&L** directly from the live options chain, mapped to the true market ATM strike. When the exact ATM or derived OTM strike is missing from the live feed, the system automatically falls back to the **nearest available strike** within a tight asset-specific tolerance (**`500`** points for BTC / **`50`** points for ETH) under the same contract expiry.
 - **Paper Trading**: Scoped multi-account simulation environment. Features custom React modals to create, edit (renaming via `react-hook-form` validation), and delete accounts (complete with active position safety warnings). Live PnL is based on immediate liquidation values, configurable exit filters (ATM, ITM, OTM with points-based thresholds), dynamic portfolio rotation, expiry settlement, IV tracking, and CSV exports.
+- **Live Account Linking + Execution**: An account can be switched to `live` mode and linked to a real Delta Exchange account. API credentials are verified in-browser and stored **encrypted at rest** (pgcrypto + Supabase Vault); the raw secret is never readable by the browser and only the headless engine (service role) can decrypt it. The engine places **real limit orders** at every entry/exit point, gated by a global dry-run flag (`DELTA_LIVE_DRYRUN`, default ON) and a per-account kill-switch (`live_enabled`) — so no real order is sent until you validate the dry-run log and explicitly arm the account. See [docs/live_trading.md](docs/live_trading.md).
 
 ## Key Features
 
@@ -58,3 +59,4 @@ Detailed design documentation is available in the `docs` folder:
 - [Option Premium Charts Explained](docs/charts_explained.md)
 - [Ratio Spread Scanner Explained](docs/ratio_spread_explained.md)
 - [Paper Trading Engine Explained](docs/paper_trading_explained.md)
+- [Live Trading — Linking a Delta Exchange Account](docs/live_trading.md)

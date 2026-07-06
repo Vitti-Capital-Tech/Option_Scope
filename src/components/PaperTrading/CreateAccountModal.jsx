@@ -1,6 +1,7 @@
 import React from 'react';
 import CustomSelect from '../common/CustomSelect';
 import CustomInput from '../common/CustomInput';
+import DeltaCredentialsSection from './DeltaCredentialsSection';
 
 export default function CreateAccountModal({
   isOpen,
@@ -53,6 +54,8 @@ export default function CreateAccountModal({
                 </span>
               )}
             </div>
+
+            <DeltaCredentialsSection register={register} watch={watch} setValue={setValue} />
 
             <div style={{ display: 'flex', gap: '16px' }}>
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
