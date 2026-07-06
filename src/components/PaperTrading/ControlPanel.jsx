@@ -121,17 +121,12 @@ export default function ControlPanel({
         <div className={`pt-filters-container ${isFiltersCollapsed ? 'collapsed' : 'expanded'}`}>
           <span className="pt-control-label">Filters</span>
           {[
-            { label: 'Min Spread Width', key: 'minStrikeDiff', width: 110, step: '50', prefix: '$' },
             { label: 'Min IV Edge', key: 'minIvDiff', width: 100, step: '0.25', suffix: '%' },
             { label: 'Max Delta Deviation', key: 'maxRatioDeviation', width: 110, step: '0.01' },
             { label: 'Min Short Premium', key: 'minSellPremium', width: 110, prefix: '$' },
             { label: 'Max Net Debit', key: 'maxNetPremium', width: 110, prefix: '$' },
-            { label: 'Min Spot Distance', key: 'minLongDist', width: 110, step: '50', prefix: '$' },
             { label: 'Max Short Ratio', key: 'maxSellQty', width: 110, step: '0.25', prefix: '1:' },
             { label: 'Min Days to Expiry', key: 'daysToExpiry', width: 100 },
-            { label: 'Max Open Calls', key: 'numberOfCalls', width: 100 },
-            { label: 'Max Open Puts', key: 'numberOfPuts', width: 100 },
-            { label: 'Re-entry Spot Step', key: 'spotDiff', width: 100, step: '0.1', suffix: '%' },
             { label: 'Short Exit Price', key: 'shortExitPrice', width: 100, step: '0.1', prefix: '$' }
           ].map(({ label, key, width, step, prefix, suffix }) => (
             <div key={key} className="form-group">
@@ -173,26 +168,6 @@ export default function ControlPanel({
                 onChange={e => updateDraftConfig('exitPoints', Number(e.target.value))} />
             </div>
           )}
-          <div key="atmRatioScaling" className="form-group" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <input type="checkbox" id="atmRatioScaling" checked={draftConfig?.atmRatioScaling ?? false}
-              onChange={e => updateDraftConfig('atmRatioScaling', e.target.checked)} />
-            <label htmlFor="atmRatioScaling" style={{ marginBottom: 0, cursor: 'pointer' }}>Dynamic ATM Scaling</label>
-          </div>
-          {draftConfig?.atmRatioScaling && (
-            <>
-              <div key="atmRatioPctCall" className="form-group">
-                <label style={{ marginBottom: 0 }}>Call Scaling</label>
-                <CustomInput type="number" step="1" suffix="%" showStepper width={100} value={draftConfig.atmRatioPctCall ?? 50}
-                  onChange={e => updateDraftConfig('atmRatioPctCall', Number(e.target.value))} />
-              </div>
-              <div key="atmRatioPctPut" className="form-group">
-                <label style={{ marginBottom: 0 }}>Put Scaling</label>
-                <CustomInput type="number" step="1" suffix="%" showStepper width={100} value={draftConfig.atmRatioPctPut ?? 25}
-                  onChange={e => updateDraftConfig('atmRatioPctPut', Number(e.target.value))} />
-              </div>
-            </>
-          )}
-
           {/* Apply, Cancel & Reset Buttons */}
           <div className="pt-filter-actions">
             <button

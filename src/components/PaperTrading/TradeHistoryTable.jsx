@@ -3,6 +3,13 @@ import { fmtExpiry } from '../../api';
 import { formatDateTime } from '../../scannerUtils';
 import CustomInput from '../common/CustomInput';
 
+// Same palette as the schedule timeline so the capacity chips line up visually
+// with the windows shown in SchedulePanel.
+const WINDOW_COLORS = [
+  '#00d9a3', '#2f81f7', '#e3b341', '#ff2ebd', '#f85149',
+  '#a371f7', '#ffa657', '#3fb950', '#79c0ff', '#ff9a8b',
+];
+
 export default function TradeHistoryTable({
   filteredTradeHistory,
   historyFilterDate,
@@ -12,7 +19,8 @@ export default function TradeHistoryTable({
   filteredRealizedPnl,
   filteredWins,
   exportCSV,
-  includeFees
+  includeFees,
+  schedules = []
 }) {
 
   const fmtDuration = (ms) => {
@@ -96,6 +104,40 @@ export default function TradeHistoryTable({
             </button>
           </div>
         </div>
+
+        {/* Row 1.5: Per-window capacity (max calls/puts) */}
+        {schedules.length > 0 && (
+          <div className="pt-history-windows" style={{
+            display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+            borderTop: '1px solid var(--border)', paddingTop: 12
+          }}>
+            <span style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)', fontWeight: 700 }}>
+              Window Capacity:
+            </span>
+            {schedules.map((s, i) => {
+              const dot = s.isDefault ? 'var(--text-dim)' : WINDOW_COLORS[i % WINDOW_COLORS.length];
+              const name = s.isDefault ? 'Default' : (s.label || `Window ${i + 1}`);
+              return (
+                <div
+                  key={s.id ?? i}
+                  title={`${name}${s.isDefault ? ' (24/7)' : ` (${(s.startTime || '').slice(0, 5)}–${(s.endTime || '').slice(0, 5)} IST)`} — max ${s.numberOfCalls} calls / ${s.numberOfPuts} puts${s.isActive ? '' : ' · inactive'}`}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 6,
+                    background: 'var(--bg3)', border: '1px solid var(--border)',
+                    borderRadius: 20, padding: '3px 10px',
+                    opacity: (s.isDefault || s.isActive) ? 1 : 0.45,
+                  }}
+                >
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: dot, flexShrink: 0 }} />
+                  <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text)' }}>{name}</span>
+                  <span style={{ fontSize: '10px', fontWeight: 600, color: 'var(--text-dim)' }}>
+                    C:{s.numberOfCalls} · P:{s.numberOfPuts}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         {/* Row 2: Stats and Export */}
         {filteredTradeHistory.length > 0 && (

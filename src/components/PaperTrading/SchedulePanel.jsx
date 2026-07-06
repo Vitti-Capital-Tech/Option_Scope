@@ -35,7 +35,7 @@ function formatMin(m) {
 function getUnoccupiedSlots(schedules, excludeId = null) {
   const mins = new Array(1440).fill(false);
   schedules.forEach(s => {
-    if (!s.isActive || s.id === excludeId) return;
+    if (s.isDefault || !s.isActive || s.id === excludeId) return;
     const start = toMin(s.startTime);
     const end = toMin(s.endTime);
     if (start > end) {
@@ -82,13 +82,13 @@ function getUnoccupiedSlots(schedules, excludeId = null) {
 
 // Check if current window overlaps with any other active window
 function checkOverlap(schedules, current) {
-  if (!current.isActive) return null;
+  if (current.isDefault || !current.isActive) return null;
   const curStart = toMin(current.startTime);
   const curEnd = toMin(current.endTime);
   const curIsOvernight = curStart > curEnd;
 
   for (const s of schedules) {
-    if (s.id === current.id || !s.isActive) continue;
+    if (s.id === current.id || s.isDefault || !s.isActive) continue;
     const start = toMin(s.startTime);
     const end = toMin(s.endTime);
     const isOvernight = start > end;
@@ -221,6 +221,23 @@ export default function SchedulePanel({
     return (
       <div className="schedule-timeline-container">
         <div className="schedule-timeline-bar">
+          {/* Default (24/7) background band — the fallback whenever no time-bound
+              window is active. Painted first so specific windows layer on top. */}
+          {schedules.some(s => s.isDefault) && (
+            <div
+              title="Default window (always active, 24/7)"
+              style={{
+                position: 'absolute', left: 0, right: 0, top: 0, bottom: 0,
+                background: 'var(--text-dim)', opacity: 0.14,
+                display: 'flex', alignItems: 'center', paddingLeft: 6,
+              }}
+            >
+              <span style={{ fontSize: 9, fontWeight: 800, color: 'var(--text-dim)' }}>
+                Default · 24/7
+              </span>
+            </div>
+          )}
+
           {/* Current Time Indicator line */}
           <div
             className="timeline-current-time-indicator"
@@ -230,7 +247,7 @@ export default function SchedulePanel({
 
           {/* Schedule blocks */}
           {schedules.map((s, i) => {
-            if (!s.isActive) return null;
+            if (s.isDefault || !s.isActive) return null;
             const startMin = toMin(s.startTime);
             const endMin = toMin(s.endTime);
             const color = WINDOW_COLORS[i % WINDOW_COLORS.length];
@@ -413,39 +430,68 @@ export default function SchedulePanel({
             <div key={s.id} className={`schedule-item ${s.isActive ? '' : 'inactive'}`} style={{
               borderLeft: `4px solid ${s.isActive ? color : 'var(--border)'}`,
             }}>
-              {/* Window Label */}
+              {/* Window Label — fixed for the Default window */}
               <div className="schedule-item-block schedule-item-name-block">
                 <span className="schedule-item-label">Window Name</span>
-                <CustomInput
-                  type="text"
-                  className="schedule-inline-input"
-                  value={s.label}
-                  onChange={e => handleChange(s.id, 'label', e.target.value)}
-                  placeholder="e.g. Night Window"
-                />
+                {s.isDefault ? (
+                  <div className="schedule-inline-input" style={{
+                    display: 'flex', alignItems: 'center', gap: 6,
+                    fontSize: 12, fontWeight: 700, color: 'var(--accent)',
+                    height: 30, padding: '0 10px', boxSizing: 'border-box',
+                    background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: 5,
+                  }} title="The Default window is always active and cannot be deleted. It applies whenever no other window covers the current time.">
+                    Default
+                    <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-dim)' }}>24/7</span>
+                  </div>
+                ) : (
+                  <CustomInput
+                    type="text"
+                    className="schedule-inline-input"
+                    value={s.label}
+                    onChange={e => handleChange(s.id, 'label', e.target.value)}
+                    placeholder="e.g. Night Window"
+                  />
+                )}
               </div>
 
-              {/* Start Time */}
-              <div className="schedule-item-block schedule-item-time-block">
-                <span className="schedule-item-label">Start Time (IST)</span>
-                <CustomInput
-                  type="time"
-                  className="schedule-inline-input"
-                  value={cleanTime(s.startTime)}
-                  onChange={e => handleChange(s.id, 'startTime', e.target.value)}
-                />
-              </div>
+              {s.isDefault ? (
+                /* Default has no time range — it is the 24/7 fallback */
+                <div className="schedule-item-block schedule-item-time-block" style={{ flex: '1 1 auto' }}>
+                  <span className="schedule-item-label">Active Time (IST)</span>
+                  <div className="schedule-inline-input" style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    height: 30, padding: '0 10px', boxSizing: 'border-box', fontSize: 11,
+                    color: 'var(--text-dim)', background: 'var(--bg3)',
+                    border: '1px dashed var(--border)', borderRadius: 5,
+                  }}>
+                    Always · 24/7 (fallback)
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {/* Start Time */}
+                  <div className="schedule-item-block schedule-item-time-block">
+                    <span className="schedule-item-label">Start Time (IST)</span>
+                    <CustomInput
+                      type="time"
+                      className="schedule-inline-input"
+                      value={cleanTime(s.startTime)}
+                      onChange={e => handleChange(s.id, 'startTime', e.target.value)}
+                    />
+                  </div>
 
-              {/* End Time */}
-              <div className="schedule-item-block schedule-item-time-block">
-                <span className="schedule-item-label">End Time (IST)</span>
-                <CustomInput
-                  type="time"
-                  className="schedule-inline-input"
-                  value={cleanTime(s.endTime)}
-                  onChange={e => handleChange(s.id, 'endTime', e.target.value)}
-                />
-              </div>
+                  {/* End Time */}
+                  <div className="schedule-item-block schedule-item-time-block">
+                    <span className="schedule-item-label">End Time (IST)</span>
+                    <CustomInput
+                      type="time"
+                      className="schedule-inline-input"
+                      value={cleanTime(s.endTime)}
+                      onChange={e => handleChange(s.id, 'endTime', e.target.value)}
+                    />
+                  </div>
+                </>
+              )}
 
               {/* Max Calls */}
               <div className="schedule-item-block schedule-item-num-block">
@@ -608,42 +654,54 @@ export default function SchedulePanel({
                 </div>
               )}
 
-              {/* Quick Delete Trash Button */}
+              {/* Quick Delete Trash Button — hidden for the permanent Default window */}
               <div className="schedule-item-block schedule-item-delete-block" style={{ justifyContent: 'center' }}>
                 <span className="schedule-item-label" style={{ opacity: 0 }}>Delete</span>
-                <button
-                  type="button"
-                  className="watch-delete-btn"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (s.isNew) {
-                      handleDelete(s.id);
-                    } else {
-                      setDeletingId(s.id);
-                    }
-                  }}
-                  style={{
-                    background: 'none', border: 'none', color: 'var(--text-dim)',
-                    cursor: 'pointer', display: 'flex', alignItems: 'center',
-                    padding: 5, borderRadius: 5, transition: 'all 0.15s',
-                    marginTop: 3
-                  }}
-                  onMouseOver={e => {
-                    e.currentTarget.style.color = '#f85149';
-                    e.currentTarget.style.background = 'rgba(248,81,73,0.1)';
-                  }}
-                  onMouseOut={e => {
-                    e.currentTarget.style.color = 'var(--text-dim)';
-                    e.currentTarget.style.background = 'none';
-                  }}
-                  title={s.isNew ? "Cancel window" : "Delete schedule window"}
-                >
-                  {s.isNew ? (
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-                  ) : (
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14H6L5 6" /><path d="M10 11v6M14 11v6" /><path d="M9 6V4h6v2" /></svg>
-                  )}
-                </button>
+                {s.isDefault ? (
+                  <div
+                    title="The Default window is permanent and cannot be deleted."
+                    style={{
+                      display: 'flex', alignItems: 'center', color: 'var(--border)',
+                      padding: 5, marginTop: 3, cursor: 'not-allowed',
+                    }}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="watch-delete-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (s.isNew) {
+                        handleDelete(s.id);
+                      } else {
+                        setDeletingId(s.id);
+                      }
+                    }}
+                    style={{
+                      background: 'none', border: 'none', color: 'var(--text-dim)',
+                      cursor: 'pointer', display: 'flex', alignItems: 'center',
+                      padding: 5, borderRadius: 5, transition: 'all 0.15s',
+                      marginTop: 3
+                    }}
+                    onMouseOver={e => {
+                      e.currentTarget.style.color = '#f85149';
+                      e.currentTarget.style.background = 'rgba(248,81,73,0.1)';
+                    }}
+                    onMouseOut={e => {
+                      e.currentTarget.style.color = 'var(--text-dim)';
+                      e.currentTarget.style.background = 'none';
+                    }}
+                    title={s.isNew ? "Cancel window" : "Delete schedule window"}
+                  >
+                    {s.isNew ? (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                    ) : (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14H6L5 6" /><path d="M10 11v6M14 11v6" /><path d="M9 6V4h6v2" /></svg>
+                    )}
+                  </button>
+                )}
               </div>
             </div>
           );

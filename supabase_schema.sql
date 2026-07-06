@@ -155,11 +155,21 @@ CREATE TABLE IF NOT EXISTS public.paper_trading_schedules (
     number_of_puts INTEGER NOT NULL DEFAULT 3,
     min_long_dist INTEGER NOT NULL DEFAULT 500,
     min_strike_diff INTEGER NOT NULL DEFAULT 800,
+    atm_ratio_scaling BOOLEAN NOT NULL DEFAULT true,
+    atm_ratio_distance_call NUMERIC NOT NULL DEFAULT 50,
+    atm_ratio_distance_put NUMERIC NOT NULL DEFAULT 25,
+    spot_diff NUMERIC NOT NULL DEFAULT 0.5,
+    is_default BOOLEAN NOT NULL DEFAULT false, -- permanent 24/7 fallback window (one per account)
     is_active BOOLEAN NOT NULL DEFAULT true,
     sort_order INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+-- One Default window per account (matches migration 003).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_schedules_one_default_per_account
+    ON public.paper_trading_schedules (account_id)
+    WHERE is_default = true;
 
 -- Enable RLS
 ALTER TABLE public.paper_trading_schedules ENABLE ROW LEVEL SECURITY;

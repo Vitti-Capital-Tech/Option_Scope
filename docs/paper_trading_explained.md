@@ -182,6 +182,9 @@ Every candidate pair must pass **all** of these filters to be considered:
 | 19 | **Short Exit Price** | `shortExitPrice` (default: 1.1) | The short option's live ASK price threshold below which the short leg is automatically bought back (holding the long leg). |
 | 20 | **Long Exit Slices** | `longExitSlices` (default: 10) | The number of scale-out levels/slices the held long leg is exited in as its own BID price recovers. |
 
+> [!IMPORTANT]
+> **Window-sourced vs. global filters.** The engine builds an `effectiveConfig` each cycle: the 8 windowed fields — `minStrikeDiff` (#1), `minLongDist` (#4), `numberOfCalls` (#10), `numberOfPuts` (#11), `atmRatioScaling` (#12), `atmRatioPctCall` (#13), `atmRatioPctPut` (#14), `spotDiff` (#15) — are taken from the **active schedule window** (the Default 24/7 window when no time-bound window matches). All other filters here come from the **global base config**. See [Time-Based Filter Schedules](#time-based-filter-schedules).
+
 ### How the Sell Quantity (Ratio) Is Calculated
 
 ```
@@ -655,6 +658,9 @@ This eliminates the largest source of Supabase egress. A full re-fetch still hap
 
 **File**: [paperTradingEngine.js:L1279-L1312](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L1279-L1312)
 
+> [!NOTE]
+> The Control Panel filter bar (`ControlPanel.jsx`) now shows **only the global filters** — Min IV Edge, Max Delta Deviation, Min Short Premium, Max Net Debit, Max Short Ratio, Min DTE, Exit Type/Points, Short Exit Price, and Variable/Long Exit Slices. The 8 windowed fields (open calls/puts, spread width, spot distance, ATM scaling + call/put %, re-entry step) were removed from it and are configured per window in the Schedule Panel instead. Apply/Reset/dirty-tracking therefore operate only on the global filters.
+
 When you change filters in the UI and click **Apply**:
 
 1. The UI writes the new config to `paper_trading_config` in Supabase
@@ -685,10 +691,10 @@ When you click **Reset**:
 
 **File**: [paperTradingEngine.js:L325-L344](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L325-L344), [SchedulePanel.jsx](file:///c:/Users/ASUS/Documents/Option_Scope/src/components/PaperTrading/SchedulePanel.jsx)
 
-Time-Based Filter Schedules allow users to define multiple named time windows per account within a 24-hour cycle. Each window overrides specific entry and portfolio filters during that period.
+Time-Based Filter Schedules allow users to define multiple named time windows per account within a 24-hour cycle. Each window owns the 8 "sizing & scaling" parameters below; a window's values apply during its time range.
 
-### Overridden Parameters
-Only the following 8 parameters are scheduled:
+### The 8 Windowed Parameters
+These 8 parameters live **only** on schedule windows (they are no longer part of the base account config or the Control Panel filter bar):
 1. **Max Calls** (`numberOfCalls`)
 2. **Max Puts** (`numberOfPuts`)
 3. **Min Strike Difference** (`minStrikeDiff`)
@@ -698,12 +704,25 @@ Only the following 8 parameters are scheduled:
 7. **Put ATM Pct (%)** (`atmRatioPctPut`)
 8. **Spot Diff (%)** (`spotDiff`)
 
-All other filter settings (like `minIvDiff`, `exitType`, etc.) default back to the base account config.
+All other filter settings (like `minIvDiff`, `maxRatioDeviation`, `minSellPremium`, `maxNetPremium`, `maxSellQty`, `daysToExpiry`, `exitType`, `shortExitPrice`, exit slices) remain **global** on the base account config and are unaffected by which window is active.
+
+### The Default (24/7) Window — the compulsory fallback
+Every account has exactly **one permanent Default window** (`is_default = true`):
+
+- It is **always active** and has **no time range** — it is the 24/7 fallback used whenever no time-bound window covers the current IST time. This replaces the old "fall back to base config" behaviour: the 8 windowed fields no longer exist on base config, so the Default window *is* the fallback.
+- It **cannot be deleted** (the delete button is hidden, and a unique DB index enforces one default per account). There is therefore always **at least one window**.
+- It is **created automatically**: on account creation (seeded from the create form), and for legacy accounts via migration `003_default_window.sql` (backfilled from each account's existing `paper_trading_config` values) plus a client-side safety net that synthesizes one on load if the DB lacks it.
+- Time-bound windows added on top **override** the Default during their ranges; the Default fills every uncovered minute.
+
+> [!NOTE]
+> **Priority order** in `getActiveSchedule()`: a matching time-bound active window wins; otherwise the Default window is returned. `getActiveSchedule()` returns `null` only for a legacy account with no windows at all, in which case the engine still falls back to base config values (retained but unused by the UI).
 
 ### Layout & UI
 - **Watchlist Style**: The configuration interface (`SchedulePanel.jsx`) features a compact, horizontal, inline-editable list styled like the Charts Watchlist. Users can edit window names, times, and overrides directly within the row.
-- **Visual Timeline**: A 24-hour horizontal bar visualizes active windows, gaps, and overrides. The timeline boundary starts/ends at `05:30` IST (representing the `00:00` UTC Delta Exchange daily rollover/day boundary). This ensures that any empty slots wrap around `05:30` IST and display at the end of the bar.
-- **Permanent Activation**: All configured schedule windows are permanently active/enabled (`is_active = true`), and the checkbox toggle has been removed.
+- **Default Window Row**: The Default window renders first with a fixed "Default · 24/7" label (no editable name), a static "Always · 24/7 (fallback)" indicator instead of Start/End time inputs, and **no delete button** (a lock icon shows in its place). All 8 numeric fields remain editable.
+- **Visual Timeline**: A 24-hour horizontal bar visualizes active windows, gaps, and overrides. The **Default window is drawn as a full-width background band** ("Default · 24/7"), with time-bound windows layered on top. The timeline boundary starts/ends at `05:30` IST (representing the `00:00` UTC Delta Exchange daily rollover/day boundary). This ensures that any empty slots wrap around `05:30` IST and display at the end of the bar.
+- **Overlap & Available Slots**: The Default window is **excluded** from overlap detection and the available-slots calculation (it spans everything by definition), so it never blocks a save or consumes a slot.
+- **Permanent Activation**: All time-bound schedule windows are permanently active/enabled (`is_active = true`), and the checkbox toggle has been removed. The Default window is likewise always active.
 - **Live Utilized Percentage**: Displays the current real-time utilization of slot capacity (calls + puts) for active full spreads in that window.
   - *Full Spreads Only*: Only positions that are active as full spreads (both long and short legs active) are counted. Long-only held positions are excluded.
   - *Capped Calculations*: The active counts are capped by the window's `numberOfCalls` and `numberOfPuts` limits to prevent greater than 100% utilization.
@@ -711,12 +730,15 @@ All other filter settings (like `minIvDiff`, `exitType`, etc.) default back to t
   - *Formula*:
     $$\text{Live Utilized} = \frac{\min(\text{numberOfCalls}, \text{activeCalls}) + \min(\text{numberOfPuts}, \text{activePuts})}{\text{numberOfCalls} + \text{numberOfPuts}} \times 100$$
 
+### Database Schema
+The `paper_trading_schedules` table stores per-window values. In addition to `start_time`/`end_time`/`number_of_calls`/`number_of_puts`/`min_long_dist`/`min_strike_diff`/`is_active`/`sort_order`, migration `003_default_window.sql` added: `atm_ratio_scaling`, `atm_ratio_distance_call`, `atm_ratio_distance_put`, `spot_diff` (these were previously read/written by the app but never declared — a schema drift the migration fixes), and `is_default` (with a unique partial index enforcing one default window per account).
+
 ### Execution, Timezones & Evaluation
-- **Database (IST)**: All times in the database `paper_trading_schedules` table (columns `start_time` and `end_time`) are stored directly as IST values in `TIME` type columns.
+- **Database (IST)**: All times in the `paper_trading_schedules` table (columns `start_time` and `end_time`) are stored directly as IST values in `TIME` type columns. The Default window stores `00:00`/`00:00` (ignored — it has no time range).
 - **Frontend (IST)**: The frontend displays and accepts inputs in Indian Standard Time (IST). Direct IST time strings are read and saved directly without timezone conversion offsets.
 - **Engine Comparison**: The backend trading engine evaluates schedule matches against the current time translated to IST (UTC + 5:30).
 - **Overnight Windows**: The engine correctly handles overnight ranges in IST (e.g. `22:29` to `06:30` IST) by splitting/wrapping time comparisons relative to the 24-hour cycle.
-- **Fallback Behavior**: If the current IST time does not fall into any active scheduled window, the engine automatically falls back to using the base account configuration parameters.
+- **Fallback Behavior**: If the current IST time does not fall into any active time-bound window, the engine uses the **Default (24/7) window**'s values. (Only a legacy account with zero windows falls back to base config.)
 - **Live Auto-Sync & Real-time Updates**: Changes made in the UI are automatically synced (debounced auto-save) to Supabase. The background engine subscribes to real-time postgres changes on `paper_trading_schedules` and reloads them instantly upon edits.
 
 ---
@@ -749,7 +771,7 @@ Accounts are rows in `paper_trading_accounts`. Each account has:
 
 | Action | What Happens |
 |--------|-------------|
-| **Create** | Inserts into `paper_trading_accounts` + `paper_trading_config`; the engine starts automatically via Realtime |
+| **Create** | Inserts into `paper_trading_accounts` + `paper_trading_config` + a permanent **Default window** into `paper_trading_schedules` (seeded from the create form's sizing/scaling fields); the engine starts automatically via Realtime |
 | **Edit** | Renames the account only (config is separate) |
 | **Delete** | Pre-deletes the `engine_heartbeat` row first (prevents zombie heartbeat rows), then deletes the account row; the engine stops via Realtime |
 
@@ -809,6 +831,15 @@ if (hasOverlap) return; // do not write overlapping schedules to DB
 ```
 
 A save only proceeds once all windows are non-overlapping. The overlap check handles both normal and overnight windows. Manual overlap resolution is required before changes persist.
+
+### Window Capacity Row
+
+The Trade History header (`TradeHistoryTable.jsx`) shows a **Window Capacity** row above the Net Realized / Win-Loss / Export stats. It renders one chip per schedule window with the window's name and its max caps (`C:` = Max Open Calls, `P:` = Max Open Puts):
+
+- Each chip's color dot uses the **same palette and index order as the Schedule Panel timeline**, so a chip lines up visually with its band. The Default window gets a neutral gray dot and is labelled "Default".
+- The hover tooltip shows the full detail: name, time range (or "24/7" for the Default), and `max N calls / N puts`.
+- Inactive time-bound windows are dimmed.
+- The row is always shown when windows exist (independent of whether any trades are present), since it is configuration info. `schedules` is passed down from `PaperTrading.jsx`.
 
 ### CSV Export
 
