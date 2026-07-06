@@ -14,8 +14,7 @@ import FirstAccountCard from './components/PaperTrading/FirstAccountCard';
 import AccountSelectorStrip from './components/PaperTrading/AccountSelectorStrip';
 import ControlPanel from './components/PaperTrading/ControlPanel';
 import KpiDashboard from './components/PaperTrading/KpiDashboard';
-import ActivePositionsTable from './components/PaperTrading/ActivePositionsTable';
-import TradeHistoryTable from './components/PaperTrading/TradeHistoryTable';
+import TradingWorkspace from './components/PaperTrading/TradingWorkspace';
 import CreateAccountModal from './components/PaperTrading/CreateAccountModal';
 import EditAccountModal from './components/PaperTrading/EditAccountModal';
 import DeleteAccountModal from './components/PaperTrading/DeleteAccountModal';
@@ -2164,40 +2163,35 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               totalMargin={totalMargin}
             />
 
-            <div className="pt-tables-container">
-              <ActivePositionsTable
-                positions={positions}
-                underlying={underlying}
-                lastEvaluated={lastEvaluated}
-                fetchSupabaseActivePositions={fetchSupabaseActivePositions}
-                fetchSupabaseTradeHistory={fetchSupabaseTradeHistory}
-                fetchHeartbeat={fetchHeartbeat}
-                now={now}
-                includeFees={includeFees}
-                setIncludeFees={setIncludeFees}
-                spotPrice={spotPrice}
-                engineStatusColor={engineStatusColor}
-                engineStatusLabel={engineStatusLabel}
-                calculatePositionMargin={calculatePositionMargin}
-                totalMargin={totalMargin}
-                exitType={config.exitType}
-                exitPoints={config.exitPoints}
-                onExitPosition={(p) => setPositionToExit(p)}
-              />
-
-              <TradeHistoryTable
-                filteredTradeHistory={filteredTradeHistory}
-                historyFilterDate={historyFilterDate}
-                setHistoryFilterDate={setHistoryFilterDate}
-                adjustFilterDay={adjustFilterDay}
-                resetToToday={resetToToday}
-                filteredRealizedPnl={filteredRealizedPnl}
-                filteredWins={filteredWins}
-                exportCSV={exportCSV}
-                includeFees={includeFees}
-                schedules={schedules}
-              />
-            </div>
+            <TradingWorkspace
+              positions={positions}
+              underlying={underlying}
+              lastEvaluated={lastEvaluated}
+              fetchSupabaseActivePositions={fetchSupabaseActivePositions}
+              fetchSupabaseTradeHistory={fetchSupabaseTradeHistory}
+              fetchHeartbeat={fetchHeartbeat}
+              now={now}
+              includeFees={includeFees}
+              setIncludeFees={setIncludeFees}
+              spotPrice={spotPrice}
+              engineStatusColor={engineStatusColor}
+              engineStatusLabel={engineStatusLabel}
+              calculatePositionMargin={calculatePositionMargin}
+              totalMargin={totalMargin}
+              exitType={config.exitType}
+              exitPoints={config.exitPoints}
+              onExitPosition={(p) => setPositionToExit(p)}
+              filteredTradeHistory={filteredTradeHistory}
+              historyFilterDate={historyFilterDate}
+              setHistoryFilterDate={setHistoryFilterDate}
+              adjustFilterDay={adjustFilterDay}
+              resetToToday={resetToToday}
+              filteredRealizedPnl={filteredRealizedPnl}
+              filteredWins={filteredWins}
+              exportCSV={exportCSV}
+              schedules={schedules}
+              isLiveAccount={activeAccount?.mode === 'live'}
+            />
           </>
         )}
       </div>

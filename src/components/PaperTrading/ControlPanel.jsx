@@ -10,7 +10,6 @@ export default function ControlPanel({
   selExpiry,
   filteredExpiries,
   activeAccountId,
-  activeAccount,
   accounts,
   triggerEditAccount,
   isFiltersCollapsed,
@@ -37,18 +36,24 @@ export default function ControlPanel({
       {/* ── Control Panel ───────────────────────────── */}
       <div className="pt-control-panel">
         <div className="pt-control-section">
-          <span className="pt-control-label">Algo</span>
-          <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-            <label style={{ marginBottom: 0 }}>Underlying:</label>
-            <CustomSelect
-              value={underlying}
-              onChange={val => updateConfig('underlying', val)}
-              options={UNDERLYINGS.map(u => ({ label: u, value: u }))}
-              style={{ width: '100px' }}
-            />
+          <span className="pt-control-label">Market</span>
+          <div className="form-group" style={{ marginBottom: 0, display: 'flex', flexDirection: 'column', gap: 5, alignItems: 'flex-start' }}>
+            <label className="pt-field-label" style={{ marginBottom: 0 }}>Underlying</label>
+            <div className="pt-seg" role="group" aria-label="Underlying">
+              {UNDERLYINGS.map(u => (
+                <button
+                  key={u}
+                  type="button"
+                  className={`pt-seg-btn ${underlying === u ? 'on' : ''}`}
+                  onClick={() => updateConfig('underlying', u)}
+                >
+                  {u}
+                </button>
+              ))}
+            </div>
           </div>
-          <div className="form-group" style={{ marginBottom: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-            <label style={{ marginBottom: 0 }}>Expiry:</label>
+          <div className="form-group" style={{ marginBottom: 0, display: 'flex', flexDirection: 'column', gap: 5, alignItems: 'flex-start' }}>
+            <label className="pt-field-label" style={{ marginBottom: 0 }}>Expiry</label>
             <CustomSelect
               value={selExpiry}
               onChange={val => updateConfig('expiry', val)}
@@ -58,7 +63,7 @@ export default function ControlPanel({
             />
           </div>
           {activeAccountId && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12, background: 'var(--bg)', padding: '6px 12px', borderRadius: '6px', border: '1px solid var(--border)' }}>
+            <div className="pt-account-chip" style={{ display: 'flex', alignItems: 'center', gap: 12, background: 'var(--bg)', padding: '6px 12px', borderRadius: '6px', border: '1px solid var(--border)' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)', textTransform: 'uppercase' }}>Active:</span>
                 <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>
@@ -116,58 +121,79 @@ export default function ControlPanel({
           </button>
         </div>
 
-        <div className="hide-mobile" style={{ width: 1, height: 24, backgroundColor: 'var(--border)' }}></div>
+        <div className="hide-mobile pt-control-divider"></div>
 
         <div className={`pt-filters-container ${isFiltersCollapsed ? 'collapsed' : 'expanded'}`}>
-          <span className="pt-control-label">Filters</span>
-          {[
-            { label: 'Min IV Edge', key: 'minIvDiff', width: 100, step: '0.25', suffix: '%' },
-            { label: 'Max Delta Deviation', key: 'maxRatioDeviation', width: 110, step: '0.01' },
-            { label: 'Min Short Premium', key: 'minSellPremium', width: 110, prefix: '$' },
-            { label: 'Max Net Debit', key: 'maxNetPremium', width: 110, prefix: '$' },
-            { label: 'Max Short Ratio', key: 'maxSellQty', width: 110, step: '0.25', prefix: '1:' },
-            { label: 'Min Days to Expiry', key: 'daysToExpiry', width: 100 },
-            { label: 'Short Exit Price', key: 'shortExitPrice', width: 100, step: '0.1', prefix: '$' }
-          ].map(({ label, key, width, step, prefix, suffix }) => (
-            <div key={key} className="form-group">
-              <label style={{ marginBottom: 0 }}>{label}</label>
-              <CustomInput type="number" step={step} prefix={prefix} suffix={suffix} showStepper
-                width={width} value={draftConfig?.[key] ?? ''}
-                onChange={e => updateDraftConfig(key, e.target.value)} />
+          <div className="pt-filter-cluster">
+            <span className="pt-cluster-head">Entry Filters</span>
+            <div className="pt-cluster-fields">
+              {[
+                { label: 'Min IV Edge', key: 'minIvDiff', width: 100, step: '0.25', suffix: '%' },
+                { label: 'Max Delta Deviation', key: 'maxRatioDeviation', width: 110, step: '0.01' },
+                { label: 'Min Short Premium', key: 'minSellPremium', width: 110, prefix: '$' },
+                { label: 'Max Net Debit', key: 'maxNetPremium', width: 110, prefix: '$' },
+                { label: 'Max Short Ratio', key: 'maxSellQty', width: 110, step: '0.25', prefix: '1:' },
+                { label: 'Min Days to Expiry', key: 'daysToExpiry', width: 100 }
+              ].map(({ label, key, width, step, prefix, suffix }) => (
+                <div key={key} className="form-group">
+                  <label className="pt-field-label" style={{ marginBottom: 0 }}>{label}</label>
+                  <CustomInput type="number" step={step} prefix={prefix} suffix={suffix} showStepper
+                    width={width} value={draftConfig?.[key] ?? ''}
+                    onChange={e => updateDraftConfig(key, e.target.value)} />
+                </div>
+              ))}
             </div>
-          ))}
-          <div key="variableExitSlices" className="form-group" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <input type="checkbox" id="variableExitSlices" checked={draftConfig?.variableExitSlices ?? false}
-              onChange={e => updateDraftConfig('variableExitSlices', e.target.checked)} />
-            <label htmlFor="variableExitSlices" style={{ marginBottom: 0, cursor: 'pointer' }}>Variable Exit Slices</label>
           </div>
-          {draftConfig?.variableExitSlices && (
-            <div key="longExitSlices" className="form-group">
-              <label style={{ marginBottom: 0 }}>Long Exit Slices</label>
-              <CustomInput type="number" step="1" showStepper width={100} value={draftConfig.longExitSlices ?? 10}
-                onChange={e => updateDraftConfig('longExitSlices', e.target.value)} />
+
+          <div className="pt-filter-cluster">
+            <span className="pt-cluster-head">Exit Rules</span>
+            <div className="pt-cluster-fields">
+              <div className="form-group">
+                <label className="pt-field-label" style={{ marginBottom: 0 }}>Short Exit Price</label>
+                <CustomInput type="number" step="0.1" prefix="$" showStepper width={100}
+                  value={draftConfig?.shortExitPrice ?? ''}
+                  onChange={e => updateDraftConfig('shortExitPrice', e.target.value)} />
+              </div>
+              <div key="exitType" className="form-group">
+                <label className="pt-field-label" style={{ marginBottom: 0 }}>Exit Type</label>
+                <CustomSelect
+                  value={draftConfig?.exitType ?? 'ATM'}
+                  onChange={val => updateDraftConfig('exitType', val)}
+                  options={[
+                    { label: 'ATM', value: 'ATM' },
+                    { label: 'ITM', value: 'ITM' },
+                    { label: 'OTM', value: 'OTM' }
+                  ]}
+                  style={{ width: '85px' }}
+                />
+              </div>
+              {(draftConfig?.exitType === 'ITM' || draftConfig?.exitType === 'OTM') && (
+                <div key="exitPoints" className="form-group">
+                  <label className="pt-field-label" style={{ marginBottom: 0 }}>Exit Points</label>
+                  <CustomInput type="number" step="1" showStepper width={100} value={draftConfig.exitPoints ?? 0}
+                    onChange={e => updateDraftConfig('exitPoints', e.target.value)} />
+                </div>
+              )}
+              {draftConfig?.variableExitSlices && (
+                <div key="longExitSlices" className="form-group">
+                  <label className="pt-field-label" style={{ marginBottom: 0 }}>Long Exit Slices</label>
+                  <CustomInput type="number" step="1" showStepper width={100} value={draftConfig.longExitSlices ?? 10}
+                    onChange={e => updateDraftConfig('longExitSlices', e.target.value)} />
+                </div>
+              )}
+              <div key="variableExitSlices" className="form-group">
+                <label htmlFor="variableExitSlices" className="pt-field-label" style={{ marginBottom: 0, cursor: 'pointer' }}>Variable Exit Slices</label>
+                <div style={{ height: 34, display: 'flex', alignItems: 'center' }}>
+                  <label className="pt-switch">
+                    <input type="checkbox" id="variableExitSlices" checked={draftConfig?.variableExitSlices ?? false}
+                      onChange={e => updateDraftConfig('variableExitSlices', e.target.checked)} />
+                    <span className="pt-slider"></span>
+                  </label>
+                </div>
+              </div>
             </div>
-          )}
-          <div key="exitType" className="form-group" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <label style={{ marginBottom: 0 }}>Exit Type:</label>
-            <CustomSelect
-              value={draftConfig?.exitType ?? 'ATM'}
-              onChange={val => updateDraftConfig('exitType', val)}
-              options={[
-                { label: 'ATM', value: 'ATM' },
-                { label: 'ITM', value: 'ITM' },
-                { label: 'OTM', value: 'OTM' }
-              ]}
-              style={{ width: '85px' }}
-            />
           </div>
-          {(draftConfig?.exitType === 'ITM' || draftConfig?.exitType === 'OTM') && (
-            <div key="exitPoints" className="form-group">
-              <label style={{ marginBottom: 0 }}>Exit Points</label>
-              <CustomInput type="number" step="1" showStepper width={100} value={draftConfig.exitPoints ?? 0}
-                onChange={e => updateDraftConfig('exitPoints', e.target.value)} />
-            </div>
-          )}
+
           {/* Apply, Cancel & Reset Buttons */}
           <div className="pt-filter-actions">
             <button

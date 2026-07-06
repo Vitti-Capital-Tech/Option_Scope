@@ -19,7 +19,8 @@ export default function ActivePositionsTable({
   totalMargin,
   exitType = 'ATM',
   exitPoints = 0,
-  onExitPosition
+  onExitPosition,
+  embedded = false
 }) {
 
   const [sortKey, setSortKey] = useState('none');
@@ -84,13 +85,15 @@ export default function ActivePositionsTable({
   };
 
   return (
-    <div className="pt-section live">
-      <div className="pt-section-header">
-        <div className="pt-section-title">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></svg>
-          Active Positions ({underlying})
-          <span className="pt-section-count">{positions.filter(p => p.underlying === underlying).length}</span>
-        </div>
+    <div className={embedded ? 'pt-embedded live' : 'pt-section live'}>
+      <div className={`pt-section-header${embedded ? ' pt-embedded-header' : ''}`}>
+        {!embedded && (
+          <div className="pt-section-title">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></svg>
+            Active Positions ({underlying})
+            <span className="pt-section-count">{positions.filter(p => p.underlying === underlying).length}</span>
+          </div>
+        )}
 
         <div className="pt-section-controls">
           <div className={`pt-statusbar ${isStale ? 'stale' : ''}`}>

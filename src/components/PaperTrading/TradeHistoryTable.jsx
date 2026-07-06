@@ -20,7 +20,8 @@ export default function TradeHistoryTable({
   filteredWins,
   exportCSV,
   includeFees,
-  schedules = []
+  schedules = [],
+  embedded = false
 }) {
 
   const fmtDuration = (ms) => {
@@ -59,7 +60,7 @@ export default function TradeHistoryTable({
   };
 
   return (
-    <div className="pt-section">
+    <div className={embedded ? 'pt-embedded' : 'pt-section'}>
       <div className="pt-section-header pt-history-header" style={{
         flexDirection: 'column', alignItems: 'stretch', gap: '16px',
         padding: '16px 20px', borderBottom: '1px solid var(--border)',
@@ -67,18 +68,20 @@ export default function TradeHistoryTable({
       }}>
         {/* Row 1: Title and Centered Filter */}
         <div className="pt-history-row-1">
-          <div className="pt-history-title-area">
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '32px', height: '32px', borderRadius: '8px', background: 'rgba(240, 185, 11, 0.1)', color: 'var(--accent)' }}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 8v4l3 3" /><circle cx="12" cy="12" r="10" /></svg>
+          {!embedded && (
+            <div className="pt-history-title-area">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '32px', height: '32px', borderRadius: '8px', background: 'rgba(240, 185, 11, 0.1)', color: 'var(--accent)' }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 8v4l3 3" /><circle cx="12" cy="12" r="10" /></svg>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                <span style={{ fontWeight: 700, fontSize: '14px', letterSpacing: '0.5px', color: 'var(--text)' }}>Order History</span>
+                <span style={{ fontSize: '10px', color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '1px' }}>Closed Positions</span>
+              </div>
+              <span style={{ background: 'var(--bg3)', color: 'var(--accent)', padding: '2px 10px', borderRadius: '20px', fontSize: '11px', fontWeight: 700, border: '1px solid rgba(240, 185, 11, 0.2)' }}>
+                {filteredTradeHistory.length}
+              </span>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column' }}>
-              <span style={{ fontWeight: 700, fontSize: '14px', letterSpacing: '0.5px', color: 'var(--text)' }}>Trade History</span>
-              <span style={{ fontSize: '10px', color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '1px' }}>Closed Positions</span>
-            </div>
-            <span style={{ background: 'var(--bg3)', color: 'var(--accent)', padding: '2px 10px', borderRadius: '20px', fontSize: '11px', fontWeight: 700, border: '1px solid rgba(240, 185, 11, 0.2)' }}>
-              {filteredTradeHistory.length}
-            </span>
-          </div>
+          )}
 
           {/* Centered Date Filter */}
           <div className="pt-history-date-filter">
