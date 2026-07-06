@@ -16,7 +16,7 @@
  * `sellQty` for the short). Validate the dry-run order log against your intended
  * real sizes BEFORE arming an account.
  */
-import { placeOrder, getLivePositions } from './deltaTradeApi.js';
+import { placeOrder, getLivePositions, getBalance } from './deltaTradeApi.js';
 import { log, logWarn, logError } from './utils.js';
 
 // Default ON. Only the literal string 'false' (any case) disarms the dry-run.
@@ -130,6 +130,86 @@ export function createLiveExecutor(getCtx) {
       return submit({ symbol, side, contracts, price, reduceOnly: true, tag });
     },
 
+    /**
+     * Place a resting reduce_only STOP (market) order triggered on the INDEX
+     * (spot_price). Used for the short-leg SL and long-leg TP in the live model.
+     * `side` is the closing side (buy to close a short, sell to close a long).
+     */
+    async placeStop({ symbol, side, contracts, stopPrice, tag }) {
+      if (!armed()) return { ok: true, skipped: true };
+      const { accountName, creds } = getCtx();
+      const size = Math.max(1, Math.round(contracts || 0));
+      const stopStr = (stopPrice != null && Number.isFinite(stopPrice)) ? String(stopPrice) : null;
+      const summary = `STOP ${side.toUpperCase()} ${size}x ${symbol} trigger@index ${stopStr ?? '—'} reduceOnly [${tag}]`;
+
+      if (DRY_RUN) {
+        log(`[${accountName}] 🧪 DRY-RUN stop order (not sent): ${summary}`);
+        return { ok: true, dryRun: true };
+      }
+      if (!creds?.apiKey || !creds?.apiSecret) {
+        if (!warnedNoCreds) { logError(`[${accountName}] LIVE armed but no credentials — cannot place stop.`); warnedNoCreds = true; }
+        return { ok: false, error: 'no-credentials' };
+      }
+      if (!stopStr) {
+        logError(`[${accountName}] LIVE stop skipped — no valid stop price: ${summary}`);
+        return { ok: false, error: 'no-stop-price' };
+      }
+      try {
+        const order = await placeOrder(creds, {
+          product_symbol: symbol,
+          size,
+          side,
+          order_type: 'market_order',
+          stop_order_type: 'stop_loss_order',
+          stop_price: stopStr,
+          stop_trigger_method: 'spot_price', // index/spot-triggered
+          reduce_only: true,
+          client_order_id: tag,
+        });
+        log(`[${accountName}] ✅ LIVE stop placed: ${summary} → id ${order?.id ?? '?'} state ${order?.state ?? '?'}`);
+        return { ok: true, order };
+      } catch (e) {
+        logError(`[${accountName}] ✖ LIVE stop FAILED: ${summary}:`, e.message);
+        return { ok: false, error: e.message };
+      }
+    },
+
+    /** Raw open positions from the exchange (armed accounts only), else []. */
+    async positions() {
+      if (!armed()) return [];
+      const { accountName, creds } = getCtx();
+      if (!creds?.apiKey) return [];
+      try {
+        const res = await getLivePositions(creds);
+        return Array.isArray(res) ? res : [];
+      } catch (e) {
+        logWarn(`[${accountName}] positions() fetch failed: ${e.message}`);
+        return [];
+      }
+    },
+
+    /**
+     * Live USDT wallet balance (armed accounts only). This is a READ, so it runs
+     * even in dry-run — the sizing math needs the real balance to be validated.
+     * Returns null if not armed, no creds, or the balance can't be read.
+     */
+    async walletBalance() {
+      if (!armed()) return null;
+      const { accountName, creds } = getCtx();
+      if (!creds?.apiKey) return null;
+      try {
+        const balances = await getBalance(creds);
+        const usdt = Array.isArray(balances)
+          ? balances.find(b => String(b.asset_symbol || '').toUpperCase() === 'USDT')
+          : null;
+        const val = usdt ? parseFloat(usdt.balance ?? usdt.available_balance) : null;
+        return Number.isFinite(val) ? val : null;
+      } catch (e) {
+        logWarn(`[${accountName}] Wallet balance fetch failed: ${e.message}`);
+        return null;
+      }
+    },
+
     /** Log-only reconciliation: compare engine position count with the exchange. */
     async reconcile(enginePositionCount) {
       if (!armed() || DRY_RUN) return;
@@ -138,10 +218,13 @@ export function createLiveExecutor(getCtx) {
       try {
         const live = await getLivePositions(creds);
         const openLive = Array.isArray(live) ? live.filter(p => Number(p.size) !== 0).length : 0;
-        if (openLive !== enginePositionCount) {
-          logWarn(`[${accountName}] RECONCILE drift: engine has ${enginePositionCount} position(s), Delta reports ${openLive} open. Review manually.`);
+        // Exchange positions are per-leg; the engine counts spreads (1–2 legs each),
+        // so this is informational — flag only the clearly-wrong "engine open but
+        // exchange flat" case.
+        if (enginePositionCount > 0 && openLive === 0) {
+          logWarn(`[${accountName}] RECONCILE: engine holds ${enginePositionCount} position(s) but Delta reports 0 open legs — review manually.`);
         } else {
-          log(`[${accountName}] Reconcile OK: ${openLive} live position(s) match engine.`);
+          log(`[${accountName}] Reconcile: engine ${enginePositionCount} spread(s) / Delta ${openLive} open leg(s).`);
         }
       } catch (e) {
         logWarn(`[${accountName}] Reconcile check failed: ${e.message}`);

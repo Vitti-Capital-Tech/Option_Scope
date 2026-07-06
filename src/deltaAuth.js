@@ -5,12 +5,16 @@
 // call and is never persisted client-side. Real order placement happens in the
 // headless engine (service_role), never here.
 //
-// Requests go through the same `/api` proxy the rest of the app uses
-// (Vite dev proxy / Vercel rewrite -> https://api.india.delta.exchange), so the
-// browser call is same-origin and the signature is computed over the path Delta
-// actually receives (the `/api` prefix is stripped by the rewrite).
-
-const PROXY = '/api';
+// Requests go through a proxy so the signature is computed over the exact path
+// Delta receives. By default this is the same-origin `/api` rewrite (Vite dev
+// proxy / Vercel rewrite -> https://api.india.delta.exchange).
+//
+// Because Vercel's egress IP is dynamic, an IP-whitelisted key will reject the
+// Vercel-proxied Verify call. Set VITE_DELTA_PROXY_URL to a proxy running on the
+// server whose IP IS whitelisted (see engine/proxyServer.js) to route Verify
+// through that host instead. It must NOT include a path prefix — the real Delta
+// path (e.g. /v2/wallet/balances) is appended directly.
+const PROXY = import.meta.env.VITE_DELTA_PROXY_URL || '/api';
 
 // HMAC-SHA256(message) with `secret`, hex-encoded, via Web Crypto.
 async function hmacSha256Hex(secret, message) {

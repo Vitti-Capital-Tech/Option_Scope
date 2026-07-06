@@ -167,6 +167,23 @@ export default function DeltaCredentialsSection({ register, watch, setValue, exi
               </span>
             )}
           </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, borderTop: '1px dashed var(--border)', paddingTop: 10 }}>
+            <label style={labelStyle}>Balance Allocation (%)</label>
+            <CustomInput
+              type="number"
+              step="1"
+              min="1"
+              max="100"
+              {...register('balanceAllocationPct', { valueAsNumber: true })}
+              placeholder="90"
+              style={fieldStyle}
+            />
+            <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+              % of live wallet balance used for trading (rest is buffer). Split equally
+              across max positions — each position uses up to 1 part of margin.
+            </span>
+          </div>
         </div>
       )}
     </div>

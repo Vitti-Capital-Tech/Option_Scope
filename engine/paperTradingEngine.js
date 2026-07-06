@@ -74,6 +74,27 @@ async function getOrBuildLongExitLevels(longBid, pos, config) {
   }
 }
 
+/**
+ * Index price level that triggers the live SL (short) / TP (long), derived from
+ * the account's exitType/exitPoints relative to the buy strike — the same
+ * geometry as the paper ATM/ITM/OTM full-exit rule, but enforced on the exchange
+ * as a spot-triggered stop. TP and SL share this one level.
+ */
+function computeIndexTriggerLevel(type, buyStrike, cfg) {
+  const exitType = cfg.exitType || 'ATM';
+  const pts = Math.abs(cfg.exitPoints || 0);
+  const isCall = type === 'call';
+  if (exitType === 'ITM') return isCall ? buyStrike - pts : buyStrike + pts;
+  if (exitType === 'OTM') return isCall ? buyStrike + pts : buyStrike - pts;
+  return buyStrike; // ATM
+}
+
+/** True once the index (spot) has reached the trigger level for this option type. */
+function isIndexTriggerMet(type, level, spot) {
+  if (level == null || spot == null) return false;
+  return type === 'call' ? spot >= level : spot <= level;
+}
+
 async function startSingleAccountEngine(account) {
   let accountState = account;
   const ENGINE_ID = 'paper_trading_' + accountState.id;
@@ -95,7 +116,8 @@ async function startSingleAccountEngine(account) {
     exitType: 'ATM',
     exitPoints: 0,
     shortExitPrice: 1.1,
-    longExitSlices: 10
+    longExitSlices: 10,
+    balanceAllocationPct: 90
   };
   let products = [];
   let expiries = [];
@@ -210,6 +232,7 @@ async function startSingleAccountEngine(account) {
           short_exit_price: 1.1,
           long_exit_slices: 10,
           variable_exit_slices: false,
+          balance_allocation_pct: 90,
           updated_at: new Date().toISOString()
         };
         const { data: inserted, error: insertErr } = await supabase
@@ -247,7 +270,8 @@ async function startSingleAccountEngine(account) {
           exitPoints: data.exit_points ?? 0,
           shortExitPrice: data.short_exit_price ?? 1.1,
           longExitSlices: data.long_exit_slices ?? 10,
-          variableExitSlices: data.variable_exit_slices ?? false
+          variableExitSlices: data.variable_exit_slices ?? false,
+          balanceAllocationPct: data.balance_allocation_pct ?? 90
         };
         configDbId = data.id;
         // log(`[${accountState.name}] Config loaded: ${config.underlying} | Expiry: ${config.expiry || 'auto'}`);
@@ -447,6 +471,135 @@ async function startSingleAccountEngine(account) {
       }
     }
     return null;
+  }
+
+  // Peak concurrent positions the account can hold — the max of (calls + puts)
+  // across the base config and every active schedule window. Used to divide the
+  // allocated balance into equal "parts" (1 part of margin per position).
+  function computeMaxPositions() {
+    let mx = (config.numberOfCalls || 0) + (config.numberOfPuts || 0);
+    for (const s of schedules) {
+      if (!s.isActive) continue;
+      mx = Math.max(mx, (s.numberOfCalls || 0) + (s.numberOfPuts || 0));
+    }
+    return Math.max(1, mx);
+  }
+
+  // ── Live exit handling (armed live accounts only) ────────────────────────
+  // Replaces the paper simulated exits. Exits are driven by the shared index
+  // trigger level (exitType/exitPoints vs buy strike): SHORT closes first (SL),
+  // then the LONG (TP) at the same level. In dry-run the index crossing itself is
+  // the fill signal; when armed, the resting exchange orders fill and we detect it
+  // via the exchange position size dropping to 0. Books trade_history directly and
+  // pushes surviving (long-only) positions back into `remaining`.
+  async function handleLiveExit(pos, remaining, sizeBySymbol) {
+    const tickerBuy = tickerData[pos.buyLeg.symbol];
+    const tickerSell = tickerData[pos.sellLeg.symbol];
+    const longBid = tickerBuy?.bid ?? tickerBuy?.lastPrice ?? tickerBuy?.markPrice;
+    const shortAsk = tickerSell?.ask ?? tickerSell?.lastPrice ?? tickerSell?.markPrice;
+
+    const triggerLevel = pos.sellLeg?.slTriggerLevel != null
+      ? pos.sellLeg.slTriggerLevel
+      : computeIndexTriggerLevel(pos.type, pos.buyLeg.strike, config);
+
+    // Expiry settlement — exchange cash-settles; just close the books, no orders.
+    const expiryTs = new Date(pos.expiry).getTime();
+    const atExpiry = Date.now() >= expiryTs - 120000;
+
+    const triggerMet = isIndexTriggerMet(pos.type, triggerLevel, spotPrice);
+    let shortFilled, longFilled;
+    if (live.dryRun) {
+      shortFilled = pos.sellQty > 0 && triggerMet;
+      longFilled = pos.sellQty === 0 && triggerMet;
+    } else {
+      const shortSize = Math.abs(sizeBySymbol[pos.sellLeg.symbol] ?? 0);
+      const longSize = Math.abs(sizeBySymbol[pos.buyLeg.symbol] ?? 0);
+      shortFilled = pos.sellQty > 0 && shortSize === 0;
+      longFilled = pos.sellQty === 0 && longSize === 0;
+    }
+
+    // ── Short SL filled → book short exit, convert to long-only, arm long TP ──
+    if (shortFilled && !atExpiry) {
+      const shortLot = pos.sellLeg.lotSize || 1;
+      const exitShortPrice = shortAsk;
+      if (exitShortPrice == null) { remaining.push(pos); return; }
+      lastDbWrite = Date.now();
+      const gross = (pos.entrySellPrice - exitShortPrice) * pos.sellQty * shortLot;
+      const entryFee = Math.min(pos.entryFee || 0, calculateFee(pos.entrySellPrice, pos.entrySpotPrice, pos.sellQty, shortLot));
+      const exitFee = calculateFee(exitShortPrice, spotPrice, pos.sellQty, shortLot);
+      const net = gross - (entryFee + exitFee);
+      try {
+        await supabase.from('trade_history').insert([{
+          trade_id: `${pos.id}-LSL-${Date.now().toString(36).toUpperCase()}`,
+          underlying: pos.underlying, expiry: pos.expiry, type: pos.type,
+          buy_leg: JSON.stringify({ ...pos.buyLeg, lotSize: 0 }),
+          sell_leg: JSON.stringify({ ...pos.sellLeg, exitIv: tickerSell?.askIv ?? tickerSell?.iv ?? null }),
+          sell_qty: pos.sellQty, strike_diff: pos.strikeDiff,
+          entry_time: pos.entryTime.toISOString(),
+          entry_buy_price: pos.entryBuyPrice, entry_sell_price: pos.entrySellPrice, entry_spot_price: pos.entrySpotPrice,
+          margin: pos.margin, exit_time: new Date().toISOString(),
+          exit_buy_price: longBid, exit_sell_price: exitShortPrice, exit_spot_price: spotPrice,
+          realized_gross_pnl: gross, realized_net_pnl: net, exit_fee: exitFee, total_fees: entryFee + exitFee,
+          exit_reason: `Live Short SL @ index ${triggerLevel}`, is_partial: true, account_id: accountState.id,
+        }]);
+      } catch (e) { logError(`[${accountState.name}] Live short SL booking failed for ${pos.id}:`, e); }
+
+      pos.entryFee = Math.max(0, (pos.entryFee || 0) - entryFee);
+      pos.sellLeg = { ...pos.sellLeg, lotSize: 0 };
+      pos.sellQty = 0;
+
+      const tpRes = await live.placeStop({
+        symbol: pos.buyLeg.symbol, side: 'sell',
+        contracts: longContracts(pos.buyLeg), stopPrice: triggerLevel, tag: `${pos.id}-TP`,
+      });
+      pos.buyLeg = { ...pos.buyLeg, tpOrderId: tpRes?.order?.id ?? pos.buyLeg.tpOrderId ?? null, longExitBaseLot: pos.buyLeg.lotSize };
+      pos.margin = calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, spotPrice, 0, 1);
+      try {
+        await supabase.from('active_positions').update({
+          buy_leg: JSON.stringify(pos.buyLeg), sell_leg: JSON.stringify(pos.sellLeg),
+          sell_qty: 0, entry_fee: pos.entryFee, margin: pos.margin,
+        }).eq('id', pos.id);
+      } catch (e) { logError(`[${accountState.name}] Live short SL update failed for ${pos.id}:`, e); }
+      log(`[${accountState.name}] ✂️ LIVE SHORT SL: ${pos.type.toUpperCase()} ${pos.buyLeg.strike}/${pos.sellLeg.strike} @ index ${triggerLevel} | PnL $${net.toFixed(2)} → long TP armed`);
+      remaining.push(pos);
+      return;
+    }
+
+    // ── Long TP filled (or expiry) → book long exit, delete position ──
+    if (longFilled || atExpiry) {
+      const exitLong = longBid;
+      // If we have no quote and it isn't an expiry settlement, wait for one.
+      if (exitLong == null && !atExpiry) { remaining.push(pos); return; }
+      lastDbWrite = Date.now();
+      const lot = pos.buyLeg.lotSize || 0;
+      const px = exitLong ?? pos.entryBuyPrice;
+      const gross = (px - pos.entryBuyPrice) * lot;
+      const entryFee = pos.entryFee || 0;
+      const exitFee = calculateFee(px, spotPrice, lot, pos.buyLeg.originalLotSize || 1);
+      const net = gross - (entryFee + exitFee);
+      const reason = atExpiry ? 'Live Expiry Settlement' : `Live Long TP @ index ${triggerLevel}`;
+      try {
+        await supabase.from('trade_history').insert([{
+          trade_id: `${pos.id}-LTP-${Date.now().toString(36).toUpperCase()}`,
+          underlying: pos.underlying, expiry: pos.expiry, type: pos.type,
+          buy_leg: JSON.stringify({ ...pos.buyLeg, exitIv: tickerBuy?.bidIv ?? tickerBuy?.iv ?? null }),
+          sell_leg: JSON.stringify({ ...pos.sellLeg, lotSize: 0 }),
+          sell_qty: 0, strike_diff: pos.strikeDiff,
+          entry_time: pos.entryTime.toISOString(),
+          entry_buy_price: pos.entryBuyPrice, entry_sell_price: pos.entrySellPrice, entry_spot_price: pos.entrySpotPrice,
+          margin: pos.margin, exit_time: new Date().toISOString(),
+          exit_buy_price: px, exit_sell_price: null, exit_spot_price: spotPrice,
+          realized_gross_pnl: gross, realized_net_pnl: net, exit_fee: exitFee, total_fees: entryFee + exitFee,
+          exit_reason: reason, is_partial: false, account_id: accountState.id,
+        }]);
+        await supabase.from('active_positions').delete().eq('id', pos.id);
+      } catch (e) { logError(`[${accountState.name}] Live long TP booking failed for ${pos.id}:`, e); }
+      log(`[${accountState.name}] 🎯 LIVE ${atExpiry ? 'EXPIRY' : 'LONG TP'}: ${pos.type.toUpperCase()} ${pos.buyLeg.strike} @ index ${triggerLevel} | PnL $${net.toFixed(2)}`);
+      return; // closed — not pushed to remaining
+    }
+
+    // No fill yet — hold.
+    remaining.push(pos);
   }
 
   async function evaluateStrategy(onlyExits = false) {
@@ -718,6 +871,16 @@ async function startSingleAccountEngine(account) {
       const remaining = [];
       const exited = [];
 
+      // Armed live accounts use the exchange-resting SL/TP model instead of the
+      // paper simulated exits. Fetch current exchange positions once per cycle so
+      // fill detection is a single API call, not one per leg.
+      const liveExitModel = accountState.mode === 'live' && !!accountState.live_enabled;
+      let liveSizeBySymbol = {};
+      if (liveExitModel && !live.dryRun) {
+        const livePos = await live.positions();
+        for (const p of livePos) liveSizeBySymbol[p.product_symbol] = Number(p.size) || 0;
+      }
+
       // Sort worst-first (farthest from ATM)
       const sortedPositions = [...positions].sort((a, b) => {
         const distA = Math.abs(a.buyLeg.strike - spotPrice);
@@ -729,6 +892,12 @@ async function startSingleAccountEngine(account) {
       for (const pos of sortedPositions) {
         if (pos.underlying !== underlying) {
           remaining.push(pos);
+          continue;
+        }
+
+        // Armed live: index-triggered SL/TP model replaces the paper exit logic.
+        if (liveExitModel) {
+          await handleLiveExit(pos, remaining, liveSizeBySymbol);
           continue;
         }
 
@@ -1308,8 +1477,31 @@ async function startSingleAccountEngine(account) {
       // ── 2. Open new positions (entries) ─────────────────────────────────
       const newEntries = [];
 
+      // LIVE sizing context: divide the allocated wallet balance into equal parts
+      // (1 part of margin per position). Only for armed live accounts; paper skips this.
+      const liveArmed = accountState.mode === 'live' && !!accountState.live_enabled;
+      let partMargin = null;
+      if (!onlyExits && liveArmed) {
+        try {
+          const bal = await live.walletBalance();
+          if (bal != null && bal > 0) {
+            const allocPct = config.balanceAllocationPct ?? 90;
+            const usable = bal * (allocPct / 100);
+            const maxPos = computeMaxPositions();
+            partMargin = usable / maxPos;
+            log(`[${accountState.name}] 💰 LIVE sizing: balance $${bal.toFixed(2)} × ${allocPct}% = $${usable.toFixed(2)} usable ÷ ${maxPos} max pos = $${partMargin.toFixed(2)}/position`);
+          } else {
+            logWarn(`[${accountState.name}] LIVE sizing: wallet balance unavailable — skipping live entries this cycle.`);
+          }
+        } catch (e) {
+          logError(`[${accountState.name}] LIVE sizing balance fetch error:`, e);
+        }
+      }
+
       if (!onlyExits) {
         for (const spread of uniqueTopSpreads) {
+          // Live accounts need a valid per-position margin part to size safely.
+          if (liveArmed && partMargin == null) continue;
           const bStrike = Number(spread.buyLeg.strike);
           const sStrike = Number(spread.sellLeg.strike);
           const spreadType = spread.buyLeg.type;
@@ -1381,19 +1573,31 @@ async function startSingleAccountEngine(account) {
           const ratioToUse = computeScaledSellQty(spread.sellQty, entryAtmRatio, spreadType, effectiveConfig);
 
           const originalLotSize = spread.buyLeg.lotSize || 1;
-
           const sellLotSize = spread.sellLeg.lotSize || originalLotSize;
-          let shortValue = spotPrice * ratioToUse * sellLotSize;
 
           let adjustedLotSize = originalLotSize;
           let adjustedSellQty = ratioToUse;
           let scale = 1;
 
-          if (shortValue >= 200000) {
-            scale = 200000 / shortValue;
-            adjustedLotSize = Number((originalLotSize * scale).toFixed(2));
-            adjustedSellQty = Number((ratioToUse * scale).toFixed(2));
-            shortValue = 200000;
+          if (liveArmed) {
+            // LIVE: cap this position's margin at 1 "part" of allocated balance.
+            const baseMargin = calcMargin(entryBuyPrice, originalLotSize, spotPrice, ratioToUse, sellLotSize);
+            if (baseMargin > partMargin && baseMargin > 0) {
+              scale = partMargin / baseMargin;
+              adjustedLotSize = Number((originalLotSize * scale).toFixed(4));
+              adjustedSellQty = Number((ratioToUse * scale).toFixed(2));
+            }
+            const finalMargin = calcMargin(entryBuyPrice, adjustedLotSize, spotPrice, adjustedSellQty, sellLotSize);
+            log(`[${accountState.name}] 💰 LIVE size ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: baseMargin $${baseMargin.toFixed(2)} vs part $${partMargin.toFixed(2)} → scale ${scale.toFixed(3)} | long ${adjustedLotSize} short ${adjustedSellQty} | est margin $${finalMargin.toFixed(2)}`);
+          } else {
+            // PAPER (unchanged): $200,000 / 200x notional cap.
+            let shortValue = spotPrice * ratioToUse * sellLotSize;
+            if (shortValue >= 200000) {
+              scale = 200000 / shortValue;
+              adjustedLotSize = Number((originalLotSize * scale).toFixed(2));
+              adjustedSellQty = Number((ratioToUse * scale).toFixed(2));
+              shortValue = 200000;
+            }
           }
 
           const buyLegWithIv = {
@@ -1536,6 +1740,18 @@ async function startSingleAccountEngine(account) {
             if (!liveEntry.ok) {
               logError(`[${accountState.name}] LIVE entry aborted (${liveEntry.legFailed} leg: ${liveEntry.error}) — not persisting ${t.buyLeg.strike}/${t.sellLeg.strike}`);
               continue;
+            }
+
+            // LIVE: punch the short-leg SL (resting, index-triggered) at entry.
+            // Its trigger level is persisted so the exit handler uses the same value.
+            if (liveArmed && t.sellQty > 0) {
+              const triggerLevel = computeIndexTriggerLevel(t.type, t.buyLeg.strike, effectiveConfig);
+              const slRes = await live.placeStop({
+                symbol: t.sellLeg.symbol, side: 'buy',
+                contracts: shortContracts(t.sellQty), stopPrice: triggerLevel, tag: `${t.id}-SL`,
+              });
+              t.sellLeg = { ...t.sellLeg, slOrderId: slRes?.order?.id ?? null, slTriggerLevel: triggerLevel };
+              log(`[${accountState.name}] 🛑 LIVE SL armed: short ${t.sellLeg.strike} @ index ${triggerLevel}`);
             }
 
             const { error: insertError } = await supabase.from('active_positions').insert([{

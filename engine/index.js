@@ -9,6 +9,7 @@
  */
 import 'dotenv/config';
 import { startPaperTradingEngine } from './paperTradingEngine.js';
+import { startDeltaProxy } from './proxyServer.js';
 import { log, logError } from './lib/utils.js';
 
 log('╔═══════════════════════════════════════════════════╗');
@@ -18,9 +19,14 @@ log('╚════════════════════════
 log('');
 
 let paperEngine = null;
+let deltaProxy = null;
 
 async function start() {
   try {
+    // Optional Delta forwarding proxy (opt-in via DELTA_PROXY_PORT) so the
+    // browser Verify call egresses from this server's whitelisted IP.
+    deltaProxy = startDeltaProxy();
+
     paperEngine = await startPaperTradingEngine();
 
     log('');
@@ -37,6 +43,7 @@ async function shutdown() {
 
   try {
     if (paperEngine) await paperEngine.stop();
+    if (deltaProxy) deltaProxy.close();
   } catch (e) {
     logError('Error during shutdown:', e);
   }
