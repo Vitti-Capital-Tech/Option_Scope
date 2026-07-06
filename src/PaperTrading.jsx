@@ -911,8 +911,22 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
   const updateConfig = (keyOrObj, value) => {
     const updates = typeof keyOrObj === 'object' ? keyOrObj : { [keyOrObj]: value };
+    const parsedUpdates = {};
+    for (const k of Object.keys(updates)) {
+      const val = updates[k];
+      if (k === 'exitType' || k === 'variableExitSlices' || k === 'atmRatioScaling' || k === 'underlying' || k === 'expiry') {
+        parsedUpdates[k] = val;
+      } else {
+        const num = (val === '' || val === '-' || val == null) ? null : Number(val);
+        if (num === null || isNaN(num)) {
+          parsedUpdates[k] = config[k] ?? DEFAULT_FILTERS[k] ?? ACCOUNT_CONFIG_DEFAULTS[k] ?? 0;
+        } else {
+          parsedUpdates[k] = num;
+        }
+      }
+    }
     setConfig(c => {
-      const newConfig = { ...c, ...updates };
+      const newConfig = { ...c, ...parsedUpdates };
       setTimeout(() => {
         tabBroadcast('CONFIG_SYNC', { config: newConfig });
         saveSupabaseConfig(newConfig);
@@ -920,8 +934,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       return newConfig;
     });
     setDraftConfig(dc => {
-      if (dc) return { ...dc, ...updates };
-      return { ...config, ...updates };
+      if (dc) return { ...dc, ...parsedUpdates };
+      return { ...config, ...parsedUpdates };
     });
   };
 
@@ -960,7 +974,16 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
   const isFiltersDirty = React.useMemo(() => {
     if (!draftConfig || !config) return false;
-    return FILTER_KEYS.some(k => draftConfig[k] !== config[k]);
+    return FILTER_KEYS.some(k => {
+      const val1 = draftConfig[k];
+      const val2 = config[k];
+      if (k === 'exitType' || k === 'variableExitSlices' || k === 'atmRatioScaling' || k === 'underlying' || k === 'expiry') {
+        return val1 !== val2;
+      }
+      const num1 = (val1 === '' || val1 === '-' || val1 == null) ? null : Number(val1);
+      const num2 = (val2 === '' || val2 === '-' || val2 == null) ? null : Number(val2);
+      return num1 !== num2;
+    });
   }, [draftConfig, config]);
 
   const handleApplyFilters = () => {

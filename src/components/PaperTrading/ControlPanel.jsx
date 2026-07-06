@@ -133,7 +133,7 @@ export default function ControlPanel({
               <label style={{ marginBottom: 0 }}>{label}</label>
               <CustomInput type="number" step={step} prefix={prefix} suffix={suffix} showStepper
                 width={width} value={draftConfig?.[key] ?? ''}
-                onChange={e => updateDraftConfig(key, Number(e.target.value))} />
+                onChange={e => updateDraftConfig(key, e.target.value)} />
             </div>
           ))}
           <div key="variableExitSlices" className="form-group" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -145,7 +145,7 @@ export default function ControlPanel({
             <div key="longExitSlices" className="form-group">
               <label style={{ marginBottom: 0 }}>Long Exit Slices</label>
               <CustomInput type="number" step="1" showStepper width={100} value={draftConfig.longExitSlices ?? 10}
-                onChange={e => updateDraftConfig('longExitSlices', Number(e.target.value))} />
+                onChange={e => updateDraftConfig('longExitSlices', e.target.value)} />
             </div>
           )}
           <div key="exitType" className="form-group" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -165,7 +165,7 @@ export default function ControlPanel({
             <div key="exitPoints" className="form-group">
               <label style={{ marginBottom: 0 }}>Exit Points</label>
               <CustomInput type="number" step="1" showStepper width={100} value={draftConfig.exitPoints ?? 0}
-                onChange={e => updateDraftConfig('exitPoints', Number(e.target.value))} />
+                onChange={e => updateDraftConfig('exitPoints', e.target.value)} />
             </div>
           )}
           {/* Apply, Cancel & Reset Buttons */}
