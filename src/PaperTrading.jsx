@@ -228,6 +228,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   }, [expiries, config?.daysToExpiry]);
 
   const [engineStatus, setEngineStatus] = useState({ status: 'offline', lastHeartbeat: null, data: null });
+  const [walletBalance, setWalletBalance] = useState(null); // live USDT balance from heartbeat
 
   const [includeFees, setIncludeFees] = useState(true);
   const [positions, setPositions] = useState([]);
@@ -1662,15 +1663,17 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     try {
       const { data, error } = await supabase
         .from('engine_heartbeat')
-        .select('id, last_heartbeat, status, ws_status, underlying, expiry, active_positions, spot_price')
+        .select('id, last_heartbeat, status, ws_status, underlying, expiry, active_positions, spot_price, wallet_balance')
         .eq('id', `paper_trading_${activeAccountId}`);
 
       if (error || !data || data.length === 0) {
         setEngineStatus({ status: 'offline', lastHeartbeat: null, data: null });
+        setWalletBalance(null);
         return;
       }
 
       const row = data[0];
+      setWalletBalance(row.wallet_balance != null ? Number(row.wallet_balance) : null);
       const age = Date.now() - new Date(row.last_heartbeat).getTime();
       const status = age < HEARTBEAT_ONLINE_THRESHOLD ? 'online'
         : age < HEARTBEAT_STALE_THRESHOLD ? 'stale' : 'offline';
@@ -2211,6 +2214,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               activeCallsCount={positions.filter(p => p.type === 'call' && p.underlying === underlying).length}
               activePutsCount={positions.filter(p => p.type === 'put' && p.underlying === underlying).length}
               totalMargin={totalMargin}
+              isLive={activeAccount?.mode === 'live'}
+              walletBalance={walletBalance}
+              allocationPct={activeAccount?.default_config?.balanceAllocationPct ?? 90}
+              maxPositions={Math.max(1, (activeAccount?.default_config?.numberOfCalls ?? 3) + (activeAccount?.default_config?.numberOfPuts ?? 3))}
             />
 
             <TradingWorkspace

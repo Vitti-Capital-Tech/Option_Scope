@@ -12,12 +12,20 @@ export default function KpiDashboard({
   activePositionsCount,
   activeCallsCount,
   activePutsCount,
-  totalMargin
+  totalMargin,
+  isLive = false,
+  walletBalance = null,
+  allocationPct = 90,
+  maxPositions = 6
 }) {
   const fmt = (n) => `${n > 0 ? '+' : ''}${n.toFixed(2)}`;
   const cls = (n) => (n > 0 ? 'positive' : n < 0 ? 'negative' : 'neutral');
   const losses = Math.max(0, tradeHistoryLength - wins);
   const wrNum = winRate === '—' ? 0 : parseFloat(winRate);
+  const money = (n) => n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  const showBalance = isLive && walletBalance != null;
+  const allocated = showBalance ? walletBalance * (allocationPct / 100) : 0;
+  const perPosition = showBalance ? allocated / Math.max(1, maxPositions) : 0;
 
   return (
     <div className="pt-kpi-grid">
@@ -66,6 +74,20 @@ export default function KpiDashboard({
         <span className="pt-k-val">${totalMargin.toFixed(0)}</span>
         <span className="pt-k-sub">Across {activePositionsCount} position{activePositionsCount !== 1 ? 's' : ''}</span>
       </div>
+
+      {/* Live wallet balance & allocation (live accounts only) */}
+      {showBalance && (
+        <div className="pt-kpi-cell">
+          <span className="pt-k-lbl">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="5" width="20" height="14" rx="2" /><path d="M2 10h20" /></svg>
+            Live Balance
+          </span>
+          <span className="pt-k-val">{money(walletBalance)} <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>USDT</span></span>
+          <span className="pt-k-sub">
+            Allocated <b>{money(allocated)}</b> ({allocationPct}%) · <b>{money(perPosition)}</b>/pos
+          </span>
+        </div>
+      )}
     </div>
   );
 }

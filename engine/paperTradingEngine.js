@@ -1997,6 +1997,19 @@ async function startSingleAccountEngine(account) {
     }
   }, 300000);
 
+  // Live wallet balance poll — every 60s for armed live accounts, surfaced to the
+  // dashboard via the heartbeat (Wallet / Allocated / per-position figures).
+  const balanceTimer = setInterval(async () => {
+    try {
+      if (accountState.mode === 'live' && accountState.live_enabled) {
+        const bal = await live.walletBalance();
+        if (bal != null) heartbeat.update({ wallet_balance: bal });
+      } else {
+        heartbeat.update({ wallet_balance: null });
+      }
+    } catch (e) { /* non-fatal */ }
+  }, 60000);
+
 
   log(`[${accountState.name}] Paper Trading Engine is LIVE`);
 
@@ -2008,6 +2021,7 @@ async function startSingleAccountEngine(account) {
       clearInterval(spotTimer);
       clearInterval(productTimer);
       clearInterval(positionsTimer);
+      clearInterval(balanceTimer);
       if (wsHandle) { wsHandle.close(); wsHandle = null; }
       supabase.removeChannel(configChannel);
 
