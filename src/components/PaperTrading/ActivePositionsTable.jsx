@@ -47,13 +47,13 @@ export default function ActivePositionsTable({
       : `${base} ${kStrike(p.buyLeg.strike)}/${kStrike(p.sellLeg.strike)}`;
   };
 
-  // A "long / short" value pair, coloured green/red (or dimmed for IV).
-  const legPair = (l, s, { longOnly = false, dim = false } = {}) => (
-    <span className={`pt-ls${dim ? ' dim' : ''}`}>
+  // A long/short value pair, stacked vertically (long on top green, short below
+  // red) to keep columns narrow. Dimmed variant for secondary values like IV.
+  const legStack = (l, s, { longOnly = false, dim = false } = {}) => (
+    <div className={`pt-legstack${dim ? ' dim' : ''}`}>
       <span className="pt-ls-l">{l ?? '—'}</span>
-      <span className="pt-ls-sep">/</span>
       <span className="pt-ls-s">{longOnly ? '—' : (s ?? '—')}</span>
-    </span>
+    </div>
   );
 
   const secsSinceEval = lastEvaluated > 0 ? Math.max(0, Math.round((now - lastEvaluated) / 1000)) : null;
@@ -194,21 +194,13 @@ export default function ActivePositionsTable({
           <table className="pt-table pt-lean">
             <thead><tr>
               <th>Position</th>
-              <th>Ratio (L/S)</th>
-              <th>Init. Ratio</th>
-              <th>Init. Scaled (L/S)</th>
-              <th>Expiry</th>
-              <th>Strikes L/S</th>
-              <th>Entry Spot</th>
-              <th>Entry Prem.</th>
-              <th>Entry IV (L/S)</th>
-              <th>Mark Prem.</th>
-              <th>Mark IV (L/S)</th>
+              <th>Strikes<span className="pt-th-sub">spot</span></th>
+              <th>Entry<span className="pt-th-sub">prem · iv</span></th>
+              <th>Mark<span className="pt-th-sub">prem · iv</span></th>
               <th>Dist. to Exit</th>
               <th>Scale-Out</th>
               <th>Unrealized P&L</th>
               <th>Margin</th>
-              <th>Entry Time</th>
               <th>Age</th>
               <th></th>
             </tr></thead>
@@ -221,7 +213,7 @@ export default function ActivePositionsTable({
                 const displaySellQty = p.sellQty;
                 const isLongOnly = (p.sellQty || 0) === 0;
 
-                // ── Original & initial-scaled ratios (shown in the detail drawer) ──
+                // ── Original & initial-scaled ratios ──
                 const origLot = p.buyLeg?.originalLotSize || p.buyLeg?.lotSize || 1;
                 const rawOrigSellQty = p.buyLeg?.originalSellQty !== undefined ? p.buyLeg.originalSellQty : p.sellQty;
                 const displayOrigSellQty = Math.round((rawOrigSellQty / origLot) * 4) / 4;
@@ -246,39 +238,41 @@ export default function ActivePositionsTable({
                 const rangeTop = exitLevels[exitLevels.length - 1];
                 const showLadder = isLongOnly && exitLevels.length > 0;
 
+                const ivText = (b, s) => `${b != null ? b.toFixed(1) : '—'}/${(isLongOnly || s == null) ? '—' : s.toFixed(1)}`;
+
                 return (
                   <tr key={p.id} className={`pt-row-${p.type}`}>
+                    {/* Position: instrument + tag + expiry + ratio/init sub-lines */}
                     <td>
                       <div className="pt-pos-cell">
                         <span className={`pt-legrail ${p.type}`} />
                         <div className="pt-pos-id">
                           <span className="pt-instrument">{instrumentName(p)}</span>
                           <span className="pt-pos-meta">
-                            {isLongOnly ? (
-                              <>
-                                <span className="pt-type-badge long">LONG ONLY</span>
-                                <span className="pt-pos-note">· short exited</span>
-                              </>
-                            ) : (
-                              <>
-                                <span className={`pt-type-badge ${p.type}`}>{p.type.toUpperCase()}</span>
-                                <span className="pt-pos-note">spread</span>
-                              </>
-                            )}
+                            <span className={`pt-type-badge ${isLongOnly ? 'long' : p.type}`}>{isLongOnly ? 'LONG ONLY' : p.type.toUpperCase()}</span>
+                            <span className="pt-pos-note">{isLongOnly ? '· short exited' : 'spread'} · {fmtExpiry(p.expiry)}</span>
+                          </span>
+                          <span className="pt-cell-sub">
+                            ratio <b>{displayBuyQty.toFixed(2)}:{displaySellQty.toFixed(2)}</b> · orig 1:{displayOrigSellQty.toFixed(2)} · init {initBuyQty.toFixed(2)}L/{initSellQty.toFixed(2)}S
                           </span>
                         </div>
                       </div>
                     </td>
-                    <td>{legPair(displayBuyQty.toFixed(2), displaySellQty.toFixed(2), { longOnly: isLongOnly })}</td>
-                    <td><span className="pt-mono pt-dim">1:{displayOrigSellQty.toFixed(2)}</span></td>
-                    <td>{legPair(initBuyQty.toFixed(2), initSellQty.toFixed(2))}</td>
-                    <td><span className="pt-mono">{fmtExpiry(p.expiry)}</span></td>
-                    <td>{legPair(p.buyLeg.strike.toLocaleString(), isLongOnly ? null : p.sellLeg.strike.toLocaleString(), { longOnly: isLongOnly })}</td>
-                    <td><span className="pt-mono pt-dim">{p.entrySpotPrice ? p.entrySpotPrice.toLocaleString() : '—'}</span></td>
-                    <td>{legPair(p.entryBuyPrice != null ? p.entryBuyPrice.toFixed(2) : null, p.entrySellPrice != null ? p.entrySellPrice.toFixed(2) : null, { longOnly: isLongOnly })}</td>
-                    <td>{legPair(p.entryBuyIv != null ? p.entryBuyIv.toFixed(1) : null, p.entrySellIv != null ? p.entrySellIv.toFixed(1) : null, { longOnly: isLongOnly, dim: true })}</td>
-                    <td>{legPair(p.currentBuyPrice != null ? p.currentBuyPrice.toFixed(2) : null, p.currentSellPrice != null ? p.currentSellPrice.toFixed(2) : null, { longOnly: isLongOnly })}</td>
-                    <td>{legPair(p.currentBuyIv != null ? p.currentBuyIv.toFixed(1) : null, p.currentSellIv != null ? p.currentSellIv.toFixed(1) : null, { longOnly: isLongOnly, dim: true })}</td>
+                    {/* Strikes (stacked) + entry spot */}
+                    <td>
+                      {legStack(p.buyLeg.strike.toLocaleString(), isLongOnly ? null : p.sellLeg.strike.toLocaleString(), { longOnly: isLongOnly })}
+                      <span className="pt-cell-sub">spot {p.entrySpotPrice ? p.entrySpotPrice.toLocaleString() : '—'}</span>
+                    </td>
+                    {/* Entry premium (stacked) + entry IV */}
+                    <td>
+                      {legStack(p.entryBuyPrice != null ? p.entryBuyPrice.toFixed(2) : null, p.entrySellPrice != null ? p.entrySellPrice.toFixed(2) : null, { longOnly: isLongOnly })}
+                      <span className="pt-cell-sub">iv {ivText(p.entryBuyIv, p.entrySellIv)}</span>
+                    </td>
+                    {/* Mark premium (stacked) + mark IV */}
+                    <td>
+                      {legStack(p.currentBuyPrice != null ? p.currentBuyPrice.toFixed(2) : null, p.currentSellPrice != null ? p.currentSellPrice.toFixed(2) : null, { longOnly: isLongOnly })}
+                      <span className="pt-cell-sub">iv {ivText(p.currentBuyIv, p.currentSellIv)}</span>
+                    </td>
                     <td>
                       <div className="pt-dist" title={`Spot ${liveSpot.toLocaleString()} vs exit ${getExitTriggerDesc(p, exitType, exitPoints).text} (${exitType})`}>
                         <span className="pt-dist-trigger">{getExitTriggerDesc(p, exitType, exitPoints).text}</span>
@@ -298,8 +292,8 @@ export default function ActivePositionsTable({
                               <span key={i} className={`pt-rung ${i < ladderStage ? 'hit' : i === ladderStage ? 'next' : ''}`} />
                             ))}
                           </div>
-                          <span className="pt-dist-away">
-                            {ladderStage} / {exitLevels.length} slices{nextLevel != null ? ` · next $${Number(nextLevel).toFixed(2)}` : ''}
+                          <span className="pt-cell-sub">
+                            {ladderStage}/{exitLevels.length} slices{nextLevel != null ? ` · next $${Number(nextLevel).toFixed(2)}` : ''}
                           </span>
                         </div>
                       ) : (
@@ -313,8 +307,10 @@ export default function ActivePositionsTable({
                       </div>
                     </td>
                     <td><span className="pt-margin-val">${calculatePositionMargin(p).toFixed(0)}</span></td>
-                    <td><span className="pt-mono pt-dim">{formatDateTime(p.entryTime)}</span></td>
-                    <td><span className="pt-duration">{fmtDuration(now - p.entryTime)}</span></td>
+                    <td>
+                      <span className="pt-duration">{fmtDuration(now - p.entryTime)}</span>
+                      <span className="pt-cell-sub">{formatDateTime(p.entryTime)}</span>
+                    </td>
                     <td>
                       <button onClick={() => onExitPosition(p)} className="pt-btn-close">Close</button>
                     </td>

@@ -2409,7 +2409,7 @@ body.light-theme .scanner-logs-body::-webkit-scrollbar-thumb:hover {
 
 /* ── Scrollable table body ───────────────────────────── */
 .pt-table-scroll {
-  max-height: 320px;
+  max-height: 480px;
   overflow-y: auto;
   overflow-x: auto;
   width: 100%;
@@ -5310,6 +5310,36 @@ body.light-theme .pt-btn-apply.active {
 .pt-ls-sep { color: var(--text-dim); opacity: 0.55; margin: 0 5px; }
 .pt-ls.dim .pt-ls-l,
 .pt-ls.dim .pt-ls-s { color: var(--text-dim); font-weight: 500; }
+
+/* Vertically-stacked long/short values (compact clubbed columns) */
+.pt-legstack { display: flex; flex-direction: column; line-height: 1.35; }
+.pt-legstack .pt-ls-l { color: var(--call); font-weight: 600; }
+.pt-legstack .pt-ls-s { color: var(--put); font-weight: 600; }
+.pt-legstack.dim span { color: var(--text-dim); font-weight: 500; }
+
+/* Secondary sub-line inside a clubbed cell */
+.pt-cell-sub {
+  display: block;
+  margin-top: 3px;
+  font-family: 'Inter', sans-serif;
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: normal;
+  max-width: 220px;
+}
+.pt-cell-sub b { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* Small secondary label under a column header */
+.pt-th-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  opacity: 0.75;
+  text-transform: none;
+}
 
 /* Distance-to-exit cell */
 .pt-dist-trigger {

@@ -43,13 +43,13 @@ export default function TradeHistoryTable({
       : `${base} ${kStrike(t.buyLeg.strike)}`;
   };
 
-  // A "long / short" value pair, coloured green/red (or dimmed for IV).
-  const legPair = (l, s, { dim = false } = {}) => (
-    <span className={`pt-ls${dim ? ' dim' : ''}`}>
+  // A long/short value pair, stacked vertically (long on top green, short below
+  // red) to keep columns narrow. Dimmed variant for secondary values like IV.
+  const legStack = (l, s, { dim = false } = {}) => (
+    <div className={`pt-legstack${dim ? ' dim' : ''}`}>
       <span className="pt-ls-l">{l ?? '—'}</span>
-      <span className="pt-ls-sep">/</span>
       <span className="pt-ls-s">{s ?? '—'}</span>
-    </span>
+    </div>
   );
 
   const exitBadgeClass = (reason) => {
@@ -79,34 +79,34 @@ export default function TradeHistoryTable({
     return `1:${originalSell.toFixed(2)}`;
   };
 
-  // ── Actual positions entered per window on the selected day ─────────────
+  // Count currently-open spreads (ignoring long-only legs) cumulatively based on their entry window.
+  // A position entered in Window 1 stays active in Window 2 and 3 if it remains open.
   const toMin = (t) => { const [h, m] = (t || '').split(':').map(Number); return (h || 0) * 60 + (m || 0); };
-  const inWindow = (min, s) => {
-    const start = toMin(s.startTime), end = toMin(s.endTime);
-    return start <= end ? (min >= start && min < end) : (min >= start || min < end);
-  };
   const entryIstMin = (d) => { const x = new Date(d); return (x.getUTCHours() * 60 + x.getUTCMinutes() + 330) % 1440; };
 
-  const getTodayIstStr = () => {
-    const d = new Date();
-    d.setUTCMinutes(d.getUTCMinutes() + 330);
-    return d.toISOString().split('T')[0];
-  };
-  const targetDateStr = historyFilterDate || getTodayIstStr();
-
-  const isSameIstDate = (date, targetDateStr) => {
-    if (!date) return false;
-    const d = new Date(date);
-    d.setUTCMinutes(d.getUTCMinutes() + 330);
-    return d.toISOString().split('T')[0] === targetDateStr;
+  const getEntryWindowIndex = (pos, schedulesList) => {
+    if (!pos.entryTime) return -1;
+    const min = entryIstMin(pos.entryTime);
+    return schedulesList.findIndex(s => {
+      const start = toMin(s.startTime), end = toMin(s.endTime);
+      return start <= end ? (min >= start && min < end) : (min >= start || min < end);
+    });
   };
 
   const windowFill = (s) => {
     let c = 0, p = 0;
+    const targetIdx = schedules.findIndex(item => item.id === s.id);
+    if (targetIdx === -1) return { c, p };
+
     for (const pos of positions) {
       if (underlying && pos.underlying !== underlying) continue;
-      if ((pos.sellQty || 0) <= 0) continue; // Only count active full spreads, ignore long-only legs
-      if (!pos.entryTime || !inWindow(entryIstMin(pos.entryTime), s)) continue;
+      if ((pos.sellQty || 0) <= 0) continue; // Ignore long-only legs
+
+      let entryIdx = getEntryWindowIndex(pos, schedules);
+      if (entryIdx === -1) entryIdx = 0; // Fallback to first window
+
+      if (targetIdx < entryIdx) continue; // Not entered yet
+
       if (pos.type === 'call') c++;
       else if (pos.type === 'put') p++;
     }
@@ -243,24 +243,12 @@ export default function TradeHistoryTable({
         <div className="pt-table-scroll">
           <table className="pt-table pt-lean">
             <thead><tr>
-              <th>Entry Time</th>
-              <th>Closed</th>
-              <th>Duration</th>
+              <th>Time<span className="pt-th-sub">in · out</span></th>
               <th>Position</th>
-              <th>Ratio</th>
-              <th>Init. Ratio</th>
-              <th>Init. Scaled (L/S)</th>
-              <th>Expiry</th>
-              <th>Strikes L/S</th>
-              <th>Spot (In / Out)</th>
-              <th>Entry Prem.</th>
-              <th>Entry IV (L/S)</th>
-              <th>Entry ATM Scaling</th>
-              <th>Exit Prem.</th>
-              <th>Exit IV (L/S)</th>
-              <th>Exit ATM Scaling</th>
-              <th>Entry Fee</th>
-              <th>Exit Fee</th>
+              <th>Strikes<span className="pt-th-sub">spot in/out</span></th>
+              <th>Entry<span className="pt-th-sub">prem · iv · atm</span></th>
+              <th>Exit<span className="pt-th-sub">prem · iv · atm</span></th>
+              <th>Fees<span className="pt-th-sub">entry/exit</span></th>
               <th>Net P&L</th>
               <th>Exit Reason</th>
             </tr></thead>
@@ -280,15 +268,22 @@ export default function TradeHistoryTable({
                 const initSellQty = t.buyLeg?.initialScaledLotSize !== undefined && t.buyLeg?.originalSellQty !== undefined
                   ? (t.buyLeg.initialScaledLotSize * t.buyLeg.originalSellQty)
                   : t.sellQty;
-                const atm = (ratio, buy, sell) => ratio != null
+                const atmFull = (ratio, buy, sell) => ratio != null
                   ? `${ratio.toFixed(2)} (${buy != null ? buy.toFixed(2) : '—'} / ${sell != null ? sell.toFixed(2) : '—'})`
                   : '—';
+                const ivText = (b, s) => `${b != null ? b.toFixed(1) : '—'}/${s != null ? s.toFixed(1) : '—'}`;
 
                 return (
                   <tr key={i} className={`pt-row-${t.type}`}>
-                    <td><span className="pt-mono pt-dim">{formatDateTime(t.entryTime)}</span></td>
-                    <td><span className="pt-hist-time">{formatDateTime(t.exitTime)}</span></td>
-                    <td><span className="pt-duration">{fmtDuration(durationMs)}</span></td>
+                    {/* Time: entry / exit stacked + duration */}
+                    <td>
+                      <div className="pt-legstack">
+                        <span className="pt-dim">{formatDateTime(t.entryTime)}</span>
+                        <span className="pt-hist-time">{formatDateTime(t.exitTime)}</span>
+                      </div>
+                      <span className="pt-cell-sub">{fmtDuration(durationMs)}</span>
+                    </td>
+                    {/* Position: instrument + tag + expiry + ratio/init sub */}
                     <td>
                       <div className="pt-pos-cell">
                         <span className={`pt-legrail ${t.type}`} />
@@ -303,25 +298,36 @@ export default function TradeHistoryTable({
                                 </span>
                               )}
                             </span>
-                            <span className="pt-pos-note">spread</span>
+                            <span className="pt-pos-note">spread · {fmtExpiry(t.expiry)}</span>
+                          </span>
+                          <span className="pt-cell-sub">
+                            ratio <b>{renderRatio(t)}</b> · orig 1:{displayOrigSellQty.toFixed(2)} · init {initBuyQty.toFixed(2)}L/{initSellQty.toFixed(2)}S
                           </span>
                         </div>
                       </div>
                     </td>
-                    <td><span className="pt-ratio">{renderRatio(t)}</span></td>
-                    <td><span className="pt-mono pt-dim">1:{displayOrigSellQty.toFixed(2)}</span></td>
-                    <td>{legPair(initBuyQty.toFixed(2), initSellQty.toFixed(2))}</td>
-                    <td><span className="pt-mono">{fmtExpiry(t.expiry)}</span></td>
-                    <td>{legPair(t.buyLeg.strike.toLocaleString(), hasShort ? t.sellLeg.strike.toLocaleString() : null)}</td>
-                    <td><span className="pt-mono pt-dim">{t.entrySpotPrice ? t.entrySpotPrice.toLocaleString() : '—'} / {t.exitSpotPrice ? t.exitSpotPrice.toLocaleString() : '—'}</span></td>
-                    <td>{legPair(t.entryBuyPrice != null ? t.entryBuyPrice.toFixed(2) : null, t.entrySellPrice != null ? t.entrySellPrice.toFixed(2) : null)}</td>
-                    <td>{legPair(t.entryBuyIv != null ? t.entryBuyIv.toFixed(1) : null, t.entrySellIv != null ? t.entrySellIv.toFixed(1) : null, { dim: true })}</td>
-                    <td><span className="pt-mono pt-dim">{atm(t.buyLeg?.entryAtmRatio, t.buyLeg?.entryBuyAtmPrice, t.buyLeg?.entrySellAtmPrice)}</span></td>
-                    <td>{legPair(t.exitBuyPrice != null ? t.exitBuyPrice.toFixed(2) : null, t.exitSellPrice != null ? t.exitSellPrice.toFixed(2) : null)}</td>
-                    <td>{legPair(t.exitBuyIv != null ? t.exitBuyIv.toFixed(1) : null, t.exitSellIv != null ? t.exitSellIv.toFixed(1) : null, { dim: true })}</td>
-                    <td><span className="pt-mono pt-dim">{atm(t.buyLeg?.exitAtmRatio, t.buyLeg?.exitBuyAtmPrice, t.buyLeg?.exitSellAtmPrice)}</span></td>
-                    <td><span className="pt-mono pt-dim">${t.entryFee?.toFixed(2) || '0.00'}</span></td>
-                    <td><span className="pt-mono pt-dim">${t.exitFee?.toFixed(2) || '0.00'}</span></td>
+                    {/* Strikes (stacked) + spot in/out */}
+                    <td>
+                      {legStack(t.buyLeg.strike.toLocaleString(), hasShort ? t.sellLeg.strike.toLocaleString() : null)}
+                      <span className="pt-cell-sub">spot {t.entrySpotPrice ? t.entrySpotPrice.toLocaleString() : '—'} → {t.exitSpotPrice ? t.exitSpotPrice.toLocaleString() : '—'}</span>
+                    </td>
+                    {/* Entry: prem stacked + IV + ATM ratio */}
+                    <td title={`Entry ATM scaling: ${atmFull(t.buyLeg?.entryAtmRatio, t.buyLeg?.entryBuyAtmPrice, t.buyLeg?.entrySellAtmPrice)}`}>
+                      {legStack(t.entryBuyPrice != null ? t.entryBuyPrice.toFixed(2) : null, t.entrySellPrice != null ? t.entrySellPrice.toFixed(2) : null)}
+                      <span className="pt-cell-sub">iv {ivText(t.entryBuyIv, t.entrySellIv)}{t.buyLeg?.entryAtmRatio != null ? ` · atm ${t.buyLeg.entryAtmRatio.toFixed(2)}` : ''}</span>
+                    </td>
+                    {/* Exit: prem stacked + IV + ATM ratio */}
+                    <td title={`Exit ATM scaling: ${atmFull(t.buyLeg?.exitAtmRatio, t.buyLeg?.exitBuyAtmPrice, t.buyLeg?.exitSellAtmPrice)}`}>
+                      {legStack(t.exitBuyPrice != null ? t.exitBuyPrice.toFixed(2) : null, t.exitSellPrice != null ? t.exitSellPrice.toFixed(2) : null)}
+                      <span className="pt-cell-sub">iv {ivText(t.exitBuyIv, t.exitSellIv)}{t.buyLeg?.exitAtmRatio != null ? ` · atm ${t.buyLeg.exitAtmRatio.toFixed(2)}` : ''}</span>
+                    </td>
+                    {/* Fees: entry / exit stacked */}
+                    <td>
+                      <div className="pt-legstack dim">
+                        <span>${t.entryFee?.toFixed(2) || '0.00'}</span>
+                        <span>${t.exitFee?.toFixed(2) || '0.00'}</span>
+                      </div>
+                    </td>
                     <td>
                       <div className="pt-pnlcell" style={{ alignItems: 'flex-start' }}>
                         <span className={`pt-pnl ${pnlClass}`}>{pnlValue > 0 ? '+' : ''}{pnlValue.toFixed(2)}</span>
