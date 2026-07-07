@@ -55,6 +55,7 @@ export default function AccountSelectorStrip({
   triggerDisarmLive,
   triggerPauseAccount,
   triggerResumeAccount,
+  engineDryRun,
   userProfile,
   session,
   handleLogout
@@ -181,6 +182,22 @@ export default function AccountSelectorStrip({
         {/* Live account controls (arm / pause) — live accounts only */}
         {activeAccount?.mode === 'live' && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 4, paddingLeft: 8, borderLeft: '1px solid var(--border)' }}>
+            {/* Execution mode: only meaningful once armed */}
+            {activeAccount.live_enabled && (
+              engineDryRun === false ? (
+                <span title="Engine is placing REAL orders on Delta" style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', padding: '3px 7px', borderRadius: 5, color: '#fff', background: '#f85149' }}>
+                  ● REAL ORDERS
+                </span>
+              ) : engineDryRun === true ? (
+                <span title="Armed, but engine is in DRY-RUN — orders are simulated, nothing hits Delta" style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', padding: '3px 7px', borderRadius: 5, color: '#e3b341', background: 'transparent', border: '1px solid #e3b341' }}>
+                  DRY-RUN
+                </span>
+              ) : (
+                <span title="Engine offline or unknown — can't confirm execution mode" style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', padding: '3px 7px', borderRadius: 5, color: 'var(--text-dim)', background: 'transparent', border: '1px solid var(--border)' }}>
+                  MODE ?
+                </span>
+              )
+            )}
             {!activeAccount.live_enabled ? (
               <button type="button" style={ctrlBtn('#238636', '#fff')} title="Arm real order execution for this account"
                 onClick={() => triggerStartLive(activeAccountId)}>

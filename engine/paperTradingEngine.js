@@ -1929,6 +1929,7 @@ async function startSingleAccountEngine(account) {
     expiry: config.expiry,
     active_positions: positions.length,
     spot_price: spotPrice,
+    dry_run: isLiveDryRun(), // publish execution mode so the UI can show real vs simulated
   });
   await heartbeat.start();
 

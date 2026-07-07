@@ -229,6 +229,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
   const [engineStatus, setEngineStatus] = useState({ status: 'offline', lastHeartbeat: null, data: null });
   const [walletBalance, setWalletBalance] = useState(null); // live USDT balance from heartbeat
+  const [engineDryRun, setEngineDryRun] = useState(null); // engine execution mode: true=sim, false=real, null=unknown
 
   const [includeFees, setIncludeFees] = useState(true);
   const [positions, setPositions] = useState([]);
@@ -1663,17 +1664,21 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     try {
       const { data, error } = await supabase
         .from('engine_heartbeat')
-        .select('id, last_heartbeat, status, ws_status, underlying, expiry, active_positions, spot_price, wallet_balance')
+        .select('id, last_heartbeat, status, ws_status, underlying, expiry, active_positions, spot_price, wallet_balance, dry_run')
         .eq('id', `paper_trading_${activeAccountId}`);
 
       if (error || !data || data.length === 0) {
         setEngineStatus({ status: 'offline', lastHeartbeat: null, data: null });
         setWalletBalance(null);
+        setEngineDryRun(null);
         return;
       }
 
       const row = data[0];
       setWalletBalance(row.wallet_balance != null ? Number(row.wallet_balance) : null);
+      // Only meaningful when the engine is actually online (fresh heartbeat).
+      const hbAge = Date.now() - new Date(row.last_heartbeat).getTime();
+      setEngineDryRun(hbAge < HEARTBEAT_STALE_THRESHOLD ? row.dry_run : null);
       const age = Date.now() - new Date(row.last_heartbeat).getTime();
       const status = age < HEARTBEAT_ONLINE_THRESHOLD ? 'online'
         : age < HEARTBEAT_STALE_THRESHOLD ? 'stale' : 'offline';
@@ -2169,6 +2174,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               triggerDisarmLive={triggerDisarmLive}
               triggerPauseAccount={triggerPauseAccount}
               triggerResumeAccount={triggerResumeAccount}
+              engineDryRun={engineDryRun}
               userProfile={userProfile}
               session={session}
               handleLogout={handleLogout}
