@@ -529,8 +529,8 @@ async function startSingleAccountEngine(account) {
       const exitFee = calculateFee(exitShortPrice, spotPrice, pos.sellQty, shortLot);
       const net = gross - (entryFee + exitFee);
       try {
-        await supabase.from('trade_history').insert([{
-          trade_id: `${pos.id}-LSL-${Date.now().toString(36).toUpperCase()}`,
+        await supabase.from('trade_history').upsert([{
+          trade_id: `${pos.id}-LSL`,
           underlying: pos.underlying, expiry: pos.expiry, type: pos.type,
           buy_leg: JSON.stringify({ ...pos.buyLeg, lotSize: 0 }),
           sell_leg: JSON.stringify({ ...pos.sellLeg, exitIv: tickerSell?.askIv ?? tickerSell?.iv ?? null }),
@@ -541,7 +541,7 @@ async function startSingleAccountEngine(account) {
           exit_buy_price: longBid, exit_sell_price: exitShortPrice, exit_spot_price: spotPrice,
           realized_gross_pnl: gross, realized_net_pnl: net, exit_fee: exitFee, total_fees: entryFee + exitFee,
           exit_reason: `Live Short SL @ index ${triggerLevel}`, is_partial: true, account_id: accountState.id,
-        }]);
+        }], { onConflict: 'trade_id', ignoreDuplicates: true });
       } catch (e) { logError(`[${accountState.name}] Live short SL booking failed for ${pos.id}:`, e); }
 
       pos.entryFee = Math.max(0, (pos.entryFee || 0) - entryFee);
@@ -579,8 +579,8 @@ async function startSingleAccountEngine(account) {
       const net = gross - (entryFee + exitFee);
       const reason = atExpiry ? 'Live Expiry Settlement' : `Live Long TP @ index ${triggerLevel}`;
       try {
-        await supabase.from('trade_history').insert([{
-          trade_id: `${pos.id}-LTP-${Date.now().toString(36).toUpperCase()}`,
+        await supabase.from('trade_history').upsert([{
+          trade_id: `${pos.id}-LTP`,
           underlying: pos.underlying, expiry: pos.expiry, type: pos.type,
           buy_leg: JSON.stringify({ ...pos.buyLeg, exitIv: tickerBuy?.bidIv ?? tickerBuy?.iv ?? null }),
           sell_leg: JSON.stringify({ ...pos.sellLeg, lotSize: 0 }),
@@ -591,7 +591,7 @@ async function startSingleAccountEngine(account) {
           exit_buy_price: px, exit_sell_price: null, exit_spot_price: spotPrice,
           realized_gross_pnl: gross, realized_net_pnl: net, exit_fee: exitFee, total_fees: entryFee + exitFee,
           exit_reason: reason, is_partial: false, account_id: accountState.id,
-        }]);
+        }], { onConflict: 'trade_id', ignoreDuplicates: true });
         await supabase.from('active_positions').delete().eq('id', pos.id);
       } catch (e) { logError(`[${accountState.name}] Live long TP booking failed for ${pos.id}:`, e); }
       log(`[${accountState.name}] 🎯 LIVE ${atExpiry ? 'EXPIRY' : 'LONG TP'}: ${pos.type.toUpperCase()} ${pos.buyLeg.strike} @ index ${triggerLevel} | PnL $${net.toFixed(2)}`);
@@ -934,11 +934,12 @@ async function startSingleAccountEngine(account) {
           const shortNetPnl = shortGrossPnl - shortTotalFees;
 
           const shortExitReason = `Short Leg Exit @ Ask $${exitShortPrice.toFixed(2)} (holding long ${pos.buyLeg.strike})`;
-          const shortTradeId = `${pos.id}-SE-${Date.now().toString(36).toUpperCase()}`;
+          const shortTradeId = `${pos.id}-SE`;
 
-          // Record the short-leg close as a partial trade_history row.
+          // Record the short-leg close as a partial trade_history row. Deterministic
+          // trade_id + idempotent upsert so a duplicate evaluator can't double-book.
           try {
-            await supabase.from('trade_history').insert([{
+            await supabase.from('trade_history').upsert([{
               trade_id: shortTradeId,
               underlying: pos.underlying,
               expiry: pos.expiry,
@@ -963,7 +964,7 @@ async function startSingleAccountEngine(account) {
               exit_reason: shortExitReason,
               is_partial: true,
               account_id: accountState.id,
-            }]);
+            }], { onConflict: 'trade_id', ignoreDuplicates: true });
           } catch (e) {
             logError(`Failed to record short-leg exit for position ${pos.id}:`, e);
           }
@@ -1056,7 +1057,7 @@ async function startSingleAccountEngine(account) {
               const sliceNetPnl = sliceGrossPnl - sliceTotalFees;
 
               longExitSlices.push({
-                trade_id: `${pos.id}-LE-${Date.now().toString(36).toUpperCase()}-${stage}`,
+                trade_id: `${pos.id}-LE-${stage}`,
                 underlying: pos.underlying,
                 expiry: pos.expiry,
                 type: pos.type,
@@ -1099,7 +1100,7 @@ async function startSingleAccountEngine(account) {
               });
 
               try {
-                await supabase.from('trade_history').insert(longExitSlices);
+                await supabase.from('trade_history').upsert(longExitSlices, { onConflict: 'trade_id', ignoreDuplicates: true });
               } catch (e) {
                 logError(`Failed to record long-leg laddered exits for position ${pos.id}:`, e);
               }
@@ -1220,7 +1221,11 @@ async function startSingleAccountEngine(account) {
 
               accumulatedPartialBuyPnl += partialGrossPnl;
 
-              const partialTradeId = `${pos.id}-PE-${Date.now().toString(36).toUpperCase()}-${partialExitsToRecord.length}`;
+              // Deterministic, lifetime-unique key: lots-remaining after this step
+              // strictly decreases across the position's life, so it never collides
+              // across cycles AND is identical if two evaluators race the same step —
+              // letting the trade_id UNIQUE constraint reject the duplicate.
+              const partialTradeId = `${pos.id}-PE-${hypotheticalLotSize.toFixed(2)}`;
 
               const historyBuyLeg = {
                 ...pos.buyLeg,
@@ -1345,7 +1350,7 @@ async function startSingleAccountEngine(account) {
 
               // FIX B6: batched insert
               try {
-                await supabase.from('trade_history').insert(partialExitsToRecord);
+                await supabase.from('trade_history').upsert(partialExitsToRecord, { onConflict: 'trade_id', ignoreDuplicates: true });
                 log(`📤 PARTIAL EXITS RECORDED: ${pos.id} | ${partialExitsToRecord.length} exits | Total reduced: ${partialExitsToRecord.length * deltaBuyQty} lots`);
               } catch (e) {
                 logError(`Failed to insert partial exit history for position ${pos.id}:`, e);
@@ -1643,27 +1648,24 @@ async function startSingleAccountEngine(account) {
       // Process exits
       for (const t of exited) {
         try {
-          const { data: alreadyExited } = await supabase
-            .from('trade_history').select('trade_id').eq('trade_id', t.id).limit(1);
-
-          if (!alreadyExited || alreadyExited.length === 0) {
-            const { error: histError } = await supabase.from('trade_history').insert([{
-              trade_id: t.id, underlying, expiry: t.expiry, type: t.type,
-              buy_leg: JSON.stringify(t.buyLeg), sell_leg: JSON.stringify(t.sellLeg),
-              sell_qty: t.sellQty, strike_diff: t.strikeDiff,
-              entry_time: t.entryTime.toISOString(),
-              entry_buy_price: t.entryBuyPrice, entry_sell_price: t.entrySellPrice,
-              entry_spot_price: t.entrySpotPrice, margin: t.margin,
-              exit_time: t.zombieExitTime || new Date().toISOString(),
-              exit_buy_price: t._latestBuy, exit_sell_price: t._latestSell,
-              exit_spot_price: t.exitSpotPrice,
-              realized_gross_pnl: t.realizedGrossPnl, realized_net_pnl: t.realizedNetPnl,
-              exit_fee: t.exitFee, total_fees: t.totalFees, exit_reason: t.exitReason,
-              is_partial: t._isPartial || false,
-              account_id: accountState.id,
-            }]);
-            if (histError) logError(`[${accountState.name}] History insert error:`, histError.message);
-          }
+          // Idempotent: trade_id is the stable position id, so a concurrent
+          // evaluator's duplicate is silently ignored (ON CONFLICT DO NOTHING).
+          const { error: histError } = await supabase.from('trade_history').upsert([{
+            trade_id: t.id, underlying, expiry: t.expiry, type: t.type,
+            buy_leg: JSON.stringify(t.buyLeg), sell_leg: JSON.stringify(t.sellLeg),
+            sell_qty: t.sellQty, strike_diff: t.strikeDiff,
+            entry_time: t.entryTime.toISOString(),
+            entry_buy_price: t.entryBuyPrice, entry_sell_price: t.entrySellPrice,
+            entry_spot_price: t.entrySpotPrice, margin: t.margin,
+            exit_time: t.zombieExitTime || new Date().toISOString(),
+            exit_buy_price: t._latestBuy, exit_sell_price: t._latestSell,
+            exit_spot_price: t.exitSpotPrice,
+            realized_gross_pnl: t.realizedGrossPnl, realized_net_pnl: t.realizedNetPnl,
+            exit_fee: t.exitFee, total_fees: t.totalFees, exit_reason: t.exitReason,
+            is_partial: t._isPartial || false,
+            account_id: accountState.id,
+          }], { onConflict: 'trade_id', ignoreDuplicates: true });
+          if (histError) logError(`[${accountState.name}] History insert error:`, histError.message);
 
           // LIVE: close remaining legs. Skip on expiry — Delta cash-settles expired
           // options exchange-side, and orders that close to expiry are rejected.
@@ -2010,19 +2012,28 @@ async function startSingleAccountEngine(account) {
 
 export async function startPaperTradingEngine() {
   const runningEngines = {}; // accountId -> engineHandle
+  const startingEngines = new Set(); // accountIds with an in-flight start (race guard)
 
   async function startAccountEngine(account) {
     const accountId = account.id;
-    if (runningEngines[accountId]) {
-      logWarn(`Account engine ${accountId} (${account.name}) is already running.`);
+    // Reserve the slot SYNCHRONOUSLY before the await below. Without this, a
+    // concurrent trigger (initial fetch, 30s fallback sync, Realtime account
+    // event) could pass the `runningEngines` check while a start is mid-flight
+    // and spawn a SECOND engine — the loser gets overwritten in the map and
+    // becomes an unstoppable zombie that double-books every exit forever.
+    if (runningEngines[accountId] || startingEngines.has(accountId)) {
+      logWarn(`Account engine ${accountId} (${account.name}) is already running or starting.`);
       return;
     }
+    startingEngines.add(accountId);
     log(`Starting engine for account ${accountId} (${account.name})...`);
     try {
       const handle = await startSingleAccountEngine(account);
       runningEngines[accountId] = handle;
     } catch (e) {
       logError(`Failed to start engine for account ${accountId}:`, e);
+    } finally {
+      startingEngines.delete(accountId);
     }
   }
 

@@ -18,11 +18,12 @@ This document explains **every** logic and condition in the Paper Trading engine
 10. [Short-Leg-Only Exit ($1.1)](#short-leg-only-exit)
 11. [Long-Only Laddered Exit](#long-only-laddered-exit)
 12. [Manual Exit (Liquidation)](#manual-exit-liquidation)
-13. [Safety Guards Summary](#safety-guards-summary)
-14. [Diagnostic Logging (0 Candidates)](#diagnostic-logging-0-candidates)
-15. [Config Synchronization](#config-synchronization)
-16. [Time-Based Filter Schedules](#time-based-filter-schedules)
-17. [Frontend Dashboard Architecture](#frontend-dashboard-architecture)
+13. [Duplicate Exit Prevention (Idempotent Writes)](#duplicate-exit-prevention-idempotent-writes)
+14. [Safety Guards Summary](#safety-guards-summary)
+15. [Diagnostic Logging (0 Candidates)](#diagnostic-logging-0-candidates)
+16. [Config Synchronization](#config-synchronization)
+17. [Time-Based Filter Schedules](#time-based-filter-schedules)
+18. [Frontend Dashboard Architecture](#frontend-dashboard-architecture)
 
 ---
 
@@ -56,6 +57,11 @@ Each account runs in complete isolation — its own WebSocket, its own positions
 
 > [!TIP]
 > **Parallel Startup**: All accounts start simultaneously via `Promise.allSettled`. With 10 accounts, startup time is ~3 seconds (previously ~30 seconds with sequential `for...await`). `allSettled` is used instead of `Promise.all` so that one account's startup failure does not block the others.
+
+> [!IMPORTANT]
+> **One engine per account (no duplicate evaluators).** `startAccountEngine` reserves the account **synchronously** in a `startingEngines` set *before* the `await startSingleAccountEngine(...)`. Without this, a concurrent trigger (the initial fetch, the 30-second fallback sync, or a Realtime account event) could pass the `runningEngines` check while a start is still mid-flight and spawn a **second** engine for the same account. The loser would get overwritten in the `runningEngines` map and become an **unstoppable "zombie"** — an evaluator that keeps writing every exit a second time, forever. The set is cleared in a `finally`, so a failed start is always retryable.
+>
+> At the **process** level the same guarantee is enforced by PM2: `ecosystem.config.cjs` pins `exec_mode: 'fork'` + `instances: 1` (never cluster-spawn a second copy) and a `kill_timeout` long enough for the outgoing process to finish its graceful shutdown before a restart. The engine must **never** run as two OS processes against the same Supabase — that reproduces the same double-booking. See also [Duplicate Exit Prevention](#duplicate-exit-prevention-idempotent-writes).
 
 ---
 
@@ -441,7 +447,7 @@ STOP:   Can't go below 0.50 (50% floor of initial scaled lot size)
 
 ### What Happens When It Scales
 
-1. A **partial exit trade** is recorded in `trade_history` with `is_partial = true`.
+1. A **partial exit trade** is recorded in `trade_history` with `is_partial = true`. Its `trade_id` is **deterministic and lifetime-unique**: `${pos.id}-PE-${lotsRemaining}` (lots-remaining after the step, e.g. `T…-PE-0.45`). Because the lot size strictly *decreases* every step, this value never repeats across cycles — and two evaluators racing the same step compute the *same* key, so the `trade_id` UNIQUE constraint rejects the duplicate ([details](#duplicate-exit-prevention-idempotent-writes)).
 2. The buy leg's `lotSize` is reduced by `deltaBuyQty` (10% of initial).
 3. The `checkpointPnl` and `checkpointAtmPnl` are **reset** to current values (this raises the bar for the next scaling step).
 4. **Accurate & Symmetrical Fee Calculations**: 
@@ -478,7 +484,7 @@ If shortLeg liveAsk ≤ shortExitPrice (default: 1.1) → buy back ONLY the shor
 
 ### What Happens
 
-1. The short leg is **bought back at the ask** (`liveExitSell`, ≤ `shortExitPrice`). Its P&L is recorded in `trade_history` as a partial row (`is_partial = true`, reason `Short Leg Exit @ Ask $...`).
+1. The short leg is **bought back at the ask** (`liveExitSell`, ≤ `shortExitPrice`). Its P&L is recorded in `trade_history` as a partial row (`is_partial = true`, reason `Short Leg Exit @ Ask $...`). Its `trade_id` is `${pos.id}-SE` — deterministic and fires once per position ([details](#duplicate-exit-prevention-idempotent-writes)).
 2. The short's share of the entry fee is apportioned out: `calculateFee(entrySellPrice, entrySpotPrice, sellQty, sellLotSize)` (capped to the remaining entry fee).
 3. The position becomes **long-only**: `sellQty = 0`, `sellLeg.lotSize = 0`, margin recomputed (`calcMargin(entryBuyPrice, buyLot, spot, 0, 1)`).
 4. The current long lot is **snapshotted** as `buyLeg.longExitBaseLot` (with `longExitStage = 0`) — this is the base for the laddered long exit below. Both are persisted in `buy_leg`.
@@ -517,7 +523,7 @@ The first level (10) exits immediately when the ladder is created.
 1. Each slice exits the long by **selling at the bid** (`liveExitBuy`) — the **same bid** is both the trigger and the exit price, so the booked P&L matches the level that fired. Each slice is a partial `trade_history` row (`is_partial = true`, reason `Long Leg Exit @ level $X (Bid $Y)`) with its apportioned entry fee.
 2. If the bid crosses several levels in one cycle (e.g. a sharp move up), **all crossed slices exit at once** (a `while` loop advances the stage).
 3. The final level clears any rounding remainder, then the position is **deleted** from `active_positions`.
-4. Progress survives restarts: `longExitStage`, `longExitBaseLot`, and the `longExitLevels` array all live in the `buy_leg` JSON, so the ladder resumes where it left off — no double exits and the levels don't get recomputed mid-flight.
+4. Progress survives restarts: `longExitStage`, `longExitBaseLot`, and the `longExitLevels` array all live in the `buy_leg` JSON, so the ladder resumes where it left off — no double exits and the levels don't get recomputed mid-flight. Each slice's `trade_id` is `${pos.id}-LE-${stage}` — deterministic per level (each stage fires once), so a duplicate evaluator produces the identical key and the UNIQUE constraint blocks the second write ([details](#duplicate-exit-prevention-idempotent-writes)).
 5. **Catch-all still applies**: if levels aren't reached, the remaining long still exits via **expiry** or the **ATM/ITM/OTM Full Exit** (spot crossing the buy strike). A partial slice this cycle falls through to those checks for the remaining lot.
 
 > [!NOTE]
@@ -559,7 +565,35 @@ sequenceDiagram
 4. **Realtime Engine Synchronization**:
    - The VPS engine has a realtime subscription listening to the `active_positions` table.
    - Upon receiving the `DELETE` event, the engine instantly filters the position from its in-memory `positions` array, ensuring it doesn't attempt any further exit evaluation on it.
-   - A redundant check ensures that if the engine's main evaluation loop attempts to exit the same position before the deletion is processed, it queries `trade_history` first and aborts the exit if `trade_id` already exists (preventing double exits).
+   - A redundant safety net covers the race where the engine's loop tries to exit the same position before the deletion is processed: every `trade_history` write is an **idempotent upsert** on a **deterministic `trade_id`** (`onConflict: 'trade_id', ignoreDuplicates: true`). If a row for that exit already exists, the duplicate write is silently skipped — no double exit. This replaced the older "select `trade_history` first, then insert" check, which was not atomic. See [Duplicate Exit Prevention](#duplicate-exit-prevention-idempotent-writes).
+
+---
+
+## Duplicate Exit Prevention (Idempotent Writes)
+
+**File**: [paperTradingEngine.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js)
+
+Every write to `trade_history` is **idempotent**, so the same logical exit can never appear twice — even if two evaluators briefly race the same position (e.g. a restart overlap, or a stray second process).
+
+### Two layers
+
+1. **Deterministic `trade_id`** — the id is derived only from stable, monotonic position state, never from wall-clock time. So two evaluators processing the same exit compute the **same** id:
+
+   | Exit type | `trade_id` format | Uniqueness basis |
+   |-----------|-------------------|------------------|
+   | Full exit (expiry / ATM-ITM-OTM) | `${pos.id}` | The position id itself (one full exit per position) |
+   | Short-leg exit | `${pos.id}-SE` | Short leg buys back once per position |
+   | Partial / scaling exit | `${pos.id}-PE-${lotsRemaining}` | Lot size strictly **decreases** each step → every step's remaining lot is distinct |
+   | Long ladder slice | `${pos.id}-LE-${stage}` | Each ladder `stage` fires exactly once |
+   | Live short SL / long TP | `${pos.id}-LSL` / `${pos.id}-LTP` | Each fires once per position (armed-live model) |
+
+2. **Idempotent upsert against the `UNIQUE` constraint** — `trade_history.trade_id` carries a `UNIQUE` constraint (see `supabase_schema.sql`). All writes use `.upsert(rows, { onConflict: 'trade_id', ignoreDuplicates: true })` — i.e. `INSERT … ON CONFLICT (trade_id) DO NOTHING`. A duplicate is silently dropped at the database, and a **batch** insert (partial / ladder slices) still writes its genuinely-new rows instead of aborting on the first conflict.
+
+> [!NOTE]
+> **Why the old scheme leaked duplicates:** partial / short / ladder ids used to embed `Date.now()`. Two evaluators stamped *different* timestamps for the same exit, so their ids differed and the UNIQUE constraint never matched — producing the "same exit recorded twice, ~1 second apart" rows. Making the ids deterministic is what lets the existing constraint do its job.
+
+> [!TIP]
+> This is the **DB-level backstop**. The **first** line of defence is running exactly one evaluator per account — see the single-instance guarantee in [Multi-Account Supervisor](#multi-account-supervisor). The two together mean duplicates are impossible both by construction (one evaluator) and by database constraint (idempotent writes).
 
 ---
 
@@ -597,6 +631,10 @@ Here's every safety guard in one table:
 | Long-only ladder | `paperTradingEngine.js` | Held long scaled out in 10 slices at 10 **equidistant bid** levels spanning [current bid, max(entry, last 2hr high)]; trigger and exit price are both the bid |
 | `lastDbWrite` cooldown (3s) | `paperTradingEngine.js` | Skips position refetch for 3s after a DB write |
 | Heartbeat timer delete | `paperTradingEngine.js` / `heartbeat.js` | Clears interval timer and deletes the DB row on account deletion to prevent zombie row resurrection |
+| Single-engine-per-account guard | `paperTradingEngine.js` | `startingEngines` set reserves an account synchronously before the async start, so a concurrent trigger can't spawn a second (zombie) evaluator |
+| Single process (PM2) | `ecosystem.config.cjs` | `exec_mode: 'fork'` + `instances: 1` — never cluster-spawn a second copy; `kill_timeout` lets the outgoing process shut down before a restart |
+| Deterministic `trade_id` | `paperTradingEngine.js` | Exit ids derive from stable position state (not `Date.now()`), so racing evaluators produce the same id |
+| Idempotent `trade_history` upsert | `paperTradingEngine.js` | `onConflict: 'trade_id', ignoreDuplicates: true` against the `trade_id` UNIQUE constraint — duplicate exit rows are impossible ([details](#duplicate-exit-prevention-idempotent-writes)) |
 
 ---
 
