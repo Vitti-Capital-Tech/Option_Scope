@@ -23,12 +23,38 @@ function LiveBadge({ account }) {
   );
 }
 
+function PausedBadge({ account }) {
+  if (!account?.paused) return null;
+  return (
+    <span
+      title="Paused — no new positions; open ones still managed"
+      style={{
+        fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
+        padding: '1px 5px', borderRadius: 4, marginLeft: 6,
+        color: '#e3b341', background: 'transparent', border: '1px solid #e3b341',
+      }}
+    >
+      PAUSED
+    </span>
+  );
+}
+
+const ctrlBtn = (bg, color) => ({
+  padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)',
+  background: bg, color, cursor: 'pointer', fontSize: 11, fontWeight: 600,
+  display: 'inline-flex', alignItems: 'center', gap: 4,
+});
+
 export default function AccountSelectorStrip({
   accounts,
   activeAccountId,
   setActiveAccountId,
   triggerCreateAccount,
   triggerDeleteAccount,
+  triggerStartLive,
+  triggerDisarmLive,
+  triggerPauseAccount,
+  triggerResumeAccount,
   userProfile,
   session,
   handleLogout
@@ -71,6 +97,7 @@ export default function AccountSelectorStrip({
               </svg>
               <span className="account-dropdown-name">{activeAccount?.name || 'Select Account'}</span>
               <LiveBadge account={activeAccount} />
+              <PausedBadge account={activeAccount} />
             </div>
             <svg 
               className="account-chevron-icon" 
@@ -149,6 +176,34 @@ export default function AccountSelectorStrip({
             </svg>
             Delete
           </button>
+        )}
+
+        {/* Live account controls (arm / pause) — live accounts only */}
+        {activeAccount?.mode === 'live' && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 4, paddingLeft: 8, borderLeft: '1px solid var(--border)' }}>
+            {!activeAccount.live_enabled ? (
+              <button type="button" style={ctrlBtn('#238636', '#fff')} title="Arm real order execution for this account"
+                onClick={() => triggerStartLive(activeAccountId)}>
+                ▶ Start Live
+              </button>
+            ) : (
+              <button type="button" style={ctrlBtn('transparent', '#f85149')} title="Stop arming — no more real orders"
+                onClick={() => triggerDisarmLive(activeAccountId)}>
+                ■ Disarm
+              </button>
+            )}
+            {!activeAccount.paused ? (
+              <button type="button" style={ctrlBtn('transparent', 'var(--text)')} title="Stop new entries; keep managing open positions"
+                onClick={() => triggerPauseAccount(activeAccountId)}>
+                ⏸ Pause
+              </button>
+            ) : (
+              <button type="button" style={ctrlBtn('#238636', '#fff')} title="Resume opening new positions"
+                onClick={() => triggerResumeAccount(activeAccountId)}>
+                ▶ Resume
+              </button>
+            )}
+          </div>
         )}
       </div>
 

@@ -187,6 +187,26 @@ is gated on `mode==='live' && live_enabled`. Dry-run logs the full breakdown
 (`💰 LIVE sizing…` and `💰 LIVE size…`) so the numbers can be validated before arming.
 The fractional-lot → integer-contract rounding still applies at order time.
 
+### Account controls — Start / Pause (live only)
+
+Live accounts show controls in the account strip (paper accounts are unaffected):
+
+- **Start Live** → sets `live_enabled=true` (arms the account). Real sends are still
+  gated by the engine's `DELTA_LIVE_DRYRUN`. **Disarm** clears it.
+- **Pause** → sets `paused=true`. The engine then opens **no new positions** but
+  keeps managing open ones and leaves the resting SL/TP orders in place. **Resume**
+  clears it. A `PAUSED` badge shows on the account.
+
+Both flags live on `paper_trading_accounts`; the engine picks them up via Realtime.
+
+### Live entry price offsets
+
+Live entry orders are placed as marketable limits with a premium-$ offset so they
+fill: **buy at ask + `entry_buy_offset`** (default 5), **sell at bid −
+`entry_sell_offset`** (default 2), editable per account in the live section of the
+Create/Edit modal. The offsets affect only the order limit price sent to Delta — the
+stored entry price (used for PnL/margin) remains the ask/bid. Paper ignores them.
+
 ### IP whitelisting & the Verify proxy
 
 Delta API keys are IP-whitelisted. There are two distinct egress points:

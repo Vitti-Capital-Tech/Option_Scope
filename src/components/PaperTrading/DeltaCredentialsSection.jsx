@@ -184,6 +184,31 @@ export default function DeltaCredentialsSection({ register, watch, setValue, exi
               across max positions — each position uses up to 1 part of margin.
             </span>
           </div>
+
+          <div style={{ display: 'flex', gap: 12 }}>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <label style={labelStyle}>Buy Offset (+$)</label>
+              <CustomInput
+                type="number" step="0.5"
+                {...register('entryBuyOffset', { valueAsNumber: true })}
+                placeholder="5"
+                style={fieldStyle}
+              />
+            </div>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <label style={labelStyle}>Sell Offset (−$)</label>
+              <CustomInput
+                type="number" step="0.5"
+                {...register('entrySellOffset', { valueAsNumber: true })}
+                placeholder="2"
+                style={fieldStyle}
+              />
+            </div>
+          </div>
+          <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+            Live entry limit prices: buy at ask +offset, sell at bid −offset (premium $),
+            so marketable entries fill.
+          </span>
         </div>
       )}
     </div>

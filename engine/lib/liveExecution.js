@@ -101,18 +101,18 @@ export function createLiveExecutor(getCtx) {
      * Returns { ok }. On the SELL leg failing after the BUY succeeded (live send
      * only), the caller should NOT persist the position; we log for reconciliation.
      */
-    async openSpread(pos, { long, short }) {
+    async openSpread(pos, { long, short, buyPrice, sellPrice }) {
       if (!armed()) return { ok: true, skipped: true };
       const buy = await submit({
         symbol: pos.buyLeg.symbol, side: 'buy', contracts: long,
-        price: pos.entryBuyPrice, reduceOnly: false, tag: `${pos.id}-EB`,
+        price: buyPrice ?? pos.entryBuyPrice, reduceOnly: false, tag: `${pos.id}-EB`,
       });
       if (!buy.ok) return { ok: false, legFailed: 'buy', error: buy.error };
 
       if (short > 0) {
         const sell = await submit({
           symbol: pos.sellLeg.symbol, side: 'sell', contracts: short,
-          price: pos.entrySellPrice, reduceOnly: false, tag: `${pos.id}-ES`,
+          price: sellPrice ?? pos.entrySellPrice, reduceOnly: false, tag: `${pos.id}-ES`,
         });
         if (!sell.ok) {
           const { accountName } = getCtx();

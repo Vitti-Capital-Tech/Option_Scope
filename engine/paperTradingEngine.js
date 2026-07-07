@@ -117,7 +117,9 @@ async function startSingleAccountEngine(account) {
     exitPoints: 0,
     shortExitPrice: 1.1,
     longExitSlices: 10,
-    balanceAllocationPct: 90
+    balanceAllocationPct: 90,
+    entryBuyOffset: 5,
+    entrySellOffset: 2
   };
   let products = [];
   let expiries = [];
@@ -233,6 +235,8 @@ async function startSingleAccountEngine(account) {
           long_exit_slices: 10,
           variable_exit_slices: false,
           balance_allocation_pct: 90,
+          entry_buy_offset: 5,
+          entry_sell_offset: 2,
           updated_at: new Date().toISOString()
         };
         const { data: inserted, error: insertErr } = await supabase
@@ -271,7 +275,9 @@ async function startSingleAccountEngine(account) {
           shortExitPrice: data.short_exit_price ?? 1.1,
           longExitSlices: data.long_exit_slices ?? 10,
           variableExitSlices: data.variable_exit_slices ?? false,
-          balanceAllocationPct: data.balance_allocation_pct ?? 90
+          balanceAllocationPct: data.balance_allocation_pct ?? 90,
+          entryBuyOffset: data.entry_buy_offset ?? 5,
+          entrySellOffset: data.entry_sell_offset ?? 2
         };
         configDbId = data.id;
         // log(`[${accountState.name}] Config loaded: ${config.underlying} | Expiry: ${config.expiry || 'auto'}`);
@@ -1484,9 +1490,16 @@ async function startSingleAccountEngine(account) {
 
       // LIVE sizing context: divide the allocated wallet balance into equal parts
       // (1 part of margin per position). Only for armed live accounts; paper skips this.
+      // Paused accounts keep managing open positions (exits ran above) but open
+      // no NEW positions. Applies to paper and live alike; defaults false.
+      const paused = !!accountState.paused;
+      if (paused && !onlyExits) {
+        log(`[${accountState.name}] ⏸ Paused — skipping new entries (open positions still managed).`);
+      }
+
       const liveArmed = accountState.mode === 'live' && !!accountState.live_enabled;
       let partMargin = null;
-      if (!onlyExits && liveArmed) {
+      if (!onlyExits && !paused && liveArmed) {
         try {
           const bal = await live.walletBalance();
           if (bal != null && bal > 0) {
@@ -1503,7 +1516,7 @@ async function startSingleAccountEngine(account) {
         }
       }
 
-      if (!onlyExits) {
+      if (!onlyExits && !paused) {
         for (const spread of uniqueTopSpreads) {
           // Live accounts need a valid per-position margin part to size safely.
           if (liveArmed && partMargin == null) continue;
@@ -1735,9 +1748,16 @@ async function startSingleAccountEngine(account) {
 
             // LIVE: place real orders before persisting. Paper/dry-run/disarmed
             // returns ok immediately; armed-live only persists if the orders succeed.
+            // Live entry limit prices carry a premium-$ offset to fill marketable:
+            // buy at ask + entryBuyOffset, sell at bid - entrySellOffset. The stored
+            // entryBuyPrice/entrySellPrice (used for bookkeeping) are left as-is.
+            const buyOff = config.entryBuyOffset ?? 5;
+            const sellOff = config.entrySellOffset ?? 2;
             const liveEntry = await live.openSpread(t, {
               long: longContracts(t.buyLeg),
               short: shortContracts(t.sellQty),
+              buyPrice: t.entryBuyPrice + buyOff,
+              sellPrice: Math.max(0.05, t.entrySellPrice - sellOff),
             });
             if (!liveEntry.ok) {
               logError(`[${accountState.name}] LIVE entry aborted (${liveEntry.legFailed} leg: ${liveEntry.error}) — not persisting ${t.buyLeg.strike}/${t.sellLeg.strike}`);

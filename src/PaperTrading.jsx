@@ -44,7 +44,9 @@ const ACCOUNT_CONFIG_DEFAULTS = {
   shortExitPrice: 1.1,
   longExitSlices: 10,
   variableExitSlices: false,
-  balanceAllocationPct: 90
+  balanceAllocationPct: 90,
+  entryBuyOffset: 5,
+  entrySellOffset: 2
 };
 
 const normalizeAccountDefaultConfig = (config = {}) => {
@@ -155,7 +157,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       shortExitPrice: 1.1,
       longExitSlices: 10,
       variableExitSlices: false,
-      balanceAllocationPct: 90
+      balanceAllocationPct: 90,
+      entryBuyOffset: 5,
+      entrySellOffset: 2
     }
   });
 
@@ -612,7 +616,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       shortExitPrice: data.shortExitPrice,
       longExitSlices: data.longExitSlices,
       variableExitSlices: data.variableExitSlices,
-      balanceAllocationPct: data.balanceAllocationPct
+      balanceAllocationPct: data.balanceAllocationPct,
+      entryBuyOffset: data.entryBuyOffset,
+      entrySellOffset: data.entrySellOffset
     });
 
     setIsCreatingAccount(true);
@@ -662,7 +668,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           short_exit_price: data.shortExitPrice ?? 1.1,
           long_exit_slices: data.longExitSlices ?? 10,
           variable_exit_slices: data.variableExitSlices ?? false,
-          balance_allocation_pct: data.balanceAllocationPct ?? 90
+          balance_allocation_pct: data.balanceAllocationPct ?? 90,
+          entry_buy_offset: data.entryBuyOffset ?? 5,
+          entry_sell_offset: data.entrySellOffset ?? 2
         }]);
 
         // For live accounts, store the (encrypted) Delta credentials via RPC.
@@ -735,7 +743,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       apiKey: '',
       apiSecret: '',
       credVerified: false,
-      balanceAllocationPct: activeAccount.default_config?.balanceAllocationPct ?? 90
+      balanceAllocationPct: activeAccount.default_config?.balanceAllocationPct ?? 90,
+      entryBuyOffset: activeAccount.default_config?.entryBuyOffset ?? 5,
+      entrySellOffset: activeAccount.default_config?.entrySellOffset ?? 2
     });
     setEditCredentialsMeta(null);
     setIsEditModalOpen(true);
@@ -762,11 +772,18 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         ? { name: trimmedName, mode: 'live' }
         : { name: trimmedName, mode: 'paper', live_enabled: false };
 
-      // Persist balance allocation % into default_config (used by live sizing).
+      // Persist live sizing/entry params into default_config.
       const allocPct = Number.isFinite(data.balanceAllocationPct) ? data.balanceAllocationPct : 90;
+      const buyOff = Number.isFinite(data.entryBuyOffset) ? data.entryBuyOffset : 5;
+      const sellOff = Number.isFinite(data.entrySellOffset) ? data.entrySellOffset : 2;
       const activeAccount = accounts.find(a => a.id === activeAccountId);
       if (activeAccount?.default_config) {
-        updatePayload.default_config = { ...activeAccount.default_config, balanceAllocationPct: allocPct };
+        updatePayload.default_config = {
+          ...activeAccount.default_config,
+          balanceAllocationPct: allocPct,
+          entryBuyOffset: buyOff,
+          entrySellOffset: sellOff,
+        };
       }
 
       setAccounts(prev => prev.map(a => a.id === activeAccountId ? { ...a, ...updatePayload } : a));
@@ -781,9 +798,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         return;
       }
 
-      // Mirror allocation into paper_trading_config so the engine reads it live.
+      // Mirror allocation + entry offsets into paper_trading_config so the engine reads them live.
       await supabase.from('paper_trading_config')
-        .update({ balance_allocation_pct: allocPct, updated_at: new Date().toISOString() })
+        .update({
+          balance_allocation_pct: allocPct,
+          entry_buy_offset: buyOff,
+          entry_sell_offset: sellOff,
+          updated_at: new Date().toISOString(),
+        })
         .eq('account_id', activeAccountId);
 
       // If live and a new key/secret were entered, replace stored credentials.
@@ -813,6 +835,30 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     setAccountToDeleteId(accountId);
     setIsDeleteModalOpen(true);
   };
+
+  // ── Live account controls (arm / pause) ───────────────────────────────
+  // Flags live on paper_trading_accounts; the engine picks them up via Realtime.
+  const updateAccountFlags = async (accountId, patch) => {
+    setAccounts(prev => prev.map(a => (a.id === accountId ? { ...a, ...patch } : a)));
+    const { error } = await supabase
+      .from('paper_trading_accounts')
+      .update(patch)
+      .eq('id', accountId);
+    if (error) {
+      console.error('Failed to update account flags:', error);
+      alert(`Failed to update account: ${error.message}`);
+    }
+    await fetchAccounts();
+  };
+
+  const triggerStartLive = (accountId) => {
+    const acc = accounts.find(a => a.id === accountId);
+    if (!window.confirm(`Start LIVE trading for "${acc?.name}"?\n\nThe engine will place real orders for this account (subject to the engine's dry-run switch).`)) return;
+    updateAccountFlags(accountId, { live_enabled: true, paused: false });
+  };
+  const triggerDisarmLive = (accountId) => updateAccountFlags(accountId, { live_enabled: false });
+  const triggerPauseAccount = (accountId) => updateAccountFlags(accountId, { paused: true });
+  const triggerResumeAccount = (accountId) => updateAccountFlags(accountId, { paused: false });
 
   const handleConfirmDelete = async () => {
     if (!accountToDeleteId) return;
@@ -2116,6 +2162,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               setActiveAccountId={setActiveAccountId}
               triggerCreateAccount={triggerCreateAccount}
               triggerDeleteAccount={triggerDeleteAccount}
+              triggerStartLive={triggerStartLive}
+              triggerDisarmLive={triggerDisarmLive}
+              triggerPauseAccount={triggerPauseAccount}
+              triggerResumeAccount={triggerResumeAccount}
               userProfile={userProfile}
               session={session}
               handleLogout={handleLogout}
