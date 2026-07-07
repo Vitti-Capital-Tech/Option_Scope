@@ -80,3 +80,19 @@ export async function getLivePositions(creds) {
 export async function getBalance(creds) {
   return signedRequest(creds, 'GET', '/v2/wallet/balances');
 }
+
+/**
+ * Live (resting) orders for the account. Delta returns limit AND stop orders here;
+ * the caller separates them by `stop_order_type`. `states` filters by order state
+ * (comma-joined), defaulting to still-working orders.
+ */
+export async function getLiveOrders(creds, { states = 'open,pending' } = {}) {
+  const query = states ? `?states=${encodeURIComponent(states)}` : '';
+  return signedRequest(creds, 'GET', '/v2/orders', { query });
+}
+
+/** Recent fills (individual leg executions), newest first, capped at `pageSize`. */
+export async function getFills(creds, { pageSize = 50 } = {}) {
+  const query = `?page_size=${encodeURIComponent(pageSize)}`;
+  return signedRequest(creds, 'GET', '/v2/fills', { query });
+}

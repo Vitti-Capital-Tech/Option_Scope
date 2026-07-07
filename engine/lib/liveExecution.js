@@ -16,7 +16,7 @@
  * `sellQty` for the short). Validate the dry-run order log against your intended
  * real sizes BEFORE arming an account.
  */
-import { placeOrder, getLivePositions, getBalance } from './deltaTradeApi.js';
+import { placeOrder, getLivePositions, getBalance, getLiveOrders, getFills } from './deltaTradeApi.js';
 import { log, logWarn, logError } from './utils.js';
 
 // Default ON. Only the literal string 'false' (any case) disarms the dry-run.
@@ -225,6 +225,69 @@ export function createLiveExecutor(getCtx) {
         logWarn(`[${accountName}] Wallet balance fetch failed: ${e.message}`);
         return null;
       }
+    },
+
+    /** Raw resting orders from the exchange (armed accounts only), else []. */
+    async orders() {
+      if (!armed()) return [];
+      const { accountName, creds } = getCtx();
+      if (!creds?.apiKey) return [];
+      try {
+        const res = await getLiveOrders(creds);
+        return Array.isArray(res) ? res : [];
+      } catch (e) {
+        logWarn(`[${accountName}] orders() fetch failed: ${e.message}`);
+        return [];
+      }
+    },
+
+    /** Recent fills from the exchange (armed accounts only), else []. */
+    async fills() {
+      if (!armed()) return [];
+      const { accountName, creds } = getCtx();
+      if (!creds?.apiKey) return [];
+      try {
+        const res = await getFills(creds);
+        return Array.isArray(res) ? res : [];
+      } catch (e) {
+        logWarn(`[${accountName}] fills() fetch failed: ${e.message}`);
+        return [];
+      }
+    },
+
+    /**
+     * One combined READ snapshot for the UI: positions, orders (split into resting
+     * limit orders vs stop orders), fills, and wallet balances. Armed accounts only
+     * (runs in dry-run too — these are reads). Each source is fetched independently
+     * so one failing endpoint doesn't blank the whole snapshot. Returns null if not
+     * armed / no creds.
+     */
+    async snapshot() {
+      if (!armed()) return null;
+      const { accountName, creds } = getCtx();
+      if (!creds?.apiKey) return null;
+      const [posR, ordR, fillR, balR] = await Promise.allSettled([
+        getLivePositions(creds),
+        getLiveOrders(creds),
+        getFills(creds),
+        getBalance(creds),
+      ]);
+      const arr = (r) => (r.status === 'fulfilled' && Array.isArray(r.value) ? r.value : []);
+      if ([posR, ordR, fillR, balR].some(r => r.status === 'rejected')) {
+        const first = [posR, ordR, fillR, balR].find(r => r.status === 'rejected');
+        logWarn(`[${accountName}] snapshot() partial failure: ${first?.reason?.message || 'unknown'}`);
+      }
+      const allOrders = arr(ordR);
+      const isStop = (o) => !!(o.stop_order_type || o.stop_price != null);
+      const balances = arr(balR);
+      return {
+        positions: arr(posR),
+        orders: allOrders.filter(o => !isStop(o)),
+        stopOrders: allOrders.filter(isStop),
+        fills: arr(fillR),
+        balances,
+        wallet: extractBalance(balances),
+      };
     },
 
     /** Log-only reconciliation: compare engine position count with the exchange. */

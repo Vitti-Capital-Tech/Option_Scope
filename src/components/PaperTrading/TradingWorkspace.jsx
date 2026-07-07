@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import ActivePositionsTable from './ActivePositionsTable';
 import TradeHistoryTable from './TradeHistoryTable';
+import { formatDateTime } from '../../scannerUtils';
 
 // ── Icons ───────────────────────────────────────────────────────────────
 const ICONS = {
@@ -206,9 +207,214 @@ function RiskMarginTab({ positions, underlying, spotPrice, totalMargin, calculat
   );
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+//  LIVE (real Delta) views — fed by the `live_exchange_state` snapshot the
+//  engine publishes for armed live accounts. These render exchange TRUTH and
+//  replace the engine-derived views above when a live snapshot is present.
+// ══════════════════════════════════════════════════════════════════════════
+
+const fmtNum = (v, d = 2) => {
+  if (v == null || v === '') return '—';
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toLocaleString(undefined, { maximumFractionDigits: d }) : '—';
+};
+const fmtTs = (t) => { try { return t ? formatDateTime(new Date(t)) : '—'; } catch { return '—'; } };
+const sideColor = (side) => String(side).toLowerCase() === 'buy' ? 'var(--call)' : 'var(--put)';
+const Tag = ({ text, color = 'var(--accent)' }) => (
+  <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', padding: '2px 7px', borderRadius: 5, color, border: `1px solid ${color}`, textTransform: 'uppercase', whiteSpace: 'nowrap' }}>
+    {String(text ?? '—')}
+  </span>
+);
+
+// ── Open Orders (live) — resting limit orders on Delta ────────────────────
+function LiveOrdersTab({ orders }) {
+  if (!orders?.length) {
+    return <EmptyPanel icon="open" title="No Open Orders"
+      desc="Resting limit orders on Delta Exchange appear here. Spread entries rest at their limit price until filled." />;
+  }
+  return (
+    <div className="pt-table-scroll">
+      <table className="pt-table"><thead><tr>
+        <th>Placed</th><th>Instrument</th><th>Side</th><th>Type</th>
+        <th>Limit Price</th><th>Size<span className="pt-th-sub">filled / total</span></th><th>State</th>
+      </tr></thead><tbody>
+        {orders.map(o => {
+          const total = Number(o.size) || 0;
+          const unfilled = Number(o.unfilled_size ?? o.size) || 0;
+          const filled = Math.max(0, total - unfilled);
+          return (
+            <tr key={o.id ?? o.client_order_id}>
+              <td><span className="pt-dim">{fmtTs(o.created_at)}</span></td>
+              <td><span className="pt-instrument">{o.product_symbol || '—'}</span></td>
+              <td><Tag text={o.side} color={sideColor(o.side)} /></td>
+              <td><span style={{ fontSize: 11, color: 'var(--text-dim)', fontWeight: 600 }}>
+                {String(o.order_type || '').replace('_order', '')}{o.reduce_only ? ' · reduce' : ''}
+              </span></td>
+              <td><span style={{ fontWeight: 700 }}>{fmtNum(o.limit_price)}</span></td>
+              <td>{fmtNum(filled, 0)} / {fmtNum(total, 0)}</td>
+              <td><Tag text={o.state} /></td>
+            </tr>
+          );
+        })}
+      </tbody></table>
+    </div>
+  );
+}
+
+// ── Stop Orders (live) — reduce-only stops resting on Delta ────────────────
+function LiveStopOrdersTab({ stopOrders }) {
+  if (!stopOrders?.length) {
+    return <EmptyPanel icon="stop" title="No Stop Orders"
+      desc="Reduce-only stop orders resting on Delta (short-leg SL / long-leg TP) appear here once armed." />;
+  }
+  return (
+    <div className="pt-table-scroll">
+      <table className="pt-table"><thead><tr>
+        <th>Placed</th><th>Instrument</th><th>Side</th><th>Stop Type</th>
+        <th>Trigger</th><th>Trigger On</th><th>Size</th><th>State</th>
+      </tr></thead><tbody>
+        {stopOrders.map(o => (
+          <tr key={o.id ?? o.client_order_id}>
+            <td><span className="pt-dim">{fmtTs(o.created_at)}</span></td>
+            <td><span className="pt-instrument">{o.product_symbol || '—'}</span></td>
+            <td><Tag text={o.side} color={sideColor(o.side)} /></td>
+            <td><span style={{ fontSize: 11, color: 'var(--text-dim)', fontWeight: 600 }}>
+              {String(o.stop_order_type || 'stop').replace(/_/g, ' ')}
+            </span></td>
+            <td><span style={{ color: 'var(--accent)', fontWeight: 700 }}>{fmtNum(o.stop_price)}</span></td>
+            <td><span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{String(o.stop_trigger_method || '—').replace(/_/g, ' ')}</span></td>
+            <td>{fmtNum(o.size, 0)}</td>
+            <td><Tag text={o.state} /></td>
+          </tr>
+        ))}
+      </tbody></table>
+    </div>
+  );
+}
+
+// ── Fills (live) — individual leg executions from Delta ────────────────────
+function LiveFillsTab({ fills }) {
+  if (!fills?.length) {
+    return <EmptyPanel icon="fills" title="No Fills Yet"
+      desc="Individual leg executions from Delta Exchange appear here as orders fill." />;
+  }
+  return (
+    <div className="pt-table-scroll">
+      <table className="pt-table"><thead><tr>
+        <th>Time</th><th>Instrument</th><th>Side</th><th>Price</th>
+        <th>Size</th><th>Role</th><th>Fee</th>
+      </tr></thead><tbody>
+        {fills.map(f => (
+          <tr key={f.id ?? `${f.order_id}-${f.created_at}`}>
+            <td><span className="pt-dim">{fmtTs(f.created_at)}</span></td>
+            <td><span className="pt-instrument">{f.product_symbol || '—'}</span></td>
+            <td><Tag text={f.side} color={sideColor(f.side)} /></td>
+            <td><span style={{ fontWeight: 700 }}>{fmtNum(f.price)}</span></td>
+            <td>{fmtNum(f.size, 0)}</td>
+            <td><span style={{ fontSize: 11, color: 'var(--text-dim)', textTransform: 'capitalize' }}>{f.role || f.fill_type || '—'}</span></td>
+            <td><span className="pt-dim">{fmtNum(f.commission ?? f.fee, 4)}</span></td>
+          </tr>
+        ))}
+      </tbody></table>
+    </div>
+  );
+}
+
+// ── Risk & Margin (live) — real margin/liquidation from Delta ──────────────
+function LiveRiskMargin({ positions, wallet }) {
+  const open = (positions || []).filter(p => Number(p.size) !== 0);
+  const totalMargin = open.reduce((s, p) => s + (Number(p.margin) || 0), 0);
+  const totalUnrl = open.reduce((s, p) => s + (Number(p.unrealized_pnl ?? p.unrealised_pnl) || 0), 0);
+  const usedPct = wallet ? Math.min(100, (totalMargin / wallet) * 100) : 0;
+
+  const cards = [
+    { label: 'Wallet Balance', big: wallet != null ? `$${fmtNum(wallet)}` : '—', sub: 'USDT on Delta', pct: 100, color: 'var(--accent)' },
+    { label: 'Margin Used', big: `$${fmtNum(totalMargin)}`, sub: wallet ? `${usedPct.toFixed(1)}% of wallet` : `${open.length} position${open.length !== 1 ? 's' : ''}`, pct: usedPct || 100, color: 'var(--accent)' },
+    { label: 'Unrealized P&L', big: `${totalUnrl >= 0 ? '+' : ''}${fmtNum(totalUnrl)}`, sub: 'Mark-to-market', pct: Math.min(100, Math.abs(totalUnrl) / (totalMargin || 1) * 100), color: totalUnrl >= 0 ? 'var(--call)' : 'var(--put)', valClass: totalUnrl >= 0 ? 'positive' : 'negative' },
+    { label: 'Open Legs', big: `${open.length}`, sub: 'Positions on exchange', pct: 100, color: 'var(--call)' },
+  ];
+
+  return (
+    <>
+      <div className="pt-risk-grid">
+        {cards.map((c, i) => (
+          <div key={i} className="pt-risk-card">
+            <h4>{c.label}</h4>
+            <span className={`pt-risk-big ${c.valClass || ''}`}>{c.big}</span>
+            <div className="pt-meter"><i style={{ width: `${c.pct}%`, background: c.color }} /></div>
+            <span className="pt-risk-sub">{c.sub}</span>
+          </div>
+        ))}
+      </div>
+
+      {open.length === 0 ? (
+        <EmptyPanel icon="risk" title="No Open Exposure"
+          desc="Delta reports no open positions for this account. Margin and liquidation figures appear here once a position is live." />
+      ) : (
+        <div className="pt-table-scroll" style={{ borderTop: '1px solid var(--border)' }}>
+          <table className="pt-table"><thead><tr>
+            <th>Instrument</th><th>Size</th><th>Entry</th><th>Mark</th>
+            <th>Liq. Price</th><th>Margin</th><th>Unrealized P&L</th>
+          </tr></thead><tbody>
+            {open.map((p, i) => {
+              const pnl = Number(p.unrealized_pnl ?? p.unrealised_pnl) || 0;
+              const size = Number(p.size) || 0;
+              return (
+                <tr key={p.product_id ?? p.product_symbol ?? i}>
+                  <td><span className="pt-instrument">{p.product_symbol || '—'}</span></td>
+                  <td><Tag text={size > 0 ? 'LONG' : 'SHORT'} color={size > 0 ? 'var(--call)' : 'var(--put)'} /> <span style={{ marginLeft: 6, fontWeight: 600 }}>{fmtNum(Math.abs(size), 0)}</span></td>
+                  <td>{fmtNum(p.entry_price)}</td>
+                  <td>{fmtNum(p.mark_price)}</td>
+                  <td><span style={{ color: 'var(--put)', fontWeight: 600 }}>{fmtNum(p.liquidation_price)}</span></td>
+                  <td><span style={{ fontWeight: 600 }}>${fmtNum(p.margin)}</span></td>
+                  <td><span className={`pt-pnl ${pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : 'zero'}`}>{pnl > 0 ? '+' : ''}{fmtNum(pnl)}</span></td>
+                </tr>
+              );
+            })}
+          </tbody></table>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ── Positions (live) — raw margined positions from Delta ───────────────────
+function LivePositionsTab({ positions }) {
+  const open = (positions || []).filter(p => Number(p.size) !== 0);
+  if (open.length === 0) {
+    return <EmptyPanel icon="positions" title="No Open Positions"
+      desc="Open positions reported by Delta Exchange appear here. The engine enters them automatically when conditions are met." />;
+  }
+  return (
+    <div className="pt-table-scroll">
+      <table className="pt-table"><thead><tr>
+        <th>Instrument</th><th>Side</th><th>Size</th><th>Entry</th>
+        <th>Mark</th><th>Liq. Price</th><th>Margin</th><th>Unrealized P&L</th>
+      </tr></thead><tbody>
+        {open.map((p, i) => {
+          const size = Number(p.size) || 0;
+          const pnl = Number(p.unrealized_pnl ?? p.unrealised_pnl) || 0;
+          return (
+            <tr key={p.product_id ?? p.product_symbol ?? i}>
+              <td><span className="pt-instrument">{p.product_symbol || '—'}</span></td>
+              <td><Tag text={size > 0 ? 'LONG' : 'SHORT'} color={size > 0 ? 'var(--call)' : 'var(--put)'} /></td>
+              <td style={{ fontWeight: 600 }}>{fmtNum(Math.abs(size), 0)}</td>
+              <td>{fmtNum(p.entry_price)}</td>
+              <td>{fmtNum(p.mark_price)}</td>
+              <td><span style={{ color: 'var(--put)', fontWeight: 600 }}>{fmtNum(p.liquidation_price)}</span></td>
+              <td>${fmtNum(p.margin)}</td>
+              <td><span className={`pt-pnl ${pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : 'zero'}`}>{pnl > 0 ? '+' : ''}{fmtNum(pnl)}</span></td>
+            </tr>
+          );
+        })}
+      </tbody></table>
+    </div>
+  );
+}
+
 // ── Workspace shell ───────────────────────────────────────────────────────
 export default function TradingWorkspace(props) {
-  const { positions, underlying, filteredTradeHistory, isLiveAccount } = props;
+  const { positions, underlying, filteredTradeHistory, isLiveAccount, liveExchangeState } = props;
 
   const [tab, setTab] = useState('positions');
 
@@ -217,11 +423,19 @@ export default function TradingWorkspace(props) {
   const longCount = visible.filter(p => (p.sellQty || 0) === 0).length;
   const histCount = filteredTradeHistory.length;
 
+  // When a live account has a fresh exchange snapshot, the exchange-fed tabs
+  // (Positions / Open Orders / Stop Orders / Fills / Risk) render Delta truth
+  // instead of the engine-derived views. Paper accounts (or a stale/absent
+  // snapshot) fall back to the engine views. Order History stays engine-sourced
+  // for both — it's the strategy's closed-trade ledger, not raw exchange fills.
+  const live = isLiveAccount && liveExchangeState ? liveExchangeState : null;
+  const liveOpenLegs = live ? (live.positions || []).filter(p => Number(p.size) !== 0).length : null;
+
   const TABS = [
-    { key: 'positions', label: 'Positions', icon: 'positions', count: spreadCount },
-    { key: 'open', label: 'Open Orders', icon: 'open', count: longCount },
-    { key: 'stop', label: 'Stop Orders', icon: 'stop', count: spreadCount },
-    { key: 'fills', label: 'Fills', icon: 'fills', count: null },
+    { key: 'positions', label: 'Positions', icon: 'positions', count: live ? liveOpenLegs : spreadCount },
+    { key: 'open', label: 'Open Orders', icon: 'open', count: live ? (live.orders?.length ?? 0) : longCount },
+    { key: 'stop', label: 'Stop Orders', icon: 'stop', count: live ? (live.stop_orders?.length ?? 0) : spreadCount },
+    { key: 'fills', label: 'Fills', icon: 'fills', count: live ? (live.fills?.length ?? 0) : null },
     { key: 'history', label: 'Order History', icon: 'history', count: histCount },
     { key: 'risk', label: 'Risk & Margin', icon: 'risk', count: null },
   ];
@@ -247,78 +461,94 @@ export default function TradingWorkspace(props) {
 
         <div className="pt-workspace-body">
           {tab === 'positions' && (
-            <ActivePositionsTable
-              positions={props.positions}
-              underlying={props.underlying}
-              lastEvaluated={props.lastEvaluated}
-              fetchSupabaseActivePositions={props.fetchSupabaseActivePositions}
-              fetchSupabaseTradeHistory={props.fetchSupabaseTradeHistory}
-              fetchHeartbeat={props.fetchHeartbeat}
-              now={props.now}
-              includeFees={props.includeFees}
-              setIncludeFees={props.setIncludeFees}
-              spotPrice={props.spotPrice}
-              engineStatusColor={props.engineStatusColor}
-              engineStatusLabel={props.engineStatusLabel}
-              calculatePositionMargin={props.calculatePositionMargin}
-              totalMargin={props.totalMargin}
-              exitType={props.exitType}
-              exitPoints={props.exitPoints}
-              onExitPosition={props.onExitPosition}
-              embedded
-              legFilter="spread"
-              title="Open Positions"
-              emptyTitle="No Open Positions"
-              emptyDesc="Spread positions (long + short legs) appear here. The engine enters them automatically when conditions are met."
-            />
+            live ? (
+              <LivePositionsTab positions={live.positions} />
+            ) : (
+              <ActivePositionsTable
+                positions={props.positions}
+                underlying={props.underlying}
+                lastEvaluated={props.lastEvaluated}
+                fetchSupabaseActivePositions={props.fetchSupabaseActivePositions}
+                fetchSupabaseTradeHistory={props.fetchSupabaseTradeHistory}
+                fetchHeartbeat={props.fetchHeartbeat}
+                now={props.now}
+                includeFees={props.includeFees}
+                setIncludeFees={props.setIncludeFees}
+                spotPrice={props.spotPrice}
+                engineStatusColor={props.engineStatusColor}
+                engineStatusLabel={props.engineStatusLabel}
+                calculatePositionMargin={props.calculatePositionMargin}
+                totalMargin={props.totalMargin}
+                exitType={props.exitType}
+                exitPoints={props.exitPoints}
+                onExitPosition={props.onExitPosition}
+                embedded
+                legFilter="spread"
+                title="Open Positions"
+                emptyTitle="No Open Positions"
+                emptyDesc="Spread positions (long + short legs) appear here. The engine enters them automatically when conditions are met."
+              />
+            )
           )}
 
           {tab === 'open' && (
-            <ActivePositionsTable
-              positions={props.positions}
-              underlying={props.underlying}
-              lastEvaluated={props.lastEvaluated}
-              fetchSupabaseActivePositions={props.fetchSupabaseActivePositions}
-              fetchSupabaseTradeHistory={props.fetchSupabaseTradeHistory}
-              fetchHeartbeat={props.fetchHeartbeat}
-              now={props.now}
-              includeFees={props.includeFees}
-              setIncludeFees={props.setIncludeFees}
-              spotPrice={props.spotPrice}
-              engineStatusColor={props.engineStatusColor}
-              engineStatusLabel={props.engineStatusLabel}
-              calculatePositionMargin={props.calculatePositionMargin}
-              totalMargin={props.totalMargin}
-              exitType={props.exitType}
-              exitPoints={props.exitPoints}
-              onExitPosition={props.onExitPosition}
-              embedded
-              legFilter="long"
-              title="Open Orders"
-              emptyTitle="No Open Orders"
-              emptyDesc="Long-only holdings (short leg already exited, scaling out via the ladder) appear here."
-            />
+            live ? (
+              <LiveOrdersTab orders={live.orders} />
+            ) : (
+              <ActivePositionsTable
+                positions={props.positions}
+                underlying={props.underlying}
+                lastEvaluated={props.lastEvaluated}
+                fetchSupabaseActivePositions={props.fetchSupabaseActivePositions}
+                fetchSupabaseTradeHistory={props.fetchSupabaseTradeHistory}
+                fetchHeartbeat={props.fetchHeartbeat}
+                now={props.now}
+                includeFees={props.includeFees}
+                setIncludeFees={props.setIncludeFees}
+                spotPrice={props.spotPrice}
+                engineStatusColor={props.engineStatusColor}
+                engineStatusLabel={props.engineStatusLabel}
+                calculatePositionMargin={props.calculatePositionMargin}
+                totalMargin={props.totalMargin}
+                exitType={props.exitType}
+                exitPoints={props.exitPoints}
+                onExitPosition={props.onExitPosition}
+                embedded
+                legFilter="long"
+                title="Open Orders"
+                emptyTitle="No Open Orders"
+                emptyDesc="Long-only holdings (short leg already exited, scaling out via the ladder) appear here."
+              />
+            )
           )}
 
           {tab === 'stop' && (
-            <StopOrdersTab
-              positions={props.positions}
-              underlying={props.underlying}
-              spotPrice={props.spotPrice}
-              exitType={props.exitType}
-              exitPoints={props.exitPoints}
-              onExitPosition={props.onExitPosition}
-            />
+            live ? (
+              <LiveStopOrdersTab stopOrders={live.stop_orders} />
+            ) : (
+              <StopOrdersTab
+                positions={props.positions}
+                underlying={props.underlying}
+                spotPrice={props.spotPrice}
+                exitType={props.exitType}
+                exitPoints={props.exitPoints}
+                onExitPosition={props.onExitPosition}
+              />
+            )
           )}
 
           {tab === 'fills' && (
-            <EmptyPanel
-              icon="fills"
-              title="No Fills Yet"
-              desc={isLiveAccount
-                ? 'Individual leg executions from Delta Exchange appear here as orders fill.'
-                : 'Leg-by-leg fills are reported for live accounts. Closed paper trades are summarised under Order History.'}
-            />
+            live ? (
+              <LiveFillsTab fills={live.fills} />
+            ) : (
+              <EmptyPanel
+                icon="fills"
+                title="No Fills Yet"
+                desc={isLiveAccount
+                  ? 'Individual leg executions from Delta Exchange appear here as orders fill.'
+                  : 'Leg-by-leg fills are reported for live accounts. Closed paper trades are summarised under Order History.'}
+              />
+            )
           )}
 
           {tab === 'history' && (
@@ -341,14 +571,18 @@ export default function TradingWorkspace(props) {
           )}
 
           {tab === 'risk' && (
-            <RiskMarginTab
-              positions={props.positions}
-              underlying={props.underlying}
-              spotPrice={props.spotPrice}
-              totalMargin={props.totalMargin}
-              calculatePositionMargin={props.calculatePositionMargin}
-              includeFees={props.includeFees}
-            />
+            live ? (
+              <LiveRiskMargin positions={live.positions} wallet={live.wallet} />
+            ) : (
+              <RiskMarginTab
+                positions={props.positions}
+                underlying={props.underlying}
+                spotPrice={props.spotPrice}
+                totalMargin={props.totalMargin}
+                calculatePositionMargin={props.calculatePositionMargin}
+                includeFees={props.includeFees}
+              />
+            )
           )}
         </div>
       </div>

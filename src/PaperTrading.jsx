@@ -230,6 +230,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const [engineStatus, setEngineStatus] = useState({ status: 'offline', lastHeartbeat: null, data: null });
   const [walletBalance, setWalletBalance] = useState(null); // live USDT balance from heartbeat
   const [engineDryRun, setEngineDryRun] = useState(null); // engine execution mode: true=sim, false=real, null=unknown
+  const [liveExchangeState, setLiveExchangeState] = useState(null); // real Delta snapshot (live accounts only)
 
   const [includeFees, setIncludeFees] = useState(true);
   const [positions, setPositions] = useState([]);
@@ -1721,6 +1722,50 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     };
   }, [fetchHeartbeat]);
 
+  // ── Live exchange snapshot (real Delta state for live accounts) ──────────
+  // Mirrors what the engine publishes to `live_exchange_state`. Only meaningful
+  // for live accounts; paper accounts have no row so this stays null and the
+  // workspace tabs fall back to their engine-derived views.
+  const isActiveLive = activeAccount?.mode === 'live';
+  const fetchLiveExchangeState = useCallback(async () => {
+    if (!activeAccountId || !isActiveLive) { setLiveExchangeState(null); return; }
+    try {
+      const { data, error } = await supabase
+        .from('live_exchange_state')
+        .select('updated_at, positions, orders, stop_orders, fills, balances, wallet')
+        .eq('account_id', activeAccountId)
+        .maybeSingle();
+      if (error || !data) { setLiveExchangeState(null); return; }
+      // Treat a stale snapshot (engine offline) as absent so tabs don't show ghosts.
+      const age = Date.now() - new Date(data.updated_at).getTime();
+      setLiveExchangeState(age < HEARTBEAT_STALE_THRESHOLD ? data : null);
+    } catch (e) { setLiveExchangeState(null); }
+  }, [activeAccountId, isActiveLive]);
+
+  useEffect(() => {
+    if (!isActiveLive) { setLiveExchangeState(null); return; }
+    let interval = null;
+    const start = () => { fetchLiveExchangeState(); interval = setInterval(fetchLiveExchangeState, 20000); };
+    const stop = () => { if (interval) clearInterval(interval); };
+
+    if (document.visibilityState === 'visible') start();
+    const handleVisibility = () => { document.visibilityState === 'visible' ? start() : stop(); };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    const channel = supabase
+      .channel(`live_exchange_state_${activeAccountId}`)
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'live_exchange_state', filter: `account_id=eq.${activeAccountId}` },
+        () => fetchLiveExchangeState())
+      .subscribe();
+
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', handleVisibility);
+      supabase.removeChannel(channel);
+    };
+  }, [fetchLiveExchangeState, isActiveLive, activeAccountId]);
+
   // ── Spot price (for PnL display math) ────────────────────────────────
   useEffect(() => {
     let interval = null;
@@ -2255,6 +2300,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               schedules={schedules}
               tradeHistory={tradeHistory}
               isLiveAccount={activeAccount?.mode === 'live'}
+              liveExchangeState={liveExchangeState}
             />
           </>
         )}

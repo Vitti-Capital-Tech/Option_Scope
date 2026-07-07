@@ -2011,6 +2011,33 @@ async function startSingleAccountEngine(account) {
     } catch (e) { /* non-fatal */ }
   }, 60000);
 
+  // Live exchange snapshot — every 20s for armed live accounts, READS real Delta
+  // state (positions, resting/stop orders, fills, balances) and upserts it to
+  // `live_exchange_state` so the UI's Positions/Open Orders/Stop Orders/Fills/Risk
+  // tabs show exchange truth. Read-only w.r.t. the exchange; runs in dry-run too.
+  const publishLiveSnapshot = async () => {
+    if (!(accountState.mode === 'live' && accountState.live_enabled)) return;
+    try {
+      const snap = await live.snapshot();
+      if (!snap) return;
+      const { error } = await supabase.from('live_exchange_state').upsert({
+        account_id: accountState.id,
+        updated_at: new Date().toISOString(),
+        positions: snap.positions,
+        orders: snap.orders,
+        stop_orders: snap.stopOrders,
+        fills: snap.fills,
+        balances: snap.balances,
+        wallet: snap.wallet,
+      }, { onConflict: 'account_id' });
+      if (error) logError(`[${accountState.name}] live_exchange_state upsert error:`, error.message);
+    } catch (e) {
+      logWarn(`[${accountState.name}] live snapshot publish failed: ${e.message}`);
+    }
+  };
+  const liveSnapshotTimer = setInterval(() => { publishLiveSnapshot(); }, 20000);
+  publishLiveSnapshot(); // prime immediately so the UI isn't blank until the first tick
+
 
   log(`[${accountState.name}] Paper Trading Engine is LIVE`);
 
@@ -2023,6 +2050,7 @@ async function startSingleAccountEngine(account) {
       clearInterval(productTimer);
       clearInterval(positionsTimer);
       clearInterval(balanceTimer);
+      clearInterval(liveSnapshotTimer);
       if (wsHandle) { wsHandle.close(); wsHandle = null; }
       supabase.removeChannel(configChannel);
 
