@@ -2,7 +2,7 @@
 // Usage: pm2 start ecosystem.config.cjs
 module.exports = {
   apps: [{
-    name: 'option-scope-engine',
+    name: 'optionscope-engine',
     script: 'index.js',
     cwd: __dirname,
     node_args: '--experimental-modules',
