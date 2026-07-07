@@ -15,7 +15,7 @@
  */
 import { supabase, hasServiceRole } from './lib/supabase.js';
 import { createHeartbeat } from './lib/heartbeat.js';
-import { createLiveExecutor, isLiveDryRun, longContracts, shortContracts } from './lib/liveExecution.js';
+import { createLiveExecutor, isLiveDryRun, longContracts, shortContracts, extractBalance } from './lib/liveExecution.js';
 import { getBalance } from './lib/deltaTradeApi.js';
 import {
   loadProducts, getExpiries, getSpotPrice,
@@ -2195,11 +2195,7 @@ export async function startPaperTradingEngine() {
           } else {
             try {
               const balances = await getBalance({ apiKey: creds[0].api_key, apiSecret: creds[0].api_secret });
-              const usdt = Array.isArray(balances)
-                ? balances.find(b => String(b.asset_symbol || '').toUpperCase() === 'USDT')
-                : null;
-              const v = usdt ? parseFloat(usdt.balance ?? usdt.available_balance) : null;
-              balanceVal = Number.isFinite(v) ? v : null;
+              balanceVal = extractBalance(balances);
               status = 'verified';
             } catch (e) {
               status = 'error';

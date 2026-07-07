@@ -39,6 +39,27 @@ export function shortContracts(sellQty) {
 }
 
 /**
+ * Extract a usable wallet balance from Delta's /v2/wallet/balances response,
+ * tolerant of asset naming/shape: prefer USDT, then USD, else the wallet with the
+ * largest balance. Reads balance/available_balance regardless of nesting.
+ */
+export function extractBalance(balances) {
+  if (!Array.isArray(balances) || balances.length === 0) return null;
+  const sym = (b) => String(b.asset_symbol || b.asset?.symbol || '').toUpperCase();
+  const amt = (b) => {
+    const v = parseFloat(b.balance ?? b.available_balance ?? b.wallet_balance ?? 0);
+    return Number.isFinite(v) ? v : 0;
+  };
+  const pick =
+    balances.find((b) => sym(b) === 'USDT') ||
+    balances.find((b) => sym(b) === 'USD') ||
+    [...balances].sort((a, b) => amt(b) - amt(a))[0];
+  if (!pick) return null;
+  const v = amt(pick);
+  return Number.isFinite(v) ? v : null;
+}
+
+/**
  * @param getCtx () => ({ accountName, mode, liveEnabled, creds })
  *   `creds` = { apiKey, apiSecret } or null.
  */
@@ -199,11 +220,7 @@ export function createLiveExecutor(getCtx) {
       if (!creds?.apiKey) return null;
       try {
         const balances = await getBalance(creds);
-        const usdt = Array.isArray(balances)
-          ? balances.find(b => String(b.asset_symbol || '').toUpperCase() === 'USDT')
-          : null;
-        const val = usdt ? parseFloat(usdt.balance ?? usdt.available_balance) : null;
-        return Number.isFinite(val) ? val : null;
+        return extractBalance(balances);
       } catch (e) {
         logWarn(`[${accountName}] Wallet balance fetch failed: ${e.message}`);
         return null;
