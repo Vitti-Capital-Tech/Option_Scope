@@ -2190,6 +2190,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               filteredWins={filteredWins}
               exportCSV={exportCSV}
               schedules={schedules}
+              tradeHistory={tradeHistory}
               isLiveAccount={activeAccount?.mode === 'live'}
             />
           </>

@@ -44,7 +44,9 @@ function EmptyPanel({ icon, title, desc }) {
 
 // ── Stop Orders — derived from active positions' exit triggers ────────────
 function StopOrdersTab({ positions, underlying, spotPrice, exitType, exitPoints, onExitPosition }) {
-  const rows = positions.filter(p => p.underlying === underlying);
+  // Spreads only — long-only positions exit via their scale-out ladder and live
+  // under Open Orders, not as spot-trigger stops.
+  const rows = positions.filter(p => p.underlying === underlying && (p.sellQty || 0) > 0);
   if (rows.length === 0) {
     return (
       <EmptyPanel icon="stop" title="No Stop Orders"
@@ -77,7 +79,7 @@ function StopOrdersTab({ positions, underlying, spotPrice, exitType, exitPoints,
               <tr key={p.id} className={`pt-row-${p.type}`}>
                 <td>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                    <span className={`pt-legrail ${isLongOnly ? 'long' : p.type}`} />
+                    <span className={`pt-legrail ${p.type}`} />
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                       <span className={`pt-type-badge ${p.type}`}>{p.type.toUpperCase()}</span>
                       <span style={{ fontSize: 10, color: 'var(--text-dim)', fontWeight: 600 }}>
@@ -178,7 +180,7 @@ function RiskMarginTab({ positions, underlying, spotPrice, totalMargin, calculat
                 <tr key={p.id} className={`pt-row-${p.type}`}>
                   <td>
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                      <span className={`pt-legrail ${isLongOnly ? 'long' : p.type}`} />
+                      <span className={`pt-legrail ${p.type}`} />
                       <span className={`pt-type-badge ${p.type}`}>{p.type.toUpperCase()}</span>
                     </div>
                   </td>
@@ -210,13 +212,15 @@ export default function TradingWorkspace(props) {
 
   const [tab, setTab] = useState('positions');
 
-  const posCount = positions.filter(p => p.underlying === underlying).length;
+  const visible = positions.filter(p => p.underlying === underlying);
+  const spreadCount = visible.filter(p => (p.sellQty || 0) > 0).length;
+  const longCount = visible.filter(p => (p.sellQty || 0) === 0).length;
   const histCount = filteredTradeHistory.length;
 
   const TABS = [
-    { key: 'positions', label: 'Positions', icon: 'positions', count: posCount },
-    { key: 'open', label: 'Open Orders', icon: 'open', count: 0 },
-    { key: 'stop', label: 'Stop Orders', icon: 'stop', count: posCount },
+    { key: 'positions', label: 'Positions', icon: 'positions', count: spreadCount },
+    { key: 'open', label: 'Open Orders', icon: 'open', count: longCount },
+    { key: 'stop', label: 'Stop Orders', icon: 'stop', count: spreadCount },
     { key: 'fills', label: 'Fills', icon: 'fills', count: null },
     { key: 'history', label: 'Order History', icon: 'history', count: histCount },
     { key: 'risk', label: 'Risk & Margin', icon: 'risk', count: null },
@@ -262,16 +266,37 @@ export default function TradingWorkspace(props) {
               exitPoints={props.exitPoints}
               onExitPosition={props.onExitPosition}
               embedded
+              legFilter="spread"
+              title="Open Positions"
+              emptyTitle="No Open Positions"
+              emptyDesc="Spread positions (long + short legs) appear here. The engine enters them automatically when conditions are met."
             />
           )}
 
           {tab === 'open' && (
-            <EmptyPanel
-              icon="open"
-              title="No Working Orders"
-              desc={isLiveAccount
-                ? 'Resting limit orders on Delta Exchange will show here. There are no open orders right now.'
-                : 'Paper accounts fill instantly, so there are no resting orders. Switch a live account here to track working orders on Delta Exchange.'}
+            <ActivePositionsTable
+              positions={props.positions}
+              underlying={props.underlying}
+              lastEvaluated={props.lastEvaluated}
+              fetchSupabaseActivePositions={props.fetchSupabaseActivePositions}
+              fetchSupabaseTradeHistory={props.fetchSupabaseTradeHistory}
+              fetchHeartbeat={props.fetchHeartbeat}
+              now={props.now}
+              includeFees={props.includeFees}
+              setIncludeFees={props.setIncludeFees}
+              spotPrice={props.spotPrice}
+              engineStatusColor={props.engineStatusColor}
+              engineStatusLabel={props.engineStatusLabel}
+              calculatePositionMargin={props.calculatePositionMargin}
+              totalMargin={props.totalMargin}
+              exitType={props.exitType}
+              exitPoints={props.exitPoints}
+              onExitPosition={props.onExitPosition}
+              embedded
+              legFilter="long"
+              title="Open Orders"
+              emptyTitle="No Open Orders"
+              emptyDesc="Long-only holdings (short leg already exited, scaling out via the ladder) appear here."
             />
           )}
 
@@ -308,6 +333,9 @@ export default function TradingWorkspace(props) {
               exportCSV={props.exportCSV}
               includeFees={props.includeFees}
               schedules={props.schedules}
+              positions={props.positions}
+              underlying={props.underlying}
+              tradeHistory={props.tradeHistory || []}
               embedded
             />
           )}

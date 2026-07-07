@@ -21,7 +21,10 @@ export default function TradeHistoryTable({
   exportCSV,
   includeFees,
   schedules = [],
-  embedded = false
+  embedded = false,
+  positions = [],
+  underlying,
+  tradeHistory = []
 }) {
 
   const fmtDuration = (ms) => {
@@ -32,7 +35,7 @@ export default function TradeHistoryTable({
     return `${Math.floor(m / 60)}h ${m % 60}m`;
   };
 
-  const kStrike = (s) => `${Number((Number(s) / 1000).toFixed(2))}k`;
+  const kStrike = (s) => Number(s).toLocaleString();
   const instrumentName = (t) => {
     const base = `${t.underlying}-${t.type.toUpperCase()}`;
     return t.sellLeg?.strike
@@ -74,6 +77,40 @@ export default function TradeHistoryTable({
 
     const originalSell = Math.round((uncappedSellQty * mult) * 4) / 4;
     return `1:${originalSell.toFixed(2)}`;
+  };
+
+  // ── Actual positions entered per window on the selected day ─────────────
+  const toMin = (t) => { const [h, m] = (t || '').split(':').map(Number); return (h || 0) * 60 + (m || 0); };
+  const inWindow = (min, s) => {
+    const start = toMin(s.startTime), end = toMin(s.endTime);
+    return start <= end ? (min >= start && min < end) : (min >= start || min < end);
+  };
+  const entryIstMin = (d) => { const x = new Date(d); return (x.getUTCHours() * 60 + x.getUTCMinutes() + 330) % 1440; };
+
+  const getTodayIstStr = () => {
+    const d = new Date();
+    d.setUTCMinutes(d.getUTCMinutes() + 330);
+    return d.toISOString().split('T')[0];
+  };
+  const targetDateStr = historyFilterDate || getTodayIstStr();
+
+  const isSameIstDate = (date, targetDateStr) => {
+    if (!date) return false;
+    const d = new Date(date);
+    d.setUTCMinutes(d.getUTCMinutes() + 330);
+    return d.toISOString().split('T')[0] === targetDateStr;
+  };
+
+  const windowFill = (s) => {
+    let c = 0, p = 0;
+    for (const pos of positions) {
+      if (underlying && pos.underlying !== underlying) continue;
+      if ((pos.sellQty || 0) <= 0) continue; // Only count active full spreads, ignore long-only legs
+      if (!pos.entryTime || !inWindow(entryIstMin(pos.entryTime), s)) continue;
+      if (pos.type === 'call') c++;
+      else if (pos.type === 'put') p++;
+    }
+    return { c, p };
   };
 
   return (
@@ -123,24 +160,28 @@ export default function TradeHistoryTable({
           </div>
         </div>
 
-        {/* Row 1.5: Per-window capacity (max calls/puts). One chip per window,
-            colored to match the Schedule Panel timeline. */}
+        {/* Row 1.5: Per-window active positions — how many calls/puts are
+            currently open in each window, vs the window's capacity. Colored to
+            match the Schedule Panel timeline. */}
         {schedules.length > 0 && (
           <div className="pt-history-windows" style={{
             display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
             borderTop: '1px solid var(--border)', paddingTop: 12
           }}>
             <span style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-dim)', fontWeight: 700 }}>
-              Window Capacity:
+              Active / Capacity:
             </span>
 
             {schedules.map((s, i) => {
               const dot = WINDOW_COLORS[i % WINDOW_COLORS.length];
               const name = s.label || `Window ${i + 1}`;
+              const fill = windowFill(s);
+              const cFull = fill.c >= s.numberOfCalls;
+              const pFull = fill.p >= s.numberOfPuts;
               return (
                 <div
                   key={s.id ?? i}
-                  title={`${name} (${(s.startTime || '').slice(0, 5)}–${(s.endTime || '').slice(0, 5)} IST) — max ${s.numberOfCalls} calls / ${s.numberOfPuts} puts${s.isActive ? '' : ' · inactive'}`}
+                  title={`${name} (${(s.startTime || '').slice(0, 5)}–${(s.endTime || '').slice(0, 5)} IST) — ${fill.c}/${s.numberOfCalls} calls, ${fill.p}/${s.numberOfPuts} puts active${s.isActive ? '' : ' · inactive'}`}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 6,
                     background: 'var(--bg3)', border: '1px solid var(--border)',
@@ -151,7 +192,9 @@ export default function TradeHistoryTable({
                   <span style={{ width: 8, height: 8, borderRadius: '50%', background: dot, flexShrink: 0 }} />
                   <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text)' }}>{name}</span>
                   <span style={{ fontSize: '10px', fontWeight: 600, color: 'var(--text-dim)' }}>
-                    C:{s.numberOfCalls} · P:{s.numberOfPuts}
+                    C:<b style={{ color: cFull ? 'var(--call)' : 'var(--text)' }}>{fill.c}</b>/{s.numberOfCalls}
+                    {' · '}
+                    P:<b style={{ color: pFull ? 'var(--put)' : 'var(--text)' }}>{fill.p}</b>/{s.numberOfPuts}
                   </span>
                 </div>
               );

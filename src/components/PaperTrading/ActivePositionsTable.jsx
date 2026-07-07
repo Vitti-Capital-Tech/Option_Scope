@@ -20,7 +20,11 @@ export default function ActivePositionsTable({
   exitType = 'ATM',
   exitPoints = 0,
   onExitPosition,
-  embedded = false
+  embedded = false,
+  legFilter = 'all',          // 'all' | 'spread' | 'long'
+  title = 'Open Positions',
+  emptyTitle = 'No Active Positions',
+  emptyDesc = 'The server engine is scanning for entries. Positions appear here automatically when entered.'
 }) {
 
   const [sortKey, setSortKey] = useState('none');
@@ -33,9 +37,9 @@ export default function ActivePositionsTable({
     return `${Math.floor(m / 60)}h ${m % 60}m`;
   };
 
-  // Trader-friendly instrument label, e.g. "BTC-CALL 98k/100k" (or single strike
-  // for a long-only leg). Strikes shown in k-notation to keep it compact.
-  const kStrike = (s) => `${Number((Number(s) / 1000).toFixed(2))}k`;
+  // Trader-friendly instrument label, e.g. "BTC-CALL 64,000/100,000" (or single
+  // strike for a long-only leg). Full strike numbers, not k-notation.
+  const kStrike = (s) => Number(s).toLocaleString();
   const instrumentName = (p) => {
     const base = `${p.underlying}-${p.type.toUpperCase()}`;
     return (p.sellQty || 0) === 0
@@ -74,7 +78,10 @@ export default function ActivePositionsTable({
 
   const pnlOf = (p) => (includeFees ? (p.unrealizedNetPnl || 0) : (p.unrealizedGrossPnl || 0));
 
-  const visiblePositions = positions.filter(p => p.underlying === underlying);
+  const matchesLeg = (p) => legFilter === 'all'
+    ? true
+    : legFilter === 'long' ? (p.sellQty || 0) === 0 : (p.sellQty || 0) > 0;
+  const visiblePositions = positions.filter(p => p.underlying === underlying && matchesLeg(p));
   const sortedPositions = [...visiblePositions];
   if (sortKey === 'pnl') sortedPositions.sort((a, b) => pnlOf(b) - pnlOf(a));
   else if (sortKey === 'margin') sortedPositions.sort((a, b) => calculatePositionMargin(b) - calculatePositionMargin(a));
@@ -108,7 +115,7 @@ export default function ActivePositionsTable({
       <div className={`pt-section-header pt-pos-header${embedded ? ' pt-embedded-header' : ''}`}>
         <div className="pt-section-title">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></svg>
-          Open Positions · {underlying}
+          {title} · {underlying}
           <span className="pt-section-count">{visiblePositions.length}</span>
         </div>
 
@@ -169,7 +176,7 @@ export default function ActivePositionsTable({
         </div>
       </div>
 
-      {positions.filter(p => p.underlying === underlying).length === 0 ? (
+      {visiblePositions.length === 0 ? (
         <div className="pt-empty">
           <div className="pt-empty-icon scanning">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke={engineStatusColor} strokeWidth="2">
@@ -179,8 +186,8 @@ export default function ActivePositionsTable({
               </path>
             </svg>
           </div>
-          <span className="pt-empty-title">No Active Positions</span>
-          <span className="pt-empty-desc">The server engine is scanning for entries. Positions appear here automatically when entered.</span>
+          <span className="pt-empty-title">{emptyTitle}</span>
+          <span className="pt-empty-desc">{emptyDesc}</span>
         </div>
       ) : (
         <div className="pt-table-scroll">
@@ -243,7 +250,7 @@ export default function ActivePositionsTable({
                   <tr key={p.id} className={`pt-row-${p.type}`}>
                     <td>
                       <div className="pt-pos-cell">
-                        <span className={`pt-legrail ${isLongOnly ? 'long' : p.type}`} />
+                        <span className={`pt-legrail ${p.type}`} />
                         <div className="pt-pos-id">
                           <span className="pt-instrument">{instrumentName(p)}</span>
                           <span className="pt-pos-meta">
