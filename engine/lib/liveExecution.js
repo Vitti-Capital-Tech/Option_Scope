@@ -195,7 +195,14 @@ export function createLiveExecutor(getCtx) {
       }
     },
 
-    /** Raw open positions from the exchange (armed accounts only), else []. */
+    /**
+     * Raw open positions from the exchange. Returns [] when not armed / no creds
+     * (legitimately "no live positions"), but returns NULL on a fetch FAILURE so
+     * callers can tell an API hiccup apart from a genuinely-flat account. This
+     * distinction is safety-critical: the live exit model infers "leg filled" from
+     * an absent position, so a failed fetch misread as [] would phantom-exit the
+     * entire book at once.
+     */
     async positions() {
       if (!armed()) return [];
       const { accountName, creds } = getCtx();
@@ -205,7 +212,7 @@ export function createLiveExecutor(getCtx) {
         return Array.isArray(res) ? res : [];
       } catch (e) {
         logWarn(`[${accountName}] positions() fetch failed: ${e.message}`);
-        return [];
+        return null;
       }
     },
 

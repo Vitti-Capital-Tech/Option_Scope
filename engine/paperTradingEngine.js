@@ -519,10 +519,31 @@ async function startSingleAccountEngine(account) {
       shortFilled = pos.sellQty > 0 && triggerMet;
       longFilled = pos.sellQty === 0 && triggerMet;
     } else {
-      const shortSize = Math.abs(sizeBySymbol[pos.sellLeg.symbol] ?? 0);
-      const longSize = Math.abs(sizeBySymbol[pos.buyLeg.symbol] ?? 0);
-      shortFilled = pos.sellQty > 0 && shortSize === 0;
-      longFilled = pos.sellQty === 0 && longSize === 0;
+      // Fill-by-absence: a leg missing from the exchange = filled. But "absent"
+      // ALSO describes a leg that never opened, or one whose symbol we can't match
+      // in the positions response. Only trust absence as a fill for a leg we have
+      // actually SEEN open (size≠0) on the exchange first — otherwise we'd phantom-
+      // exit a position that is really still open (leaving a naked leg on Delta).
+      const shortRaw = sizeBySymbol[pos.sellLeg.symbol];
+      const longRaw = sizeBySymbol[pos.buyLeg.symbol];
+      const shortSize = Math.abs(shortRaw ?? 0);
+      const longSize = Math.abs(longRaw ?? 0);
+      shortFilled = pos.sellQty > 0 && pos._shortConfirmedOpen === true && shortSize === 0;
+      longFilled = pos.sellQty === 0 && pos._longConfirmedOpen === true && longSize === 0;
+
+      // Diagnostic: log whenever a fill is inferred OR a held leg is unexpectedly
+      // absent-but-never-confirmed (the phantom-exit signature). Tells (B1) symbol
+      // mismatch / unlisted leg (ABSENT, never confirmed) apart from (B2) a real
+      // close (was confirmed open, size dropped to 0).
+      const suspicious = (pos.sellQty > 0 && shortSize === 0 && !pos._shortConfirmedOpen)
+        || (pos.sellQty === 0 && longSize === 0 && !pos._longConfirmedOpen);
+      if (shortFilled || longFilled || suspicious) {
+        log(`[${accountState.name}] 🔎 Live fill-check ${pos.id} (${pos.type} ${pos.buyLeg.strike}/${pos.sellLeg.strike}): ` +
+          `short ${pos.sellLeg.symbol}=${shortRaw ?? 'ABSENT'}${pos._shortConfirmedOpen ? '' : ' (never-confirmed)'} · ` +
+          `long ${pos.buyLeg.symbol}=${longRaw ?? 'ABSENT'}${pos._longConfirmedOpen ? '' : ' (never-confirmed)'} · ` +
+          `exchange returned ${Object.keys(sizeBySymbol).length} leg(s) → ` +
+          `${shortFilled ? 'SHORT-FILL' : longFilled ? 'LONG-FILL' : 'HELD (phantom avoided)'}`);
+      }
     }
 
     // ── Short SL filled → book short exit, convert to long-only, arm long TP ──
@@ -883,9 +904,28 @@ async function startSingleAccountEngine(account) {
       // fill detection is a single API call, not one per leg.
       const liveExitModel = accountState.mode === 'live' && !!accountState.live_enabled;
       let liveSizeBySymbol = {};
+      // In armed real mode, fill detection reads "leg absent from exchange" as
+      // "leg filled". That is only safe when we actually KNOW the exchange state.
+      // If the positions fetch fails (null), we must NOT run fill detection this
+      // cycle — otherwise a single API hiccup reads as an all-flat account and
+      // phantom-exits every open position at once. Hold instead; retry next cycle.
+      let liveFillDetectionOk = true;
       if (liveExitModel && !live.dryRun) {
         const livePos = await live.positions();
-        for (const p of livePos) liveSizeBySymbol[p.product_symbol] = Number(p.size) || 0;
+        if (livePos == null) {
+          liveFillDetectionOk = false;
+          logWarn(`[${accountState.name}] Live exit: exchange positions fetch failed — holding all positions this cycle (skipping fill detection to avoid phantom exits).`);
+        } else {
+          for (const p of livePos) liveSizeBySymbol[p.product_symbol] = Number(p.size) || 0;
+          // Latch "confirmed open" for any held leg the exchange actually reports
+          // as non-zero. Fill-by-absence (below) is only trusted for confirmed legs,
+          // so a leg we can never match / that never opens can't trigger a phantom
+          // exit. The latch survives future cycles (in-memory on the position).
+          for (const pos of positions) {
+            if (Math.abs(liveSizeBySymbol[pos.sellLeg?.symbol] ?? 0) > 0) pos._shortConfirmedOpen = true;
+            if (Math.abs(liveSizeBySymbol[pos.buyLeg?.symbol] ?? 0) > 0) pos._longConfirmedOpen = true;
+          }
+        }
       }
 
       // Sort worst-first (farthest from ATM)
@@ -904,6 +944,12 @@ async function startSingleAccountEngine(account) {
 
         // Armed live: index-triggered SL/TP model replaces the paper exit logic.
         if (liveExitModel) {
+          // Real mode with a failed exchange fetch → hold (no fill detection).
+          // Dry-run is unaffected (it uses the index crossing, not exchange size).
+          if (!live.dryRun && !liveFillDetectionOk) {
+            remaining.push(pos);
+            continue;
+          }
           await handleLiveExit(pos, remaining, liveSizeBySymbol);
           continue;
         }
