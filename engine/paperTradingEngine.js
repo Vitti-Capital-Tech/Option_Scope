@@ -2172,6 +2172,7 @@ export async function startPaperTradingEngine() {
       for (const row of pending || []) {
         let status = 'error';
         let errMsg = null;
+        let balanceVal = null;
         try {
           const { data: creds, error: dErr } = await supabase
             .rpc('get_delta_verify_request_decrypted', { p_id: row.id });
@@ -2179,7 +2180,12 @@ export async function startPaperTradingEngine() {
             errMsg = dErr?.message || 'Could not decrypt request';
           } else {
             try {
-              await getBalance({ apiKey: creds[0].api_key, apiSecret: creds[0].api_secret });
+              const balances = await getBalance({ apiKey: creds[0].api_key, apiSecret: creds[0].api_secret });
+              const usdt = Array.isArray(balances)
+                ? balances.find(b => String(b.asset_symbol || '').toUpperCase() === 'USDT')
+                : null;
+              const v = usdt ? parseFloat(usdt.balance ?? usdt.available_balance) : null;
+              balanceVal = Number.isFinite(v) ? v : null;
               status = 'verified';
             } catch (e) {
               status = 'error';
@@ -2190,9 +2196,9 @@ export async function startPaperTradingEngine() {
           errMsg = e.message;
         }
         await supabase.from('delta_verify_requests')
-          .update({ status, error: errMsg, api_secret_enc: null, processed_at: new Date().toISOString() })
+          .update({ status, error: errMsg, balance: balanceVal, api_secret_enc: null, processed_at: new Date().toISOString() })
           .eq('id', row.id);
-        log(`Delta verify request ${row.id}: ${status}${errMsg ? ` (${errMsg})` : ''}`);
+        log(`Delta verify request ${row.id}: ${status}${balanceVal != null ? ` (USDT ${balanceVal})` : ''}${errMsg ? ` (${errMsg})` : ''}`);
       }
 
       // Purge processed/stale requests older than 1 hour (they hold no secret once processed).

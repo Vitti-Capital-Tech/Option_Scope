@@ -34,7 +34,7 @@ export async function verifyDeltaCredentials(apiKey, apiSecret) {
       const { data, error: sErr } = await supabase.rpc('get_delta_verification_status', { p_id: id });
       if (sErr) return { ok: false, error: sErr.message };
       const row = Array.isArray(data) ? data[0] : data;
-      if (row?.status === 'verified') return { ok: true };
+      if (row?.status === 'verified') return { ok: true, balance: row.balance };
       if (row?.status === 'error') return { ok: false, error: row.error || 'Verification failed.' };
     }
     return { ok: false, error: 'Timed out waiting for the engine — is it running?' };

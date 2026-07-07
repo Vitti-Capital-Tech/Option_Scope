@@ -163,7 +163,11 @@ export default function DeltaCredentialsSection({ register, watch, setValue, exi
 
             {result && (
               <span style={{ fontSize: 12, fontWeight: 600, color: result.ok ? '#3fb950' : '#f85149' }}>
-                {result.ok ? '✓ Verified' : `✕ ${result.error}`}
+                {result.ok
+                  ? (result.balance != null
+                    ? `✓ Verified — Balance: ${Number(result.balance).toLocaleString(undefined, { maximumFractionDigits: 2 })} USDT`
+                    : '✓ Verified')
+                  : `✕ ${result.error}`}
               </span>
             )}
           </div>
