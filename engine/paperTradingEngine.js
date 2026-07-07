@@ -16,6 +16,7 @@
 import { supabase, hasServiceRole } from './lib/supabase.js';
 import { createHeartbeat } from './lib/heartbeat.js';
 import { createLiveExecutor, isLiveDryRun, longContracts, shortContracts } from './lib/liveExecution.js';
+import { getBalance } from './lib/deltaTradeApi.js';
 import {
   loadProducts, getExpiries, getSpotPrice,
   createTickerStream, buildSymbolMeta, processTickerMessage,
@@ -2154,10 +2155,60 @@ export async function startPaperTradingEngine() {
     }
   }, 30000);
 
+  // ── Credential verification watcher ───────────────────────────────────
+  // The browser drops encrypted verify requests into delta_verify_requests; we
+  // run the balance check from THIS server's whitelisted IP and write the result
+  // back. Requires the service_role key (to decrypt); no-op otherwise.
+  async function processVerifyRequests() {
+    if (!hasServiceRole) return;
+    try {
+      const { data: pending, error } = await supabase
+        .from('delta_verify_requests')
+        .select('id')
+        .eq('status', 'pending')
+        .limit(5);
+      if (error) { logError('Verify watcher fetch error:', error.message); return; }
+
+      for (const row of pending || []) {
+        let status = 'error';
+        let errMsg = null;
+        try {
+          const { data: creds, error: dErr } = await supabase
+            .rpc('get_delta_verify_request_decrypted', { p_id: row.id });
+          if (dErr || !creds || !creds[0]) {
+            errMsg = dErr?.message || 'Could not decrypt request';
+          } else {
+            try {
+              await getBalance({ apiKey: creds[0].api_key, apiSecret: creds[0].api_secret });
+              status = 'verified';
+            } catch (e) {
+              status = 'error';
+              errMsg = e.message;
+            }
+          }
+        } catch (e) {
+          errMsg = e.message;
+        }
+        await supabase.from('delta_verify_requests')
+          .update({ status, error: errMsg, api_secret_enc: null, processed_at: new Date().toISOString() })
+          .eq('id', row.id);
+        log(`Delta verify request ${row.id}: ${status}${errMsg ? ` (${errMsg})` : ''}`);
+      }
+
+      // Purge processed/stale requests older than 1 hour (they hold no secret once processed).
+      const cutoff = new Date(Date.now() - 3600000).toISOString();
+      await supabase.from('delta_verify_requests').delete().lt('created_at', cutoff);
+    } catch (e) {
+      logError('Verify watcher exception:', e);
+    }
+  }
+  const verifyTimer = setInterval(processVerifyRequests, 4000);
+
   return {
     async stop() {
       log('Shutting down all running account engines...');
       clearInterval(syncTimer);
+      clearInterval(verifyTimer);
       supabase.removeChannel(accountsChannel);
       for (const accountId of Object.keys(runningEngines)) {
         await stopAccountEngine(accountId);

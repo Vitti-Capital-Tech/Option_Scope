@@ -218,7 +218,17 @@ Delta API keys are IP-whitelisted. There are two distinct egress points:
   it (`ip_not_whitelisted_for_api_key`) and the IP keeps changing. This cannot be
   fixed by whitelisting.
 
-To make Verify egress from the whitelisted server instead (Option B):
+**Active approach — engine-mediated verify (no public endpoint).** The browser
+does NOT call Delta for Verify. It calls `request_delta_verification` (encrypts the
+secret with the Vault key), and the **engine** — running on the whitelisted server
+with the service_role key — polls `delta_verify_requests`, runs the balance check
+from that IP, and writes the result back (`get_delta_verification_status`, which the
+UI polls). The secret is cleared once processed; rows are purged after 1 hour.
+Requires the engine running with `SUPABASE_SERVICE_ROLE_KEY`, and migration 004.
+This is what `verifyDeltaCredentials` uses today — no AWS exposure needed.
+
+**Alternative — HTTPS proxy (Option B), if you prefer the browser to call through
+the server directly:**
 
 1. Run the engine with **`DELTA_PROXY_PORT`** set (e.g. `8787`). `engine/proxyServer.js`
    then forwards `/v2/*` to Delta verbatim from the server's IP. Set
