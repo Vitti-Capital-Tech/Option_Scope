@@ -47,7 +47,10 @@ async function signedRequest(creds, method, path, { query = '', body = null } = 
   let json = null;
   try { json = await res.json(); } catch { /* non-JSON */ }
   if (!res.ok || json?.success === false) {
-    const msg = json?.error?.code || json?.error?.message || `Delta API ${res.status} on ${path}`;
+    let msg = json?.error?.code || json?.error?.message || `Delta API ${res.status} on ${path}`;
+    // Surface the IP Delta actually saw — tells you exactly what to whitelist.
+    const clientIp = json?.error?.context?.client_ip;
+    if (clientIp) msg += ` (client_ip: ${clientIp})`;
     throw new Error(String(msg));
   }
   return json?.result;

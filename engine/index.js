@@ -8,6 +8,11 @@
  *   node index.js
  */
 import 'dotenv/config';
+import dns from 'node:dns';
+// Force outbound connections to prefer IPv4 so Delta sees the box's whitelisted
+// IPv4 (Node/undici otherwise prefers IPv6 when available, which egresses from a
+// different, non-whitelisted address). No-op on IPv4-only hosts.
+dns.setDefaultResultOrder('ipv4first');
 import { startPaperTradingEngine } from './paperTradingEngine.js';
 import { startDeltaProxy } from './proxyServer.js';
 import { log, logError } from './lib/utils.js';
