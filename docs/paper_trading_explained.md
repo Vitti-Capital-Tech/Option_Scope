@@ -405,17 +405,17 @@ Exits when the spot price crosses your buy leg's strike.
 
 ##### ITM (In The Money)
 ```
-For CALLS: if spotPrice ≥ buyStrike - exitPoints → EXIT
-For PUTS:  if spotPrice ≤ buyStrike + exitPoints → EXIT
-```
-Exits when the option goes in-the-money relative to the strike (e.g. spot rises to or above `buyStrike - exitPoints` for calls, or falls to or below `buyStrike + exitPoints` for puts).
-
-##### OTM (Out The Money)
-```
 For CALLS: if spotPrice ≥ buyStrike + exitPoints → EXIT
 For PUTS:  if spotPrice ≤ buyStrike - exitPoints → EXIT
 ```
-Exits when the buy leg has gone ITM by at least `exitPoints` (i.e., spot rises to or above `buyStrike + exitPoints` for calls, or falls to or below `buyStrike - exitPoints` for puts). The sell leg is still OTM at that point. This is a **delayed exit** — it lets the buy leg go deeper into the money before closing the spread.
+Exits once the **long (buy) leg has gone in-the-money** by at least `exitPoints` — i.e. spot has crossed the buy strike into the money (spot ≥ `buyStrike + exitPoints` for calls, spot ≤ `buyStrike - exitPoints` for puts). This is a **delayed exit** — it lets the long run past its strike, deeper into the money, before closing.
+
+##### OTM (Out The Money)
+```
+For CALLS: if spotPrice ≥ buyStrike - exitPoints → EXIT
+For PUTS:  if spotPrice ≤ buyStrike + exitPoints → EXIT
+```
+Exits **before** the long leg reaches its strike, while it is still out-of-the-money by `exitPoints` (spot ≥ `buyStrike - exitPoints` for calls, spot ≤ `buyStrike + exitPoints` for puts). This is an **early exit** — it closes the spread ahead of the ATM crossing.
 
 ## Partial Exit / Scaling Logic
 

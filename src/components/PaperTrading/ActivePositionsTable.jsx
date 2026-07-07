@@ -64,8 +64,8 @@ export default function ActivePositionsTable({
     const isCall = p.type === 'call';
     const buyStrike = Number(p.buyLeg.strike);
     let triggerPrice = buyStrike;
-    if (exitType === 'ITM') triggerPrice = isCall ? buyStrike - exitPoints : buyStrike + exitPoints;
-    else if (exitType === 'OTM') triggerPrice = isCall ? buyStrike + exitPoints : buyStrike - exitPoints;
+    if (exitType === 'ITM') triggerPrice = isCall ? buyStrike + exitPoints : buyStrike - exitPoints;
+    else if (exitType === 'OTM') triggerPrice = isCall ? buyStrike - exitPoints : buyStrike + exitPoints;
     const entrySpot = p.entrySpotPrice || spotPrice || triggerPrice;
     const liveSpot = spotPrice || entrySpot;
     const towardTrigger = isCall ? (liveSpot - entrySpot) : (entrySpot - liveSpot);
@@ -94,10 +94,10 @@ export default function ActivePositionsTable({
     let operator = isCall ? '≥' : '≤';
 
     if (exitType === 'ITM') {
-      triggerPrice = isCall ? buyStrike - exitPoints : buyStrike + exitPoints;
+      triggerPrice = isCall ? buyStrike + exitPoints : buyStrike - exitPoints;
       operator = isCall ? '≥' : '≤';
     } else if (exitType === 'OTM') {
-      triggerPrice = isCall ? buyStrike + exitPoints : buyStrike - exitPoints;
+      triggerPrice = isCall ? buyStrike - exitPoints : buyStrike + exitPoints;
       operator = isCall ? '≥' : '≤';
     } else {
       triggerPrice = buyStrike;

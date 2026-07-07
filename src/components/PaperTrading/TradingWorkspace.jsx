@@ -23,8 +23,8 @@ function exitTrigger(p, exitType, exitPoints) {
   const isCall = p.type === 'call';
   const buyStrike = Number(p.buyLeg.strike);
   let triggerPrice = buyStrike;
-  if (exitType === 'ITM') triggerPrice = isCall ? buyStrike - exitPoints : buyStrike + exitPoints;
-  else if (exitType === 'OTM') triggerPrice = isCall ? buyStrike + exitPoints : buyStrike - exitPoints;
+  if (exitType === 'ITM') triggerPrice = isCall ? buyStrike + exitPoints : buyStrike - exitPoints;
+  else if (exitType === 'OTM') triggerPrice = isCall ? buyStrike - exitPoints : buyStrike + exitPoints;
   const operator = isCall ? '≥' : '≤';
   return { triggerPrice, operator, isCall };
 }
