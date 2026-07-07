@@ -198,7 +198,7 @@ export default function ActivePositionsTable({
               <th>Entry<span className="pt-th-sub">prem · iv</span></th>
               <th>Mark<span className="pt-th-sub">prem · iv</span></th>
               <th>Dist. to Exit</th>
-              <th>Scale-Out</th>
+              {legFilter !== 'spread' && <th>Scale-Out</th>}
               <th>Unrealized P&L</th>
               <th>Margin</th>
               <th>Age</th>
@@ -283,23 +283,25 @@ export default function ActivePositionsTable({
                         <span className="pt-dist-away">spot {liveSpot.toLocaleString()} · {Math.round(away).toLocaleString()} away</span>
                       </div>
                     </td>
-                    <td>
-                      {showLadder ? (
-                        <div className="pt-scaleout"
-                          title={`Scale-out ${ladderStage}/${exitLevels.length} · entry $${Number(p.entryBuyPrice).toFixed(2)}${nextLevel != null ? ` · next $${Number(nextLevel).toFixed(2)}` : ''} · now ${p.currentBuyPrice != null ? `$${p.currentBuyPrice.toFixed(2)}` : '—'}${rangeTop != null ? ` · range top $${Number(rangeTop).toFixed(2)}` : ''}`}>
-                          <div className="pt-rungs">
-                            {exitLevels.map((lvl, i) => (
-                              <span key={i} className={`pt-rung ${i < ladderStage ? 'hit' : i === ladderStage ? 'next' : ''}`} />
-                            ))}
+                    {legFilter !== 'spread' && (
+                      <td>
+                        {showLadder ? (
+                          <div className="pt-scaleout"
+                            title={`Scale-out ${ladderStage}/${exitLevels.length} · entry $${Number(p.entryBuyPrice).toFixed(2)}${nextLevel != null ? ` · next $${Number(nextLevel).toFixed(2)}` : ''} · now ${p.currentBuyPrice != null ? `$${p.currentBuyPrice.toFixed(2)}` : '—'}${rangeTop != null ? ` · range top $${Number(rangeTop).toFixed(2)}` : ''}`}>
+                            <div className="pt-rungs">
+                              {exitLevels.map((lvl, i) => (
+                                <span key={i} className={`pt-rung ${i < ladderStage ? 'hit' : i === ladderStage ? 'next' : ''}`} />
+                              ))}
+                            </div>
+                            <span className="pt-cell-sub">
+                              {ladderStage}/{exitLevels.length} slices{nextLevel != null ? ` · next $${Number(nextLevel).toFixed(2)}` : ''}
+                            </span>
                           </div>
-                          <span className="pt-cell-sub">
-                            {ladderStage}/{exitLevels.length} slices{nextLevel != null ? ` · next $${Number(nextLevel).toFixed(2)}` : ''}
-                          </span>
-                        </div>
-                      ) : (
-                        <span className="pt-mono pt-dim">—</span>
-                      )}
-                    </td>
+                        ) : (
+                          <span className="pt-mono pt-dim">—</span>
+                        )}
+                      </td>
+                    )}
                     <td>
                       <div className="pt-pnlcell">
                         <span className={`pt-pnl ${pnlClass}`}>{pnlValue > 0 ? '+' : ''}{pnlValue.toFixed(2)}</span>
