@@ -414,7 +414,7 @@ function LivePositionsTab({ positions }) {
 
 // ── Workspace shell ───────────────────────────────────────────────────────
 export default function TradingWorkspace(props) {
-  const { positions, underlying, filteredTradeHistory, isLiveAccount, liveExchangeState } = props;
+  const { positions, underlying, filteredTradeHistory, isLiveAccount, liveExchangeState, engineDryRun } = props;
 
   const [tab, setTab] = useState('positions');
 
@@ -423,12 +423,15 @@ export default function TradingWorkspace(props) {
   const longCount = visible.filter(p => (p.sellQty || 0) === 0).length;
   const histCount = filteredTradeHistory.length;
 
-  // When a live account has a fresh exchange snapshot, the exchange-fed tabs
-  // (Positions / Open Orders / Stop Orders / Fills / Risk) render Delta truth
-  // instead of the engine-derived views. Paper accounts (or a stale/absent
-  // snapshot) fall back to the engine views. Order History stays engine-sourced
-  // for both — it's the strategy's closed-trade ledger, not raw exchange fills.
-  const live = isLiveAccount && liveExchangeState ? liveExchangeState : null;
+  // The exchange-fed tabs (Positions / Open Orders / Stop Orders / Fills / Risk)
+  // render Delta truth ONLY when the engine is placing REAL orders — i.e. a live
+  // account whose engine is armed and NOT in dry-run (engineDryRun === false),
+  // with a fresh snapshot. In dry-run the engine only simulates, so Delta reports
+  // nothing real; the engine/paper views are the truth and we fall back to them.
+  // Paper accounts and stale/absent snapshots also fall back. Order History stays
+  // engine-sourced for both — it's the strategy's closed-trade ledger.
+  const useLive = isLiveAccount && engineDryRun === false && !!liveExchangeState;
+  const live = useLive ? liveExchangeState : null;
   const liveOpenLegs = live ? (live.positions || []).filter(p => Number(p.size) !== 0).length : null;
 
   const TABS = [
