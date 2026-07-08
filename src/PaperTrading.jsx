@@ -998,6 +998,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     return accounts.find(a => a.id === activeAccountId) || null;
   }, [accounts, activeAccountId]);
 
+  const useLive = activeAccount?.mode === 'live' && engineDryRun === false && !!liveExchangeState;
+
   const DEFAULT_FILTERS = React.useMemo(() => {
     const baseFilters = {
       minIvDiff: 5,
@@ -2076,9 +2078,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     });
   }, [tradeHistory, historyFilterDate]);
 
-  const totalUnrealizedPnl = positions
-    .filter(p => p.underlying === underlying)
-    .reduce((s, p) => s + (includeFees ? (p.unrealizedNetPnl || 0) : (p.unrealizedGrossPnl || 0)), 0);
+  const totalUnrealizedPnl = useLive
+    ? (liveExchangeState?.positions || [])
+        .filter(p => Number(p.size) !== 0 && (p.product_symbol || '').startsWith(underlying))
+        .reduce((s, p) => s + (Number(p.unrealized_pnl ?? p.unrealised_pnl) || 0), 0)
+    : positions
+        .filter(p => p.underlying === underlying)
+        .reduce((s, p) => s + (includeFees ? (p.unrealizedNetPnl || 0) : (p.unrealizedGrossPnl || 0)), 0);
 
   // Cumulative KPIs read straight off the server-aggregated historyStats object
   // (sums/counts/today buckets computed in get_trade_stats), so no per-trade math
@@ -2106,10 +2112,28 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   }, [spotPrice]);
 
   const totalMargin = React.useMemo(() => {
+    if (useLive) {
+      return (liveExchangeState?.positions || [])
+        .filter(p => Number(p.size) !== 0 && (p.product_symbol || '').startsWith(underlying))
+        .reduce((s, p) => s + (Number(p.margin) || 0), 0);
+    }
     return positions
       .filter(p => p.underlying === underlying)
       .reduce((s, p) => s + calculatePositionMargin(p), 0);
-  }, [positions, underlying, calculatePositionMargin]);
+  }, [positions, underlying, calculatePositionMargin, useLive, liveExchangeState]);
+
+  const livePositions = useLive
+    ? (liveExchangeState?.positions || []).filter(p => Number(p.size) > 0 && (p.product_symbol || '').startsWith(underlying))
+    : [];
+  const activePositionsCount = useLive
+    ? livePositions.length
+    : positions.filter(p => p.underlying === underlying).length;
+  const activeCallsCount = useLive
+    ? livePositions.filter(p => p.product_symbol?.endsWith('-C') || p.product_symbol?.includes('-C-')).length
+    : positions.filter(p => p.type === 'call' && p.underlying === underlying).length;
+  const activePutsCount = useLive
+    ? livePositions.filter(p => p.product_symbol?.endsWith('-P') || p.product_symbol?.includes('-P-')).length
+    : positions.filter(p => p.type === 'put' && p.underlying === underlying).length;
   const filteredRealizedPnl = filteredTradeHistory.reduce((s, t) =>
     s + (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || 0)), 0);
   const filteredWins = filteredTradeHistory.filter(t =>
@@ -2261,9 +2285,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               winRate={winRate}
               wins={wins}
               tradeHistoryLength={historyStats.totalCount}
-              activePositionsCount={positions.filter(p => p.underlying === underlying).length}
-              activeCallsCount={positions.filter(p => p.type === 'call' && p.underlying === underlying).length}
-              activePutsCount={positions.filter(p => p.type === 'put' && p.underlying === underlying).length}
+              activePositionsCount={activePositionsCount}
+              activeCallsCount={activeCallsCount}
+              activePutsCount={activePutsCount}
               totalMargin={totalMargin}
               isLive={activeAccount?.mode === 'live'}
               walletBalance={walletBalance}

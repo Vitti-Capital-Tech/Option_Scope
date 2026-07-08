@@ -96,6 +96,13 @@ function isIndexTriggerMet(type, level, spot) {
   return type === 'call' ? spot >= level : spot <= level;
 }
 
+/** Greatest common divisor — reduces a ratio to minimal integer lots. */
+function gcdInt(a, b) {
+  a = Math.abs(Math.round(a)); b = Math.abs(Math.round(b));
+  while (b) { [a, b] = [b, a % b]; }
+  return a || 1;
+}
+
 async function startSingleAccountEngine(account) {
   let accountState = account;
   const ENGINE_ID = 'paper_trading_' + accountState.id;
@@ -650,12 +657,14 @@ async function startSingleAccountEngine(account) {
   async function cancelRestingOrders(pos) {
     const toCancel = [];
     if (pos.sellLeg?.exitOrderId) toCancel.push({ id: pos.sellLeg.exitOrderId, productId: pos.sellLeg.exitProductId });
-    if (pos.sellLeg?.backstopOrderId) toCancel.push({ id: pos.sellLeg.backstopOrderId, productId: pos.sellLeg.backstopProductId });
     for (const lo of (pos.buyLeg?.ladderOrders || [])) {
       if (lo.orderId && !lo.filled) toCancel.push({ id: lo.orderId, productId: lo.productId });
     }
     for (const o of toCancel) await live.cancelStop(o);
   }
+  // NOTE: the long-TP / short-SL brackets are attached to the exchange positions;
+  // Delta auto-cancels a bracket when its position closes, so they need no manual
+  // cancellation here — closing a leg (resting fill or market close) clears it.
 
   async function handleLiveRestingExit(pos, remaining, fillIds) {
     const tickerBuy = tickerData[pos.buyLeg.symbol];
@@ -740,14 +749,10 @@ async function startSingleAccountEngine(account) {
         }], { onConflict: 'trade_id', ignoreDuplicates: true });
       } catch (e) { logError(`[${accountState.name}] Resting short-exit booking failed for ${pos.id}:`, e); }
 
-      // Short is closed → cancel its disaster backstop (nothing left to protect,
-      // and it must not fire against a re-entry on the same symbol).
-      if (pos.sellLeg.backstopOrderId) {
-        await live.cancelStop({ id: pos.sellLeg.backstopOrderId, productId: pos.sellLeg.backstopProductId });
-      }
       // Convert to long-only and place the fixed ladder of resting SELL orders.
+      // (The short's SL bracket auto-cancels on the exchange now that the short is flat.)
       pos.entryFee = Math.max(0, (pos.entryFee || 0) - entryFee);
-      pos.sellLeg = { ...pos.sellLeg, lotSize: 0, exitOrderId: null, backstopOrderId: null };
+      pos.sellLeg = { ...pos.sellLeg, lotSize: 0, exitOrderId: null };
       pos.sellQty = 0;
       const baseLot = pos.buyLeg.lotSize || 0;
       const S = longContracts(pos.buyLeg);
@@ -1205,11 +1210,6 @@ async function startSingleAccountEngine(account) {
             contracts: shortContracts(pos.sellQty),
             price: exitShortPrice, tag: `${pos.id}-SEX`,
           });
-          // Short is closed → pull its disaster backstop so it can't later fire
-          // against a re-entered position on the same symbol.
-          if (pos.sellLeg?.backstopOrderId) {
-            await live.cancelStop({ id: pos.sellLeg.backstopOrderId, productId: pos.sellLeg.backstopProductId });
-          }
 
           // Convert the position to long-only: drop the short leg, recompute margin.
           // Snapshot the long lot (base for the 10-slice laddered exit) and build 10
@@ -1827,15 +1827,31 @@ async function startSingleAccountEngine(account) {
           let scale = 1;
 
           if (liveArmed) {
-            // LIVE: cap this position's margin at 1 "part" of allocated balance.
-            const baseMargin = calcMargin(entryBuyPrice, originalLotSize, spotPrice, ratioToUse, sellLotSize);
-            if (baseMargin > partMargin && baseMargin > 0) {
-              scale = partMargin / baseMargin;
-              adjustedLotSize = Number((originalLotSize * scale).toFixed(4));
-              adjustedSellQty = Number((ratioToUse * scale).toFixed(2));
+            // INTEGER-RATIO sizing: keep the exact ratio in WHOLE contracts (no
+            // fractional scaling — which used to collapse the ratio to 1:1 integer
+            // contracts on the exchange), then take as many whole units as fit ONE
+            // "part" of allocated margin. Margin = calcMargin = the account formula
+            // buyPrem×longLots×cs + shortLots×spot×cs/200. Ratio is locked at entry,
+            // so there is no scaling / partial-exit drift afterwards.
+            if (!partMargin || partMargin <= 0) {
+              logWarn(`[${accountState.name}] LIVE skip ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: no allocated part margin (wallet balance unavailable).`);
+              continue;
             }
+            const cs = originalLotSize || 1;                    // contract_size
+            const q = Math.max(1, Math.round(ratioToUse * 4));  // ratio in quarter-steps
+            const g = gcdInt(q, 4);
+            const unitLong = 4 / g;                             // minimal integer long contracts
+            const unitShort = q / g;                            // minimal integer short contracts
+            const unitMargin = calcMargin(entryBuyPrice, unitLong * cs, spotPrice, unitShort, sellLotSize);
+            const k = unitMargin > 0 ? Math.floor(partMargin / unitMargin) : 0;
+            if (k < 1) {
+              logWarn(`[${accountState.name}] LIVE skip ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: min unit ${unitLong}L:${unitShort}S needs $${unitMargin.toFixed(2)} > part $${partMargin.toFixed(2)}`);
+              continue;
+            }
+            adjustedLotSize = Number((unitLong * k * cs).toFixed(6)); // long contracts × cs
+            adjustedSellQty = unitShort * k;                          // integer short contracts
             const finalMargin = calcMargin(entryBuyPrice, adjustedLotSize, spotPrice, adjustedSellQty, sellLotSize);
-            log(`[${accountState.name}] 💰 LIVE size ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: baseMargin $${baseMargin.toFixed(2)} vs part $${partMargin.toFixed(2)} → scale ${scale.toFixed(3)} | long ${adjustedLotSize} short ${adjustedSellQty} | est margin $${finalMargin.toFixed(2)}`);
+            log(`[${accountState.name}] 💰 LIVE int-ratio ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: ratio ${ratioToUse} → ${unitLong}L:${unitShort}S ×${k} = ${unitLong * k}L:${unitShort * k}S | unitMargin $${unitMargin.toFixed(2)} / part $${partMargin.toFixed(2)} | est margin $${finalMargin.toFixed(2)} (cs=${cs})`);
           } else {
             // PAPER (unchanged): $200,000 / 200x notional cap.
             let shortValue = spotPrice * ratioToUse * sellLotSize;
@@ -1929,12 +1945,6 @@ async function startSingleAccountEngine(account) {
             }
           }
 
-          // Pull the short's disaster backstop (if armed) — position is closing,
-          // whether by normal exit or expiry settlement.
-          if (t.sellLeg?.backstopOrderId) {
-            await live.cancelStop({ id: t.sellLeg.backstopOrderId, productId: t.sellLeg.backstopProductId });
-          }
-
           // Delete from active
           await supabase.from('active_positions').delete().eq('id', t.id);
 
@@ -1988,40 +1998,24 @@ async function startSingleAccountEngine(account) {
             // entryBuyPrice/entrySellPrice (used for bookkeeping) are left as-is.
             const buyOff = config.entryBuyOffset ?? 5;
             const sellOff = config.entrySellOffset ?? 2;
+            // Exchange-native brackets at the exit-type SPOT level (ATM/ITM/OTM):
+            // long leg → take-profit, short leg → stop-loss. These fire even if the
+            // engine is down, and are the account's hard risk exit.
+            const bracketLevel = computeIndexTriggerLevel(t.type, t.buyLeg.strike, effectiveConfig);
             const liveEntry = await live.openSpread(t, {
               long: longContracts(t.buyLeg),
               short: shortContracts(t.sellQty),
               buyPrice: t.entryBuyPrice + buyOff,
               sellPrice: Math.max(0.05, t.entrySellPrice - sellOff),
+              longTp: bracketLevel,
+              shortSl: bracketLevel,
             });
             if (!liveEntry.ok) {
               logError(`[${accountState.name}] LIVE entry aborted (${liveEntry.legFailed} leg: ${liveEntry.error}) — not persisting ${t.buyLeg.strike}/${t.sellLeg.strike}`);
               continue;
             }
-
-            // Normal exits are managed ACTIVELY by the engine (same as paper): short
-            // bought back on premium decay / ATM-ITM-OTM, long laddered out — each
-            // branch sends its own reduce_only close. On TOP of that we arm a DISASTER
-            // BACKSTOP on the short leg: a reduce-only buy-stop that fires only if the
-            // short option's MARK price blows out to a disaster multiple of entry
-            // premium. This protects the naked-short risk even if the engine is down.
-            // It triggers on the option price RISING (unambiguous for calls & puts),
-            // so — unlike a spot-level stop — it can't fire the instant it's placed.
-            if (liveArmed && t.sellQty > 0 && t.entrySellPrice > 0) {
-              const mult = config.liveBackstopMult ?? 4;
-              const backstopPx = Number((t.entrySellPrice * mult).toFixed(2));
-              const dslRes = await live.placeStop({
-                symbol: t.sellLeg.symbol, side: 'buy',
-                contracts: shortContracts(t.sellQty), stopPrice: backstopPx,
-                triggerMethod: 'mark_price', tag: `${t.id}-DSL`,
-              });
-              t.sellLeg = {
-                ...t.sellLeg,
-                backstopOrderId: dslRes?.order?.id ?? null,
-                backstopProductId: dslRes?.order?.product_id ?? null,
-                backstopStop: backstopPx,
-              };
-              log(`[${accountState.name}] 🛡️ Disaster backstop armed: buy-stop short ${t.sellLeg.strike} @ mark $${backstopPx} (${mult}× entry $${t.entrySellPrice})`);
+            if (liveArmed && t.sellQty > 0) {
+              log(`[${accountState.name}] 🎯 Brackets: long TP + short SL @ spot ${bracketLevel} (${effectiveConfig.exitType || 'ATM'})`);
             }
 
             // RESTING-EXIT MODEL (armed + REAL orders only): rest a reduce-only limit

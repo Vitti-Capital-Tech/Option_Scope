@@ -71,11 +71,14 @@ export function createLiveExecutor(getCtx) {
     return mode === 'live' && !!liveEnabled;
   }
 
-  async function submit({ symbol, side, contracts, price, reduceOnly = false, tag }) {
+  async function submit({ symbol, side, contracts, price, reduceOnly = false, tag, bracket = null }) {
     const { accountName, creds } = getCtx();
     const size = Math.max(1, Math.round(contracts || 0));
     const priceStr = (price != null && Number.isFinite(price)) ? String(price) : null;
-    const summary = `${side.toUpperCase()} ${size}x ${symbol} @ ${priceStr ?? '—'}${reduceOnly ? ' reduceOnly' : ''} [${tag}]`;
+    const brkStr = bracket
+      ? ` +bracket{${bracket.bracket_take_profit_price ? 'TP@' + bracket.bracket_take_profit_price : ''}${bracket.bracket_stop_loss_price ? ' SL@' + bracket.bracket_stop_loss_price : ''} via ${bracket.bracket_stop_trigger_method || 'mark'}}`
+      : '';
+    const summary = `${side.toUpperCase()} ${size}x ${symbol} @ ${priceStr ?? '—'}${reduceOnly ? ' reduceOnly' : ''}${brkStr} [${tag}]`;
 
     if (DRY_RUN) {
       log(`[${accountName}] 🧪 DRY-RUN live order (not sent): ${summary}`);
@@ -104,6 +107,7 @@ export function createLiveExecutor(getCtx) {
         time_in_force: 'gtc',
         reduce_only: !!reduceOnly,
         client_order_id: tag,
+        ...(bracket || {}), // bracket_take_profit_price / bracket_stop_loss_price / bracket_stop_trigger_method
       });
       log(`[${accountName}] ✅ LIVE order sent: ${summary} → id ${order?.id ?? '?'} state ${order?.state ?? '?'}`);
       return { ok: true, order };
@@ -119,21 +123,33 @@ export function createLiveExecutor(getCtx) {
 
     /**
      * Open a spread: buy the long leg (@ ask), sell the short leg (@ bid).
+     * Optionally attaches exchange-native brackets (spot-triggered) to each leg:
+     *   longTp → bracket TAKE-PROFIT on the long buy
+     *   shortSl → bracket STOP-LOSS on the short sell
+     * Both fire at the shared exit level even if the engine is down.
      * Returns { ok }. On the SELL leg failing after the BUY succeeded (live send
      * only), the caller should NOT persist the position; we log for reconciliation.
      */
-    async openSpread(pos, { long, short, buyPrice, sellPrice }) {
+    async openSpread(pos, { long, short, buyPrice, sellPrice, longTp = null, shortSl = null }) {
       if (!armed()) return { ok: true, skipped: true };
+      const buyBracket = (longTp != null && Number.isFinite(longTp))
+        ? { bracket_take_profit_price: String(longTp), bracket_stop_trigger_method: 'spot_price' }
+        : null;
       const buy = await submit({
         symbol: pos.buyLeg.symbol, side: 'buy', contracts: long,
         price: buyPrice ?? pos.entryBuyPrice, reduceOnly: false, tag: `${pos.id}-EB`,
+        bracket: buyBracket,
       });
       if (!buy.ok) return { ok: false, legFailed: 'buy', error: buy.error };
 
       if (short > 0) {
+        const sellBracket = (shortSl != null && Number.isFinite(shortSl))
+          ? { bracket_stop_loss_price: String(shortSl), bracket_stop_trigger_method: 'spot_price' }
+          : null;
         const sell = await submit({
           symbol: pos.sellLeg.symbol, side: 'sell', contracts: short,
           price: sellPrice ?? pos.entrySellPrice, reduceOnly: false, tag: `${pos.id}-ES`,
+          bracket: sellBracket,
         });
         if (!sell.ok) {
           const { accountName } = getCtx();
@@ -197,9 +213,9 @@ export function createLiveExecutor(getCtx) {
 
     /**
      * Cancel a resting order by id (armed accounts only, no-op in dry-run). Used to
-     * pull the disaster backstop stop once its leg is closed normally, so a stale
-     * reduce-only stop can't later fire against a re-entered position on the same
-     * symbol. `productId` is required by Delta's cancel endpoint.
+     * pull the resting short-exit / ladder orders when a position closes another way,
+     * so a stale reduce-only order can't later fire against a re-entered position on
+     * the same symbol. `productId` is required by Delta's cancel endpoint.
      */
     async cancelStop({ id, productId }) {
       if (!armed() || DRY_RUN) return { ok: true, skipped: true };
@@ -207,7 +223,7 @@ export function createLiveExecutor(getCtx) {
       if (!creds?.apiKey || id == null) return { ok: false, error: 'no-id-or-creds' };
       try {
         await cancelOrder(creds, { id, product_id: productId });
-        log(`[${accountName}] 🧹 Cancelled backstop stop id ${id}`);
+        log(`[${accountName}] 🧹 Cancelled resting order id ${id}`);
         return { ok: true };
       } catch (e) {
         logWarn(`[${accountName}] cancelStop failed for id ${id}: ${e.message}`);

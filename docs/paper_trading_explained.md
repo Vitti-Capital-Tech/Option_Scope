@@ -347,8 +347,9 @@ When evaluating exits, positions are processed in a specific order: **worst-firs
 > sends its own `reduce_only` close to Delta via `live.closeLeg()` when armed, so they
 > behave identically. **Armed *real*-order live accounts use a different, resting-order
 > exit model** (same trigger levels, but the short buy-back and long ladder rest in the
-> exchange order book and fill on their own), plus a short-leg **disaster backstop** at
-> entry. See [live_trading.md](live_trading.md#live-exit-model--two-paths).
+> exchange order book and fill on their own), plus exchange-native **brackets** (long
+> TP + short SL at the exit-type spot level) and **integer-ratio** whole-contract
+> sizing. See [live_trading.md](live_trading.md#live-exit-model--two-paths).
 
 For each position, the engine walks through this **priority tree** from top to bottom. The first matching condition triggers the exit:
 
@@ -593,7 +594,7 @@ Every write to `trade_history` is **idempotent**, so the same logical exit can n
    | Short-leg exit | `${pos.id}-SE` | Short leg buys back once per position |
    | Partial / scaling exit | `${pos.id}-PE-${lotsRemaining}` | Lot size strictly **decreases** each step → every step's remaining lot is distinct |
    | Long ladder slice | `${pos.id}-LE-${stage}` | Each ladder `stage` fires exactly once |
-   | ~~Live short SL / long TP~~ | ~~`${pos.id}-LSL` / `${pos.id}-LTP`~~ | **Retired** — the separate armed-live exit model is dormant; live accounts now use the same exit path (and the same `trade_id`s) as paper. See [live_trading.md](live_trading.md#live-exit-model--shared-with-paper-option-a--disaster-backstop). |
+   | ~~Live short SL / long TP~~ | ~~`${pos.id}-LSL` / `${pos.id}-LTP`~~ | **Retired** — the old index-triggered armed-live model is dormant. Paper & dry-run-live use the same exit path (and `trade_id`s) as this tree; armed-real live uses the resting-order + bracket model. See [live_trading.md](live_trading.md#live-exit-model--two-paths). |
 
 2. **Idempotent upsert against the `UNIQUE` constraint** — `trade_history.trade_id` carries a `UNIQUE` constraint (see `supabase_schema.sql`). All writes use `.upsert(rows, { onConflict: 'trade_id', ignoreDuplicates: true })` — i.e. `INSERT … ON CONFLICT (trade_id) DO NOTHING`. A duplicate is silently dropped at the database, and a **batch** insert (partial / ladder slices) still writes its genuinely-new rows instead of aborting on the first conflict.
 

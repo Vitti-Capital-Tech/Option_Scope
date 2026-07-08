@@ -111,14 +111,13 @@ logic is byte-for-byte unchanged when paper/disarmed:
 
 | Point | Live order |
 | --- | --- |
-| Entry (before `active_positions` insert) | Buy long @ ask (limit) + sell short @ bid (limit). **A failed live send aborts the insert** — no phantom position. |
-| Entry (disaster backstop) | Reduce-only **buy-stop** on the short leg, `stop_trigger_method: mark_price`, stop = `liveBackstopMult`× entry premium (default 4×). See [Live exit model](#live-exit-model--two-paths). |
-| Entry (resting short-exit, armed real) | Resting reduce-only **limit BUY** on the short @ `shortExitPrice` (`${id}-SEX`) — the short buy-back, sitting in Open Orders |
-| Short-leg exit | Active model: buy-to-close @ ask. Resting model: the `-SEX` limit fills on its own → book + cancel backstop + place ladder |
+| Entry (before `active_positions` insert) | Buy long @ ask + sell short @ bid (limit, `+entryBuyOffset`/`−entrySellOffset`). Each leg carries a **spot-triggered bracket** at the exit level (long → TP, short → SL). **A failed live send aborts the insert.** |
+| Entry (resting short-exit, armed real) | Resting reduce-only **limit BUY** on the short @ `shortExitPrice` (`${id}-SEX`) — the short buy-back (profit), sitting in Open Orders |
+| Short-leg exit | Active model: buy-to-close @ ask. Resting model: the `-SEX` limit fills on its own → book + place ladder (short SL bracket auto-cancels) |
 | Long laddered exit | Active model: sell reduce_only @ bid per level. Resting model: fixed-ladder resting **limit SELLs** fill on their own |
 | Partial ratio scale-down | Sell-to-close the reduced buy lot (`reduce_only`) @ bid (active model only) |
-| Full ATM/ITM/OTM exit | Sell long + buy short (`reduce_only`) + cancel backstop & any resting orders |
-| **Expiry / zombie exit** | **No leg order** — Delta cash-settles expired options exchange-side; backstop & resting orders still cancelled |
+| Risk exit (spot hits exit level) | **Brackets** close the whole spread exchange-side; engine's spot-cross catch-all (if up) also market-closes + books (reduce-only guards double-close) |
+| **Expiry / zombie exit** | **No leg order** — Delta cash-settles expired options; brackets auto-cancel, resting orders cancelled |
 
 All orders use limit orders at the engine's computed price and carry a
 `client_order_id` derived from the position id + leg + stage (idempotency).
@@ -163,24 +162,25 @@ Exit handling now depends on whether the engine is actually sending real orders:
 
 #### Resting-order model (armed real)
 
-The trigger *levels* are the same as paper (`shortExitPrice`, the fixed ladder), but
-they are placed as **resting reduce-only orders** instead of engine-driven market
-closes, so they fill even if the engine is momentarily busy:
+Two mechanisms run together — **resting profit exits** (engine-detected) and
+**exchange-native bracket risk exits** (fire even if the engine is down):
 
-- **At entry:** a resting **limit BUY** rests on the short leg @ `shortExitPrice`
-  (default $1.1), tag `${id}-SEX` — the short buy-back, sitting in Open Orders.
-- **When it fills** (detected by its `order_id` appearing in recent `/v2/fills` —
-  restart-safe, ids persisted in `sell_leg`): book the short exit (`${id}-SE` @ the
-  limit price), cancel the disaster backstop, convert to long-only, and place the
-  **fixed long ladder** as resting **limit SELL** orders.
+- **At entry:** the long buy and short sell each carry an exchange **bracket** (see
+  below), and a resting reduce-only **limit BUY** rests on the short leg @
+  `shortExitPrice` (default $1.1), tag `${id}-SEX` — the short buy-back (profit),
+  sitting in Open Orders.
+- **When the resting @1.1 fills** (detected by its `order_id` in recent `/v2/fills` —
+  restart-safe, id persisted in `sell_leg`): book the short exit (`${id}-SE` @ the
+  limit price), convert to long-only, and place the **fixed long ladder** as resting
+  **limit SELL** orders. (The short's SL bracket auto-cancels once the short is flat.)
 - **Fixed ladder** = 5 levels — `[10,20,30,40,50]` if the long bid < 25, else
   `[25,50,75,100,125]` — with **integer-contract** slices split `[1,1,1,1,S-4]`
   (remainder on the highest level; `S` = long contracts). Small longs degrade
   gracefully: `S ≤ 5` → one contract per level, fewer levels; `S = 1` → a single
   order (no ladder). Each slice books `${id}-LE-${stage}` @ its level as it fills.
-- **Catch-alls stay engine-driven:** if spot crosses the buy strike (ATM/ITM/OTM) or
-  expiry nears, the engine cancels any still-resting orders and **market-closes** the
-  remainder, booking a single full exit (`${id}`).
+- **Risk exit:** the brackets close the whole spread at the exit level exchange-side.
+  The engine ALSO runs a redundant spot-cross / expiry catch-all (cancel resting +
+  market-close + book `${id}`) for when it is up — reduce-only prevents double-close.
 - **Fill-fetch guard:** the recent-fills fetch failing (null) makes the engine **hold**
   all positions that cycle — it never infers a fill from a missing/empty result.
 
@@ -189,22 +189,27 @@ paper. Slice PnL maps integer contracts back to fractional lots
 (`lot = baseLot × contracts / S`); fills are booked at the resting limit price (fills
 at that price or better), and `reconcile()` flags gross drift.
 
-#### Disaster backstop (both real-order entries)
+#### Exit-level brackets (the exchange-side risk exit)
 
-At entry, on the *short leg only*, the engine also arms a `reduce_only` **buy-stop**
-that fires if the short option's **mark price** blows out to `config.liveBackstopMult`
-(default **4×**) entry premium — the only hard safety net if the engine is down:
+At entry, `openSpread` attaches a **spot-triggered bracket** to each leg's order at the
+shared exit-type level (`computeIndexTriggerLevel` — ATM = buy strike, ITM/OTM = ±
+points), so the spread is protected even if the engine is down:
 
-- **Mark-price (option) triggered, not spot** — a buy-stop on a *rising* option price
-  is directionally unambiguous for calls and puts and can never fire on placement.
-- **Auto-cancelled** when the short closes (resting @1.1 fill, or full exit); id
-  persisted in `sell_leg`, so cancellation survives a restart.
+- **Long buy** → `bracket_take_profit_price = exitLevel`
+- **Short sell** → `bracket_stop_loss_price = exitLevel`
+- both `bracket_stop_trigger_method: spot_price`.
 
-**Trade-offs:** there is no hard *spot* stop-loss — normal protection is the engine's
-active monitoring; the backstop is the only exchange-side net if the engine is down.
-Two reduce-only orders now rest on the short simultaneously (the @1.1 buy-back and the
-4× backstop) — **verify Delta accepts both** on the first real entry. If the backstop
-itself fires, the engine doesn't auto-detect it; `reconcile()` flags the drift.
+A bracket **closes the whole leg** on trigger and is **auto-cancelled by Delta when its
+position closes** (so a profit exit via the resting @1.1 / ladder clears the brackets;
+no manual cancellation). This replaces the old mark-price disaster backstop.
+
+**Trade-offs / verify on the first real trade:**
+- **Spot-trigger direction for PUTs** — a spot bracket must fire only when spot
+  *reaches* the level, not on placement. Brackets are attached to the position (so
+  Delta knows the side), which should handle direction correctly — but confirm the put
+  bracket does **not** fire immediately on entry.
+- **Two orders rest on the short** (the @1.1 buy-back + the SL bracket) — confirm Delta
+  accepts both simultaneously.
 
 > **⚠ Dry-run cannot exercise the resting model** — resting orders need a real
 > exchange to sit on, so dry-run live uses the active model. The first **small real**
@@ -215,17 +220,32 @@ itself fires, the engine doesn't auto-detect it; `reconcile()` flags the drift.
 Live accounts size positions from the **live Delta USDT wallet balance**, not the
 paper `$200k` notional cap:
 
-- Each account has a **`balance_allocation_pct`** (default **90**, set at creation,
-  editable) — the share of wallet balance used for trading; the rest is buffer.
+- Each account has a **`balance_allocation_pct`** (default **90**) — the share of
+  wallet balance used for trading; the rest is buffer.
 - **max positions** = peak concurrent positions across the base config and all active
   schedule windows (`max(numberOfCalls + numberOfPuts)`).
-- **part** = `(balance × allocation%) ÷ max positions`. At entry the spread is scaled
-  so its estimated margin is **≤ 1 part**. This replaces the `$200k` cap for live only.
+- **part** = `(balance × allocation%) ÷ max positions`.
 
-Paper accounts keep the `$200k` / 200× branch **unchanged** — the entire sizing branch
-is gated on `mode==='live' && live_enabled`. Dry-run logs the full breakdown
-(`💰 LIVE sizing…` and `💰 LIVE size…`) so the numbers can be validated before arming.
-The fractional-lot → integer-contract rounding still applies at order time.
+**Integer-ratio sizing (replaces fractional scaling).** The old model scaled the lot
+by `part ÷ margin`, producing *fractional* lots that then rounded to `1:1` integer
+contracts on the exchange — destroying the ratio. Now:
+
+1. Reduce the (0.25-stepped) ratio to **minimal integer contracts** via GCD, e.g.
+   `2.5 → 2L:5S`, `2.75 → 4L:11S`, `4.25 → 4L:17S`.
+2. **unitMargin** = `calcMargin(buyPrem, unitLong×cs, spot, unitShort, cs)` =
+   `buyPrem×unitLong×cs + unitShort×spot×cs/200` (cs = `contract_size`, leverage 200).
+3. Take the largest whole multiple `k` where `k × unitMargin ≤ part`; open
+   `k·unitLong` long / `k·unitShort` short contracts. **If `k < 1` (even the minimal
+   unit exceeds the part) the entry is skipped** (`⏭ LIVE skip …`).
+
+The ratio is thus **locked in whole contracts at entry** — no fractional scaling, no
+partial-exit drift, and the ladder splits cleanly on the integer long count.
+
+Paper accounts keep the `$200k` / 200× branch **unchanged** (the sizing branch is
+gated on `mode==='live' && live_enabled`). Dry-run logs the full breakdown
+(`💰 LIVE int-ratio …` with `unitMargin`, `part`, `k`, and `cs`) so the numbers —
+especially that `cs` and the margins match Delta's actual figures — **must be
+validated before arming**.
 
 ### Account controls — Start / Pause (live only)
 
@@ -319,9 +339,12 @@ forwards the signed headers unchanged, so the browser's HMAC stays valid.
 4. When satisfied, set `DELTA_LIVE_DRYRUN=false`, restart, and arm a single account
    (`live_enabled = true`) with **tiny** size. On the first entry, verify in the
    dashboard (or Delta directly):
+   - **Sizing:** the `💰 LIVE int-ratio …` log shows whole-contract lots that hold the
+     ratio, and `unitMargin`/`cs` match Delta's real figures (not 1000× off).
    - **Open Orders:** the resting short buy-back `@ shortExitPrice` (`-SEX`).
-   - **Stop Orders:** the disaster backstop at `4× premium`, open, not triggered.
-   - Confirm Delta **accepts both** reduce-only orders resting on the short at once.
-   - After the short fills → **Open Orders** should show the fixed **ladder** SELLs;
-     **Fills** shows the executions; Order History logs `Short Leg Exit @ …` /
+   - **Positions/Stop Orders:** the long-TP and short-SL **brackets** at the exit
+     level. Confirm the **PUT bracket does not fire immediately** on entry, and that
+     Delta accepts both the @1.1 resting buy and the short SL bracket at once.
+   - After the short @1.1 fills → **Open Orders** shows the fixed **ladder** SELLs;
+     **Fills** shows executions; Order History logs `Short Leg Exit @ …` /
      `Long Leg Exit @ level …`. Only scale up once this full cycle is confirmed.
