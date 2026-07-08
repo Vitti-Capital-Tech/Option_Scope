@@ -16,7 +16,7 @@
  * `sellQty` for the short). Validate the dry-run order log against your intended
  * real sizes BEFORE arming an account.
  */
-import { placeOrder, getLivePositions, getBalance, getLiveOrders, getFills } from './deltaTradeApi.js';
+import { placeOrder, cancelOrder, getLivePositions, getBalance, getLiveOrders, getFills } from './deltaTradeApi.js';
 import { log, logWarn, logError } from './utils.js';
 
 // Default ON. Only the literal string 'false' (any case) disarms the dry-run.
@@ -156,12 +156,12 @@ export function createLiveExecutor(getCtx) {
      * (spot_price). Used for the short-leg SL and long-leg TP in the live model.
      * `side` is the closing side (buy to close a short, sell to close a long).
      */
-    async placeStop({ symbol, side, contracts, stopPrice, tag }) {
+    async placeStop({ symbol, side, contracts, stopPrice, tag, triggerMethod = 'spot_price' }) {
       if (!armed()) return { ok: true, skipped: true };
       const { accountName, creds } = getCtx();
       const size = Math.max(1, Math.round(contracts || 0));
       const stopStr = (stopPrice != null && Number.isFinite(stopPrice)) ? String(stopPrice) : null;
-      const summary = `STOP ${side.toUpperCase()} ${size}x ${symbol} trigger@index ${stopStr ?? '—'} reduceOnly [${tag}]`;
+      const summary = `STOP ${side.toUpperCase()} ${size}x ${symbol} trigger@${triggerMethod} ${stopStr ?? '—'} reduceOnly [${tag}]`;
 
       if (DRY_RUN) {
         log(`[${accountName}] 🧪 DRY-RUN stop order (not sent): ${summary}`);
@@ -183,7 +183,7 @@ export function createLiveExecutor(getCtx) {
           order_type: 'market_order',
           stop_order_type: 'stop_loss_order',
           stop_price: stopStr,
-          stop_trigger_method: 'spot_price', // index/spot-triggered
+          stop_trigger_method: triggerMethod, // 'spot_price' (index) or 'mark_price' (option price)
           reduce_only: true,
           client_order_id: tag,
         });
@@ -191,6 +191,26 @@ export function createLiveExecutor(getCtx) {
         return { ok: true, order };
       } catch (e) {
         logError(`[${accountName}] ✖ LIVE stop FAILED: ${summary}:`, e.message);
+        return { ok: false, error: e.message };
+      }
+    },
+
+    /**
+     * Cancel a resting order by id (armed accounts only, no-op in dry-run). Used to
+     * pull the disaster backstop stop once its leg is closed normally, so a stale
+     * reduce-only stop can't later fire against a re-entered position on the same
+     * symbol. `productId` is required by Delta's cancel endpoint.
+     */
+    async cancelStop({ id, productId }) {
+      if (!armed() || DRY_RUN) return { ok: true, skipped: true };
+      const { accountName, creds } = getCtx();
+      if (!creds?.apiKey || id == null) return { ok: false, error: 'no-id-or-creds' };
+      try {
+        await cancelOrder(creds, { id, product_id: productId });
+        log(`[${accountName}] 🧹 Cancelled backstop stop id ${id}`);
+        return { ok: true };
+      } catch (e) {
+        logWarn(`[${accountName}] cancelStop failed for id ${id}: ${e.message}`);
         return { ok: false, error: e.message };
       }
     },

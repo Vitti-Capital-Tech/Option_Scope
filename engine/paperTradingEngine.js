@@ -899,34 +899,13 @@ async function startSingleAccountEngine(account) {
       const remaining = [];
       const exited = [];
 
-      // Armed live accounts use the exchange-resting SL/TP model instead of the
-      // paper simulated exits. Fetch current exchange positions once per cycle so
-      // fill detection is a single API call, not one per leg.
-      const liveExitModel = accountState.mode === 'live' && !!accountState.live_enabled;
-      let liveSizeBySymbol = {};
-      // In armed real mode, fill detection reads "leg absent from exchange" as
-      // "leg filled". That is only safe when we actually KNOW the exchange state.
-      // If the positions fetch fails (null), we must NOT run fill detection this
-      // cycle — otherwise a single API hiccup reads as an all-flat account and
-      // phantom-exits every open position at once. Hold instead; retry next cycle.
-      let liveFillDetectionOk = true;
-      if (liveExitModel && !live.dryRun) {
-        const livePos = await live.positions();
-        if (livePos == null) {
-          liveFillDetectionOk = false;
-          logWarn(`[${accountState.name}] Live exit: exchange positions fetch failed — holding all positions this cycle (skipping fill detection to avoid phantom exits).`);
-        } else {
-          for (const p of livePos) liveSizeBySymbol[p.product_symbol] = Number(p.size) || 0;
-          // Latch "confirmed open" for any held leg the exchange actually reports
-          // as non-zero. Fill-by-absence (below) is only trusted for confirmed legs,
-          // so a leg we can never match / that never opens can't trigger a phantom
-          // exit. The latch survives future cycles (in-memory on the position).
-          for (const pos of positions) {
-            if (Math.abs(liveSizeBySymbol[pos.sellLeg?.symbol] ?? 0) > 0) pos._shortConfirmedOpen = true;
-            if (Math.abs(liveSizeBySymbol[pos.buyLeg?.symbol] ?? 0) > 0) pos._longConfirmedOpen = true;
-          }
-        }
-      }
+      // Armed live accounts now share the SAME exit logic as paper (premium-based
+      // short take-profit, laddered long scale-out, ATM ratio partials, ATM/ITM/OTM
+      // full exit, expiry). Every exit branch below already sends a reduce_only
+      // close to Delta via live.closeLeg(), so no separate live exit model is
+      // needed — the engine ACTIVELY manages exits instead of resting exchange
+      // stops. (The old index-triggered handleLiveExit / resting-SL model is
+      // retired; see the entry path where the SL is no longer armed.)
 
       // Sort worst-first (farthest from ATM)
       const sortedPositions = [...positions].sort((a, b) => {
@@ -939,18 +918,6 @@ async function startSingleAccountEngine(account) {
       for (const pos of sortedPositions) {
         if (pos.underlying !== underlying) {
           remaining.push(pos);
-          continue;
-        }
-
-        // Armed live: index-triggered SL/TP model replaces the paper exit logic.
-        if (liveExitModel) {
-          // Real mode with a failed exchange fetch → hold (no fill detection).
-          // Dry-run is unaffected (it uses the index crossing, not exchange size).
-          if (!live.dryRun && !liveFillDetectionOk) {
-            remaining.push(pos);
-            continue;
-          }
-          await handleLiveExit(pos, remaining, liveSizeBySymbol);
           continue;
         }
 
@@ -1028,6 +995,11 @@ async function startSingleAccountEngine(account) {
             contracts: shortContracts(pos.sellQty),
             price: exitShortPrice, tag: `${pos.id}-SEX`,
           });
+          // Short is closed → pull its disaster backstop so it can't later fire
+          // against a re-entered position on the same symbol.
+          if (pos.sellLeg?.backstopOrderId) {
+            await live.cancelStop({ id: pos.sellLeg.backstopOrderId, productId: pos.sellLeg.backstopProductId });
+          }
 
           // Convert the position to long-only: drop the short leg, recompute margin.
           // Snapshot the long lot (base for the 10-slice laddered exit) and build 10
@@ -1747,6 +1719,12 @@ async function startSingleAccountEngine(account) {
             }
           }
 
+          // Pull the short's disaster backstop (if armed) — position is closing,
+          // whether by normal exit or expiry settlement.
+          if (t.sellLeg?.backstopOrderId) {
+            await live.cancelStop({ id: t.sellLeg.backstopOrderId, productId: t.sellLeg.backstopProductId });
+          }
+
           // Delete from active
           await supabase.from('active_positions').delete().eq('id', t.id);
 
@@ -1811,16 +1789,29 @@ async function startSingleAccountEngine(account) {
               continue;
             }
 
-            // LIVE: punch the short-leg SL (resting, index-triggered) at entry.
-            // Its trigger level is persisted so the exit handler uses the same value.
-            if (liveArmed && t.sellQty > 0) {
-              const triggerLevel = computeIndexTriggerLevel(t.type, t.buyLeg.strike, effectiveConfig);
-              const slRes = await live.placeStop({
+            // Normal exits are managed ACTIVELY by the engine (same as paper): short
+            // bought back on premium decay / ATM-ITM-OTM, long laddered out — each
+            // branch sends its own reduce_only close. On TOP of that we arm a DISASTER
+            // BACKSTOP on the short leg: a reduce-only buy-stop that fires only if the
+            // short option's MARK price blows out to a disaster multiple of entry
+            // premium. This protects the naked-short risk even if the engine is down.
+            // It triggers on the option price RISING (unambiguous for calls & puts),
+            // so — unlike a spot-level stop — it can't fire the instant it's placed.
+            if (liveArmed && t.sellQty > 0 && t.entrySellPrice > 0) {
+              const mult = config.liveBackstopMult ?? 4;
+              const backstopPx = Number((t.entrySellPrice * mult).toFixed(2));
+              const dslRes = await live.placeStop({
                 symbol: t.sellLeg.symbol, side: 'buy',
-                contracts: shortContracts(t.sellQty), stopPrice: triggerLevel, tag: `${t.id}-SL`,
+                contracts: shortContracts(t.sellQty), stopPrice: backstopPx,
+                triggerMethod: 'mark_price', tag: `${t.id}-DSL`,
               });
-              t.sellLeg = { ...t.sellLeg, slOrderId: slRes?.order?.id ?? null, slTriggerLevel: triggerLevel };
-              log(`[${accountState.name}] 🛑 LIVE SL armed: short ${t.sellLeg.strike} @ index ${triggerLevel}`);
+              t.sellLeg = {
+                ...t.sellLeg,
+                backstopOrderId: dslRes?.order?.id ?? null,
+                backstopProductId: dslRes?.order?.product_id ?? null,
+                backstopStop: backstopPx,
+              };
+              log(`[${accountState.name}] 🛡️ Disaster backstop armed: buy-stop short ${t.sellLeg.strike} @ mark $${backstopPx} (${mult}× entry $${t.entrySellPrice})`);
             }
 
             const { error: insertError } = await supabase.from('active_positions').insert([{

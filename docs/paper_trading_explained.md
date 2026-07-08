@@ -342,6 +342,13 @@ This is **execution-realistic** — no cheating with mid-prices.
 
 When evaluating exits, positions are processed in a specific order: **worst-first** (farthest from ATM). This ensures we exit the least valuable positions before the best ones.
 
+> [!NOTE]
+> **Live accounts run this exact same exit tree.** Armed live accounts are no longer
+> given a separate exit model — every branch below already sends a `reduce_only` close
+> to Delta via `live.closeLeg()`, so paper and live behave identically. The only
+> live-specific addition is a short-leg **disaster backstop** stop armed at entry (see
+> [live_trading.md](live_trading.md#live-exit-model--shared-with-paper-option-a--disaster-backstop)).
+
 For each position, the engine walks through this **priority tree** from top to bottom. The first matching condition triggers the exit:
 
 ```
@@ -585,7 +592,7 @@ Every write to `trade_history` is **idempotent**, so the same logical exit can n
    | Short-leg exit | `${pos.id}-SE` | Short leg buys back once per position |
    | Partial / scaling exit | `${pos.id}-PE-${lotsRemaining}` | Lot size strictly **decreases** each step → every step's remaining lot is distinct |
    | Long ladder slice | `${pos.id}-LE-${stage}` | Each ladder `stage` fires exactly once |
-   | Live short SL / long TP | `${pos.id}-LSL` / `${pos.id}-LTP` | Each fires once per position (armed-live model) |
+   | ~~Live short SL / long TP~~ | ~~`${pos.id}-LSL` / `${pos.id}-LTP`~~ | **Retired** — the separate armed-live exit model is dormant; live accounts now use the same exit path (and the same `trade_id`s) as paper. See [live_trading.md](live_trading.md#live-exit-model--shared-with-paper-option-a--disaster-backstop). |
 
 2. **Idempotent upsert against the `UNIQUE` constraint** — `trade_history.trade_id` carries a `UNIQUE` constraint (see `supabase_schema.sql`). All writes use `.upsert(rows, { onConflict: 'trade_id', ignoreDuplicates: true })` — i.e. `INSERT … ON CONFLICT (trade_id) DO NOTHING`. A duplicate is silently dropped at the database, and a **batch** insert (partial / ladder slices) still writes its genuinely-new rows instead of aborting on the first conflict.
 
@@ -833,6 +840,26 @@ The engine's `engine_heartbeat` row is polled every **30 seconds** (paused when 
 | **Online** | `age < 60 seconds` | Green (`#0ecb81`) |
 | **Stale** | `60s ≤ age < 120 seconds` | Yellow (`#f0b90b`) |
 | **Offline** | `age ≥ 120 seconds` | Red (`#f85149`) |
+
+### Trading Workspace Tabs
+
+The positions/history area (`TradingWorkspace.jsx`) is a tabbed panel modelled on an
+exchange layout: **Positions, Open Orders, Stop Orders, Fills, Order History, Risk &
+Margin**.
+
+- **Paper accounts (and dry-run or disarmed live):** every tab is **engine-derived** —
+  Positions / Open Orders / Stop Orders / Risk & Margin from the in-memory
+  `active_positions` state (Open Orders = long-only held legs; Stop Orders = the
+  engine's exit triggers), Order History from `trade_history`, and Fills is a
+  placeholder.
+- **Armed real-orders live accounts:** Positions / Open Orders / Stop Orders / Fills /
+  Risk & Margin render **real Delta data** from the `live_exchange_state` snapshot the
+  engine publishes (see
+  [live_trading.md](live_trading.md#live-exchange-data-pipeline-dashboard-tabs)).
+  The switch is gated on `engineDryRun === false` **and** a fresh snapshot; otherwise
+  the tabs fall back to the engine-derived views. **Order History always stays
+  engine-sourced** (`trade_history`) — it's the strategy's closed-trade ledger, not raw
+  exchange fills.
 
 ### Trade History Date Filter
 
