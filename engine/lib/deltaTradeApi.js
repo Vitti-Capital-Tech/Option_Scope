@@ -71,6 +71,25 @@ export async function cancelOrder(creds, { id, product_id }) {
   return signedRequest(creds, 'DELETE', '/v2/orders', { body: { id, product_id } });
 }
 
+/**
+ * Edit an existing (open) order in place — price and/or size. Keeps the order id
+ * (and queue priority) rather than cancel+replace. `order` fields:
+ *   id, product_id | product_symbol, limit_price (string), size (int)
+ */
+export async function editOrder(creds, order) {
+  return signedRequest(creds, 'PUT', '/v2/orders', { body: order });
+}
+
+/**
+ * Edit the bracket (attached SL/TP) on a position/order in place. Fields:
+ *   product_id | product_symbol, bracket_stop_loss_price, bracket_take_profit_price,
+ *   bracket_stop_trigger_method ('spot_price' | 'mark_price' | 'last_traded_price'),
+ *   optional id.
+ */
+export async function editBracket(creds, bracket) {
+  return signedRequest(creds, 'PUT', '/v2/orders/bracket', { body: bracket });
+}
+
 /** All open margined positions for the account. */
 export async function getLivePositions(creds) {
   return signedRequest(creds, 'GET', '/v2/positions/margined');

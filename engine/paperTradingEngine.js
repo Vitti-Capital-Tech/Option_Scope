@@ -2136,10 +2136,56 @@ async function startSingleAccountEngine(account) {
 
   // ── Config hot-reload via Supabase Realtime ───────────────────────────
 
+  // ── Re-sync resting exchange orders when exit config is modified ─────────
+  // When exitType/exitPoints/shortExitPrice change on an account that already has
+  // OPEN live positions, the orders resting on Delta were placed with the old
+  // values. Edit them IN PLACE (no cancel/replace): the resting short buy-back's
+  // limit price, and the SL/TP bracket levels. Armed real live only; a no-op for
+  // paper (no real resting orders) and harmless in dry-run (logs intended edits).
+  async function resyncRestingOrders(oldCfg) {
+    if (accountState.mode !== 'live') return;
+    const shortPxChanged = (oldCfg.shortExitPrice ?? 1.1) !== (config.shortExitPrice ?? 1.1);
+    const exitChanged = (oldCfg.exitType !== config.exitType) || ((oldCfg.exitPoints ?? 0) !== (config.exitPoints ?? 0));
+    if (!shortPxChanged && !exitChanged) return;
+
+    log(`[${accountState.name}] 🔧 Exit config changed — re-syncing resting orders on ${positions.length} open position(s) | shortPx ${oldCfg.shortExitPrice}→${config.shortExitPrice} | exit ${oldCfg.exitType}/${oldCfg.exitPoints}→${config.exitType}/${config.exitPoints}`);
+
+    for (const pos of positions) {
+      if (pos.underlying !== underlying) continue;
+      try {
+        // 1. Short resting buy-back price (short still open + resting order present)
+        if (shortPxChanged && pos.sellQty > 0 && pos.sellLeg?.exitOrderId) {
+          const newPx = config.shortExitPrice ?? 1.1;
+          const r = await live.editOrder({
+            id: pos.sellLeg.exitOrderId, symbol: pos.sellLeg.symbol,
+            price: newPx, size: shortContracts(pos.sellQty), tag: `${pos.id}-SEX-edit`,
+          });
+          if (r.ok && !r.skipped) {
+            pos.sellLeg = { ...pos.sellLeg, exitOrderPx: newPx };
+            await supabase.from('active_positions').update({ sell_leg: JSON.stringify(pos.sellLeg) }).eq('id', pos.id);
+          }
+        }
+        // 2. SL/TP bracket levels (recomputed from the new exitType/exitPoints)
+        if (exitChanged) {
+          const newLevel = computeIndexTriggerLevel(pos.type, pos.buyLeg.strike, config);
+          if ((pos.buyLeg?.lotSize || 0) > 0) {
+            await live.editBracket({ symbol: pos.buyLeg.symbol, takeProfit: newLevel, tag: `${pos.id}-TP-edit` });
+          }
+          if (pos.sellQty > 0) {
+            await live.editBracket({ symbol: pos.sellLeg.symbol, stopLoss: newLevel, tag: `${pos.id}-SL-edit` });
+          }
+        }
+      } catch (e) {
+        logError(`[${accountState.name}] resyncRestingOrders failed for ${pos.id}:`, e);
+      }
+    }
+  }
+
   async function reloadConfigAndSync() {
     try {
       const oldUnderlying = config.underlying;
       const oldExpiry = config.expiry;
+      const oldExitCfg = { shortExitPrice: config.shortExitPrice, exitType: config.exitType, exitPoints: config.exitPoints };
       await fetchConfig();
 
       if (config.underlying !== oldUnderlying || config.expiry !== oldExpiry) {
@@ -2150,6 +2196,9 @@ async function startSingleAccountEngine(account) {
         startWebSocket();
         tickerData = await backfillTickers(config.underlying, symbolMeta, tickerData);
       }
+
+      // Modify open positions' resting orders to match the new exit config.
+      await resyncRestingOrders(oldExitCfg);
     } catch (e) {
       logError(`[${accountState.name}] Error during config reload:`, e);
     }

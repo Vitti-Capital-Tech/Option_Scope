@@ -16,7 +16,7 @@
  * `sellQty` for the short). Validate the dry-run order log against your intended
  * real sizes BEFORE arming an account.
  */
-import { placeOrder, cancelOrder, getLivePositions, getBalance, getLiveOrders, getFills } from './deltaTradeApi.js';
+import { placeOrder, cancelOrder, editOrder, editBracket, getLivePositions, getBalance, getLiveOrders, getFills } from './deltaTradeApi.js';
 import { log, logWarn, logError } from './utils.js';
 
 // Default ON. Only the literal string 'false' (any case) disarms the dry-run.
@@ -165,6 +165,55 @@ export function createLiveExecutor(getCtx) {
     async closeLeg({ symbol, side, contracts, price, tag }) {
       if (!armed()) return { ok: true, skipped: true };
       return submit({ symbol, side, contracts, price, reduceOnly: true, tag });
+    },
+
+    /**
+     * Edit an existing resting order's price (and size) in place. Used to re-sync a
+     * position's resting short buy-back when shortExitPrice changes — no cancel/replace.
+     */
+    async editOrder({ id, symbol, price, size, tag }) {
+      if (!armed()) return { ok: true, skipped: true };
+      const { accountName, creds } = getCtx();
+      const priceStr = (price != null && Number.isFinite(price)) ? String(price) : null;
+      const summary = `EDIT order ${id} ${symbol} → @ ${priceStr ?? '—'}${size != null ? ` x${size}` : ''} [${tag}]`;
+      if (DRY_RUN) { log(`[${accountName}] 🧪 DRY-RUN edit order (not sent): ${summary}`); return { ok: true, dryRun: true }; }
+      if (!creds?.apiKey || !id || !priceStr) return { ok: false, error: 'missing id/price/creds' };
+      try {
+        const order = await editOrder(creds, { id, product_symbol: symbol, limit_price: priceStr, ...(size != null ? { size: Math.max(1, Math.round(size)) } : {}) });
+        log(`[${accountName}] ✅ LIVE order edited: ${summary} → state ${order?.state ?? '?'}`);
+        return { ok: true, order };
+      } catch (e) {
+        logError(`[${accountName}] ✖ LIVE order edit FAILED: ${summary}:`, e.message);
+        return { ok: false, error: e.message };
+      }
+    },
+
+    /**
+     * Edit a position's attached bracket (SL and/or TP) in place. Used to re-sync
+     * the index SL/TP level when exitType/exitPoints change. Pass only the side(s)
+     * you want to change.
+     */
+    async editBracket({ symbol, stopLoss = null, takeProfit = null, triggerMethod = 'spot_price', tag }) {
+      if (!armed()) return { ok: true, skipped: true };
+      const { accountName, creds } = getCtx();
+      const sl = (stopLoss != null && Number.isFinite(stopLoss)) ? String(stopLoss) : null;
+      const tp = (takeProfit != null && Number.isFinite(takeProfit)) ? String(takeProfit) : null;
+      const summary = `EDIT bracket ${symbol} →${sl ? ` SL@${sl}` : ''}${tp ? ` TP@${tp}` : ''} via ${triggerMethod} [${tag}]`;
+      if (DRY_RUN) { log(`[${accountName}] 🧪 DRY-RUN edit bracket (not sent): ${summary}`); return { ok: true, dryRun: true }; }
+      if (!creds?.apiKey || (!sl && !tp)) return { ok: false, error: 'missing creds/levels' };
+      try {
+        const res = await editBracket(creds, {
+          product_symbol: symbol,
+          bracket_stop_trigger_method: triggerMethod,
+          ...(sl ? { bracket_stop_loss_price: sl } : {}),
+          ...(tp ? { bracket_take_profit_price: tp } : {}),
+        });
+        log(`[${accountName}] ✅ LIVE bracket edited: ${summary}`);
+        return { ok: true, res };
+      } catch (e) {
+        logError(`[${accountName}] ✖ LIVE bracket edit FAILED: ${summary}:`, e.message);
+        return { ok: false, error: e.message };
+      }
     },
 
     /**
