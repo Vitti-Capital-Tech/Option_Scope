@@ -691,7 +691,7 @@ async function startSingleAccountEngine(account) {
 
     const now = Date.now();
     for (const pos of [...positions]) {
-      if (pos.underlying !== underlying) continue;
+      if (pos.underlying !== config.underlying) continue;
       const shortSize = Math.abs(sizeBySymbol[pos.sellLeg?.symbol] ?? 0);
       const longSize = Math.abs(sizeBySymbol[pos.buyLeg?.symbol] ?? 0);
       if (shortSize > 0 || longSize > 0) { pos._everOpenOnDelta = true; continue; } // still open
@@ -2233,7 +2233,7 @@ async function startSingleAccountEngine(account) {
     log(`[${accountState.name}] 🔧 Exit config changed — re-syncing resting orders on ${positions.length} open position(s) | shortPx ${oldCfg.shortExitPrice}→${config.shortExitPrice} | exit ${oldCfg.exitType}/${oldCfg.exitPoints}→${config.exitType}/${config.exitPoints}`);
 
     for (const pos of positions) {
-      if (pos.underlying !== underlying) continue;
+      if (pos.underlying !== config.underlying) continue;
       try {
         // 1. Short resting buy-back price (short still open + resting order present)
         if (shortPxChanged && pos.sellQty > 0 && pos.sellLeg?.exitOrderId) {
