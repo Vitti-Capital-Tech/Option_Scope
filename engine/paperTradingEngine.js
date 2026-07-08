@@ -1889,31 +1889,15 @@ async function startSingleAccountEngine(account) {
           let scale = 1;
 
           if (liveArmed) {
-            // INTEGER-RATIO sizing: keep the exact ratio in WHOLE contracts (no
-            // fractional scaling — which used to collapse the ratio to 1:1 integer
-            // contracts on the exchange), then take as many whole units as fit ONE
-            // "part" of allocated margin. Margin = calcMargin = the account formula
-            // buyPrem×longLots×cs + shortLots×spot×cs/200. Ratio is locked at entry,
-            // so there is no scaling / partial-exit drift afterwards.
-            if (!partMargin || partMargin <= 0) {
-              logWarn(`[${accountState.name}] LIVE skip ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: no allocated part margin (wallet balance unavailable).`);
-              continue;
+            // LIVE: cap this position's margin at 1 "part" of allocated balance.
+            const baseMargin = calcMargin(entryBuyPrice, originalLotSize, spotPrice, ratioToUse, sellLotSize);
+            if (baseMargin > partMargin && baseMargin > 0) {
+              scale = partMargin / baseMargin;
+              adjustedLotSize = Number((originalLotSize * scale).toFixed(4));
+              adjustedSellQty = Number((ratioToUse * scale).toFixed(2));
             }
-            const cs = originalLotSize || 1;                    // contract_size
-            const q = Math.max(1, Math.round(ratioToUse * 4));  // ratio in quarter-steps
-            const g = gcdInt(q, 4);
-            const unitLong = 4 / g;                             // minimal integer long contracts
-            const unitShort = q / g;                            // minimal integer short contracts
-            const unitMargin = calcMargin(entryBuyPrice, unitLong * cs, spotPrice, unitShort, sellLotSize);
-            const k = unitMargin > 0 ? Math.floor(partMargin / unitMargin) : 0;
-            if (k < 1) {
-              logWarn(`[${accountState.name}] LIVE skip ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: min unit ${unitLong}L:${unitShort}S needs $${unitMargin.toFixed(2)} > part $${partMargin.toFixed(2)}`);
-              continue;
-            }
-            adjustedLotSize = Number((unitLong * k * cs).toFixed(6)); // long contracts × cs
-            adjustedSellQty = unitShort * k;                          // integer short contracts
             const finalMargin = calcMargin(entryBuyPrice, adjustedLotSize, spotPrice, adjustedSellQty, sellLotSize);
-            log(`[${accountState.name}] 💰 LIVE int-ratio ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: ratio ${ratioToUse} → ${unitLong}L:${unitShort}S ×${k} = ${unitLong * k}L:${unitShort * k}S | unitMargin $${unitMargin.toFixed(2)} / part $${partMargin.toFixed(2)} | est margin $${finalMargin.toFixed(2)} (cs=${cs})`);
+            log(`[${accountState.name}] 💰 LIVE size ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: baseMargin $${baseMargin.toFixed(2)} vs part $${partMargin.toFixed(2)} → scale ${scale.toFixed(3)} | long ${adjustedLotSize} short ${adjustedSellQty} | est margin $${finalMargin.toFixed(2)}`);
           } else {
             // PAPER (unchanged): $200,000 / 200x notional cap.
             let shortValue = spotPrice * ratioToUse * sellLotSize;
