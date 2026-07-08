@@ -112,12 +112,13 @@ logic is byte-for-byte unchanged when paper/disarmed:
 | Point | Live order |
 | --- | --- |
 | Entry (before `active_positions` insert) | Buy long @ ask (limit) + sell short @ bid (limit). **A failed live send aborts the insert** — no phantom position. |
-| Entry (disaster backstop) | Reduce-only **buy-stop** on the short leg, `stop_trigger_method: mark_price`, stop = `liveBackstopMult`× entry premium (default 4×). See [Live exit model](#live-exit-model--shared-with-paper-option-a--disaster-backstop). |
-| Short-leg exit | Buy-to-close short (`reduce_only`) @ ask + cancel the backstop |
-| Long laddered exit | Sell-to-close the cycle's long lot (`reduce_only`) @ bid |
-| Partial ratio scale-down | Sell-to-close the reduced buy lot (`reduce_only`) @ bid |
-| Full ATM/ITM/OTM exit | Sell long + buy short (`reduce_only`) + cancel the backstop |
-| **Expiry / zombie exit** | **No leg order** — Delta cash-settles expired options exchange-side; the backstop is still cancelled |
+| Entry (disaster backstop) | Reduce-only **buy-stop** on the short leg, `stop_trigger_method: mark_price`, stop = `liveBackstopMult`× entry premium (default 4×). See [Live exit model](#live-exit-model--two-paths). |
+| Entry (resting short-exit, armed real) | Resting reduce-only **limit BUY** on the short @ `shortExitPrice` (`${id}-SEX`) — the short buy-back, sitting in Open Orders |
+| Short-leg exit | Active model: buy-to-close @ ask. Resting model: the `-SEX` limit fills on its own → book + cancel backstop + place ladder |
+| Long laddered exit | Active model: sell reduce_only @ bid per level. Resting model: fixed-ladder resting **limit SELLs** fill on their own |
+| Partial ratio scale-down | Sell-to-close the reduced buy lot (`reduce_only`) @ bid (active model only) |
+| Full ATM/ITM/OTM exit | Sell long + buy short (`reduce_only`) + cancel backstop & any resting orders |
+| **Expiry / zombie exit** | **No leg order** — Delta cash-settles expired options exchange-side; backstop & resting orders still cancelled |
 
 All orders use limit orders at the engine's computed price and carry a
 `client_order_id` derived from the position id + leg + stage (idempotency).
@@ -145,58 +146,69 @@ scale-downs up to a minimum of 1 contract.
 intended sizing differs (e.g. you trade fixed contract counts), the mapping needs to
 be adjusted to your convention first.
 
-### Live exit model — shared with paper (Option A) + disaster backstop
+### Live exit model — two paths
 
-> **History:** an earlier iteration gave armed live accounts a *separate*
-> exchange-resting, index-triggered SL/TP model (short-leg SL at the buy strike,
-> long-leg TP at the same level, fill-detected by polling `/v2/positions`). **That
-> model is retired.** It diverged from paper (it ignored `shortExitPrice` and the
-> laddered long exit, only closing when spot reached the buy strike) and its
-> spot-triggered stops were direction-ambiguous for puts — a stop placed below spot
-> could fire prematurely. The `handleLiveExit` / `computeIndexTriggerLevel` helpers
-> remain in the file but are **dormant** (uncalled).
+> **History:** the very first live iteration used a separate exchange-resting,
+> index-triggered SL/TP model (short SL at the buy strike, long TP at the same level,
+> fill-detected by polling `/v2/positions`). **Retired** — it diverged from the paper
+> strategy and its spot-triggered stops fired prematurely for puts. The
+> `handleLiveExit` / `computeIndexTriggerLevel` helpers remain **dormant** (uncalled).
 
-Armed live accounts now run the **exact same exit logic as paper** — the
-[premium-based short buy-back](paper_trading_explained.md#short-leg-only-exit)
-(`shortExitPrice`, default $1.1), the
-[laddered long scale-out](paper_trading_explained.md#long-only-laddered-exit),
-[ATM ratio partial scaling](paper_trading_explained.md#partial-exit--scaling-logic),
-and the ATM/ITM/OTM / expiry full exit. Every one of those branches already sends
-its own `reduce_only` close to Delta via `live.closeLeg()` (see the Execution hooks
-table above), so **paper and live now behave identically** — the engine ACTIVELY
-manages exits each 1-second cycle instead of resting stops on the exchange. This is
-what you test in paper is what runs live.
+Exit handling now depends on whether the engine is actually sending real orders:
 
-**Disaster backstop — the one resting stop that remains.** At entry, on the *short
-leg only*, the engine arms a single `reduce_only` **buy-stop** that fires only if the
-short option's **mark price** blows out to a disaster multiple of its entry premium
-(`config.liveBackstopMult`, default **4×**). It protects the naked-short risk even if
-the engine is down or slow. It is:
+| Account state | Exit model |
+| --- | --- |
+| **Paper**, or **dry-run live** (`DELTA_LIVE_DRYRUN=true`) | **Active model** — the exact paper exit logic (premium short buy-back @ `shortExitPrice`, laddered long, ATM partials, ATM/ITM/OTM / expiry). `live.closeLeg()` logs the intended orders in dry-run. |
+| **Armed REAL live** (`live_enabled` + `DELTA_LIVE_DRYRUN=false`) | **Resting-order model** (`handleLiveRestingExit`) — exits rest in the exchange order book and fill on their own. |
+
+#### Resting-order model (armed real)
+
+The trigger *levels* are the same as paper (`shortExitPrice`, the fixed ladder), but
+they are placed as **resting reduce-only orders** instead of engine-driven market
+closes, so they fill even if the engine is momentarily busy:
+
+- **At entry:** a resting **limit BUY** rests on the short leg @ `shortExitPrice`
+  (default $1.1), tag `${id}-SEX` — the short buy-back, sitting in Open Orders.
+- **When it fills** (detected by its `order_id` appearing in recent `/v2/fills` —
+  restart-safe, ids persisted in `sell_leg`): book the short exit (`${id}-SE` @ the
+  limit price), cancel the disaster backstop, convert to long-only, and place the
+  **fixed long ladder** as resting **limit SELL** orders.
+- **Fixed ladder** = 5 levels — `[10,20,30,40,50]` if the long bid < 25, else
+  `[25,50,75,100,125]` — with **integer-contract** slices split `[1,1,1,1,S-4]`
+  (remainder on the highest level; `S` = long contracts). Small longs degrade
+  gracefully: `S ≤ 5` → one contract per level, fewer levels; `S = 1` → a single
+  order (no ladder). Each slice books `${id}-LE-${stage}` @ its level as it fills.
+- **Catch-alls stay engine-driven:** if spot crosses the buy strike (ATM/ITM/OTM) or
+  expiry nears, the engine cancels any still-resting orders and **market-closes** the
+  remainder, booking a single full exit (`${id}`).
+- **Fill-fetch guard:** the recent-fills fetch failing (null) makes the engine **hold**
+  all positions that cycle — it never infers a fill from a missing/empty result.
+
+**Bookkeeping** uses the same deterministic `trade_id`s and idempotent upserts as
+paper. Slice PnL maps integer contracts back to fractional lots
+(`lot = baseLot × contracts / S`); fills are booked at the resting limit price (fills
+at that price or better), and `reconcile()` flags gross drift.
+
+#### Disaster backstop (both real-order entries)
+
+At entry, on the *short leg only*, the engine also arms a `reduce_only` **buy-stop**
+that fires if the short option's **mark price** blows out to `config.liveBackstopMult`
+(default **4×**) entry premium — the only hard safety net if the engine is down:
 
 - **Mark-price (option) triggered, not spot** — a buy-stop on a *rising* option price
-  is directionally unambiguous for both calls and puts, and (sitting above the current
-  price) can never fire the instant it is placed.
-- **Auto-cancelled** when the short leg closes normally (premium buy-back or full
-  exit) so a stale stop can't later fire against a re-entered position on the same
-  symbol. The order id + product id are persisted in `sell_leg`, so cancellation
-  survives an engine restart (`safeParseLeg` preserves the fields).
+  is directionally unambiguous for calls and puts and can never fire on placement.
+- **Auto-cancelled** when the short closes (resting @1.1 fill, or full exit); id
+  persisted in `sell_leg`, so cancellation survives a restart.
 
-**Trade-offs to know:**
+**Trade-offs:** there is no hard *spot* stop-loss — normal protection is the engine's
+active monitoring; the backstop is the only exchange-side net if the engine is down.
+Two reduce-only orders now rest on the short simultaneously (the @1.1 buy-back and the
+4× backstop) — **verify Delta accepts both** on the first real entry. If the backstop
+itself fires, the engine doesn't auto-detect it; `reconcile()` flags the drift.
 
-- There is **no hard spot stop-loss** anymore. Normal protection is the engine's
-  active 1-second monitoring; the disaster backstop is the *only* exchange-side safety
-  net if the engine is down.
-- Exits are booked assuming the `closeLeg` limit (sell @ bid / buy @ ask — the
-  marketable/taker side) fills. A close that doesn't fill leaves the engine's books
-  ahead of the exchange; the 5-minute `reconcile()` flags gross drift.
-- If the **backstop itself fires**, the engine does not auto-detect it (this model has
-  no fill-detection) — the position lingers in the engine books until its normal exit,
-  and `reconcile()` flags the drift. A backstop firing means a catastrophic move →
-  manual review.
-
-**Bookkeeping** (`trade_history` / `active_positions`) is identical to paper — same
-deterministic `trade_id`s and idempotent upserts. Fills are booked at the engine's
-computed option quotes (not the exact exchange fill price); `reconcile()` flags drift.
+> **⚠ Dry-run cannot exercise the resting model** — resting orders need a real
+> exchange to sit on, so dry-run live uses the active model. The first **small real**
+> trade is the validation.
 
 ### Live position sizing — balance allocation (Sub-stage A)
 
@@ -300,12 +312,16 @@ forwards the signed headers unchanged, so the browser's HMAC stays valid.
 
 1. Set `SUPABASE_SERVICE_ROLE_KEY` in the engine env; keep `DELTA_LIVE_DRYRUN=true`.
 2. Restart the engine; confirm the log shows `Delta credentials loaded … Dry-run: ON`.
-3. Let it run; watch the `🧪 DRY-RUN live order` lines at real entry/exit events and
-   validate sides, symbols, prices, and **sizes**. Confirm exits log **paper-style**
-   reasons (`Short Leg Exit @ Ask`, `Long Leg Exit @ level`, `Full Exit`) — *not* the
-   retired `Live Short SL/Long TP` — and that a `🛡️ Disaster backstop armed` line
-   fires at each entry.
+3. Let it run in dry-run; watch the `🧪 DRY-RUN live order` lines at real entry/exit
+   events and validate sides, symbols, prices, and **sizes**. Note: dry-run uses the
+   **active** exit model, so this validates entry sizing but **not** the resting-order
+   exit flow (that needs a real exchange — step 4).
 4. When satisfied, set `DELTA_LIVE_DRYRUN=false`, restart, and arm a single account
-   (`live_enabled = true`) with small size to confirm real fills before scaling. After
-   the first entry, check the **Stop Orders** tab (or Delta directly): the disaster
-   backstop should be resting at `4× premium`, state open, **not** triggered.
+   (`live_enabled = true`) with **tiny** size. On the first entry, verify in the
+   dashboard (or Delta directly):
+   - **Open Orders:** the resting short buy-back `@ shortExitPrice` (`-SEX`).
+   - **Stop Orders:** the disaster backstop at `4× premium`, open, not triggered.
+   - Confirm Delta **accepts both** reduce-only orders resting on the short at once.
+   - After the short fills → **Open Orders** should show the fixed **ladder** SELLs;
+     **Fills** shows the executions; Order History logs `Short Leg Exit @ …` /
+     `Long Leg Exit @ level …`. Only scale up once this full cycle is confirmed.

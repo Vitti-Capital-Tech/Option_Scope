@@ -630,6 +630,203 @@ async function startSingleAccountEngine(account) {
     remaining.push(pos);
   }
 
+  // ── Live RESTING-order exit model (armed + REAL orders only) ─────────────
+  // Exits execute as resting exchange orders instead of engine-driven market
+  // closes. At entry a reduce-only limit BUY rests on the short leg @ shortExitPrice.
+  // When it fills (its order id shows up in recent fills), the short is booked and a
+  // FIXED-ladder of reduce-only limit SELLs is placed on the long — split
+  // [1,1,1,1,S-4] across the 5 fixed levels, remainder on the highest level. Each
+  // ladder slice fills on its own at its level. Spot-cross (ATM/ITM/OTM) and expiry
+  // remain engine-driven catch-alls: they cancel any still-resting orders and
+  // market-close the remainder. Fills are detected by order id (restart-safe).
+  const fixedLadderLevels = (bid) => ((bid ?? 0) < 25 ? [10, 20, 30, 40, 50] : [25, 50, 75, 100, 125]);
+  const splitContracts = (total, n) => {
+    if (total <= 0) return [];
+    if (total <= n) return Array(total).fill(1);
+    const arr = Array(n).fill(1);
+    arr[n - 1] = total - (n - 1); // remainder on the LAST (highest) level
+    return arr;
+  };
+  async function cancelRestingOrders(pos) {
+    const toCancel = [];
+    if (pos.sellLeg?.exitOrderId) toCancel.push({ id: pos.sellLeg.exitOrderId, productId: pos.sellLeg.exitProductId });
+    if (pos.sellLeg?.backstopOrderId) toCancel.push({ id: pos.sellLeg.backstopOrderId, productId: pos.sellLeg.backstopProductId });
+    for (const lo of (pos.buyLeg?.ladderOrders || [])) {
+      if (lo.orderId && !lo.filled) toCancel.push({ id: lo.orderId, productId: lo.productId });
+    }
+    for (const o of toCancel) await live.cancelStop(o);
+  }
+
+  async function handleLiveRestingExit(pos, remaining, fillIds) {
+    const tickerBuy = tickerData[pos.buyLeg.symbol];
+    const tickerSell = tickerData[pos.sellLeg.symbol];
+    const longBid = tickerBuy?.bid ?? tickerBuy?.lastPrice ?? tickerBuy?.markPrice;
+    const shortAsk = tickerSell?.ask ?? tickerSell?.lastPrice ?? tickerSell?.markPrice;
+
+    const triggerLevel = computeIndexTriggerLevel(pos.type, pos.buyLeg.strike, config);
+    const spotCross = isIndexTriggerMet(pos.type, triggerLevel, spotPrice);
+    const expiryTs = new Date(pos.expiry).getTime();
+    const atExpiry = Date.now() >= expiryTs - 120000;
+
+    // ── Catch-all: spot crossed the strike (SL), or expiry → cancel resting +
+    //    market-close the remainder + book a single full exit.
+    if (spotCross || atExpiry) {
+      await cancelRestingOrders(pos);
+      lastDbWrite = Date.now();
+      const longLot = pos.buyLeg.lotSize || 0;
+      const shortLot = pos.sellLeg.lotSize || 1;
+      const exitLong = longBid ?? pos.entryBuyPrice;
+      const exitShort = shortAsk ?? pos.entrySellPrice;
+      // Market-close remaining legs unless expiry (Delta cash-settles expired options).
+      if (!atExpiry) {
+        if (pos.sellQty > 0) {
+          await live.closeLeg({ symbol: pos.sellLeg.symbol, side: 'buy', contracts: shortContracts(pos.sellQty), price: exitShort, tag: `${pos.id}-XS` });
+        }
+        if (longLot > 0) {
+          await live.closeLeg({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: longContracts(pos.buyLeg), price: exitLong, tag: `${pos.id}-XB` });
+        }
+      }
+      const grossLong = (exitLong - pos.entryBuyPrice) * longLot;
+      const grossShort = pos.sellQty > 0 ? (pos.entrySellPrice - exitShort) * pos.sellQty * shortLot : 0;
+      const gross = grossLong + grossShort;
+      const entryFee = pos.entryFee || 0;
+      const exitFee = calculateFee(exitLong, spotPrice, longLot, pos.buyLeg.originalLotSize || 1)
+        + (pos.sellQty > 0 ? calculateFee(exitShort, spotPrice, pos.sellQty, shortLot) : 0);
+      const net = gross - (entryFee + exitFee);
+      const reason = atExpiry ? 'Expiry Reached (2min Early)' : `Full Exit (${config.exitType || 'ATM'} spot ${Math.round(spotPrice)})`;
+      try {
+        await supabase.from('trade_history').upsert([{
+          trade_id: pos.id, underlying: pos.underlying, expiry: pos.expiry, type: pos.type,
+          buy_leg: JSON.stringify(pos.buyLeg), sell_leg: JSON.stringify(pos.sellLeg),
+          sell_qty: pos.sellQty, strike_diff: pos.strikeDiff,
+          entry_time: pos.entryTime.toISOString(),
+          entry_buy_price: pos.entryBuyPrice, entry_sell_price: pos.entrySellPrice, entry_spot_price: pos.entrySpotPrice,
+          margin: pos.margin, exit_time: pos.zombieExitTime || new Date().toISOString(),
+          exit_buy_price: exitLong, exit_sell_price: pos.sellQty > 0 ? exitShort : null, exit_spot_price: spotPrice,
+          realized_gross_pnl: gross, realized_net_pnl: net, exit_fee: exitFee, total_fees: entryFee + exitFee,
+          exit_reason: reason, is_partial: false, account_id: accountState.id,
+        }], { onConflict: 'trade_id', ignoreDuplicates: true });
+        await supabase.from('active_positions').delete().eq('id', pos.id);
+      } catch (e) { logError(`[${accountState.name}] Resting full-exit booking failed for ${pos.id}:`, e); }
+      log(`[${accountState.name}] 📤 LIVE ${atExpiry ? 'EXPIRY' : 'FULL EXIT'}: ${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} | ${reason} | PnL $${net.toFixed(2)}`);
+      return; // closed
+    }
+
+    // ── Full spread: waiting for the resting short-@shortExitPrice BUY to fill ──
+    if (pos.sellQty > 0) {
+      const filled = pos.sellLeg.exitOrderId != null && fillIds.has(String(pos.sellLeg.exitOrderId));
+      if (!filled) { remaining.push(pos); return; }
+
+      lastDbWrite = Date.now();
+      const exitPx = pos.sellLeg.exitOrderPx ?? (config.shortExitPrice ?? 1.1);
+      const shortLot = pos.sellLeg.lotSize || 1;
+      const gross = (pos.entrySellPrice - exitPx) * pos.sellQty * shortLot;
+      const entryFee = Math.min(pos.entryFee || 0, calculateFee(pos.entrySellPrice, pos.entrySpotPrice, pos.sellQty, shortLot));
+      const exitFee = calculateFee(exitPx, spotPrice, pos.sellQty, shortLot);
+      const net = gross - (entryFee + exitFee);
+      try {
+        await supabase.from('trade_history').upsert([{
+          trade_id: `${pos.id}-SE`, underlying: pos.underlying, expiry: pos.expiry, type: pos.type,
+          buy_leg: JSON.stringify({ ...pos.buyLeg, lotSize: 0 }),
+          sell_leg: JSON.stringify({ ...pos.sellLeg, exitIv: tickerSell?.askIv ?? tickerSell?.iv ?? null }),
+          sell_qty: pos.sellQty, strike_diff: pos.strikeDiff,
+          entry_time: pos.entryTime.toISOString(),
+          entry_buy_price: pos.entryBuyPrice, entry_sell_price: pos.entrySellPrice, entry_spot_price: pos.entrySpotPrice,
+          margin: pos.margin, exit_time: new Date().toISOString(),
+          exit_buy_price: longBid, exit_sell_price: exitPx, exit_spot_price: spotPrice,
+          realized_gross_pnl: gross, realized_net_pnl: net, exit_fee: exitFee, total_fees: entryFee + exitFee,
+          exit_reason: `Short Leg Exit @ $${exitPx} (resting, holding long ${pos.buyLeg.strike})`,
+          is_partial: true, account_id: accountState.id,
+        }], { onConflict: 'trade_id', ignoreDuplicates: true });
+      } catch (e) { logError(`[${accountState.name}] Resting short-exit booking failed for ${pos.id}:`, e); }
+
+      // Short is closed → cancel its disaster backstop (nothing left to protect,
+      // and it must not fire against a re-entry on the same symbol).
+      if (pos.sellLeg.backstopOrderId) {
+        await live.cancelStop({ id: pos.sellLeg.backstopOrderId, productId: pos.sellLeg.backstopProductId });
+      }
+      // Convert to long-only and place the fixed ladder of resting SELL orders.
+      pos.entryFee = Math.max(0, (pos.entryFee || 0) - entryFee);
+      pos.sellLeg = { ...pos.sellLeg, lotSize: 0, exitOrderId: null, backstopOrderId: null };
+      pos.sellQty = 0;
+      const baseLot = pos.buyLeg.lotSize || 0;
+      const S = longContracts(pos.buyLeg);
+      const levels = fixedLadderLevels(longBid);
+      const alloc = splitContracts(S, levels.length);
+      const ladderOrders = [];
+      for (let i = 0; i < alloc.length; i++) {
+        const res = await live.closeLeg({
+          symbol: pos.buyLeg.symbol, side: 'sell', contracts: alloc[i], price: levels[i], tag: `${pos.id}-LE-${i}`,
+        });
+        ladderOrders.push({
+          stage: i, level: levels[i], contracts: alloc[i],
+          lot: S > 0 ? Number((baseLot * alloc[i] / S).toFixed(4)) : baseLot,
+          orderId: res?.order?.id ?? null, productId: res?.order?.product_id ?? null, filled: false,
+        });
+      }
+      pos.buyLeg = { ...pos.buyLeg, longExitBaseLot: baseLot, ladderOrders };
+      pos.margin = calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, spotPrice, 0, 1);
+      try {
+        await supabase.from('active_positions').update({
+          buy_leg: JSON.stringify(pos.buyLeg), sell_leg: JSON.stringify(pos.sellLeg),
+          sell_qty: 0, entry_fee: pos.entryFee, margin: pos.margin,
+        }).eq('id', pos.id);
+      } catch (e) { logError(`[${accountState.name}] Resting short-exit persist failed for ${pos.id}:`, e); }
+      log(`[${accountState.name}] ✂️ RESTING SHORT EXIT: ${pos.type.toUpperCase()} ${pos.buyLeg.strike} @ $${exitPx} | ladder ${alloc.join('/')} contracts @ [${levels.join(',')}] | PnL $${net.toFixed(2)}`);
+      remaining.push(pos);
+      return;
+    }
+
+    // ── Long-only: book any ladder slices that have filled ──
+    const ladder = pos.buyLeg.ladderOrders || [];
+    const newlyFilled = ladder.filter(lo => !lo.filled && lo.orderId != null && fillIds.has(String(lo.orderId)));
+    if (newlyFilled.length > 0) {
+      lastDbWrite = Date.now();
+      const rows = [];
+      for (const lo of newlyFilled) {
+        const px = lo.level;
+        const gross = (px - pos.entryBuyPrice) * lo.lot;
+        const entryFee = Math.min(pos.entryFee || 0, calculateFee(pos.entryBuyPrice, pos.entrySpotPrice, lo.lot, pos.buyLeg.originalLotSize || 1));
+        const exitFee = calculateFee(px, spotPrice, lo.lot, pos.buyLeg.originalLotSize || 1);
+        const net = gross - (entryFee + exitFee);
+        rows.push({
+          trade_id: `${pos.id}-LE-${lo.stage}`, underlying: pos.underlying, expiry: pos.expiry, type: pos.type,
+          buy_leg: JSON.stringify({ ...pos.buyLeg, lotSize: lo.lot, ladderOrders: undefined, exitIv: tickerBuy?.bidIv ?? tickerBuy?.iv ?? null }),
+          sell_leg: JSON.stringify({ ...pos.sellLeg, lotSize: 0 }),
+          sell_qty: 0, strike_diff: pos.strikeDiff,
+          entry_time: pos.entryTime.toISOString(),
+          entry_buy_price: pos.entryBuyPrice, entry_sell_price: pos.entrySellPrice, entry_spot_price: pos.entrySpotPrice,
+          margin: pos.margin, exit_time: new Date().toISOString(),
+          exit_buy_price: px, exit_sell_price: null, exit_spot_price: spotPrice,
+          realized_gross_pnl: gross, realized_net_pnl: net, exit_fee: exitFee, total_fees: entryFee + exitFee,
+          exit_reason: `Long Leg Exit @ level $${lo.level} (resting)`, is_partial: true, account_id: accountState.id,
+        });
+        lo.filled = true;
+        pos.entryFee = Math.max(0, (pos.entryFee || 0) - entryFee);
+        pos.buyLeg.lotSize = Number((pos.buyLeg.lotSize - lo.lot).toFixed(4));
+      }
+      try {
+        await supabase.from('trade_history').upsert(rows, { onConflict: 'trade_id', ignoreDuplicates: true });
+      } catch (e) { logError(`[${accountState.name}] Resting ladder booking failed for ${pos.id}:`, e); }
+
+      const allFilled = ladder.length > 0 && ladder.every(lo => lo.filled);
+      if (allFilled || pos.buyLeg.lotSize <= 0.0001) {
+        try { await supabase.from('active_positions').delete().eq('id', pos.id); }
+        catch (e) { logError(`[${accountState.name}] Resting ladder final delete failed for ${pos.id}:`, e); }
+        log(`[${accountState.name}] 🪜 LONG FULLY EXITED (resting ladder): ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | ${newlyFilled.length} slice(s) this cycle`);
+        return;
+      }
+      pos.margin = calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, spotPrice, 0, 1);
+      try {
+        await supabase.from('active_positions').update({
+          buy_leg: JSON.stringify(pos.buyLeg), entry_fee: pos.entryFee, margin: pos.margin,
+        }).eq('id', pos.id);
+      } catch (e) { logError(`[${accountState.name}] Resting ladder persist failed for ${pos.id}:`, e); }
+      log(`[${accountState.name}] 🪜 LONG SLICE EXIT (resting): ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | ${newlyFilled.length} slice(s) | remaining lot ${pos.buyLeg.lotSize}`);
+    }
+    remaining.push(pos);
+  }
+
   async function evaluateStrategy(onlyExits = false) {
     if (isEvaluating) {
       const evalDuration = Date.now() - evaluationStart;
@@ -899,13 +1096,19 @@ async function startSingleAccountEngine(account) {
       const remaining = [];
       const exited = [];
 
-      // Armed live accounts now share the SAME exit logic as paper (premium-based
-      // short take-profit, laddered long scale-out, ATM ratio partials, ATM/ITM/OTM
-      // full exit, expiry). Every exit branch below already sends a reduce_only
-      // close to Delta via live.closeLeg(), so no separate live exit model is
-      // needed — the engine ACTIVELY manages exits instead of resting exchange
-      // stops. (The old index-triggered handleLiveExit / resting-SL model is
-      // retired; see the entry path where the SL is no longer armed.)
+      // Exit model selection:
+      //  • Paper accounts & dry-run live → engine-ACTIVE model below (premium short
+      //    buy-back, laddered long, ATM partials, ATM/ITM/OTM, expiry). Each branch
+      //    also fires reduce_only closes to Delta when armed.
+      //  • Armed REAL live → RESTING-order model (handleLiveRestingExit): the short
+      //    buy-back @1.1 and the fixed long ladder rest in the exchange order book
+      //    and fill on their own; the engine books fills (detected by order id) and
+      //    keeps spot-cross / expiry as engine-driven catch-alls. Fetch recent fill
+      //    order ids once per cycle; a failed fetch (null) → hold everything (no
+      //    fill inference) to avoid mis-booking.
+      const liveResting = accountState.mode === 'live' && !!accountState.live_enabled && !live.dryRun;
+      let liveFillIds = null;
+      if (liveResting) liveFillIds = await live.recentFillOrderIds();
 
       // Sort worst-first (farthest from ATM)
       const sortedPositions = [...positions].sort((a, b) => {
@@ -918,6 +1121,13 @@ async function startSingleAccountEngine(account) {
       for (const pos of sortedPositions) {
         if (pos.underlying !== underlying) {
           remaining.push(pos);
+          continue;
+        }
+
+        // Armed REAL live → resting-order exit model (isolated from the active model).
+        if (liveResting) {
+          if (liveFillIds == null) { remaining.push(pos); continue; } // fills fetch failed → hold
+          await handleLiveRestingExit(pos, remaining, liveFillIds);
           continue;
         }
 
@@ -1812,6 +2022,27 @@ async function startSingleAccountEngine(account) {
                 backstopStop: backstopPx,
               };
               log(`[${accountState.name}] 🛡️ Disaster backstop armed: buy-stop short ${t.sellLeg.strike} @ mark $${backstopPx} (${mult}× entry $${t.entrySellPrice})`);
+            }
+
+            // RESTING-EXIT MODEL (armed + REAL orders only): rest a reduce-only limit
+            // BUY on the short leg at shortExitPrice ($1.1) so the short buy-back sits
+            // in the exchange order book and fills on its own as the premium decays —
+            // engine-independent. When it fills, the exit loop places the long ladder.
+            // (Dry-run keeps the engine-active exit model; resting orders need a real
+            // exchange to rest on.)
+            if (liveArmed && !live.dryRun && t.sellQty > 0) {
+              const exitPx = config.shortExitPrice ?? 1.1;
+              const seRes = await live.closeLeg({
+                symbol: t.sellLeg.symbol, side: 'buy',
+                contracts: shortContracts(t.sellQty), price: exitPx, tag: `${t.id}-SEX`,
+              });
+              t.sellLeg = {
+                ...t.sellLeg,
+                exitOrderId: seRes?.order?.id ?? null,
+                exitProductId: seRes?.order?.product_id ?? null,
+                exitOrderPx: exitPx,
+              };
+              log(`[${accountState.name}] 🎯 Resting short-exit armed: limit BUY short ${t.sellLeg.strike} @ $${exitPx} (id ${seRes?.order?.id ?? '?'})`);
             }
 
             const { error: insertError } = await supabase.from('active_positions').insert([{

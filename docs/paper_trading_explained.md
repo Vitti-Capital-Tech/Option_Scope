@@ -343,11 +343,12 @@ This is **execution-realistic** — no cheating with mid-prices.
 When evaluating exits, positions are processed in a specific order: **worst-first** (farthest from ATM). This ensures we exit the least valuable positions before the best ones.
 
 > [!NOTE]
-> **Live accounts run this exact same exit tree.** Armed live accounts are no longer
-> given a separate exit model — every branch below already sends a `reduce_only` close
-> to Delta via `live.closeLeg()`, so paper and live behave identically. The only
-> live-specific addition is a short-leg **disaster backstop** stop armed at entry (see
-> [live_trading.md](live_trading.md#live-exit-model--shared-with-paper-option-a--disaster-backstop)).
+> **Paper and *dry-run* live accounts run this exact exit tree** — every branch below
+> sends its own `reduce_only` close to Delta via `live.closeLeg()` when armed, so they
+> behave identically. **Armed *real*-order live accounts use a different, resting-order
+> exit model** (same trigger levels, but the short buy-back and long ladder rest in the
+> exchange order book and fill on their own), plus a short-leg **disaster backstop** at
+> entry. See [live_trading.md](live_trading.md#live-exit-model--two-paths).
 
 For each position, the engine walks through this **priority tree** from top to bottom. The first matching condition triggers the exit:
 

@@ -283,6 +283,29 @@ export function createLiveExecutor(getCtx) {
     },
 
     /**
+     * Set of Delta `order_id`s that have at least one recent fill — used by the
+     * resting-exit model to detect when a resting order has executed (its order id
+     * appears here). Order ids are matched (not client tags) because Delta fills
+     * carry `order_id`; we persist each resting order's id, so detection survives a
+     * restart. Returns null on fetch failure so callers hold rather than mis-read an
+     * empty result. Not-armed → empty set.
+     */
+    async recentFillOrderIds() {
+      if (!armed()) return new Set();
+      const { accountName, creds } = getCtx();
+      if (!creds?.apiKey) return new Set();
+      try {
+        const res = await getFills(creds, { pageSize: 100 });
+        const set = new Set();
+        if (Array.isArray(res)) for (const f of res) { if (f.order_id != null) set.add(String(f.order_id)); }
+        return set;
+      } catch (e) {
+        logWarn(`[${accountName}] recentFillOrderIds() fetch failed: ${e.message}`);
+        return null;
+      }
+    },
+
+    /**
      * One combined READ snapshot for the UI: positions, orders (split into resting
      * limit orders vs stop orders), fills, and wallet balances. Armed accounts only
      * (runs in dry-run too — these are reads). Each source is fetched independently
