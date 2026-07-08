@@ -2476,11 +2476,34 @@ async function startSingleAccountEngine(account) {
   // state (positions, resting/stop orders, fills, balances) and upserts it to
   // `live_exchange_state` so the UI's Positions/Open Orders/Stop Orders/Fills/Risk
   // tabs show exchange truth. Read-only w.r.t. the exchange; runs in dry-run too.
+  // Structural fingerprint of a snapshot — captures what the UI cares about CHANGING
+  // (open position set + size, resting/stop orders, fills, wallet) while deliberately
+  // IGNORING tick-by-tick noise (mark_price / unrealized_pnl / liquidation_price /
+  // balance fluctuations). Used to skip redundant upserts (see below).
+  const snapSignature = (s) => {
+    if (!s) return '';
+    const pos = (s.positions || []).map(p => `${p.product_symbol}:${p.size}:${p.entry_price ?? ''}`).sort().join('|');
+    const ord = (s.orders || []).map(o => `${o.id}:${o.limit_price ?? o.price ?? ''}:${o.size}:${o.state ?? ''}`).sort().join('|');
+    const stp = (s.stopOrders || []).map(o => `${o.id}:${o.stop_price ?? o.limit_price ?? ''}:${o.size}:${o.state ?? ''}`).sort().join('|');
+    const fills = `${(s.fills || []).length}:${(s.fills || [])[0]?.id ?? ''}`;
+    const wallet = s.wallet != null ? Number(s.wallet).toFixed(2) : '';
+    return `${pos}#${ord}#${stp}#${fills}#${wallet}`;
+  };
+  // Only re-publish when the structure changed, else at most once per keepalive window.
+  // This turns a full-snapshot Realtime broadcast + UI refetch every 20s (per open tab)
+  // into one only when something meaningful moved. The keepalive still refreshes
+  // updated_at (liveness; UI marks stale after 120s) and mark/PnL at least this often.
+  const SNAP_KEEPALIVE_MS = 60000;
+  let lastSnapSig = null;
+  let lastSnapUpsertAt = 0;
   const publishLiveSnapshot = async () => {
     if (!(accountState.mode === 'live' && accountState.live_enabled)) return;
     try {
       const snap = await live.snapshot();
       if (!snap) return;
+      const sig = snapSignature(snap);
+      const now = Date.now();
+      if (sig === lastSnapSig && (now - lastSnapUpsertAt) < SNAP_KEEPALIVE_MS) return;
       const { error } = await supabase.from('live_exchange_state').upsert({
         account_id: accountState.id,
         updated_at: new Date().toISOString(),
@@ -2491,7 +2514,9 @@ async function startSingleAccountEngine(account) {
         balances: snap.balances,
         wallet: snap.wallet,
       }, { onConflict: 'account_id' });
-      if (error) logError(`[${accountState.name}] live_exchange_state upsert error:`, error.message);
+      if (error) { logError(`[${accountState.name}] live_exchange_state upsert error:`, error.message); return; }
+      lastSnapSig = sig;
+      lastSnapUpsertAt = now;
     } catch (e) {
       logWarn(`[${accountState.name}] live snapshot publish failed: ${e.message}`);
     }
@@ -2632,9 +2657,13 @@ export async function startPaperTradingEngine() {
   // Periodic sync check — every 30 seconds as fallback for missed Realtime events
   const syncTimer = setInterval(async () => {
     try {
+      // Only the columns the engine actually consumes (id, name, mode, live_enabled,
+      // paused) plus is_active for the running/stopping decision. Avoids pulling the
+      // full row — including large encrypted-credential blobs — every 30s. Credentials
+      // are loaded separately via RPC (loadCredentials), never from this row.
       const { data: currentAccounts, error: syncError } = await supabase
         .from('paper_trading_accounts')
-        .select('*');
+        .select('id, name, mode, live_enabled, paused, is_active');
 
       if (syncError || !currentAccounts) {
         logError('Fallback sync: failed to fetch accounts:', syncError?.message);

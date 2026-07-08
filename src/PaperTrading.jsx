@@ -1771,23 +1771,24 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
   useEffect(() => {
     if (!isActiveLive) { setLiveExchangeState(null); return; }
-    let interval = null;
-    const start = () => { fetchLiveExchangeState(); interval = setInterval(fetchLiveExchangeState, 20000); };
-    const stop = () => { if (interval) clearInterval(interval); };
-
-    if (document.visibilityState === 'visible') start();
-    const handleVisibility = () => { document.visibilityState === 'visible' ? start() : stop(); };
+    // Realtime-driven only — no 20s poll. The engine now upserts live_exchange_state
+    // only when it structurally changes (else once per 60s keepalive), and Realtime
+    // pushes each change → we refetch on demand. Dropping the redundant interval poll
+    // removes a full-snapshot read every 20s per open tab. We still refetch once when
+    // the tab regains focus, to catch up on anything missed while hidden.
+    const refresh = () => { if (document.visibilityState === 'visible') fetchLiveExchangeState(); };
+    refresh(); // prime on mount / account switch
+    const handleVisibility = () => { if (document.visibilityState === 'visible') fetchLiveExchangeState(); };
     document.addEventListener('visibilitychange', handleVisibility);
 
     const channel = supabase
       .channel(`live_exchange_state_${activeAccountId}`)
       .on('postgres_changes',
         { event: '*', schema: 'public', table: 'live_exchange_state', filter: `account_id=eq.${activeAccountId}` },
-        () => fetchLiveExchangeState())
+        refresh)
       .subscribe();
 
     return () => {
-      stop();
       document.removeEventListener('visibilitychange', handleVisibility);
       supabase.removeChannel(channel);
     };
