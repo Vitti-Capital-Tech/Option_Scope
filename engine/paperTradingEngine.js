@@ -1971,15 +1971,21 @@ async function startSingleAccountEngine(account) {
           let scale = 1;
 
           if (liveArmed) {
-            // LIVE: cap this position's margin at 1 "part" of allocated balance.
+            // LIVE: size the position to ~1 "part" of allocated balance while keeping
+            // the ratio. baseMargin = margin of ONE set (1 long + N short contracts);
+            // factor = how many whole sets fit in 1 part (floored so the ratio stays
+            // exact), min 1 (can't trade less than one set of integer contracts).
+            //   e.g. set margin $0.5, part $10 → factor 20 → 1:4 becomes 20:80.
             const baseMargin = calcMargin(entryBuyPrice, originalLotSize, spotPrice, ratioToUse, sellLotSize);
-            if (baseMargin > partMargin && baseMargin > 0) {
-              scale = partMargin / baseMargin;
-              adjustedLotSize = Number((originalLotSize * scale).toFixed(4));
-              adjustedSellQty = Number((ratioToUse * scale).toFixed(2));
-            }
+            const factor = (baseMargin > 0) ? Math.max(1, Math.floor(partMargin / baseMargin)) : 1;
+            adjustedLotSize = Number((originalLotSize * factor).toFixed(4));
+            adjustedSellQty = Number((ratioToUse * factor).toFixed(2));
+            scale = factor;
             const finalMargin = calcMargin(entryBuyPrice, adjustedLotSize, spotPrice, adjustedSellQty, sellLotSize);
-            log(`[${accountState.name}] 💰 LIVE size ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: baseMargin $${baseMargin.toFixed(2)} vs part $${partMargin.toFixed(2)} → scale ${scale.toFixed(3)} | long ${adjustedLotSize} short ${adjustedSellQty} | est margin $${finalMargin.toFixed(2)}`);
+            if (baseMargin > partMargin) {
+              logWarn(`[${accountState.name}] LIVE size: one set (margin $${baseMargin.toFixed(2)}) exceeds 1 part ($${partMargin.toFixed(2)}) — trading the minimum 1 set.`);
+            }
+            log(`[${accountState.name}] 💰 LIVE size ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: set margin $${baseMargin.toFixed(2)} | part $${partMargin.toFixed(2)} → factor ${factor} | long ${adjustedLotSize} short ${adjustedSellQty} (ratio 1:${ratioToUse}) | est margin $${finalMargin.toFixed(2)}`);
           } else {
             // PAPER (unchanged): $200,000 / 200x notional cap.
             let shortValue = spotPrice * ratioToUse * sellLotSize;
