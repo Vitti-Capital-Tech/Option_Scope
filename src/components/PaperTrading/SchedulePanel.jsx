@@ -525,6 +525,7 @@ export default function SchedulePanel({
                   suffix="%"
                   showStepper
                   step="5"
+                  width={90}
                   value={s.atmRatioPctCall ?? 50}
                   disabled={!(s.atmRatioScaling ?? true)}
                   onChange={e => handleChange(s.id, 'atmRatioPctCall', Number(e.target.value))}
@@ -541,6 +542,7 @@ export default function SchedulePanel({
                   suffix="%"
                   showStepper
                   step="5"
+                  width={90}
                   value={s.atmRatioPctPut ?? 25}
                   disabled={!(s.atmRatioScaling ?? true)}
                   onChange={e => handleChange(s.id, 'atmRatioPctPut', Number(e.target.value))}
