@@ -2360,12 +2360,17 @@ async function startSingleAccountEngine(account) {
     try {
       if (accountState.mode === 'live' && accountState.live_enabled) {
         const bal = await live.walletBalance();
-        if (bal != null) heartbeat.update({ wallet_balance: bal });
+        // Publish the SAME max-positions the engine uses for sizing (max of
+        // calls+puts across the base config AND every schedule window) + the live
+        // allocation %, so the UI's per-position figure matches the engine exactly.
+        const hb = { max_positions: computeMaxPositions(), allocation_pct: config.balanceAllocationPct ?? 90 };
+        if (bal != null) hb.wallet_balance = bal;
+        heartbeat.update(hb);
         // Also clean up any positions the exchange has closed under us (bracket /
         // manual / external), so the books + KPI converge with Delta within ~60s.
         await reconcileOrphans();
       } else {
-        heartbeat.update({ wallet_balance: null });
+        heartbeat.update({ wallet_balance: null, max_positions: null, allocation_pct: null });
       }
     } catch (e) { /* non-fatal */ }
   }, 60000);

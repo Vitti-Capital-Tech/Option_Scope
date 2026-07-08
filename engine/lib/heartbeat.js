@@ -20,6 +20,8 @@ export function createHeartbeat(engineId) {
     status: 'starting',
     wallet_balance: null,
     dry_run: null,
+    max_positions: null,
+    allocation_pct: null,
   };
 
   const write = async () => {
@@ -35,6 +37,8 @@ export function createHeartbeat(engineId) {
         spot_price: state.spot_price,
         wallet_balance: state.wallet_balance,
         dry_run: state.dry_run,
+        max_positions: state.max_positions,
+        allocation_pct: state.allocation_pct,
       });
       if (error) {
         logError(`Heartbeat write error (${engineId}):`, error.message);

@@ -230,6 +230,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const [engineStatus, setEngineStatus] = useState({ status: 'offline', lastHeartbeat: null, data: null });
   const [walletBalance, setWalletBalance] = useState(null); // live USDT balance from heartbeat
   const [engineDryRun, setEngineDryRun] = useState(null); // engine execution mode: true=sim, false=real, null=unknown
+  const [engineMaxPositions, setEngineMaxPositions] = useState(null); // engine's max positions (base + windows)
+  const [engineAllocationPct, setEngineAllocationPct] = useState(null); // engine's live allocation %
   const [liveExchangeState, setLiveExchangeState] = useState(null); // real Delta snapshot (live accounts only)
 
   const [includeFees, setIncludeFees] = useState(true);
@@ -1667,18 +1669,22 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     try {
       const { data, error } = await supabase
         .from('engine_heartbeat')
-        .select('id, last_heartbeat, status, ws_status, underlying, expiry, active_positions, spot_price, wallet_balance, dry_run')
+        .select('id, last_heartbeat, status, ws_status, underlying, expiry, active_positions, spot_price, wallet_balance, dry_run, max_positions, allocation_pct')
         .eq('id', `paper_trading_${activeAccountId}`);
 
       if (error || !data || data.length === 0) {
         setEngineStatus({ status: 'offline', lastHeartbeat: null, data: null });
         setWalletBalance(null);
         setEngineDryRun(null);
+        setEngineMaxPositions(null);
+        setEngineAllocationPct(null);
         return;
       }
 
       const row = data[0];
       setWalletBalance(row.wallet_balance != null ? Number(row.wallet_balance) : null);
+      setEngineMaxPositions(row.max_positions != null ? Number(row.max_positions) : null);
+      setEngineAllocationPct(row.allocation_pct != null ? Number(row.allocation_pct) : null);
       // Only meaningful when the engine is actually online (fresh heartbeat).
       const hbAge = Date.now() - new Date(row.last_heartbeat).getTime();
       setEngineDryRun(hbAge < HEARTBEAT_STALE_THRESHOLD ? row.dry_run : null);
@@ -2291,8 +2297,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               totalMargin={totalMargin}
               isLive={activeAccount?.mode === 'live'}
               walletBalance={walletBalance}
-              allocationPct={activeAccount?.default_config?.balanceAllocationPct ?? 90}
-              maxPositions={Math.max(1, (activeAccount?.default_config?.numberOfCalls ?? 3) + (activeAccount?.default_config?.numberOfPuts ?? 3))}
+              allocationPct={engineAllocationPct ?? activeAccount?.default_config?.balanceAllocationPct ?? 90}
+              maxPositions={engineMaxPositions ?? Math.max(1, (activeAccount?.default_config?.numberOfCalls ?? 3) + (activeAccount?.default_config?.numberOfPuts ?? 3))}
             />
 
             <TradingWorkspace
