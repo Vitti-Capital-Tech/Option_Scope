@@ -666,6 +666,68 @@ async function startSingleAccountEngine(account) {
   // Delta auto-cancels a bracket when its position closes, so they need no manual
   // cancellation here — closing a leg (resting fill or market close) clears it.
 
+  // Orphan reconcile (armed real): a position the engine still holds but Delta no
+  // longer reports as open was closed exchange-side — a TP/SL bracket fired, or a
+  // manual/external close. Book a full exit at current mark + delete so the books,
+  // KPI, and Positions view converge with Delta. Two guards prevent phantom cleanup:
+  //   • the positions fetch must SUCCEED (null = API hiccup → skip), and
+  //   • the leg must have been CONFIRMED open on Delta here at least once
+  //     (`_everOpenOnDelta`) — so a symbol we can't match / a never-opened row is
+  //     never mistaken for a close. In-memory latch resets on restart (conservative).
+  async function reconcileOrphans() {
+    if (!(accountState.mode === 'live' && accountState.live_enabled && !live.dryRun)) return;
+    const livePos = await live.positions();
+    if (livePos == null) return; // fetch failed → don't infer any closes this pass
+    const sizeBySymbol = {};
+    for (const p of livePos) sizeBySymbol[p.product_symbol] = Number(p.size) || 0;
+    const now = Date.now();
+    for (const pos of [...positions]) {
+      if (pos.underlying !== underlying) continue;
+      const shortSize = Math.abs(sizeBySymbol[pos.sellLeg?.symbol] ?? 0);
+      const longSize = Math.abs(sizeBySymbol[pos.buyLeg?.symbol] ?? 0);
+      if (shortSize > 0 || longSize > 0) { pos._everOpenOnDelta = true; continue; } // still open
+      
+      const ageMs = now - new Date(pos.entryTime).getTime();
+      // If never confirmed open on Delta (e.g. engine restarted after exits), clean up after 5 min
+      if (!pos._everOpenOnDelta && ageMs < 300000) continue;
+      // If confirmed open before, clean up after 1.5 min
+      if (ageMs < 90000) continue;
+
+      // Orphan — the exchange closed it. Book a full exit at current mark + delete
+      // (Realtime removes it from the in-memory `positions` and the UI).
+      const tBuy = tickerData[pos.buyLeg.symbol];
+      const tSell = tickerData[pos.sellLeg.symbol];
+      const exitLong = tBuy?.markPrice ?? tBuy?.bid ?? tBuy?.lastPrice ?? pos.entryBuyPrice;
+      const exitShort = tSell?.markPrice ?? tSell?.ask ?? tSell?.lastPrice ?? pos.entrySellPrice;
+      const longLot = pos.buyLeg.lotSize || 0;
+      const shortLot = pos.sellLeg.lotSize || 1;
+      const gross = (exitLong - pos.entryBuyPrice) * longLot
+        + (pos.sellQty > 0 ? (pos.entrySellPrice - exitShort) * pos.sellQty * shortLot : 0);
+      const entryFee = pos.entryFee || 0;
+      const exitFee = calculateFee(exitLong, spotPrice, longLot, pos.buyLeg.originalLotSize || 1)
+        + (pos.sellQty > 0 ? calculateFee(exitShort, spotPrice, pos.sellQty, shortLot) : 0);
+      const net = gross - (entryFee + exitFee);
+      try {
+        await cancelRestingOrders(pos);
+        await supabase.from('trade_history').upsert([{
+          trade_id: pos.id, underlying: pos.underlying, expiry: pos.expiry, type: pos.type,
+          buy_leg: JSON.stringify(pos.buyLeg), sell_leg: JSON.stringify(pos.sellLeg),
+          sell_qty: pos.sellQty, strike_diff: pos.strikeDiff,
+          entry_time: pos.entryTime.toISOString(),
+          entry_buy_price: pos.entryBuyPrice, entry_sell_price: pos.entrySellPrice, entry_spot_price: pos.entrySpotPrice,
+          margin: pos.margin, exit_time: new Date().toISOString(),
+          exit_buy_price: exitLong, exit_sell_price: pos.sellQty > 0 ? exitShort : null, exit_spot_price: spotPrice,
+          realized_gross_pnl: gross, realized_net_pnl: net, exit_fee: exitFee, total_fees: entryFee + exitFee,
+          exit_reason: 'Reconciled: closed on exchange (bracket/external)', is_partial: false, account_id: accountState.id,
+        }], { onConflict: 'trade_id', ignoreDuplicates: true });
+        await supabase.from('active_positions').delete().eq('id', pos.id);
+        log(`[${accountState.name}] ♻️ RECONCILE-CLEAN: ${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} absent from Delta → booked + removed | ~PnL $${net.toFixed(2)} (mark-based)`);
+      } catch (e) {
+        logError(`[${accountState.name}] reconcileOrphans failed for ${pos.id}:`, e);
+      }
+    }
+  }
+
   async function handleLiveRestingExit(pos, remaining, fillIds) {
     const tickerBuy = tickerData[pos.buyLeg.symbol];
     const tickerSell = tickerData[pos.sellLeg.symbol];
@@ -2253,8 +2315,7 @@ async function startSingleAccountEngine(account) {
       await reloadConfigAndSync();
       await fetchSchedules(); // Refresh schedules periodically
       await fetchActivePositions();
-      // LIVE: log-only drift check against the exchange (no-op unless armed + live).
-      await live.reconcile(positions.length);
+      await reconcileOrphans();
     } catch (e) {
       logError(`[${accountState.name}] Error in positionsTimer:`, e);
     }
@@ -2267,6 +2328,9 @@ async function startSingleAccountEngine(account) {
       if (accountState.mode === 'live' && accountState.live_enabled) {
         const bal = await live.walletBalance();
         if (bal != null) heartbeat.update({ wallet_balance: bal });
+        // Also clean up any positions the exchange has closed under us (bracket /
+        // manual / external), so the books + KPI converge with Delta within ~60s.
+        await reconcileOrphans();
       } else {
         heartbeat.update({ wallet_balance: null });
       }
