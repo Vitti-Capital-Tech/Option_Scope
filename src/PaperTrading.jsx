@@ -2103,9 +2103,16 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     });
   }, [tradeHistory, historyFilterDate]);
 
+  // Delta option symbols are like "C-BTC-95000-310125" / "P-BTC-…", so a plain
+  // startsWith(underlying) misses them. Match the type-prefixed form instead.
+  const liveBelongsToUnderlying = (sym) => {
+    const s = sym || '';
+    return s.startsWith(`C-${underlying}-`) || s.startsWith(`P-${underlying}-`);
+  };
+
   const totalUnrealizedPnl = useLive
     ? (liveExchangeState?.positions || [])
-        .filter(p => Number(p.size) !== 0 && (p.product_symbol || '').startsWith(underlying))
+        .filter(p => Number(p.size) !== 0 && liveBelongsToUnderlying(p.product_symbol))
         .reduce((s, p) => s + (Number(p.unrealized_pnl ?? p.unrealised_pnl) || 0), 0)
     : positions
         .filter(p => p.underlying === underlying)
@@ -2139,7 +2146,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const totalMargin = React.useMemo(() => {
     if (useLive) {
       return (liveExchangeState?.positions || [])
-        .filter(p => Number(p.size) !== 0 && (p.product_symbol || '').startsWith(underlying))
+        .filter(p => Number(p.size) !== 0 && liveBelongsToUnderlying(p.product_symbol))
         .reduce((s, p) => s + (Number(p.margin) || 0), 0);
     }
     return positions
@@ -2148,16 +2155,16 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   }, [positions, underlying, calculatePositionMargin, useLive, liveExchangeState]);
 
   const livePositions = useLive
-    ? (liveExchangeState?.positions || []).filter(p => Number(p.size) > 0 && (p.product_symbol || '').startsWith(underlying))
+    ? (liveExchangeState?.positions || []).filter(p => Number(p.size) !== 0 && liveBelongsToUnderlying(p.product_symbol))
     : [];
   const activePositionsCount = useLive
     ? livePositions.length
     : positions.filter(p => p.underlying === underlying).length;
   const activeCallsCount = useLive
-    ? livePositions.filter(p => p.product_symbol?.endsWith('-C') || p.product_symbol?.includes('-C-')).length
+    ? livePositions.filter(p => (p.product_symbol || '').startsWith('C-')).length
     : positions.filter(p => p.type === 'call' && p.underlying === underlying).length;
   const activePutsCount = useLive
-    ? livePositions.filter(p => p.product_symbol?.endsWith('-P') || p.product_symbol?.includes('-P-')).length
+    ? livePositions.filter(p => (p.product_symbol || '').startsWith('P-')).length
     : positions.filter(p => p.type === 'put' && p.underlying === underlying).length;
   const filteredRealizedPnl = filteredTradeHistory.reduce((s, t) =>
     s + (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || 0)), 0);
