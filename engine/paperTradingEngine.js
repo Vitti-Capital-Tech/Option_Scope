@@ -2360,6 +2360,15 @@ async function startSingleAccountEngine(account) {
   await fetchActivePositions();
   log(`[${accountState.name}] Active positions loaded: ${positions.length}`);
 
+  // Sync resting orders to Delta on startup to match the current database config
+  try {
+    if (accountState.mode === 'live') {
+      await resyncRestingOrders({ shortExitPrice: null, exitType: null, exitPoints: null });
+    }
+  } catch (e) {
+    logError(`[${accountState.name}] Startup resting orders sync failed:`, e.message);
+  }
+
   // 5. Build symbol map and backfill tickers via REST
   symbolMeta = buildSymbolMeta(products, config.expiry, config.underlying, positions);
   tickerData = await backfillTickers(config.underlying, symbolMeta, tickerData);
