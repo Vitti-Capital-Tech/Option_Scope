@@ -1494,6 +1494,25 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     if (!pos || !activeAccountId) return;
     setIsExitingPosition(true);
     try {
+      // LIVE accounts: don't book/delete from the browser (it can't touch Delta).
+      // Flag the position; the engine closes it on Delta, books, and deletes the row.
+      if (activeAccount?.mode === 'live') {
+        const { error } = await supabase
+          .from('active_positions')
+          .update({ exit_requested: true })
+          .eq('id', pos.id);
+        if (error) {
+          console.error('Failed to request manual exit:', error);
+          alert(`Failed to request exit: ${error.message}`);
+          setIsExitingPosition(false);
+          return;
+        }
+        setPositions(prev => prev.map(p => p.id === pos.id ? { ...p, exitRequested: true } : p));
+        setPositionToExit(null);
+        setIsExitingPosition(false);
+        return; // engine handles close + book + delete (Realtime removes the row)
+      }
+
       const exitTime = new Date().toISOString();
       const exitBuyPrice = pos.currentBuyPrice !== null ? pos.currentBuyPrice : pos.entryBuyPrice;
       const exitSellPrice = pos.currentSellPrice !== null ? pos.currentSellPrice : pos.entrySellPrice;

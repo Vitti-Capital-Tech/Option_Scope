@@ -707,8 +707,10 @@ async function startSingleAccountEngine(account) {
       if (!isDeadEntry) {
         // If never confirmed open on Delta (e.g. engine restarted after exits), clean up after 5 min
         if (!pos._everOpenOnDelta && ageMs < 300000) continue;
-        // If confirmed open before, clean up after 1.5 min
-        if (ageMs < 90000) continue;
+        // If confirmed open before, clean up after a short grace (was 90s) so a
+        // closed position clears from active_positions fast and stops blocking new
+        // entries. 20s absorbs a transient positions-fetch blip.
+        if (ageMs < 20000) continue;
       }
 
       // Orphan — the exchange closed it. Book a full exit at current mark + delete
@@ -746,6 +748,66 @@ async function startSingleAccountEngine(account) {
         logError(`[${accountState.name}] reconcileOrphans failed for ${pos.id}:`, e);
       }
     }
+  }
+
+  // ── Manual exit (UI-initiated) ───────────────────────────────────────────
+  // The dashboard sets active_positions.exit_requested = true. The engine (not the
+  // browser) then closes the real position on Delta — cancel resting orders +
+  // market-close the legs (no-op for paper / dry-run / disarmed) — books a Manual
+  // Exit and deletes the row. This prevents the browser from deleting a live DB row
+  // while the real Delta position stays open.
+  async function manualExitPosition(pos) {
+    lastDbWrite = Date.now();
+    const tBuy = tickerData[pos.buyLeg.symbol];
+    const tSell = tickerData[pos.sellLeg.symbol];
+    const exitLong = tBuy?.bid ?? tBuy?.markPrice ?? tBuy?.lastPrice ?? pos.entryBuyPrice;
+    const exitShort = tSell?.ask ?? tSell?.markPrice ?? tSell?.lastPrice ?? pos.entrySellPrice;
+    try { await cancelRestingOrders(pos); } catch (e) { /* best-effort */ }
+    if (pos.sellQty > 0) {
+      await live.closeLeg({ symbol: pos.sellLeg.symbol, side: 'buy', contracts: shortContracts(pos.sellQty), price: exitShort, tag: `${pos.id}-MXS` });
+    }
+    if ((pos.buyLeg.lotSize || 0) > 0) {
+      await live.closeLeg({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: longContracts(pos.buyLeg), price: exitLong, tag: `${pos.id}-MXB` });
+    }
+    const longLot = pos.buyLeg.lotSize || 0;
+    const shortLot = pos.sellLeg.lotSize || 1;
+    const gross = (exitLong - pos.entryBuyPrice) * longLot
+      + (pos.sellQty > 0 ? (pos.entrySellPrice - exitShort) * pos.sellQty * shortLot : 0);
+    const entryFee = pos.entryFee || 0;
+    const exitFee = calculateFee(exitLong, spotPrice, longLot, pos.buyLeg.originalLotSize || 1)
+      + (pos.sellQty > 0 ? calculateFee(exitShort, spotPrice, pos.sellQty, shortLot) : 0);
+    const net = gross - (entryFee + exitFee);
+    try {
+      await supabase.from('trade_history').upsert([{
+        trade_id: pos.id, underlying: pos.underlying, expiry: pos.expiry, type: pos.type,
+        buy_leg: JSON.stringify(pos.buyLeg), sell_leg: JSON.stringify(pos.sellLeg),
+        sell_qty: pos.sellQty, strike_diff: pos.strikeDiff,
+        entry_time: pos.entryTime.toISOString(),
+        entry_buy_price: pos.entryBuyPrice, entry_sell_price: pos.entrySellPrice, entry_spot_price: pos.entrySpotPrice,
+        margin: pos.margin, exit_time: new Date().toISOString(),
+        exit_buy_price: exitLong, exit_sell_price: pos.sellQty > 0 ? exitShort : null, exit_spot_price: spotPrice,
+        realized_gross_pnl: gross, realized_net_pnl: net, exit_fee: exitFee, total_fees: entryFee + exitFee,
+        exit_reason: 'Manual Exit', is_partial: false, account_id: accountState.id,
+      }], { onConflict: 'trade_id', ignoreDuplicates: true });
+      await supabase.from('active_positions').delete().eq('id', pos.id);
+    } catch (e) { logError(`[${accountState.name}] Manual exit booking failed for ${pos.id}:`, e); }
+    positions = positions.filter(p => p.id !== pos.id);
+    heartbeat.update({ active_positions: positions.length });
+    log(`[${accountState.name}] 🙋 MANUAL EXIT: ${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} | PnL $${net.toFixed(2)}`);
+  }
+
+  // Poll for UI-requested exits and process them promptly.
+  async function processManualExits() {
+    try {
+      const { data, error } = await supabase
+        .from('active_positions').select('id')
+        .eq('account_id', accountState.id).eq('exit_requested', true);
+      if (error || !data || !data.length) return;
+      const ids = new Set(data.map(r => r.id));
+      for (const pos of [...positions]) {
+        if (ids.has(pos.id)) await manualExitPosition(pos);
+      }
+    } catch (e) { /* non-fatal */ }
   }
 
   async function handleLiveRestingExit(pos, remaining, fillIds) {
@@ -2422,6 +2484,13 @@ async function startSingleAccountEngine(account) {
   const liveSnapshotTimer = setInterval(() => { publishLiveSnapshot(); }, 20000);
   publishLiveSnapshot(); // prime immediately so the UI isn't blank until the first tick
 
+  // Fast orphan reconcile — every 12s, so exchange-closed positions clear from
+  // active_positions quickly and stop blocking new entries.
+  const reconcileTimer = setInterval(() => { reconcileOrphans().catch(() => {}); }, 12000);
+
+  // Manual-exit poll — every 4s, processes UI-requested exits (exit_requested flag).
+  const manualExitTimer = setInterval(() => { processManualExits().catch(() => {}); }, 4000);
+
 
   log(`[${accountState.name}] Paper Trading Engine is LIVE`);
 
@@ -2435,6 +2504,8 @@ async function startSingleAccountEngine(account) {
       clearInterval(positionsTimer);
       clearInterval(balanceTimer);
       clearInterval(liveSnapshotTimer);
+      clearInterval(reconcileTimer);
+      clearInterval(manualExitTimer);
       if (wsHandle) { wsHandle.close(); wsHandle = null; }
       supabase.removeChannel(configChannel);
 
