@@ -2154,8 +2154,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       .reduce((s, p) => s + calculatePositionMargin(p), 0);
   }, [positions, underlying, calculatePositionMargin, useLive, liveExchangeState]);
 
+  // Count SPREADS, not legs: Delta reports the long and short as separate positions,
+  // but a spread = 1 position. Each spread has exactly one LONG leg (size > 0), so
+  // counting long legs = counting spreads. (Margin/PnL above still use both legs.)
   const livePositions = useLive
-    ? (liveExchangeState?.positions || []).filter(p => Number(p.size) !== 0 && liveBelongsToUnderlying(p.product_symbol))
+    ? (liveExchangeState?.positions || []).filter(p => Number(p.size) > 0 && liveBelongsToUnderlying(p.product_symbol))
     : [];
   const activePositionsCount = useLive
     ? livePositions.length
