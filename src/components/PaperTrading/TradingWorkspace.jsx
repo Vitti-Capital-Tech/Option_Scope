@@ -277,31 +277,56 @@ function LiveOrdersTab({ orders, spotPrice, onCancelOrder }) {
 }
 
 // ── Stop Orders (live) — reduce-only stops resting on Delta ────────────────
-function LiveStopOrdersTab({ stopOrders }) {
+function LiveStopOrdersTab({ stopOrders, spotPrice, onCancelOrder }) {
   if (!stopOrders?.length) {
     return <EmptyPanel icon="stop" title="No Stop Orders"
       desc="Reduce-only stop orders resting on Delta (short-leg SL / long-leg TP) appear here once armed." />;
   }
+  const num = (v) => (v == null || v === '' || Number.isNaN(Number(v)) ? null : Number(v));
+  const idx = num(spotPrice);
+  const typeLabel = (o) => {
+    const t = String(o.stop_order_type || '');
+    const kind = t.includes('take_profit') ? 'TP' : t.includes('stop_loss') ? 'SL' : 'Stop';
+    return o.bracket_order ? `Bracket - ${kind}` : kind;
+  };
+  const statusLabel = (s) => (String(s) === 'pending' ? 'Untriggered' : String(s || '—'));
   return (
     <div className="pt-table-scroll">
-      <table className="pt-table"><thead><tr>
-        <th>Placed</th><th>Instrument</th><th>Side</th><th>Stop Type</th>
-        <th>Trigger</th><th>Trigger On</th><th>Size</th><th>State</th>
+      <table className="pt-table pt-delta-table"><thead><tr>
+        <th>Symbol</th><th className="r">Qty (Lot)</th><th className="r">Size</th><th className="r">Notional</th>
+        <th className="r">Trigger Price</th><th>Trigger Index</th><th className="r">Triggering Price</th>
+        <th>Type</th><th className="r">Limit Price</th><th className="r">Reduce Only</th>
+        <th>Status</th><th className="r">Time</th><th className="r">Action</th>
       </tr></thead><tbody>
-        {stopOrders.map(o => (
-          <tr key={o.id ?? o.client_order_id}>
-            <td><span className="pt-dim">{fmtTs(o.created_at)}</span></td>
-            <td><span className="pt-instrument">{o.product_symbol || '—'}</span></td>
-            <td><Tag text={o.side} color={sideColor(o.side)} /></td>
-            <td><span style={{ fontSize: 11, color: 'var(--text-dim)', fontWeight: 600 }}>
-              {String(o.stop_order_type || 'stop').replace(/_/g, ' ')}
-            </span></td>
-            <td><span style={{ color: 'var(--accent)', fontWeight: 700 }}>{fmtNum(o.stop_price)}</span></td>
-            <td><span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{String(o.stop_trigger_method || '—').replace(/_/g, ' ')}</span></td>
-            <td>{fmtNum(o.size, 0)}</td>
-            <td><Tag text={o.state} /></td>
-          </tr>
-        ))}
+        {stopOrders.map(o => {
+          const size = num(o.size) || 0;
+          const sell = String(o.side) === 'sell';
+          const qty = sell ? -size : size;
+          const cv = num(o.product?.contract_value) ?? 0.001;
+          const unit = o.product?.underlying_asset?.symbol || 'BTC';
+          const sizeBtc = parseFloat((size * cv).toFixed(6));
+          const notional = idx != null ? Math.abs(size) * cv * idx : null;
+          const trigMethod = String(o.stop_trigger_method || '') === 'spot_price' ? 'Index Price'
+            : String(o.stop_trigger_method || '') === 'mark_price' ? 'Mark Price' : (o.stop_trigger_method || '—');
+          const isCall = (o.product_symbol || '').startsWith('C-');
+          return (
+            <tr key={o.id ?? o.client_order_id} className={`pt-row-${isCall ? 'call' : 'put'}`}>
+              <td><span className={`pt-legrail ${isCall ? 'call' : 'put'}`} /><span className="pt-instrument">{o.product_symbol || '—'}</span></td>
+              <td className="r"><span style={{ color: sell ? 'var(--put)' : 'var(--call)', fontWeight: 700 }}>{qty > 0 ? '+' : ''}{qty}</span></td>
+              <td className="r">{sizeBtc} {unit}</td>
+              <td className="r">{notional != null ? `$${fmtNum(notional)}` : '—'}</td>
+              <td className="r"><span style={{ color: 'var(--accent)', fontWeight: 700 }}>{fmtNum(o.stop_price)}</span></td>
+              <td>{trigMethod}</td>
+              <td className="r">{idx != null ? fmtNum(idx) : '—'}</td>
+              <td><span style={{ color: typeLabel(o).includes('TP') ? 'var(--call)' : 'var(--put)', fontWeight: 600, fontSize: 11 }}>{typeLabel(o)}</span></td>
+              <td className="r">{o.limit_price ? fmtNum(o.limit_price) : '—'}</td>
+              <td className="r">{o.reduce_only ? '✓' : '—'}</td>
+              <td><span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{statusLabel(o.state)}</span></td>
+              <td className="r"><span className="pt-dim" style={{ fontSize: 11 }}>{fmtTs(o.created_at)}</span></td>
+              <td className="r"><button onClick={() => onCancelOrder && onCancelOrder(o)} className="pt-btn-close" title="Cancel order">✕</button></td>
+            </tr>
+          );
+        })}
       </tbody></table>
     </div>
   );
@@ -674,7 +699,7 @@ export default function TradingWorkspace(props) {
 
           {tab === 'stop' && (
             live ? (
-              <LiveStopOrdersTab stopOrders={live.stop_orders} />
+              <LiveStopOrdersTab stopOrders={live.stop_orders} spotPrice={props.spotPrice} onCancelOrder={props.onCancelOrder} />
             ) : (
               <StopOrdersTab
                 positions={props.positions}
