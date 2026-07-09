@@ -333,28 +333,46 @@ function LiveStopOrdersTab({ stopOrders, spotPrice, onCancelOrder }) {
 }
 
 // ── Fills (live) — individual leg executions from Delta ────────────────────
-function LiveFillsTab({ fills }) {
+function LiveFillsTab({ fills, spotPrice }) {
   if (!fills?.length) {
     return <EmptyPanel icon="fills" title="No Fills Yet"
       desc="Individual leg executions from Delta Exchange appear here as orders fill." />;
   }
+  const num = (v) => (v == null || v === '' || Number.isNaN(Number(v)) ? null : Number(v));
+  const idx = num(spotPrice);
+  const cap = (s) => (s ? String(s).replace(/^\w/, c => c.toUpperCase()) : '—');
   return (
     <div className="pt-table-scroll">
-      <table className="pt-table"><thead><tr>
-        <th>Time</th><th>Instrument</th><th>Side</th><th>Price</th>
-        <th>Size</th><th>Role</th><th>Fee</th>
+      <table className="pt-table pt-delta-table"><thead><tr>
+        <th>Symbol</th><th className="r">Fill Qty (Lot)</th><th>Side</th><th className="r">Order Qty (Lot)</th>
+        <th className="r">Exec Price</th><th className="r">Notional</th><th className="r">Size</th>
+        <th>Fill Type</th><th>Order Type</th><th>Role</th><th className="r">Time</th>
       </tr></thead><tbody>
-        {fills.map(f => (
-          <tr key={f.id ?? `${f.order_id}-${f.created_at}`}>
-            <td><span className="pt-dim">{fmtTs(f.created_at)}</span></td>
-            <td><span className="pt-instrument">{f.product_symbol || '—'}</span></td>
-            <td><Tag text={f.side} color={sideColor(f.side)} /></td>
-            <td><span style={{ fontWeight: 700 }}>{fmtNum(f.price)}</span></td>
-            <td>{fmtNum(f.size, 0)}</td>
-            <td><span style={{ fontSize: 11, color: 'var(--text-dim)', textTransform: 'capitalize' }}>{f.role || f.fill_type || '—'}</span></td>
-            <td><span className="pt-dim">{fmtNum(f.commission ?? f.fee, 4)}</span></td>
-          </tr>
-        ))}
+        {fills.map(f => {
+          const size = num(f.size) || 0;
+          const sell = String(f.side) === 'sell';
+          const cv = num(f.product?.contract_value) ?? 0.001;
+          const unit = f.product?.underlying_asset?.symbol || 'BTC';
+          const sizeBtc = parseFloat((size * cv).toFixed(6)) * (sell ? -1 : 1);
+          const notional = idx != null ? Math.abs(size) * cv * idx : null;
+          const orderQty = num(f.order_size ?? f.order_qty) ?? size;
+          const isCall = (f.product_symbol || '').startsWith('C-');
+          return (
+            <tr key={f.id ?? `${f.order_id}-${f.created_at}`} className={`pt-row-${isCall ? 'call' : 'put'}`}>
+              <td><span className={`pt-legrail ${isCall ? 'call' : 'put'}`} /><span className="pt-instrument">{f.product_symbol || '—'}</span></td>
+              <td className="r"><span style={{ color: sell ? 'var(--put)' : 'var(--call)', fontWeight: 700 }}>{fmtNum(size, 0)}</span></td>
+              <td><span style={{ color: sell ? 'var(--put)' : 'var(--call)', fontWeight: 600 }}>{cap(f.side)}</span></td>
+              <td className="r">{fmtNum(orderQty, 0)}</td>
+              <td className="r">{fmtNum(f.price)}</td>
+              <td className="r">{notional != null ? `$${fmtNum(notional)}` : '—'}</td>
+              <td className="r"><span style={{ color: sell ? 'var(--put)' : 'var(--call)' }}>{sizeBtc > 0 ? '+' : ''}{sizeBtc} {unit}</span></td>
+              <td>{cap(f.fill_type) === '—' ? 'Normal' : cap(f.fill_type)}</td>
+              <td>{String(f.order_type || '').replace('_order', '').replace(/^\w/, c => c.toUpperCase()) || '—'}</td>
+              <td>{cap(f.role)}</td>
+              <td className="r"><span className="pt-dim" style={{ fontSize: 11 }}>{fmtTs(f.created_at)}</span></td>
+            </tr>
+          );
+        })}
       </tbody></table>
     </div>
   );
@@ -714,7 +732,7 @@ export default function TradingWorkspace(props) {
 
           {tab === 'fills' && (
             live ? (
-              <LiveFillsTab fills={live.fills} />
+              <LiveFillsTab fills={live.fills} spotPrice={props.spotPrice} />
             ) : (
               <EmptyPanel
                 icon="fills"
