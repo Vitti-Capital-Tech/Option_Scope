@@ -39,6 +39,19 @@ export function shortContracts(sellQty) {
 }
 
 /**
+ * Turn a numeric limit price into a Delta-safe string. Computed prices carry
+ * float-representation noise (e.g. 2.7 - 2 === 0.7000000000000002); sending that
+ * raw makes Delta reject the order with `bad_schema`. Inputs are already
+ * tick-aligned (exchange bid/ask/mark ± integer offsets), so rounding to 4
+ * decimals only strips the noise: 0.7000000000000002 → "0.7", 0.05 → "0.05".
+ * Returns null for non-finite prices so callers can skip.
+ */
+export function cleanLimitPrice(price) {
+  if (price == null || !Number.isFinite(Number(price))) return null;
+  return String(Number(Number(price).toFixed(4)));
+}
+
+/**
  * Extract a usable wallet balance from Delta's /v2/wallet/balances response,
  * tolerant of asset naming/shape: prefer USDT, then USD, else the wallet with the
  * largest balance. Reads balance/available_balance regardless of nesting.
@@ -74,7 +87,7 @@ export function createLiveExecutor(getCtx) {
   async function submit({ symbol, side, contracts, price, reduceOnly = false, tag, bracket = null }) {
     const { accountName, creds } = getCtx();
     const size = Math.max(1, Math.round(contracts || 0));
-    const priceStr = (price != null && Number.isFinite(price)) ? String(price) : null;
+    const priceStr = cleanLimitPrice(price);
     const brkStr = bracket
       ? ` +bracket{${bracket.bracket_take_profit_price ? 'TP@' + bracket.bracket_take_profit_price : ''}${bracket.bracket_stop_loss_price ? ' SL@' + bracket.bracket_stop_loss_price : ''} via ${bracket.bracket_stop_trigger_method || 'mark'}}`
       : '';
@@ -200,7 +213,7 @@ export function createLiveExecutor(getCtx) {
     async editOrder({ id, symbol, price, size, tag }) {
       if (!armed()) return { ok: true, skipped: true };
       const { accountName, creds } = getCtx();
-      const priceStr = (price != null && Number.isFinite(price)) ? String(price) : null;
+      const priceStr = cleanLimitPrice(price);
       const summary = `EDIT order ${id} ${symbol} → @ ${priceStr ?? '—'}${size != null ? ` x${size}` : ''} [${tag}]`;
       if (DRY_RUN) { log(`[${accountName}] 🧪 DRY-RUN edit order (not sent): ${summary}`); return { ok: true, dryRun: true }; }
       if (!creds?.apiKey || !id || !priceStr) return { ok: false, error: 'missing id/price/creds' };
@@ -251,7 +264,7 @@ export function createLiveExecutor(getCtx) {
       if (!armed()) return { ok: true, skipped: true };
       const { accountName, creds } = getCtx();
       const size = Math.max(1, Math.round(contracts || 0));
-      const stopStr = (stopPrice != null && Number.isFinite(stopPrice)) ? String(stopPrice) : null;
+      const stopStr = cleanLimitPrice(stopPrice);
       const summary = `STOP ${side.toUpperCase()} ${size}x ${symbol} trigger@${triggerMethod} ${stopStr ?? '—'} reduceOnly [${tag}]`;
 
       if (DRY_RUN) {
