@@ -236,6 +236,14 @@ const fmtNum = (v, d = 2) => {
 };
 const fmtTs = (t) => { try { return t ? formatDateTime(new Date(t)) : '—'; } catch { return '—'; } };
 const sideColor = (side) => String(side).toLowerCase() === 'buy' ? 'var(--call)' : 'var(--put)';
+// Delta's Order History lists only orders that actually executed. The resting
+// bracket SL/TP and limit exit orders auto-cancel (zero fill) when a position
+// closes — Delta hides those; we filter them out too so our list matches Delta.
+const orderExecuted = (o) => {
+  const size = Number(o.size) || 0;
+  const unfilled = o.unfilled_size == null ? 0 : Number(o.unfilled_size);
+  return (size - unfilled) > 0;
+};
 const Tag = ({ text, color = 'var(--accent)' }) => (
   <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', padding: '2px 7px', borderRadius: 5, color, border: `1px solid ${color}`, textTransform: 'uppercase', whiteSpace: 'nowrap' }}>
     {String(text ?? '—')}
@@ -411,7 +419,13 @@ function LiveOrderHistoryTab({ orderHistory }) {
   // and Delta sorts by it descending — not by created_at or order id. Sort the same
   // way (updated_at desc, id desc tiebreak) so our sequence + times match Delta.
   const ts = (o) => new Date(o.updated_at ?? o.created_at ?? 0).getTime();
-  const rows = [...orderHistory].sort((a, b) => (ts(b) - ts(a)) || (Number(b.id || 0) - Number(a.id || 0)));
+  const rows = orderHistory
+    .filter(orderExecuted) // hide auto-cancelled bracket/limit noise, like Delta
+    .sort((a, b) => (ts(b) - ts(a)) || (Number(b.id || 0) - Number(a.id || 0)));
+  if (!rows.length) {
+    return <EmptyPanel icon="history" title="No Order History"
+      desc="Filled orders on Delta Exchange appear here, newest first." />;
+  }
 
   const statusLabel = (o) => {
     const s = String(o.state || '').toLowerCase();
@@ -709,7 +723,7 @@ export default function TradingWorkspace(props) {
     { key: 'open', label: 'Open Orders', icon: 'open', count: live ? (live.orders?.length ?? 0) : paperCount(longCount) },
     { key: 'stop', label: 'Stop Orders', icon: 'stop', count: live ? (live.stop_orders?.length ?? 0) : paperCount(spreadCount) },
     { key: 'fills', label: 'Fills', icon: 'fills', count: live ? (live.fills?.length ?? 0) : null },
-    { key: 'history', label: 'Order History', icon: 'history', count: live ? (live.order_history?.length ?? 0) : paperCount(histCount) },
+    { key: 'history', label: 'Order History', icon: 'history', count: live ? (live.order_history || []).filter(orderExecuted).length : paperCount(histCount) },
   ];
 
   return (
