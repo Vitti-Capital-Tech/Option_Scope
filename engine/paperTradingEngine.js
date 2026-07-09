@@ -515,7 +515,7 @@ async function startSingleAccountEngine(account) {
   // across the base config and every active schedule window. Used to divide the
   // allocated balance into equal "parts" (1 part of margin per position).
   function computeMaxPositions() {
-    let mx = (config.numberOfCalls || 0) + (config.numberOfPuts || 0);
+    let mx = 1;
     for (const s of schedules) {
       if (!s.isActive) continue;
       mx = Math.max(mx, (s.numberOfCalls || 0) + (s.numberOfPuts || 0));
