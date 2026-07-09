@@ -698,6 +698,20 @@ async function startSingleAccountEngine(account) {
       }
     }
 
+    // Systemic-mismatch guard: if Delta reports open positions but NONE of them
+    // match any tracked leg symbol, that's a symbol-format problem — NOT real
+    // closes. Deleting here would wipe live positions the engine still owns
+    // (leaving them unmanaged on Delta). Skip the whole pass in that case.
+    const liveOpenSymbols = new Set(livePos.filter(p => Number(p.size) !== 0).map(p => p.product_symbol));
+    const tracked = positions.filter(p => p.underlying === config.underlying);
+    if (liveOpenSymbols.size > 0 && tracked.length > 0) {
+      const anyMatch = tracked.some(p => liveOpenSymbols.has(p.buyLeg?.symbol) || liveOpenSymbols.has(p.sellLeg?.symbol));
+      if (!anyMatch) {
+        logWarn(`[${accountState.name}] reconcile: Delta has ${liveOpenSymbols.size} open leg(s) but none match tracked symbols — skipping (possible symbol mismatch, not wiping positions).`);
+        return;
+      }
+    }
+
     const now = Date.now();
     for (const pos of [...positions]) {
       if (pos.underlying !== config.underlying) continue;
@@ -716,10 +730,10 @@ async function startSingleAccountEngine(account) {
       if (!isDeadEntry) {
         // If never confirmed open on Delta (e.g. engine restarted after exits), clean up after 5 min
         if (!pos._everOpenOnDelta && ageMs < 300000) continue;
-        // If confirmed open before, clean up after a short grace (was 90s) so a
-        // closed position clears from active_positions fast and stops blocking new
-        // entries. 20s absorbs a transient positions-fetch blip.
-        if (ageMs < 20000) continue;
+        // If confirmed open before, wait 90s before treating an absent position as
+        // closed — conservative, so a transient fetch/symbol blip can't wrongly wipe
+        // a live position (the systemic-mismatch guard above is the primary defence).
+        if (ageMs < 90000) continue;
       }
 
       // Orphan — the exchange closed it. Book a full exit at current mark + delete
@@ -836,9 +850,10 @@ async function startSingleAccountEngine(account) {
     accountState.close_all_requested = false;
 
     const open = [...positions];
-    if (open.length === 0) return;
-    log(`[${accountState.name}] 🧨 CLOSE ALL requested — ${open.length} position(s)`);
+    log(`[${accountState.name}] 🧨 CLOSE ALL requested — ${open.length} tracked position(s)`);
 
+    // Flatten the whole Delta account FIRST (even if the engine tracks nothing —
+    // this also clears any orphaned positions the engine lost track of). One call.
     let flattened = false;
     if (accountState.mode === 'live' && accountState.live_enabled) {
       const r = await live.closeAll();          // one-shot flatten (dry-run logs only)
@@ -2601,7 +2616,7 @@ async function startSingleAccountEngine(account) {
 
   // Fast orphan reconcile — every 12s, so exchange-closed positions clear from
   // active_positions quickly and stop blocking new entries.
-  const reconcileTimer = setInterval(() => { reconcileOrphans().catch(() => {}); }, 12000);
+  const reconcileTimer = setInterval(() => { reconcileOrphans().catch(() => {}); }, 30000);
 
   // Manual-exit poll — every 1.5s: per-position exits (exit_requested flag) and the
   // account-level Close All (close_all_requested → native flatten + book/delete).

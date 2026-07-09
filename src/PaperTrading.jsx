@@ -888,10 +888,18 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   // Close ALL open positions for the active account at once (like Delta's close-all).
   // Flags every position; the engine exits them (cancel resting + market-close) within ~1.5s.
   const triggerCloseAll = async () => {
-    const count = positions.length;
     const acc = accounts.find(a => a.id === activeAccountId);
-    if (count === 0) { alert('No open positions to close.'); return; }
-    if (!window.confirm(`Close ALL ${count} open position(s) for "${acc?.name || 'this account'}"?\n\nEvery trade will be exited at market.`)) return;
+    // Count from the live Delta snapshot too — the engine may have lost track of
+    // positions that are still open on Delta (orphans), so don't block on the
+    // engine's count being 0. For a live account, close_all flattens the account.
+    const liveLegs = (liveExchangeState?.positions || []).filter(p => Number(p.size) !== 0).length;
+    const count = Math.max(positions.length, liveLegs);
+    const isLiveAcc = acc?.mode === 'live';
+    if (count === 0 && !isLiveAcc) { alert('No open positions to close.'); return; }
+    const msg = isLiveAcc
+      ? `Flatten this live account on Delta${count ? ` (${count} position/leg${count !== 1 ? 's' : ''})` : ''}?\n\nThis closes EVERY position on the Delta account at market — including any the dashboard isn't showing.`
+      : `Close ALL ${count} open position(s) for "${acc?.name || 'this account'}"?\n\nEvery trade will be exited at market.`;
+    if (!window.confirm(msg)) return;
     // One flag → the engine flattens the account (native close_all) in one call,
     // then books + deletes all positions.
     const { error } = await supabase

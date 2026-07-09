@@ -492,7 +492,7 @@ export default function TradingWorkspace(props) {
                     {props.isSyncing ? 'Syncing…' : 'Sync'}
                   </button>
                 )}
-                {props.onCloseAll && visible.length > 0 && (
+                {props.onCloseAll && (visible.length > 0 || isLiveAccount) && (
                   <button type="button" onClick={props.onCloseAll} className="pt-btn-close"
                     style={{ background: '#f85149', color: '#fff', borderColor: '#f85149', fontWeight: 700 }}>
                     ✕ Close All
