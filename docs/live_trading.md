@@ -122,6 +122,17 @@ logic is byte-for-byte unchanged when paper/disarmed:
 All orders use limit orders at the engine's computed price and carry a
 `client_order_id` derived from the position id + leg + stage (idempotency).
 
+> [!NOTE]
+> **Price sanitization (`cleanLimitPrice`).** Every limit/stop price is rounded to 4
+> decimals and stringified before it is sent to Delta. Computed prices carry
+> float-representation noise (e.g. `2.7 − 2 === 0.7000000000000002`); sending that raw
+> makes Delta reject the order with **`bad_schema`** — a silent failure that, on the
+> entry SELL leg, could leave an **orphan long** (the BUY filled, the SELL rejected).
+> Inputs are already tick-aligned (exchange bid/ask/mark ± integer offsets), so rounding
+> only strips the noise (`0.7000000000000002 → "0.7"`, `0.05 → "0.05"`). Applied
+> centrally in `liveExecution.js` to entry buy/sell, the resting short buy-back
+> (`closeLeg`), order edits (`editOrder`), and stops (`placeStop`).
+
 **Safety layer**
 
 - `DELTA_LIVE_DRYRUN` (default **true**): intended orders are logged (`🧪 DRY-RUN…`)
@@ -198,11 +209,22 @@ points), so the spread is protected even if the engine is down:
 > [!NOTE]
 > **Exit Type / Exit Points are now per-schedule-window** (`effectiveConfig`, migration
 > `012`) with **active-window-governs** semantics. The bracket level is computed from the
-> **window active at entry**. When the window later flips, the engine's own spot-cross
-> catch-all follows the new active window (it market-closes at the new level while the
-> engine is up), but the **exchange bracket is NOT auto-moved** — it stays at the entry
-> level as an engine-down backstop. So live exits track the active window whenever the
-> engine is running, with the entry-level bracket as the fallback.
+> **window active at entry**. When the window later flips (or you change exitType in the
+> filters), the engine's own spot-cross catch-all follows the new active window (it
+> market-closes at the new level while the engine is up), but the **exchange bracket is
+> NOT auto-moved** — it stays at the entry level as an engine-down backstop. So live
+> exits track the active window whenever the engine is running, with the entry-level
+> bracket as the fallback.
+>
+> **The bracket-move resync was removed (was never functional).** `resyncRestingOrders`
+> previously tried to `editBracket` the SL/TP to the new level on config change. Delta's
+> `PUT /v2/orders/bracket` requires the **trigger price + a matching limit price + the
+> parent order id**, so those partial edits only ever failed with `bad_schema` (spamming
+> the error log on every restart, since startup passed an all-`null` old config that
+> forced the branch). It was dropped — no functional loss, since it never actually moved
+> a bracket. `resyncRestingOrders` now only re-syncs the **short buy-back limit price**
+> (`shortExitPrice` → `editOrder`), which works. exitType/exitPoints changes still take
+> effect live via the engine's spot-cross catch-all (reads `effectiveConfig` every ~1s).
 
 - **Long buy** → `bracket_take_profit_price = exitLevel`
 - **Short sell** → `bracket_stop_loss_price = exitLevel`
@@ -282,6 +304,46 @@ Live accounts show controls in the account strip (paper accounts are unaffected)
 
 Both flags live on `paper_trading_accounts`; the engine picks them up via Realtime.
 
+### Manual actions — Close All, per-leg close, order cancel
+
+The dashboard requests exchange-side actions by writing a row/flag; the engine (never
+the browser) executes them on Delta and cleans up:
+
+| Action | UI writes | Engine does |
+| --- | --- | --- |
+| **Per-leg close (✕)** | inserts `delta_close_requests` (`account_id`, `product_symbol`) | reduce-only market-close of exactly that leg (incl. orphans the engine no longer tracks), books, deletes the row |
+| **Order cancel (✕)** | inserts `delta_cancel_requests` (`order_id`, `product_id`) | cancels that order on Delta, deletes the row |
+| **Close All** | sets `paper_trading_accounts.close_all_requested = true` | one-shot native `close_all` flatten (falls back to per-position closes), books + deletes all |
+| **Manual exit** | sets `active_positions.exit_requested = true` | cancel resting + market-close the legs, books Manual Exit, deletes the row |
+
+> [!IMPORTANT]
+> **Close All is DB-polled, not Realtime-only.** It used to fire only when a Realtime
+> `close_all_requested` event reached the engine's in-memory `accountState`. The 30s
+> fallback account-sync omits that column (and replaces `accountState` with a partial
+> row), so a **missed Realtime event silently dropped the Close All** — the flag stayed
+> `true` in the DB and nothing happened. `processCloseAll` now **reads the flag straight
+> from the DB every tick** (like the per-leg close), so it's reliable regardless of
+> Realtime delivery. Per-leg close / cancel / manual-exit were already DB-polled.
+
+> [!NOTE]
+> **Consolidated request poll (multi-account egress).** These four request types are no
+> longer polled per-account (which was 4 queries × N accounts every 1.5s). A single
+> **manager-level** poll (`pollAllRequests`) runs 4 **batched** queries across all
+> running accounts every 1.5s and dispatches only to the accounts with pending work — so
+> idle request-poll load stays flat as the account count grows (4 queries/tick instead
+> of 4×N). Manual-action responsiveness is unchanged (~1.5s). After executing, each
+> handler republishes the live snapshot immediately (see [the data pipeline](#live-exchange-data-pipeline-dashboard-tabs)).
+
+> [!NOTE]
+> **Admins can now run these on managed accounts (migration `016`).** The `delta_close_requests`,
+> `delta_cancel_requests`, `active_positions`, and `paper_trading_accounts` RLS policies
+> only allowed the account **owner** (`user_id = auth.uid()`) — so an admin acting on a
+> client's account had its insert/update silently rejected (`new row violates row-level
+> security policy`, or a 0-row no-op for the flag updates). Migration `016` adds an
+> **admin bypass** to those client policies (matching the admin model the credential RPCs
+> already use), so admins can close/cancel/exit/Close-All and edit config/schedules on
+> any account they manage.
+
 ### Live entry price offsets
 
 Live entry orders are placed as marketable limits with a premium-$ offset so they
@@ -309,13 +371,22 @@ bookkeeping.
     `updated_at` (liveness; UI marks stale after 120s). Quiet markets therefore emit a
     Realtime broadcast + UI refetch roughly every 60s instead of every 20s, while a
     real fill/order/position change still publishes immediately.
+  - **Immediate republish after a manual action:** the engine republishes the snapshot
+    **right after** it processes a per-leg close, Close All, order cancel, or manual
+    exit — so the closed row clears from the UI within ~1s instead of lingering until
+    the next 20s tick. (Without this, the UI's optimistic removal was undone by a
+    refetch of the still-stale snapshot, making the position visibly **reappear then
+    vanish** — the "close glitch".)
 - **Table** — `live_exchange_state` (migration `009_live_exchange_state.sql`): one row
   per account (`positions`, `orders`, `stop_orders`, `fills`, `balances` JSONB +
   `wallet` numeric + `updated_at`). RLS: authenticated read, `service_role` write;
   `ON DELETE CASCADE` with the account.
-- **UI** — `PaperTrading.jsx` is **Realtime-driven only** (the redundant 20s poll was
-  removed — another egress cut): it refetches the row on each Realtime change and once
-  when the tab regains focus. `TradingWorkspace.jsx` renders Delta data in each tab
+- **UI** — `PaperTrading.jsx` is **Realtime-driven** (instant refetch on each Realtime
+  change + on tab focus), backed by a **30s safety-net poll** for a missed Realtime
+  message. The old every-**5s** snapshot refetch (which re-pulled the heavy
+  positions/orders/fills payload 12×/min per tab) was throttled to this 30s net — a
+  large egress cut with no visible staleness, since Realtime still drives immediacy.
+  `TradingWorkspace.jsx` renders Delta data in each tab
   **only when** the account is
   live **and** the engine is placing real orders (`engineDryRun === false`) **and**
   the snapshot is fresh. Otherwise the tabs fall back to their engine-derived views —

@@ -63,6 +63,24 @@ Each account runs in complete isolation — its own WebSocket, its own positions
 >
 > At the **process** level the same guarantee is enforced by PM2: `ecosystem.config.cjs` pins `exec_mode: 'fork'` + `instances: 1` (never cluster-spawn a second copy) and a `kill_timeout` long enough for the outgoing process to finish its graceful shutdown before a restart. The engine must **never** run as two OS processes against the same Supabase — that reproduces the same double-booking. See also [Duplicate Exit Prevention](#duplicate-exit-prevention-idempotent-writes).
 
+### Consolidated manual-action request poll (multi-account egress)
+
+Manual actions — **per-leg close** (`delta_close_requests`), **order cancel**
+(`delta_cancel_requests`), **Close All** (`paper_trading_accounts.close_all_requested`),
+and **manual exit** (`active_positions.exit_requested`) — are polled at the **manager
+level**, not per-account. A single `pollAllRequests` timer runs **4 batched queries**
+(one per table, filtered to all running account ids) every **1.5s** and dispatches to
+each account engine's `processRequests(flags)` **only** for the request types that
+actually have pending rows.
+
+> [!NOTE]
+> **Why:** previously every account engine ran its own 1.5s timer firing 4 queries — i.e.
+> `4 × N` queries/tick. At 18-20 accounts that was ~80 queries/1.5s (~4.6M/day) of mostly
+> **empty** reads, a dominant, constant source of Supabase egress. Consolidating to 4
+> batched queries/tick (~230K/day) keeps idle load **flat as accounts scale**, with the
+> same ~1.5s responsiveness. After executing an action, the handler republishes the live
+> snapshot immediately (see [live_trading.md](live_trading.md#manual-actions--close-all-per-leg-close-order-cancel)).
+
 ---
 
 ## Engine Startup
@@ -798,7 +816,24 @@ Two roles exist:
 | Role | Capabilities |
 |------|-------------|
 | `client` | Can only see and manage accounts linked to their own `user_id` |
-| `admin` | Can see all accounts across all users; can assign any account owner during creation |
+| `admin` | Can see all accounts across all users; can assign any account owner during creation; **can manage (write to) any account, not just owned ones** |
+
+> [!IMPORTANT]
+> **Admin write access — migration `016_admin_manage_accounts.sql`.** The client-facing
+> RLS policies on `paper_trading_accounts`, `paper_trading_config`,
+> `paper_trading_schedules`, `active_positions`, `trade_history`, `delta_close_requests`,
+> and `delta_cancel_requests` originally allowed only the account **owner**
+> (`user_id = auth.uid()`). Admins could *see* other users' accounts (the fetch query
+> drops the `user_id` filter for admins) but **any write silently failed** — an INSERT
+> raised `new row violates row-level security policy`, and a flag UPDATE (pause,
+> `close_all_requested`, config save) matched **0 rows with no error** (an RLS-filtered
+> UPDATE is a silent no-op), so the UI showed the change optimistically while the DB
+> never changed. Migration `016` adds an **admin bypass**
+> (`OR EXISTS (SELECT 1 FROM profiles WHERE id = auth.uid() AND role = 'admin')`) to each
+> of those policies — the same inline admin check the existing "Admins can manage all
+> profiles" policy uses — so admins can now pause, close, cancel, Close-All, manually
+> exit, and edit config/schedules on any managed account. Only ADDS permission (owner
+> access is unchanged); service-role policies are untouched.
 
 ### Account Management
 
