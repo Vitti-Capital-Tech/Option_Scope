@@ -116,9 +116,13 @@ export async function getBalance(creds) {
  * the caller separates them by `stop_order_type`. `states` filters by order state
  * (comma-joined), defaulting to still-working orders.
  */
-export async function getLiveOrders(creds, { states = 'open,pending' } = {}) {
-  const query = states ? `?states=${encodeURIComponent(states)}` : '';
-  return signedRequest(creds, 'GET', '/v2/orders', { query });
+export async function getLiveOrders(creds, { states = 'open,pending', pageSize = 100 } = {}) {
+  // Delta paginates /v2/orders (small default page) — request a large page so we
+  // get ALL working orders, otherwise later brackets (e.g. TP legs) get truncated.
+  const params = new URLSearchParams();
+  if (states) params.set('states', states);
+  params.set('page_size', String(pageSize));
+  return signedRequest(creds, 'GET', '/v2/orders', { query: `?${params.toString()}` });
 }
 
 /** Recent fills (individual leg executions), newest first, capped at `pageSize`. */
