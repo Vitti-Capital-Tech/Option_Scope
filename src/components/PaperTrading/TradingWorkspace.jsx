@@ -425,12 +425,9 @@ function LiveOrderHistoryTab({ orderHistory }) {
           const cv = num(o.product?.contract_value) ?? 0.001;
           const unit = o.product?.underlying_asset?.symbol || 'BTC';
           const sizeBtc = parseFloat((size * cv).toFixed(6)) * (sell ? -1 : 1);
-          // Realized PnL: Delta carries it on the order record under a few possible
-          // names depending on endpoint version; fall back through them, then meta.
-          const rpnl = num(
-            o.realized_pnl ?? o.realised_pnl ??
-            o.meta_data?.realized_pnl ?? o.meta_data?.pnl ?? o.pnl,
-          );
+          // Realized PnL (USD) lives in meta_data.pnl on Delta's order-history
+          // record (only present once a leg realizes, e.g. a reduce-only close).
+          const rpnl = num(o.meta_data?.pnl ?? o.realized_pnl ?? o.realised_pnl);
           const status = statusLabel(o);
           const isCall = (o.product_symbol || '').startsWith('C-');
           const sideLabel = `${o.reduce_only ? 'Close' : 'Open'} ${cap(o.side)}`;
