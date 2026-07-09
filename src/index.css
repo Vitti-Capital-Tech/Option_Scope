@@ -5782,3 +5782,8 @@ body.light-theme .pt-btn-apply.active {
     font-size: 12px;
   }
 }
+/* Delta-style tables (Positions/Orders/Stops) — right-align numerics, tight rows */
+.pt-delta-table th.r, .pt-delta-table td.r { text-align: right; }
+.pt-delta-table th, .pt-delta-table td { white-space: nowrap; }
+.pt-delta-table .pt-instrument { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.pt-delta-table .pt-btn-close { padding: 2px 8px; line-height: 1.2; }

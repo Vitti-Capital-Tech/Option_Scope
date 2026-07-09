@@ -379,6 +379,74 @@ function LiveRiskMargin({ positions, wallet }) {
 }
 
 // ── Positions (live) — raw margined positions from Delta ───────────────────
+// Delta-style positions table — mirrors the columns/layout of Delta's Positions
+// tab (Symbol · Size · Notional · Entry · TP/SL · Index · Mark · Margin · UPNL ·
+// Action), rendering the live exchange snapshot per leg. Close (×) maps the leg
+// back to its engine position so it exits the whole spread.
+function DeltaPositionsTable({ positions, enginePositions, onExitPosition }) {
+  const open = (positions || []).filter(p => Number(p.size) !== 0);
+  if (open.length === 0) {
+    return <EmptyPanel icon="positions" title="No Open Positions"
+      desc="Open positions reported by Delta Exchange appear here. The engine enters them automatically when conditions are met." />;
+  }
+  const posBySymbol = {};
+  for (const ep of (enginePositions || [])) {
+    if (ep.buyLeg?.symbol) posBySymbol[ep.buyLeg.symbol] = ep;
+    if (ep.sellLeg?.symbol) posBySymbol[ep.sellLeg.symbol] = ep;
+  }
+  const num = (v) => (v == null || v === '' || Number.isNaN(Number(v)) ? null : Number(v));
+  return (
+    <div className="pt-table-scroll">
+      <table className="pt-table pt-delta-table">
+        <thead><tr>
+          <th>Symbol</th><th className="r">Size</th><th className="r">Notional</th>
+          <th className="r">Entry</th><th>TP / SL</th><th className="r">Index</th>
+          <th className="r">Mark</th><th className="r">Margin</th><th className="r">UPNL</th><th></th>
+        </tr></thead>
+        <tbody>
+          {open.map((p, i) => {
+            const size = num(p.size) || 0;
+            const isCall = /(^|[^A-Z])C-/.test(p.product_symbol || '') || (p.product_symbol || '').startsWith('C-');
+            const long = size > 0;
+            const pnl = num(p.unrealized_pnl ?? p.unrealised_pnl) ?? 0;
+            const notional = num(p.notional) ?? (num(p.mark_price) != null ? Math.abs(size) * num(p.mark_price) : null);
+            const tp = num(p.bracket_take_profit_price ?? p.take_profit_price);
+            const sl = num(p.bracket_stop_loss_price ?? p.stop_loss_price);
+            const enginePos = posBySymbol[p.product_symbol];
+            return (
+              <tr key={p.product_id ?? p.product_symbol ?? i} className={`pt-row-${isCall ? 'call' : 'put'}`}>
+                <td>
+                  <span className={`pt-legrail ${isCall ? 'call' : 'put'}`} />
+                  <span className="pt-instrument">{p.product_symbol || '—'}</span>
+                </td>
+                <td className="r"><span style={{ color: long ? 'var(--call)' : 'var(--put)', fontWeight: 700 }}>{long ? '+' : ''}{fmtNum(size, 0)}</span></td>
+                <td className="r">{notional != null ? `$${fmtNum(notional)}` : '—'}</td>
+                <td className="r">{fmtNum(p.entry_price)}</td>
+                <td>
+                  <span style={{ fontSize: 11 }}>
+                    <span style={{ color: 'var(--call)' }}>TP {tp != null ? tp : '—'}</span>
+                    <span style={{ color: 'var(--text-dim)' }}> · </span>
+                    <span style={{ color: 'var(--put)' }}>SL {sl != null ? sl : '—'}</span>
+                  </span>
+                </td>
+                <td className="r">{fmtNum(p.index_price)}</td>
+                <td className="r">{fmtNum(p.mark_price)}</td>
+                <td className="r">{num(p.margin) != null ? `$${fmtNum(p.margin)}` : '—'}</td>
+                <td className="r"><span className={`pt-pnl ${pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : 'zero'}`}>{pnl > 0 ? '+' : ''}{fmtNum(pnl)}</span></td>
+                <td className="r">
+                  {onExitPosition && enginePos
+                    ? <button onClick={() => onExitPosition(enginePos)} className="pt-btn-close" title="Close position">✕</button>
+                    : <span style={{ opacity: 0.35 }}>—</span>}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function LivePositionsTab({ positions, enginePositions, onExitPosition }) {
   const open = (positions || []).filter(p => Number(p.size) !== 0);
   if (open.length === 0) {
@@ -499,9 +567,13 @@ export default function TradingWorkspace(props) {
                   </button>
                 )}
               </div>
-              {/* Always the engine's positions here (reliable ids + Close per row).
-                  The Delta-leg snapshot drives the KPIs; the closeable list is the
-                  engine's tracked spreads, kept in sync by the reconcile. */}
+              {live ? (
+                <DeltaPositionsTable
+                  positions={live.positions}
+                  enginePositions={props.positions}
+                  onExitPosition={props.onExitPosition}
+                />
+              ) : (
               <ActivePositionsTable
                 positions={props.positions}
                 underlying={props.underlying}
@@ -526,6 +598,7 @@ export default function TradingWorkspace(props) {
                 emptyTitle="No Open Positions"
                 emptyDesc="Spread positions (long + short legs) appear here. The engine enters them automatically when conditions are met."
               />
+              )}
             </>
           )}
 
