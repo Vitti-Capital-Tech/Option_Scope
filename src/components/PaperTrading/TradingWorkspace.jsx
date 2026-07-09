@@ -379,6 +379,84 @@ function LiveFillsTab({ fills }) {
   );
 }
 
+// ── Order History (live) — Delta's real order-history feed ─────────────────
+// Mirrors Delta's Order History tab: every past order (filled + cancelled) with
+// side/status/qty/type/prices, cashflow, realized pnl, commission, reduce-only.
+// Read-only snapshot from `live_exchange_state.order_history`.
+function LiveOrderHistoryTab({ orderHistory }) {
+  if (!orderHistory?.length) {
+    return <EmptyPanel icon="history" title="No Order History"
+      desc="Filled and cancelled orders on Delta Exchange appear here, newest first." />;
+  }
+  const num = (v) => (v == null || v === '' || Number.isNaN(Number(v)) ? null : Number(v));
+  const cap = (s) => (s ? String(s).replace(/^\w/, c => c.toUpperCase()) : '—');
+
+  const statusLabel = (o) => {
+    const s = String(o.state || '').toLowerCase();
+    if (s === 'cancelled' || s === 'canceled') return 'Cancelled';
+    const filled = (num(o.size) || 0) - (num(o.unfilled_size) ?? 0);
+    if (s === 'closed') return filled > 0 ? 'Filled' : 'Cancelled';
+    return cap(s);
+  };
+  const statusColor = (label) => label === 'Filled' ? 'var(--call)' : label === 'Cancelled' ? 'var(--put)' : 'var(--text-dim)';
+  const typeLabel = (o) => {
+    const st = String(o.stop_order_type || '');
+    if (o.bracket_order || st) {
+      const kind = st.includes('take_profit') ? 'TP' : st.includes('stop_loss') ? 'SL' : null;
+      if (kind) return `Bracket - ${kind}`;
+    }
+    return String(o.order_type || '').replace('_order', '').replace(/^\w/, c => c.toUpperCase()) || '—';
+  };
+
+  return (
+    <div className="pt-table-scroll">
+      <table className="pt-table pt-delta-table"><thead><tr>
+        <th>Symbol</th><th>Side</th><th>Status</th><th className="r">Qty (Lot)</th>
+        <th className="r">Filled</th><th>Type</th><th className="r">Limit Price</th>
+        <th className="r">Trigger Price</th><th className="r">Exec Price</th><th className="r">Size</th>
+        <th className="r">Cashflow</th><th className="r">Realized PnL</th><th className="r">Fees (GST)</th>
+        <th className="r">Reduce Only</th><th className="r">Order ID</th><th className="r">Time</th>
+      </tr></thead><tbody>
+        {orderHistory.map((o, i) => {
+          const size = num(o.size) || 0;
+          const sell = String(o.side) === 'sell';
+          const qty = sell ? -size : size;
+          const filled = Math.max(0, size - (num(o.unfilled_size) ?? 0));
+          const cv = num(o.product?.contract_value) ?? 0.001;
+          const unit = o.product?.underlying_asset?.symbol || 'BTC';
+          const sizeBtc = parseFloat((size * cv).toFixed(6)) * (sell ? -1 : 1);
+          const cashflow = num(o.cashflow ?? o.cash_flow);
+          const rpnl = num(o.realized_pnl ?? o.realised_pnl);
+          const fees = num(o.paid_commission ?? o.commission);
+          const status = statusLabel(o);
+          const isCall = (o.product_symbol || '').startsWith('C-');
+          const sideLabel = `${o.reduce_only ? 'Close' : 'Open'} ${cap(o.side)}`;
+          return (
+            <tr key={o.id ?? `${o.client_order_id}-${i}`} className={`pt-row-${isCall ? 'call' : 'put'}`}>
+              <td><span className={`pt-legrail ${isCall ? 'call' : 'put'}`} /><span className="pt-instrument">{o.product_symbol || '—'}</span></td>
+              <td><span style={{ color: sell ? 'var(--put)' : 'var(--call)', fontWeight: 600 }}>{sideLabel}</span></td>
+              <td><span style={{ color: statusColor(status), fontWeight: 600 }}>{status}</span></td>
+              <td className="r"><span style={{ color: sell ? 'var(--put)' : 'var(--call)', fontWeight: 700 }}>{qty > 0 ? '+' : ''}{qty}</span></td>
+              <td className="r">{fmtNum(filled, 0)}</td>
+              <td>{typeLabel(o)}</td>
+              <td className="r">{o.limit_price ? fmtNum(o.limit_price) : '—'}</td>
+              <td className="r">{o.stop_price ? fmtNum(o.stop_price) : '—'}</td>
+              <td className="r">{o.average_fill_price ? fmtNum(o.average_fill_price) : '—'}</td>
+              <td className="r"><span style={{ color: sell ? 'var(--put)' : 'var(--call)' }}>{sizeBtc > 0 ? '+' : ''}{sizeBtc} {unit}</span></td>
+              <td className="r">{cashflow != null ? `${fmtNum(cashflow)} USD` : '—'}</td>
+              <td className="r">{rpnl != null ? <span className={`pt-pnl ${rpnl > 0 ? 'positive' : rpnl < 0 ? 'negative' : 'zero'}`}>{rpnl > 0 ? '+' : ''}{fmtNum(rpnl)}</span> : '—'}</td>
+              <td className="r">{fees != null ? `${fmtNum(fees)} USD` : '—'}</td>
+              <td className="r">{o.reduce_only ? '✓' : '✕'}</td>
+              <td className="r"><span className="pt-dim" style={{ fontSize: 11 }}>{o.id ?? '—'}</span></td>
+              <td className="r"><span className="pt-dim" style={{ fontSize: 11 }}>{fmtTs(o.created_at)}</span></td>
+            </tr>
+          );
+        })}
+      </tbody></table>
+    </div>
+  );
+}
+
 // ── Risk & Margin (live) — real margin/liquidation from Delta ──────────────
 function LiveRiskMargin({ positions, wallet }) {
   const open = (positions || []).filter(p => Number(p.size) !== 0);
@@ -593,8 +671,9 @@ export default function TradingWorkspace(props) {
   // account whose engine is armed and NOT in dry-run (engineDryRun === false),
   // with a fresh snapshot. In dry-run the engine only simulates, so Delta reports
   // nothing real; the engine/paper views are the truth and we fall back to them.
-  // Paper accounts and stale/absent snapshots also fall back. Order History stays
-  // engine-sourced for both — it's the strategy's closed-trade ledger.
+  // Paper accounts and stale/absent snapshots also fall back. Order History also
+  // mirrors Delta's real order-history feed when live; otherwise it shows the
+  // engine's closed-trade ledger (paper / dry-run).
   const useLive = isLiveAccount && engineDryRun === false && !!liveExchangeState;
   const live = useLive ? liveExchangeState : null;
   const liveOpenLegs = live ? (live.positions || []).filter(p => Number(p.size) !== 0).length : null;
@@ -604,7 +683,7 @@ export default function TradingWorkspace(props) {
     { key: 'open', label: 'Open Orders', icon: 'open', count: live ? (live.orders?.length ?? 0) : longCount },
     { key: 'stop', label: 'Stop Orders', icon: 'stop', count: live ? (live.stop_orders?.length ?? 0) : spreadCount },
     { key: 'fills', label: 'Fills', icon: 'fills', count: live ? (live.fills?.length ?? 0) : null },
-    { key: 'history', label: 'Order History', icon: 'history', count: histCount },
+    { key: 'history', label: 'Order History', icon: 'history', count: live ? (live.order_history?.length ?? 0) : histCount },
   ];
 
   return (
@@ -746,6 +825,9 @@ export default function TradingWorkspace(props) {
           )}
 
           {tab === 'history' && (
+            live ? (
+              <LiveOrderHistoryTab orderHistory={live.order_history} />
+            ) : (
             <TradeHistoryTable
               filteredTradeHistory={props.filteredTradeHistory}
               historyFilterDate={props.historyFilterDate}
@@ -762,6 +844,7 @@ export default function TradingWorkspace(props) {
               tradeHistory={props.tradeHistory || []}
               embedded
             />
+            )
           )}
 
           {tab === 'risk' && (

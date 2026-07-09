@@ -2727,8 +2727,9 @@ async function startSingleAccountEngine(account) {
     const ord = (s.orders || []).map(o => `${o.id}:${o.limit_price ?? o.price ?? ''}:${o.size}:${o.state ?? ''}`).sort().join('|');
     const stp = (s.stopOrders || []).map(o => `${o.id}:${o.stop_price ?? o.limit_price ?? ''}:${o.size}:${o.state ?? ''}`).sort().join('|');
     const fills = `${(s.fills || []).length}:${(s.fills || [])[0]?.id ?? ''}`;
+    const hist = `${(s.orderHistory || []).length}:${(s.orderHistory || [])[0]?.id ?? ''}`;
     const wallet = s.wallet != null ? Number(s.wallet).toFixed(2) : '';
-    return `${pos}#${ord}#${stp}#${fills}#${wallet}`;
+    return `${pos}#${ord}#${stp}#${fills}#${hist}#${wallet}`;
   };
   // Only re-publish when the structure changed, else at most once per keepalive window.
   // This turns a full-snapshot Realtime broadcast + UI refetch every 20s (per open tab)
@@ -2752,6 +2753,7 @@ async function startSingleAccountEngine(account) {
         orders: snap.orders,
         stop_orders: snap.stopOrders,
         fills: snap.fills,
+        order_history: snap.orderHistory,
         balances: snap.balances,
         wallet: snap.wallet,
       }, { onConflict: 'account_id' });

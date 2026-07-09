@@ -1862,7 +1862,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     try {
       const { data, error } = await supabase
         .from('live_exchange_state')
-        .select('updated_at, positions, orders, stop_orders, fills, balances, wallet')
+        .select('updated_at, positions, orders, stop_orders, fills, order_history, balances, wallet')
         .eq('account_id', activeAccountId)
         .maybeSingle();
       if (error || !data) { setLiveExchangeState(null); return; }

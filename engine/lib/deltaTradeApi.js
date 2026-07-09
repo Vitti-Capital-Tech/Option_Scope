@@ -130,3 +130,14 @@ export async function getFills(creds, { pageSize = 50 } = {}) {
   const query = `?page_size=${encodeURIComponent(pageSize)}`;
   return signedRequest(creds, 'GET', '/v2/fills', { query });
 }
+
+/**
+ * Order history — every past order for the account (filled + cancelled), newest
+ * first. This is Delta's Order History feed: each record carries execution price,
+ * cashflow, realized pnl, commission, reduce-only, etc. Used to mirror Delta's
+ * Order History tab in the UI (read-only). `pageSize` caps the page.
+ */
+export async function getOrderHistory(creds, { pageSize = 100 } = {}) {
+  const query = `?page_size=${encodeURIComponent(pageSize)}`;
+  return signedRequest(creds, 'GET', '/v2/orders/history', { query });
+}

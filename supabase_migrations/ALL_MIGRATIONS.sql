@@ -744,3 +744,9 @@ CREATE POLICY "Users manage cancel requests of their own accounts"
         OR EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.role = 'admin')
     );
 
+
+-- ─── 017_live_order_history.sql ───
+-- Adds order_history JSONB to live_exchange_state so the UI's Order History tab
+-- can mirror Delta's real order-history feed for armed live accounts. Additive.
+ALTER TABLE public.live_exchange_state
+    ADD COLUMN IF NOT EXISTS order_history JSONB NOT NULL DEFAULT '[]'::jsonb;

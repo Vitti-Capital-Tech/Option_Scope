@@ -16,7 +16,7 @@
  * `sellQty` for the short). Validate the dry-run order log against your intended
  * real sizes BEFORE arming an account.
  */
-import { placeOrder, cancelOrder, editOrder, editBracket, closeAllPositions, getLivePositions, getBalance, getLiveOrders, getFills } from './deltaTradeApi.js';
+import { placeOrder, cancelOrder, editOrder, editBracket, closeAllPositions, getLivePositions, getBalance, getLiveOrders, getFills, getOrderHistory } from './deltaTradeApi.js';
 import { log, logWarn, logError } from './utils.js';
 
 // Default ON. Only the literal string 'false' (any case) disarms the dry-run.
@@ -443,15 +443,16 @@ export function createLiveExecutor(getCtx) {
       if (!armed()) return null;
       const { accountName, creds } = getCtx();
       if (!creds?.apiKey) return null;
-      const [posR, ordR, fillR, balR] = await Promise.allSettled([
+      const [posR, ordR, fillR, balR, histR] = await Promise.allSettled([
         getLivePositions(creds),
         getLiveOrders(creds),
         getFills(creds),
         getBalance(creds),
+        getOrderHistory(creds),
       ]);
       const arr = (r) => (r.status === 'fulfilled' && Array.isArray(r.value) ? r.value : []);
-      if ([posR, ordR, fillR, balR].some(r => r.status === 'rejected')) {
-        const first = [posR, ordR, fillR, balR].find(r => r.status === 'rejected');
+      if ([posR, ordR, fillR, balR, histR].some(r => r.status === 'rejected')) {
+        const first = [posR, ordR, fillR, balR, histR].find(r => r.status === 'rejected');
         logWarn(`[${accountName}] snapshot() partial failure: ${first?.reason?.message || 'unknown'}`);
       }
       const allOrders = arr(ordR);
@@ -462,6 +463,7 @@ export function createLiveExecutor(getCtx) {
         orders: allOrders.filter(o => !isStop(o)),
         stopOrders: allOrders.filter(isStop),
         fills: arr(fillR),
+        orderHistory: arr(histR),
         balances,
         wallet: extractBalance(balances),
       };
