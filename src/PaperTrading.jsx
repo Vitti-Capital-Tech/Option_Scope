@@ -249,6 +249,16 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const [engineMaxPositions, setEngineMaxPositions] = useState(null); // engine's max positions (base + windows)
   const [engineAllocationPct, setEngineAllocationPct] = useState(null); // engine's live allocation %
   const [liveExchangeState, setLiveExchangeState] = useState(null); // real Delta snapshot (live accounts only)
+  // On reload the live-vs-paper decision (mode + engineDryRun + snapshot) resolves
+  // async, so the paper tables briefly flash before the live tables. Track whether
+  // the first heartbeat AND snapshot probe have completed for the active account;
+  // until then a live account shows a loading state instead of the paper fallback.
+  const [liveViewResolved, setLiveViewResolved] = useState(false);
+  const liveProbeRef = useRef({ hb: false, snap: false });
+  const markLiveProbe = useCallback((key) => {
+    liveProbeRef.current[key] = true;
+    if (liveProbeRef.current.hb && liveProbeRef.current.snap) setLiveViewResolved(true);
+  }, []);
 
   const [includeFees, setIncludeFees] = useState(true);
   const [positions, setPositions] = useState([]);
@@ -1815,8 +1825,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       if (row.last_heartbeat) {
         setLastEvaluated(new Date(row.last_heartbeat).getTime());
       }
-    } catch (e) { }
-  }, [activeAccountId]);
+    } catch (e) { } finally { markLiveProbe('hb'); }
+  }, [activeAccountId, markLiveProbe]);
 
   useEffect(() => {
     let interval = null;
@@ -1887,7 +1897,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     return out;
   }, []);
   const fetchLiveExchangeState = useCallback(async () => {
-    if (!activeAccountId || !isActiveLive) { setLiveExchangeState(null); return; }
+    if (!activeAccountId || !isActiveLive) { setLiveExchangeState(null); markLiveProbe('snap'); return; }
     try {
       const { data, error } = await supabase
         .from('live_exchange_state')
@@ -1902,7 +1912,15 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       const age = Date.now() - new Date(data.updated_at).getTime();
       setLiveExchangeState(age < HEARTBEAT_STALE_THRESHOLD ? applyCloseGuard(data) : null);
     } catch (e) { setLiveExchangeState(null); }
-  }, [activeAccountId, isActiveLive, applyCloseGuard]);
+    finally { markLiveProbe('snap'); }
+  }, [activeAccountId, isActiveLive, applyCloseGuard, markLiveProbe]);
+
+  // Reset the resolved gate whenever the selected account changes so we re-probe
+  // (and re-show the loading state) instead of flashing the previous view.
+  useEffect(() => {
+    liveProbeRef.current = { hb: false, snap: false };
+    setLiveViewResolved(false);
+  }, [activeAccountId]);
 
   // Manual "Sync" — pull everything fresh on demand (no page reload needed).
   const [isSyncing, setIsSyncing] = useState(false);
@@ -2550,6 +2568,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               isLiveAccount={activeAccount?.mode === 'live'}
               liveExchangeState={liveExchangeState}
               engineDryRun={engineDryRun}
+              liveLoading={activeAccount?.mode === 'live' && !liveViewResolved}
             />
           </>
         )}

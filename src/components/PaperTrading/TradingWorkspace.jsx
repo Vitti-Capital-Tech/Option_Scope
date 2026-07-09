@@ -30,6 +30,22 @@ function exitTrigger(p, exitType, exitPoints) {
   return { triggerPrice, operator, isCall };
 }
 
+// ── Loading state (live view still resolving on reload) ───────────────────
+function LoadingPanel() {
+  return (
+    <div className="pt-empty">
+      <div className="pt-empty-icon idle">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="2"
+          strokeLinecap="round" strokeLinejoin="round" style={{ animation: 'spin 0.8s linear infinite' }}>
+          <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+        </svg>
+      </div>
+      <span className="pt-empty-title">Loading live data…</span>
+      <span className="pt-empty-desc">Fetching positions, orders and history from Delta Exchange.</span>
+    </div>
+  );
+}
+
 // ── Empty state ─────────────────────────────────────────────────────────
 function EmptyPanel({ icon, title, desc }) {
   return (
@@ -655,7 +671,7 @@ function LivePositionsTab({ positions, enginePositions, onExitPosition }) {
 
 // ── Workspace shell ───────────────────────────────────────────────────────
 export default function TradingWorkspace(props) {
-  const { positions, underlying, filteredTradeHistory, isLiveAccount, liveExchangeState, engineDryRun } = props;
+  const { positions, underlying, filteredTradeHistory, isLiveAccount, liveExchangeState, engineDryRun, liveLoading } = props;
 
   const [tab, setTab] = useState('positions');
 
@@ -676,12 +692,16 @@ export default function TradingWorkspace(props) {
   const live = useLive ? liveExchangeState : null;
   const liveOpenLegs = live ? (live.positions || []).filter(p => Number(p.size) !== 0).length : null;
 
+  // While a live account's view is still resolving, don't show paper-derived
+  // counts (they'd flash the wrong numbers before the live tables load).
+  const showLoading = !!liveLoading && !live;
+  const paperCount = (n) => (showLoading ? null : n);
   const TABS = [
-    { key: 'positions', label: 'Positions', icon: 'positions', count: live ? liveOpenLegs : spreadCount },
-    { key: 'open', label: 'Open Orders', icon: 'open', count: live ? (live.orders?.length ?? 0) : longCount },
-    { key: 'stop', label: 'Stop Orders', icon: 'stop', count: live ? (live.stop_orders?.length ?? 0) : spreadCount },
+    { key: 'positions', label: 'Positions', icon: 'positions', count: live ? liveOpenLegs : paperCount(spreadCount) },
+    { key: 'open', label: 'Open Orders', icon: 'open', count: live ? (live.orders?.length ?? 0) : paperCount(longCount) },
+    { key: 'stop', label: 'Stop Orders', icon: 'stop', count: live ? (live.stop_orders?.length ?? 0) : paperCount(spreadCount) },
     { key: 'fills', label: 'Fills', icon: 'fills', count: live ? (live.fills?.length ?? 0) : null },
-    { key: 'history', label: 'Order History', icon: 'history', count: live ? (live.order_history?.length ?? 0) : histCount },
+    { key: 'history', label: 'Order History', icon: 'history', count: live ? (live.order_history?.length ?? 0) : paperCount(histCount) },
   ];
 
   return (
@@ -704,6 +724,8 @@ export default function TradingWorkspace(props) {
         </div>
 
         <div className="pt-workspace-body">
+          {showLoading ? <LoadingPanel /> : (
+          <>
           {tab === 'positions' && (
             <>
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, padding: '8px 12px 0' }}>
@@ -858,6 +880,8 @@ export default function TradingWorkspace(props) {
                 includeFees={props.includeFees}
               />
             )
+          )}
+          </>
           )}
         </div>
       </div>
