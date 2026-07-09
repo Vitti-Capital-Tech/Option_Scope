@@ -765,18 +765,23 @@ async function startSingleAccountEngine(account) {
   // market-close the legs (no-op for paper / dry-run / disarmed) — books a Manual
   // Exit and deletes the row. This prevents the browser from deleting a live DB row
   // while the real Delta position stays open.
-  async function manualExitPosition(pos) {
+  async function manualExitPosition(pos, opts = {}) {
+    // skipExchangeClose: the account was already flattened by a native close_all,
+    // so the legs are gone — just cancel resting orders, book, and delete.
+    const { skipExchangeClose = false } = opts;
     lastDbWrite = Date.now();
     const tBuy = tickerData[pos.buyLeg.symbol];
     const tSell = tickerData[pos.sellLeg.symbol];
     const exitLong = tBuy?.bid ?? tBuy?.markPrice ?? tBuy?.lastPrice ?? pos.entryBuyPrice;
     const exitShort = tSell?.ask ?? tSell?.markPrice ?? tSell?.lastPrice ?? pos.entrySellPrice;
     try { await cancelRestingOrders(pos); } catch (e) { /* best-effort */ }
-    if (pos.sellQty > 0) {
-      await live.closeLeg({ symbol: pos.sellLeg.symbol, side: 'buy', contracts: shortContracts(pos.sellQty), price: exitShort, tag: `${pos.id}-MXS` });
-    }
-    if ((pos.buyLeg.lotSize || 0) > 0) {
-      await live.closeLeg({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: longContracts(pos.buyLeg), price: exitLong, tag: `${pos.id}-MXB` });
+    if (!skipExchangeClose) {
+      if (pos.sellQty > 0) {
+        await live.closeLeg({ symbol: pos.sellLeg.symbol, side: 'buy', contracts: shortContracts(pos.sellQty), price: exitShort, tag: `${pos.id}-MXS` });
+      }
+      if ((pos.buyLeg.lotSize || 0) > 0) {
+        await live.closeLeg({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: longContracts(pos.buyLeg), price: exitLong, tag: `${pos.id}-MXB` });
+      }
     }
     const longLot = pos.buyLeg.lotSize || 0;
     const shortLot = pos.sellLeg.lotSize || 1;
@@ -817,6 +822,33 @@ async function startSingleAccountEngine(account) {
         if (ids.has(pos.id)) await manualExitPosition(pos);
       }
     } catch (e) { /* non-fatal */ }
+  }
+
+  // "Close All" — the dashboard sets paper_trading_accounts.close_all_requested.
+  // Armed real: flatten the account in ONE Delta call (close_all); if that fails,
+  // fall back to per-position closes. Then cancel resting orders, book, delete all.
+  async function processCloseAll() {
+    if (!accountState.close_all_requested) return;
+    // Clear the flag first so we process it exactly once.
+    try {
+      await supabase.from('paper_trading_accounts').update({ close_all_requested: false }).eq('id', accountState.id);
+    } catch (e) { /* will retry next tick if this failed */ }
+    accountState.close_all_requested = false;
+
+    const open = [...positions];
+    if (open.length === 0) return;
+    log(`[${accountState.name}] 🧨 CLOSE ALL requested — ${open.length} position(s)`);
+
+    let flattened = false;
+    if (accountState.mode === 'live' && accountState.live_enabled) {
+      const r = await live.closeAll();          // one-shot flatten (dry-run logs only)
+      flattened = !!(r.ok && r.res);            // real success → legs already gone
+    }
+    // Book + delete every tracked position (cancels resting orders). Skip the
+    // per-leg close only when the native flatten actually executed.
+    for (const pos of open) {
+      await manualExitPosition(pos, { skipExchangeClose: flattened });
+    }
   }
 
   async function handleLiveRestingExit(pos, remaining, fillIds, eff = config) {
@@ -2560,9 +2592,12 @@ async function startSingleAccountEngine(account) {
   // active_positions quickly and stop blocking new entries.
   const reconcileTimer = setInterval(() => { reconcileOrphans().catch(() => {}); }, 12000);
 
-  // Manual-exit poll — every 1.5s, processes UI-requested exits (exit_requested flag),
-  // including "Close All" which flags every open position at once.
-  const manualExitTimer = setInterval(() => { processManualExits().catch(() => {}); }, 1500);
+  // Manual-exit poll — every 1.5s: per-position exits (exit_requested flag) and the
+  // account-level Close All (close_all_requested → native flatten + book/delete).
+  const manualExitTimer = setInterval(() => {
+    processManualExits().catch(() => {});
+    processCloseAll().catch(() => {});
+  }, 1500);
 
 
   log(`[${accountState.name}] Paper Trading Engine is LIVE`);

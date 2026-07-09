@@ -95,6 +95,17 @@ export async function getLivePositions(creds) {
   return signedRequest(creds, 'GET', '/v2/positions/margined');
 }
 
+/**
+ * Flatten ALL open positions on the account in one call. Closes both cross
+ * (portfolio) and isolated positions. Note: this closes every position on the
+ * account, not just the engine's — only use on a dedicated trading account.
+ */
+export async function closeAllPositions(creds) {
+  return signedRequest(creds, 'POST', '/v2/positions/close_all', {
+    body: { close_all_portfolio: true, close_all_isolated: true },
+  });
+}
+
 /** Wallet balances — cheapest authenticated read, used for connectivity checks. */
 export async function getBalance(creds) {
   return signedRequest(creds, 'GET', '/v2/wallet/balances');
