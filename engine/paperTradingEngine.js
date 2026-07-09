@@ -832,9 +832,12 @@ async function startSingleAccountEngine(account) {
         .eq('account_id', accountState.id).eq('exit_requested', true);
       if (error || !data || !data.length) return;
       const ids = new Set(data.map(r => r.id));
+      let exited = false;
       for (const pos of [...positions]) {
-        if (ids.has(pos.id)) await manualExitPosition(pos);
+        if (ids.has(pos.id)) { await manualExitPosition(pos); exited = true; }
       }
+      // Republish immediately so the closed position clears from the UI within ~1s.
+      if (exited) await publishLiveSnapshot().catch(() => {});
     } catch (e) { /* non-fatal */ }
   }
 
@@ -928,6 +931,10 @@ async function startSingleAccountEngine(account) {
         }
         await supabase.from('delta_close_requests').delete().eq('id', r.id);
       }
+      // Republish the snapshot immediately so the UI reflects the close within ~1s
+      // instead of waiting up to the 20s snapshot tick (which made a closed leg
+      // reappear on the UI's 5s refetch until then — the "glitch").
+      await publishLiveSnapshot().catch(() => {});
     } catch (e) { logError(`[${accountState.name}] processCloseRequests error:`, e); }
   }
 
@@ -939,6 +946,7 @@ async function startSingleAccountEngine(account) {
         .from('delta_cancel_requests').select('id, order_id, product_id, created_at')
         .eq('account_id', accountState.id);
       if (error || !data || !data.length) return;
+      let cancelled = false;
       for (const r of data) {
         // Skip stale cancel requests (backlog from a down engine) — just remove them.
         if (Date.now() - new Date(r.created_at).getTime() > 90000) {
@@ -947,7 +955,10 @@ async function startSingleAccountEngine(account) {
         }
         await live.cancelStop({ id: r.order_id, productId: r.product_id });
         await supabase.from('delta_cancel_requests').delete().eq('id', r.id);
+        cancelled = true;
       }
+      // Republish immediately so the cancelled order clears from the UI within ~1s.
+      if (cancelled) await publishLiveSnapshot().catch(() => {});
     } catch (e) { logError(`[${accountState.name}] processCancelRequests error:`, e); }
   }
 
@@ -955,7 +966,22 @@ async function startSingleAccountEngine(account) {
   // Armed real: flatten the account in ONE Delta call (close_all); if that fails,
   // fall back to per-position closes. Then cancel resting orders, book, delete all.
   async function processCloseAll() {
-    if (!accountState.close_all_requested) return;
+    // Read the flag straight from the DB rather than relying on in-memory
+    // accountState.close_all_requested. Realtime is the only path that sets that
+    // field (the 30s fallback sync selects a subset that omits it, and replaces
+    // accountState with a partial row that drops it), so a missed Realtime event
+    // would silently swallow a Close All. Polling here — like processCloseRequests
+    // — makes it reliable regardless of Realtime delivery.
+    let requested = false;
+    try {
+      const { data, error } = await supabase
+        .from('paper_trading_accounts')
+        .select('close_all_requested')
+        .eq('id', accountState.id).single();
+      if (error) return;
+      requested = !!data?.close_all_requested;
+    } catch { return; }
+    if (!requested) return;
     // Clear the flag first so we process it exactly once.
     try {
       await supabase.from('paper_trading_accounts').update({ close_all_requested: false }).eq('id', accountState.id);
@@ -977,6 +1003,9 @@ async function startSingleAccountEngine(account) {
     for (const pos of open) {
       await manualExitPosition(pos, { skipExchangeClose: flattened });
     }
+    // Republish immediately so the flattened account shows empty on the UI within
+    // ~1s rather than lingering until the next 20s snapshot tick.
+    await publishLiveSnapshot().catch(() => {});
   }
 
   async function handleLiveRestingExit(pos, remaining, fillIds, eff = config) {
