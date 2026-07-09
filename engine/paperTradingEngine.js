@@ -2766,14 +2766,12 @@ async function startSingleAccountEngine(account) {
   // active_positions quickly and stop blocking new entries.
   const reconcileTimer = setInterval(() => { reconcileOrphans().catch(() => {}); }, 30000);
 
-  // Manual-exit poll — every 1.5s: per-position exits (exit_requested flag) and the
-  // account-level Close All (close_all_requested → native flatten + book/delete).
-  const manualExitTimer = setInterval(() => {
-    processManualExits().catch(() => {});
-    processCloseAll().catch(() => {});
-    processCloseRequests().catch(() => {});
-    processCancelRequests().catch(() => {});
-  }, 1500);
+  // Manual-action requests (per-position exit, Close All, per-leg close, order
+  // cancel) are polled at the MANAGER level in ONE batched query across all
+  // accounts (see pollAllRequests) rather than per-account here. This keeps
+  // Supabase egress flat as the account count grows (4 queries/tick total instead
+  // of 4×N). The manager calls this engine's processRequests() only for the
+  // request types that actually have pending work — same ~1.5s responsiveness.
 
 
   log(`[${accountState.name}] Paper Trading Engine is LIVE`);
@@ -2789,7 +2787,6 @@ async function startSingleAccountEngine(account) {
       clearInterval(balanceTimer);
       clearInterval(liveSnapshotTimer);
       clearInterval(reconcileTimer);
-      clearInterval(manualExitTimer);
       if (wsHandle) { wsHandle.close(); wsHandle = null; }
       supabase.removeChannel(configChannel);
 
@@ -2807,6 +2804,15 @@ async function startSingleAccountEngine(account) {
       } else if (accountState.mode !== 'live') {
         liveCreds = null;
       }
+    },
+    // Called by the manager's consolidated request poll. `flags` tells us which
+    // request types the batched query found pending for THIS account, so we run
+    // only those handlers (each self-gates by re-querying + acting).
+    async processRequests(flags = {}) {
+      if (flags.manualEx) await processManualExits().catch(() => {});
+      if (flags.closeAll) await processCloseAll().catch(() => {});
+      if (flags.closeReq) await processCloseRequests().catch(() => {});
+      if (flags.cancelReq) await processCancelRequests().catch(() => {});
     }
   };
 }
@@ -2992,11 +2998,51 @@ export async function startPaperTradingEngine() {
   }
   const verifyTimer = setInterval(processVerifyRequests, 4000);
 
+  // ── Consolidated manual-action request poll ───────────────────────────
+  // One batched query PER TABLE across ALL running accounts every 1.5s, replacing
+  // each account engine's own 4-table poll. At N accounts this cuts idle
+  // request-poll egress from 4×N queries/tick to 4/tick, while keeping the same
+  // ~1.5s manual-action responsiveness. Only accounts with actual pending work
+  // get their handlers invoked.
+  async function pollAllRequests() {
+    const ids = Object.keys(runningEngines);
+    if (!ids.length) return;
+    try {
+      const [closeAllRes, closeReqRes, cancelReqRes, manualExRes] = await Promise.all([
+        supabase.from('paper_trading_accounts').select('id').eq('close_all_requested', true).in('id', ids),
+        supabase.from('delta_close_requests').select('account_id').in('account_id', ids),
+        supabase.from('delta_cancel_requests').select('account_id').in('account_id', ids),
+        supabase.from('active_positions').select('account_id').eq('exit_requested', true).in('account_id', ids),
+      ]);
+      const pending = {};
+      const mark = (rows, key, field) => {
+        for (const r of (rows || [])) {
+          const id = r[field];
+          if (!id) continue;
+          if (!pending[id]) pending[id] = {};
+          pending[id][key] = true;
+        }
+      };
+      mark(closeAllRes.data, 'closeAll', 'id');
+      mark(closeReqRes.data, 'closeReq', 'account_id');
+      mark(cancelReqRes.data, 'cancelReq', 'account_id');
+      mark(manualExRes.data, 'manualEx', 'account_id');
+      for (const [accountId, flags] of Object.entries(pending)) {
+        const engine = runningEngines[accountId];
+        if (engine?.processRequests) engine.processRequests(flags).catch(() => {});
+      }
+    } catch (e) {
+      logError('Consolidated request poll error:', e);
+    }
+  }
+  const requestPollTimer = setInterval(() => { pollAllRequests().catch(() => {}); }, 1500);
+
   return {
     async stop() {
       log('Shutting down all running account engines...');
       clearInterval(syncTimer);
       clearInterval(verifyTimer);
+      clearInterval(requestPollTimer);
       supabase.removeChannel(accountsChannel);
       for (const accountId of Object.keys(runningEngines)) {
         await stopAccountEngine(accountId);

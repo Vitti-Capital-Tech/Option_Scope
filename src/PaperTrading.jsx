@@ -1878,13 +1878,20 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   // 5s while the tab is visible, so open positions stay current without a manual
   // page refresh. Lightweight — skips the heavier trade-history/stats reads (those
   // refresh on trade close and via their own effects).
+  const liveSnapPollRef = useRef(0);
   useEffect(() => {
     if (!activeAccountId) return;
     const tick = () => {
       if (document.visibilityState !== 'visible') return;
       fetchSupabaseActivePositions();
       fetchHeartbeat();
-      if (isActiveLive) fetchLiveExchangeState();
+      // The live snapshot is Realtime-driven (subscription below refetches on every
+      // change), so we don't re-pull its heavy payload every 5s. Poll it only as a
+      // slow safety net (every 6th tick ≈ 30s) to catch a missed Realtime message.
+      if (isActiveLive) {
+        liveSnapPollRef.current = (liveSnapPollRef.current + 1) % 6;
+        if (liveSnapPollRef.current === 0) fetchLiveExchangeState();
+      }
     };
     const id = setInterval(tick, 5000);
     return () => clearInterval(id);
