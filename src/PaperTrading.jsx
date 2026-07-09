@@ -2335,8 +2335,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               triggerDisarmLive={triggerDisarmLive}
               triggerPauseAccount={triggerPauseAccount}
               triggerResumeAccount={triggerResumeAccount}
-              triggerCloseAll={triggerCloseAll}
-              openPositionsCount={positions.length}
               engineDryRun={engineDryRun}
               userProfile={userProfile}
               session={session}
@@ -2415,6 +2413,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               exitType={findActiveSchedule(schedules, now)?.exitType ?? config.exitType}
               exitPoints={findActiveSchedule(schedules, now)?.exitPoints ?? config.exitPoints}
               onExitPosition={(p) => setPositionToExit(p)}
+              onCloseAll={triggerCloseAll}
               filteredTradeHistory={filteredTradeHistory}
               historyFilterDate={historyFilterDate}
               setHistoryFilterDate={setHistoryFilterDate}

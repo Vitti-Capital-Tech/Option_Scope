@@ -379,21 +379,30 @@ function LiveRiskMargin({ positions, wallet }) {
 }
 
 // ── Positions (live) — raw margined positions from Delta ───────────────────
-function LivePositionsTab({ positions }) {
+function LivePositionsTab({ positions, enginePositions, onExitPosition }) {
   const open = (positions || []).filter(p => Number(p.size) !== 0);
   if (open.length === 0) {
     return <EmptyPanel icon="positions" title="No Open Positions"
       desc="Open positions reported by Delta Exchange appear here. The engine enters them automatically when conditions are met." />;
+  }
+  // Map a Delta leg (product_symbol) back to its owning engine position so the
+  // per-row Close exits the whole spread (both legs), not just that leg.
+  const posBySymbol = {};
+  for (const ep of (enginePositions || [])) {
+    if (ep.buyLeg?.symbol) posBySymbol[ep.buyLeg.symbol] = ep;
+    if (ep.sellLeg?.symbol) posBySymbol[ep.sellLeg.symbol] = ep;
   }
   return (
     <div className="pt-table-scroll">
       <table className="pt-table"><thead><tr>
         <th>Instrument</th><th>Side</th><th>Size</th><th>Entry</th>
         <th>Mark</th><th>Liq. Price</th><th>Margin</th><th>Unrealized P&L</th>
+        {onExitPosition && <th>Action</th>}
       </tr></thead><tbody>
         {open.map((p, i) => {
           const size = Number(p.size) || 0;
           const pnl = Number(p.unrealized_pnl ?? p.unrealised_pnl) || 0;
+          const enginePos = posBySymbol[p.product_symbol];
           return (
             <tr key={p.product_id ?? p.product_symbol ?? i}>
               <td><span className="pt-instrument">{p.product_symbol || '—'}</span></td>
@@ -404,6 +413,13 @@ function LivePositionsTab({ positions }) {
               <td><span style={{ color: 'var(--put)', fontWeight: 600 }}>{fmtNum(p.liquidation_price)}</span></td>
               <td>${fmtNum(p.margin)}</td>
               <td><span className={`pt-pnl ${pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : 'zero'}`}>{pnl > 0 ? '+' : ''}{fmtNum(pnl)}</span></td>
+              {onExitPosition && (
+                <td>
+                  {enginePos
+                    ? <button onClick={() => onExitPosition(enginePos)} className="pt-btn-close">Close</button>
+                    : <span style={{ opacity: 0.4, fontSize: 11 }}>—</span>}
+                </td>
+              )}
             </tr>
           );
         })}
@@ -464,8 +480,17 @@ export default function TradingWorkspace(props) {
 
         <div className="pt-workspace-body">
           {tab === 'positions' && (
-            live ? (
-              <LivePositionsTab positions={live.positions} />
+            <>
+              {props.onCloseAll && (live ? (live.positions || []).some(p => Number(p.size) !== 0) : visible.length > 0) && (
+                <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '8px 12px 0' }}>
+                  <button type="button" onClick={props.onCloseAll} className="pt-btn-close"
+                    style={{ background: '#f85149', color: '#fff', borderColor: '#f85149', fontWeight: 700 }}>
+                    ✕ Close All
+                  </button>
+                </div>
+              )}
+              {live ? (
+              <LivePositionsTab positions={live.positions} enginePositions={props.positions} onExitPosition={props.onExitPosition} />
             ) : (
               <ActivePositionsTable
                 positions={props.positions}
@@ -491,7 +516,8 @@ export default function TradingWorkspace(props) {
                 emptyTitle="No Open Positions"
                 emptyDesc="Spread positions (long + short legs) appear here. The engine enters them automatically when conditions are met."
               />
-            )
+            )}
+            </>
           )}
 
           {tab === 'open' && (
