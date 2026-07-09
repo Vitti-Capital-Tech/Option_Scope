@@ -407,6 +407,12 @@ function LiveOrderHistoryTab({ orderHistory }) {
   const num = (v) => (v == null || v === '' || Number.isNaN(Number(v)) ? null : Number(v));
   const cap = (s) => (s ? String(s).replace(/^\w/, c => c.toUpperCase()) : '—');
 
+  // Delta's Order History Time column is the order's updated_at (fill/close time),
+  // and Delta sorts by it descending — not by created_at or order id. Sort the same
+  // way (updated_at desc, id desc tiebreak) so our sequence + times match Delta.
+  const ts = (o) => new Date(o.updated_at ?? o.created_at ?? 0).getTime();
+  const rows = [...orderHistory].sort((a, b) => (ts(b) - ts(a)) || (Number(b.id || 0) - Number(a.id || 0)));
+
   const statusLabel = (o) => {
     const s = String(o.state || '').toLowerCase();
     if (s === 'cancelled' || s === 'canceled') return 'Cancelled';
@@ -433,7 +439,7 @@ function LiveOrderHistoryTab({ orderHistory }) {
         <th className="r">Realized PnL</th>
         <th className="r">Reduce Only</th><th className="r">Order ID</th><th className="r">Time</th>
       </tr></thead><tbody>
-        {orderHistory.map((o, i) => {
+        {rows.map((o, i) => {
           const size = num(o.size) || 0;
           const sell = String(o.side) === 'sell';
           const qty = sell ? -size : size;
@@ -462,7 +468,7 @@ function LiveOrderHistoryTab({ orderHistory }) {
               <td className="r">{rpnl != null ? <span className={`pt-pnl ${rpnl > 0 ? 'positive' : rpnl < 0 ? 'negative' : 'zero'}`}>{rpnl > 0 ? '+' : ''}{fmtNum(rpnl)}</span> : '—'}</td>
               <td className="r">{o.reduce_only ? '✓' : '✕'}</td>
               <td className="r"><span className="pt-dim" style={{ fontSize: 11 }}>{o.id ?? '—'}</span></td>
-              <td className="r"><span className="pt-dim" style={{ fontSize: 11 }}>{fmtTs(o.created_at)}</span></td>
+              <td className="r"><span className="pt-dim" style={{ fontSize: 11 }}>{fmtTs(o.updated_at ?? o.created_at)}</span></td>
             </tr>
           );
         })}
