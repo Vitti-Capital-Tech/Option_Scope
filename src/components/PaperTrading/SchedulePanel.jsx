@@ -1,5 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import CustomInput from '../common/CustomInput';
+import CustomSelect from '../common/CustomSelect';
 
 const DEFAULT_WINDOW = {
   label: 'Window',
@@ -13,6 +14,9 @@ const DEFAULT_WINDOW = {
   atmRatioPctCall: 50,
   atmRatioPctPut: 25,
   spotDiff: 0.5,
+  maxNetPremium: 20,
+  exitType: 'ATM',
+  exitPoints: 0,
   isActive: true,
 };
 
@@ -562,6 +566,48 @@ export default function SchedulePanel({
                   onChange={e => handleChange(s.id, 'spotDiff', Number(e.target.value))}
                 />
               </div>
+
+              {/* Max Net Debit */}
+              <div className="schedule-item-block schedule-item-num-block">
+                <span className="schedule-item-label">Max Net Debit</span>
+                <CustomInput
+                  type="number"
+                  prefix="$"
+                  showStepper
+                  value={s.maxNetPremium ?? 20}
+                  onChange={e => handleChange(s.id, 'maxNetPremium', Number(e.target.value))}
+                />
+              </div>
+
+              {/* Exit Type */}
+              <div className="schedule-item-block schedule-item-num-block">
+                <span className="schedule-item-label">Exit Type</span>
+                <CustomSelect
+                  value={s.exitType ?? 'ATM'}
+                  onChange={val => handleChange(s.id, 'exitType', val)}
+                  options={[
+                    { label: 'ATM', value: 'ATM' },
+                    { label: 'ITM', value: 'ITM' },
+                    { label: 'OTM', value: 'OTM' },
+                  ]}
+                  style={{ width: '90px' }}
+                />
+              </div>
+
+              {/* Exit Points (only for ITM/OTM) */}
+              {(s.exitType === 'ITM' || s.exitType === 'OTM') && (
+                <div className="schedule-item-block schedule-item-num-block">
+                  <span className="schedule-item-label">Exit Points</span>
+                  <CustomInput
+                    type="number"
+                    min="0"
+                    step="1"
+                    showStepper
+                    value={s.exitPoints ?? 0}
+                    onChange={e => handleChange(s.id, 'exitPoints', Number(e.target.value))}
+                  />
+                </div>
+              )}
 
               {/* Live Utilization */}
               <div className="schedule-item-block schedule-item-num-block" style={{ minWidth: 80 }}>

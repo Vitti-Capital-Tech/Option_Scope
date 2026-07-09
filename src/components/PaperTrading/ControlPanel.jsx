@@ -151,7 +151,6 @@ export default function ControlPanel({
                 { label: 'Min IV Edge', key: 'minIvDiff', width: 100, step: '0.25', suffix: '%' },
                 { label: 'Max Delta Deviation', key: 'maxRatioDeviation', width: 110, step: '0.01' },
                 { label: 'Min Short Premium', key: 'minSellPremium', width: 110, prefix: '$' },
-                { label: 'Max Net Debit', key: 'maxNetPremium', width: 110, prefix: '$' },
                 { label: 'Max Short Ratio', key: 'maxSellQty', width: 110, step: '0.25', prefix: '1:' },
                 { label: 'Min Days to Expiry', key: 'daysToExpiry', width: 100 }
               ].map(({ label, key, width, step, prefix, suffix }) => (
@@ -174,26 +173,6 @@ export default function ControlPanel({
                   value={draftConfig?.shortExitPrice ?? ''}
                   onChange={e => updateDraftConfig('shortExitPrice', e.target.value)} />
               </div>
-              <div key="exitType" className="form-group">
-                <label className="pt-field-label" style={{ marginBottom: 0 }}>Exit Type</label>
-                <CustomSelect
-                  value={draftConfig?.exitType ?? 'ATM'}
-                  onChange={val => updateDraftConfig('exitType', val)}
-                  options={[
-                    { label: 'ATM', value: 'ATM' },
-                    { label: 'ITM', value: 'ITM' },
-                    { label: 'OTM', value: 'OTM' }
-                  ]}
-                  style={{ width: '85px' }}
-                />
-              </div>
-              {(draftConfig?.exitType === 'ITM' || draftConfig?.exitType === 'OTM') && (
-                <div key="exitPoints" className="form-group">
-                  <label className="pt-field-label" style={{ marginBottom: 0 }}>Exit Points</label>
-                  <CustomInput type="number" step="1" showStepper width={100} value={draftConfig.exitPoints ?? 0}
-                    onChange={e => updateDraftConfig('exitPoints', e.target.value)} />
-                </div>
-              )}
               {draftConfig?.variableExitSlices && (
                 <div key="longExitSlices" className="form-group">
                   <label className="pt-field-label" style={{ marginBottom: 0 }}>Long Exit Slices</label>

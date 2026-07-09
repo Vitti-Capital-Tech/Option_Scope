@@ -89,9 +89,29 @@ const makeFirstWindow = (cfg = {}) => ({
   atmRatioPctCall: cfg.atmRatioPctCall ?? 50,
   atmRatioPctPut: cfg.atmRatioPctPut ?? 25,
   spotDiff: cfg.spotDiff ?? 0.5,
+  maxNetPremium: cfg.maxNetPremium ?? 20,
+  exitType: cfg.exitType ?? 'ATM',
+  exitPoints: cfg.exitPoints ?? 0,
   isActive: true,
   sort_order: 0,
 });
+
+// Mirror of the engine's getActiveSchedule: the window whose IST time range covers
+// `nowMs` (handles overnight windows). Returns null when none is active (the
+// uncovered-slot gap), so callers fall back to the account-level config.
+const findActiveSchedule = (schedules, nowMs) => {
+  if (!Array.isArray(schedules) || schedules.length === 0) return null;
+  const d = new Date(nowMs);
+  const istMin = (d.getUTCHours() * 60 + d.getUTCMinutes() + 330) % 1440;
+  const toMin = (t) => { const [h, m] = String(t || '00:00').split(':').map(Number); return (h || 0) * 60 + (m || 0); };
+  for (const s of schedules) {
+    if (s.isActive === false) continue;
+    const start = toMin(s.startTime), end = toMin(s.endTime);
+    const inWin = start > end ? (istMin >= start || istMin < end) : (istMin >= start && istMin < end);
+    if (inWin) return s;
+  }
+  return null;
+};
 
 export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const [accounts, setAccounts] = useState([]);
@@ -1182,6 +1202,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           atmRatioPctCall: s.atm_ratio_distance_call ?? 50,
           atmRatioPctPut: s.atm_ratio_distance_put ?? 25,
           spotDiff: s.spot_diff ?? 0.5,
+          maxNetPremium: s.max_net_premium ?? 20,
+          exitType: s.exit_type ?? 'ATM',
+          exitPoints: s.exit_points ?? 0,
           isActive: s.is_active ?? true,
           sort_order: s.sort_order ?? 0,
         }));
@@ -1204,6 +1227,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           atmRatioPctCall: s.atmRatioPctCall,
           atmRatioPctPut: s.atmRatioPctPut,
           spotDiff: s.spotDiff,
+          maxNetPremium: s.maxNetPremium,
+          exitType: s.exitType,
+          exitPoints: s.exitPoints,
           isActive: s.isActive
         })));
       }
@@ -1230,6 +1256,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           atm_ratio_distance_call: s.atmRatioPctCall ?? 50,
           atm_ratio_distance_put: s.atmRatioPctPut ?? 25,
           spot_diff: s.spotDiff ?? 0.5,
+          max_net_premium: s.maxNetPremium ?? 20,
+          exit_type: s.exitType ?? 'ATM',
+          exit_points: s.exitPoints ?? 0,
           is_active: s.isActive ?? true,
           sort_order: i,
           updated_at: new Date().toISOString(),
@@ -1250,6 +1279,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         atmRatioPctCall: s.atmRatioPctCall,
         atmRatioPctPut: s.atmRatioPctPut,
         spotDiff: s.spotDiff,
+        maxNetPremium: s.maxNetPremium,
+        exitType: s.exitType,
+        exitPoints: s.exitPoints,
         isActive: s.isActive
       })));
       lastSavedSchedulesRef.current = savedJson;
@@ -1316,6 +1348,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       atmRatioPctCall: s.atmRatioPctCall,
       atmRatioPctPut: s.atmRatioPctPut,
       spotDiff: s.spotDiff,
+      maxNetPremium: s.maxNetPremium,
+      exitType: s.exitType,
+      exitPoints: s.exitPoints,
       isActive: s.isActive
     })));
 
@@ -2346,8 +2381,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               engineStatusLabel={engineStatusLabel}
               calculatePositionMargin={calculatePositionMargin}
               totalMargin={totalMargin}
-              exitType={config.exitType}
-              exitPoints={config.exitPoints}
+              exitType={findActiveSchedule(schedules, now)?.exitType ?? config.exitType}
+              exitPoints={findActiveSchedule(schedules, now)?.exitPoints ?? config.exitPoints}
               onExitPosition={(p) => setPositionToExit(p)}
               filteredTradeHistory={filteredTradeHistory}
               historyFilterDate={historyFilterDate}

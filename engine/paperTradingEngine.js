@@ -320,6 +320,9 @@ async function startSingleAccountEngine(account) {
           atmRatioPctCall: s.atm_ratio_distance_call ?? 50,
           atmRatioPctPut: s.atm_ratio_distance_put ?? 25,
           spotDiff: s.spot_diff ?? 0.5,
+          maxNetPremium: s.max_net_premium ?? config.maxNetPremium ?? 20,
+          exitType: s.exit_type ?? config.exitType ?? 'ATM',
+          exitPoints: s.exit_points ?? config.exitPoints ?? 0,
           isActive: s.is_active ?? true,
         }));
       }
@@ -810,13 +813,15 @@ async function startSingleAccountEngine(account) {
     } catch (e) { /* non-fatal */ }
   }
 
-  async function handleLiveRestingExit(pos, remaining, fillIds) {
+  async function handleLiveRestingExit(pos, remaining, fillIds, eff = config) {
     const tickerBuy = tickerData[pos.buyLeg.symbol];
     const tickerSell = tickerData[pos.sellLeg.symbol];
     const longBid = tickerBuy?.bid ?? tickerBuy?.lastPrice ?? tickerBuy?.markPrice;
     const shortAsk = tickerSell?.ask ?? tickerSell?.lastPrice ?? tickerSell?.markPrice;
 
-    const triggerLevel = computeIndexTriggerLevel(pos.type, pos.buyLeg.strike, config);
+    // Active-window exit rule governs the engine's spot-cross catch-all. The exchange
+    // SL/TP bracket placed at entry is NOT moved here (see note at the call site).
+    const triggerLevel = computeIndexTriggerLevel(pos.type, pos.buyLeg.strike, eff);
     const spotCross = isIndexTriggerMet(pos.type, triggerLevel, spotPrice);
     const expiryTs = new Date(pos.expiry).getTime();
     const atExpiry = Date.now() >= expiryTs - 120000;
@@ -846,7 +851,7 @@ async function startSingleAccountEngine(account) {
       const exitFee = calculateFee(exitLong, spotPrice, longLot, pos.buyLeg.originalLotSize || 1)
         + (pos.sellQty > 0 ? calculateFee(exitShort, spotPrice, pos.sellQty, shortLot) : 0);
       const net = gross - (entryFee + exitFee);
-      const reason = atExpiry ? 'Expiry Reached (2min Early)' : `Full Exit (${config.exitType || 'ATM'} spot ${Math.round(spotPrice)})`;
+      const reason = atExpiry ? 'Expiry Reached (2min Early)' : `Full Exit (${eff.exitType || 'ATM'} spot ${Math.round(spotPrice)})`;
       try {
         await supabase.from('trade_history').upsert([{
           trade_id: pos.id, underlying: pos.underlying, expiry: pos.expiry, type: pos.type,
@@ -1028,7 +1033,12 @@ async function startSingleAccountEngine(account) {
           atmRatioScaling: activeSchedule.atmRatioScaling,
           atmRatioPctCall: activeSchedule.atmRatioPctCall,
           atmRatioPctPut: activeSchedule.atmRatioPctPut,
-          spotDiff: activeSchedule.spotDiff
+          spotDiff: activeSchedule.spotDiff,
+          // Per-window entry debit cap + exit rule (fall back to account config if
+          // the schedule row predates migration 012).
+          maxNetPremium: activeSchedule.maxNetPremium ?? config.maxNetPremium,
+          exitType: activeSchedule.exitType ?? config.exitType,
+          exitPoints: activeSchedule.exitPoints ?? config.exitPoints,
         }
         : { ...config };
 
@@ -1276,7 +1286,7 @@ async function startSingleAccountEngine(account) {
         // Armed REAL live → resting-order exit model (isolated from the active model).
         if (liveResting) {
           if (liveFillIds == null) { remaining.push(pos); continue; } // fills fetch failed → hold
-          await handleLiveRestingExit(pos, remaining, liveFillIds);
+          await handleLiveRestingExit(pos, remaining, liveFillIds, effectiveConfig);
           continue;
         }
 
@@ -1780,8 +1790,10 @@ async function startSingleAccountEngine(account) {
         if (!shouldExit) {
           const isCall = pos.type === 'call';
           const buyStrike = pos.buyLeg.strike;
-          const exitType = config.exitType || 'ATM';
-          const exitPoints = Math.abs(config.exitPoints || 0);
+          // Active-window exit rule (effectiveConfig), so open positions follow the
+          // window that is live right now — not the account default.
+          const exitType = effectiveConfig.exitType || 'ATM';
+          const exitPoints = Math.abs(effectiveConfig.exitPoints || 0);
 
           let isExitMet = false;
           let reasonSuffix = '';
