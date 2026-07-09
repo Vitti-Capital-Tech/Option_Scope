@@ -333,14 +333,14 @@ function LiveStopOrdersTab({ stopOrders, spotPrice, onCancelOrder }) {
 }
 
 // ── Fills (live) — individual leg executions from Delta ────────────────────
-function LiveFillsTab({ fills, spotPrice }) {
+function LiveFillsTab({ fills }) {
   if (!fills?.length) {
     return <EmptyPanel icon="fills" title="No Fills Yet"
       desc="Individual leg executions from Delta Exchange appear here as orders fill." />;
   }
   const num = (v) => (v == null || v === '' || Number.isNaN(Number(v)) ? null : Number(v));
-  const idx = num(spotPrice);
   const cap = (s) => (s ? String(s).replace(/^\w/, c => c.toUpperCase()) : '—');
+  const orderTypeLabel = (t) => (t ? String(t).replace('_order', '').replace(/^\w/, c => c.toUpperCase()) : '—');
   return (
     <div className="pt-table-scroll">
       <table className="pt-table pt-delta-table"><thead><tr>
@@ -354,8 +354,9 @@ function LiveFillsTab({ fills, spotPrice }) {
           const cv = num(f.product?.contract_value) ?? 0.001;
           const unit = f.product?.underlying_asset?.symbol || 'BTC';
           const sizeBtc = parseFloat((size * cv).toFixed(6)) * (sell ? -1 : 1);
-          const notional = idx != null ? Math.abs(size) * cv * idx : null;
-          const orderQty = num(f.order_size ?? f.order_qty) ?? size;
+          const notional = num(f.notional);                                  // FIXED at fill time (no live spot)
+          const orderQty = num(f.meta_data?.order_size) ?? size;
+          const orderType = f.meta_data?.order_type;
           const isCall = (f.product_symbol || '').startsWith('C-');
           return (
             <tr key={f.id ?? `${f.order_id}-${f.created_at}`} className={`pt-row-${isCall ? 'call' : 'put'}`}>
@@ -364,10 +365,10 @@ function LiveFillsTab({ fills, spotPrice }) {
               <td><span style={{ color: sell ? 'var(--put)' : 'var(--call)', fontWeight: 600 }}>{cap(f.side)}</span></td>
               <td className="r">{fmtNum(orderQty, 0)}</td>
               <td className="r">{fmtNum(f.price)}</td>
-              <td className="r">{notional != null ? `$${fmtNum(notional)}` : '—'}</td>
+              <td className="r">{notional != null ? `$${notional.toLocaleString('en-US', { maximumFractionDigits: 4 })}` : '—'}</td>
               <td className="r"><span style={{ color: sell ? 'var(--put)' : 'var(--call)' }}>{sizeBtc > 0 ? '+' : ''}{sizeBtc} {unit}</span></td>
               <td>{cap(f.fill_type) === '—' ? 'Normal' : cap(f.fill_type)}</td>
-              <td>{String(f.order_type || '').replace('_order', '').replace(/^\w/, c => c.toUpperCase()) || '—'}</td>
+              <td>{orderTypeLabel(orderType)}</td>
               <td>{cap(f.role)}</td>
               <td className="r"><span className="pt-dim" style={{ fontSize: 11 }}>{fmtTs(f.created_at)}</span></td>
             </tr>
