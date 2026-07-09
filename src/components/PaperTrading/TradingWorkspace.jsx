@@ -492,16 +492,16 @@ export default function TradingWorkspace(props) {
                     {props.isSyncing ? 'Syncing…' : 'Sync'}
                   </button>
                 )}
-                {props.onCloseAll && (live ? (live.positions || []).some(p => Number(p.size) !== 0) : visible.length > 0) && (
+                {props.onCloseAll && visible.length > 0 && (
                   <button type="button" onClick={props.onCloseAll} className="pt-btn-close"
                     style={{ background: '#f85149', color: '#fff', borderColor: '#f85149', fontWeight: 700 }}>
                     ✕ Close All
                   </button>
                 )}
               </div>
-              {live ? (
-              <LivePositionsTab positions={live.positions} enginePositions={props.positions} onExitPosition={props.onExitPosition} />
-            ) : (
+              {/* Always the engine's positions here (reliable ids + Close per row).
+                  The Delta-leg snapshot drives the KPIs; the closeable list is the
+                  engine's tracked spreads, kept in sync by the reconcile. */}
               <ActivePositionsTable
                 positions={props.positions}
                 underlying={props.underlying}
@@ -526,7 +526,6 @@ export default function TradingWorkspace(props) {
                 emptyTitle="No Open Positions"
                 emptyDesc="Spread positions (long + short legs) appear here. The engine enters them automatically when conditions are met."
               />
-            )}
             </>
           )}
 
