@@ -918,6 +918,20 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     setTimeout(() => syncAll(), 6000);
   };
 
+  // Close a single Delta position by symbol (per-row ✕ on an orphan leg the engine
+  // no longer tracks). The engine reduce_only-market-closes exactly that leg.
+  const triggerCloseOrphan = async (symbol) => {
+    if (!symbol) return;
+    if (!window.confirm(`Close ${symbol} on Delta at market?`)) return;
+    const { error } = await supabase
+      .from('delta_close_requests')
+      .insert([{ account_id: activeAccountId, product_symbol: symbol }]);
+    if (error) { console.error('close-symbol failed', error); alert(`Failed to close ${symbol}: ${error.message}`); return; }
+    setLiveExchangeState(prev => prev ? { ...prev, positions: (prev.positions || []).filter(p => p.product_symbol !== symbol) } : prev);
+    setTimeout(() => syncAll(), 2500);
+    setTimeout(() => syncAll(), 6000);
+  };
+
   const handleConfirmDelete = async () => {
     if (!accountToDeleteId) return;
     setIsDeletingAccount(true);
@@ -2469,6 +2483,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               exitPoints={findActiveSchedule(schedules, now)?.exitPoints ?? config.exitPoints}
               onExitPosition={(p) => setPositionToExit(p)}
               onCloseAll={triggerCloseAll}
+              onCloseOrphan={triggerCloseOrphan}
               onSync={syncAll}
               isSyncing={isSyncing}
               filteredTradeHistory={filteredTradeHistory}

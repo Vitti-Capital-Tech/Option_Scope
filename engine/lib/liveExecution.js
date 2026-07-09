@@ -168,6 +168,32 @@ export function createLiveExecutor(getCtx) {
     },
 
     /**
+     * Flatten a single leg by symbol with a reduce_only MARKET order (no price) —
+     * used for the per-row ✕ close, including orphan legs not tracked by the engine.
+     * `side` is the closing side (sell to close a long, buy to close a short).
+     */
+    async closeSymbol({ symbol, side, contracts, tag }) {
+      if (!armed()) return { ok: true, skipped: true };
+      const { accountName, creds } = getCtx();
+      const size = Math.max(1, Math.round(Math.abs(contracts || 0)));
+      const summary = `CLOSE ${side.toUpperCase()} ${size}x ${symbol} reduceOnly [${tag}]`;
+      if (DRY_RUN) { log(`[${accountName}] 🧪 DRY-RUN close-symbol (not sent): ${summary}`); return { ok: true, dryRun: true }; }
+      if (!creds?.apiKey || !creds?.apiSecret) return { ok: false, error: 'no-credentials' };
+      try {
+        const order = await placeOrder(creds, {
+          product_symbol: symbol, size, side,
+          order_type: 'market_order', reduce_only: true, time_in_force: 'ioc',
+          client_order_id: tag,
+        });
+        log(`[${accountName}] ✅ LIVE close-symbol: ${summary} → id ${order?.id ?? '?'}`);
+        return { ok: true, order };
+      } catch (e) {
+        logError(`[${accountName}] ✖ LIVE close-symbol FAILED: ${summary}:`, e.message);
+        return { ok: false, error: e.message };
+      }
+    },
+
+    /**
      * Edit an existing resting order's price (and size) in place. Used to re-sync a
      * position's resting short buy-back when shortExitPrice changes — no cancel/replace.
      */

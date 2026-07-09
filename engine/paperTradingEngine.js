@@ -838,6 +838,37 @@ async function startSingleAccountEngine(account) {
     } catch (e) { /* non-fatal */ }
   }
 
+  // Per-symbol close (UI ✕ on a Delta position row, incl. orphans not tracked by
+  // the engine). Reduce_only market close of exactly that leg on Delta.
+  async function processCloseRequests() {
+    if (!(accountState.mode === 'live' && accountState.live_enabled)) return;
+    try {
+      const { data, error } = await supabase
+        .from('delta_close_requests').select('id, product_symbol')
+        .eq('account_id', accountState.id);
+      if (error || !data || !data.length) return;
+      const livePos = await live.positions();
+      const sizeBySymbol = {};
+      for (const p of (livePos || [])) sizeBySymbol[p.product_symbol] = Number(p.size) || 0;
+      for (const r of data) {
+        const sz = sizeBySymbol[r.product_symbol] || 0;
+        if (sz !== 0) {
+          const side = sz > 0 ? 'sell' : 'buy'; // close the leg
+          await live.closeSymbol({ symbol: r.product_symbol, side, contracts: Math.abs(sz), tag: `${r.product_symbol}-CX` });
+        } else {
+          log(`[${accountState.name}] Close request for ${r.product_symbol}: no open size on Delta (already flat).`);
+        }
+        // If this leg belongs to a tracked spread, also book+delete it.
+        for (const pos of [...positions]) {
+          if (pos.buyLeg?.symbol === r.product_symbol || pos.sellLeg?.symbol === r.product_symbol) {
+            await manualExitPosition(pos, { skipExchangeClose: true });
+          }
+        }
+        await supabase.from('delta_close_requests').delete().eq('id', r.id);
+      }
+    } catch (e) { logError(`[${accountState.name}] processCloseRequests error:`, e); }
+  }
+
   // "Close All" — the dashboard sets paper_trading_accounts.close_all_requested.
   // Armed real: flatten the account in ONE Delta call (close_all); if that fails,
   // fall back to per-position closes. Then cancel resting orders, book, delete all.
@@ -2623,6 +2654,7 @@ async function startSingleAccountEngine(account) {
   const manualExitTimer = setInterval(() => {
     processManualExits().catch(() => {});
     processCloseAll().catch(() => {});
+    processCloseRequests().catch(() => {});
   }, 1500);
 
 

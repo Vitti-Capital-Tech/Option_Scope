@@ -383,7 +383,7 @@ function LiveRiskMargin({ positions, wallet }) {
 // tab (Symbol · Size · Notional · Entry · TP/SL · Index · Mark · Margin · UPNL ·
 // Action), rendering the live exchange snapshot per leg. Close (×) maps the leg
 // back to its engine position so it exits the whole spread.
-function DeltaPositionsTable({ positions, enginePositions, onExitPosition, spotPrice, stopOrders }) {
+function DeltaPositionsTable({ positions, enginePositions, onExitPosition, onCloseOrphan, spotPrice, stopOrders }) {
   const open = (positions || []).filter(p => Number(p.size) !== 0);
   if (open.length === 0) {
     return <EmptyPanel icon="positions" title="No Open Positions"
@@ -457,9 +457,9 @@ function DeltaPositionsTable({ positions, enginePositions, onExitPosition, spotP
                   {pnlPct != null && <span style={{ display: 'block', fontSize: 10, color: pnl >= 0 ? 'var(--call)' : 'var(--put)' }}>{pnl >= 0 ? '+' : ''}{pnlPct.toFixed(2)}%</span>}
                 </td>
                 <td className="r">
-                  {onExitPosition && enginePos
-                    ? <button onClick={() => onExitPosition(enginePos)} className="pt-btn-close" title="Close position">✕</button>
-                    : <span style={{ opacity: 0.35 }} title="No matching engine position — deploy sync fix">—</span>}
+                  {enginePos
+                    ? <button onClick={() => onExitPosition && onExitPosition(enginePos)} className="pt-btn-close" title="Close spread">✕</button>
+                    : <button onClick={() => onCloseOrphan && onCloseOrphan(p.product_symbol)} className="pt-btn-close" title="Close this leg on Delta">✕</button>}
                 </td>
               </tr>
             );
@@ -595,6 +595,7 @@ export default function TradingWorkspace(props) {
                   positions={live.positions}
                   enginePositions={props.positions}
                   onExitPosition={props.onExitPosition}
+                  onCloseOrphan={props.onCloseOrphan}
                   spotPrice={props.spotPrice}
                   stopOrders={live.stopOrders || live.stop_orders}
                 />
