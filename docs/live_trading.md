@@ -235,18 +235,6 @@ paper `$200k` notional cap:
   schedule windows (`max(numberOfCalls + numberOfPuts)`).
 - **part** = `(balance × allocation%) ÷ max positions`.
 
-> [!NOTE]
-> **Multi-expiry range scan.** The engine now scans an **expiry range** — every expiry
-> from the nearest (respecting `daysToExpiry`) up to the selected `config.expiry` (the
-> upper bound) — and unions the same-expiry ratio spreads. The WebSocket subscribes to
-> **every expiry's chain** in the range (`buildSymbolMeta` accepts a list), so a live
-> account can hold positions across several expiries at once. **Caps and sizing are
-> unchanged:** `numberOfCalls`/`numberOfPuts` count total across the range (not per
-> expiry), so `max positions` and the `part` math above are unaffected. Only the
-> strike-conflict/uniqueness guards became expiry-aware (same strike in a different
-> expiry is a distinct instrument). See `paper_trading_explained.md → Step 0: Expiry
-> range` for the full logic.
-
 **"1 part" factor sizing (scale to fill one part, keep the ratio).** The old model
 scaled the lot by `part ÷ margin`, producing *fractional* lots that rounded to `1:1`
 integer contracts on the exchange — destroying the ratio. The current model scales

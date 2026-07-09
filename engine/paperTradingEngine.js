@@ -417,7 +417,7 @@ async function startSingleAccountEngine(account) {
   function startWebSocket() {
     if (!config.expiry || !products.length) return;
 
-    symbolMeta = buildSymbolMeta(products, scanExpiries(), config.underlying, positions);
+    symbolMeta = buildSymbolMeta(products, config.expiry, config.underlying, positions);
     const perpSymbol = `${config.underlying}USD`;
     const allSymbols = Object.keys(symbolMeta);
     if (!allSymbols.includes(perpSymbol)) {
@@ -488,27 +488,6 @@ async function startSingleAccountEngine(account) {
       }
     }
     return null;
-  }
-
-  // Expiries to scan this cycle. `config.expiry` is the UPPER bound (target the user
-  // picked, e.g. weekly); daysToExpiry is the lower bound. Returns every available
-  // expiry with daysRemaining >= daysToExpiry AND expiry <= target — so a weekly
-  // target scans all dailies up to it, a d1 target scans d0..d1. Same-expiry ratio
-  // spreads only (union across expiries); caps stay total across the range.
-  function scanExpiries() {
-    const target = config.expiry;
-    if (!target) return [];
-    const targetTs = new Date(target).getTime();
-    const minDays = config.daysToExpiry || 0;
-    const now = Date.now();
-    const list = (expiries || []).filter(e => {
-      const ts = new Date(e).getTime();
-      const daysRemaining = (ts - now) / (24 * 60 * 60 * 1000);
-      return daysRemaining >= minDays && ts <= targetTs;
-    });
-    // Always include the target itself as a fallback (expiries list may lag on boot).
-    if (!list.includes(target)) list.push(target);
-    return list;
   }
 
   // Position slots for the CURRENTLY-ACTIVE schedule window (calls + puts) — falls
@@ -1080,38 +1059,29 @@ async function startSingleAccountEngine(account) {
       }
 
       // A. Local Scan: top candidates per type
-      // Scan every expiry in the range [nearest .. selected target] and UNION the
-      // same-expiry ratio spreads. Only on entry cycles (!onlyExits) — the 1s exit
-      // loop doesn't need candidates, so we skip the O(n²) pairing there.
-      const rangeExpiries = scanExpiries();
-      const localTopCalls = [];
-      const localTopPuts = [];
-      const totalRejected = {};
-      let scanCallCount = 0, scanPutCount = 0, staleQuoteCount = 0;
+      const callTickers = allTickers.filter(t => t.type === 'call' && t.expiry === config.expiry && (atmStrike === null || t.strike >= atmStrike));
+      const putTickers = allTickers.filter(t => t.type === 'put' && t.expiry === config.expiry && (atmStrike === null || t.strike <= atmStrike));
+
       if (!onlyExits) {
         const now = Date.now();
-        for (const exp of rangeExpiries) {
-          const callTickers = allTickers.filter(t => t.type === 'call' && t.expiry === exp && (atmStrike === null || t.strike >= atmStrike));
-          const putTickers = allTickers.filter(t => t.type === 'put' && t.expiry === exp && (atmStrike === null || t.strike <= atmStrike));
-          scanCallCount += callTickers.length;
-          scanPutCount += putTickers.length;
-          staleQuoteCount += callTickers.filter(t => !((t.askUpdatedAt || 0) > 0 && (now - t.askUpdatedAt) < 120000)).length;
-          staleQuoteCount += putTickers.filter(t => !((t.bidUpdatedAt || 0) > 0 && (now - t.bidUpdatedAt) < 120000)).length;
-          const { pairs: cPairs, rejected: cRej } = scanTickers(callTickers, effectiveConfig, spotPrice, atmStrike, getTickerPrice);
-          const { pairs: pPairs, rejected: pRej } = scanTickers(putTickers, effectiveConfig, spotPrice, atmStrike, getTickerPrice);
-          localTopCalls.push(...cPairs);
-          localTopPuts.push(...pPairs);
-          for (const k of Object.keys(cRej)) totalRejected[k] = (totalRejected[k] || 0) + (cRej[k] || 0);
-          for (const k of Object.keys(pRej)) totalRejected[k] = (totalRejected[k] || 0) + (pRej[k] || 0);
-        }
-        const expiryMatchCount = scanCallCount + scanPutCount;
+        const staleCallCount = callTickers.filter(t => !((t.askUpdatedAt || 0) > 0 && (now - t.askUpdatedAt) < 120000)).length;
+        const stalePutCount = putTickers.filter(t => !((t.bidUpdatedAt || 0) > 0 && (now - t.bidUpdatedAt) < 120000)).length;
+        const totalTickers = allTickers.length;
+        const expiryMatchCount = callTickers.length + putTickers.length;
         if (expiryMatchCount === 0) {
-          logWarn(`[${accountState.name}] Ticker pool: ${allTickers.length} total, 0 match range [${rangeExpiries.join(', ')}] — WS may not have started yet.`);
-        } else if (staleQuoteCount > 0) {
-          logWarn(`[${accountState.name}] Ticker pool: ${expiryMatchCount} across ${rangeExpiries.length} expiry(s) (${scanCallCount} calls, ${scanPutCount} puts), but ${staleQuoteCount} have stale quotes (>120s) — waiting for fresh WS data.`);
+          logWarn(`[${accountState.name}] Ticker pool: ${totalTickers} total, 0 match expiry ${config.expiry} — WS may not have started yet.`);
+        } else if (staleCallCount + stalePutCount > 0) {
+          logWarn(`[${accountState.name}] Ticker pool: ${expiryMatchCount} matching expiry (${callTickers.length} calls, ${putTickers.length} puts), but ${staleCallCount + stalePutCount} have stale quotes (>120s) — waiting for fresh WS data.`);
         }
       }
+
+      const { pairs: localTopCalls, rejected: callRej } = scanTickers(callTickers, effectiveConfig, spotPrice, atmStrike, getTickerPrice);
+      const { pairs: localTopPuts, rejected: putRej } = scanTickers(putTickers, effectiveConfig, spotPrice, atmStrike, getTickerPrice);
       const topSpreads = [...localTopCalls, ...localTopPuts];
+
+      // Merge rejection counts from calls + puts
+      const totalRejected = {};
+      for (const k of Object.keys(callRej)) totalRejected[k] = (callRej[k] || 0) + (putRej[k] || 0);
 
       function getTickerPrice(strike, optType, priceField, expiry) {
         const lowerType = optType.toLowerCase();
@@ -1142,10 +1112,9 @@ async function startSingleAccountEngine(account) {
       }
 
       function calculateAtmPnlAndRoi(spread) {
-        const sExpiry = spread.buyLeg.expiry;
-        const buyIntrinsic = getTickerPrice(atmStrike, spread.buyLeg.type, 'bid', sExpiry);
+        const buyIntrinsic = getTickerPrice(atmStrike, spread.buyLeg.type, 'bid', config.expiry);
         const targetSellStrike = spread.buyLeg.type === 'call' ? atmStrike + spread.strikeDiff : atmStrike - spread.strikeDiff;
-        const sellIntrinsic = getTickerPrice(targetSellStrike, spread.buyLeg.type, 'ask', sExpiry);
+        const sellIntrinsic = getTickerPrice(targetSellStrike, spread.buyLeg.type, 'ask', config.expiry);
         const lotSize = spread.buyLeg.lotSize || 1;
 
         if (buyIntrinsic == null || sellIntrinsic == null) {
@@ -1193,7 +1162,7 @@ async function startSingleAccountEngine(account) {
               sellPremium: 'minSellPremium', noDelta: 'missing delta',
               ratioDev: 'maxRatioDeviation', maxSellQty: 'maxSellQty', netPrem: 'maxNetPremium'
             };
-            logWarn(`[${accountState.name}] 0 candidates — top filter: ${filterNames[topFilter[0]] || topFilter[0]} rejected ${topFilter[1]} pairs (pool: ${scanCallCount} calls, ${scanPutCount} puts across ${rangeExpiries.length} expiry(s))`);
+            logWarn(`[${accountState.name}] 0 candidates — top filter: ${filterNames[topFilter[0]] || topFilter[0]} rejected ${topFilter[1]} pairs (pool: ${callTickers.length} calls, ${putTickers.length} puts)`);
           }
         }
       }
@@ -1952,35 +1921,34 @@ async function startSingleAccountEngine(account) {
           const bStrike = Number(spread.buyLeg.strike);
           const sStrike = Number(spread.sellLeg.strike);
           const spreadType = spread.buyLeg.type;
-          const sExpiry = spread.buyLeg.expiry; // this spread's own expiry (range scan)
 
-          // Expiry buffer guard — use THIS spread's expiry, not the range target.
-          const expiryCheck = (new Date(sExpiry).getTime() - Date.now()) / 60000;
+          // Expiry buffer guard
+          const minutesToExpiry = (new Date(spread.buyLeg.symbol?.includes(config.expiry) ? config.expiry : config.expiry).getTime() - Date.now()) / 60000;
+          const expiryCheck = (new Date(config.expiry).getTime() - Date.now()) / 60000;
           if (expiryCheck < 5) {
-            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} @ ${sExpiry} skipped: too close to expiry (${expiryCheck.toFixed(1)} mins remaining)`);
+            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: too close to expiry (${expiryCheck.toFixed(1)} mins remaining)`);
             continue;
           }
 
           // Days to expiry guard
-          const daysRemaining = (new Date(sExpiry).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
+          const daysRemaining = (new Date(config.expiry).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
           if (daysRemaining < (config.daysToExpiry || 0)) {
-            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} @ ${sExpiry} skipped: days to expiry (${daysRemaining.toFixed(2)}) is less than min required (${config.daysToExpiry})`);
+            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: days to expiry (${daysRemaining.toFixed(2)}) is less than min required (${config.daysToExpiry})`);
             continue;
           }
 
-          // Buy strike conflict check (per expiry — same strike in another expiry is
-          // a different instrument and allowed).
+          // Buy strike conflict check
           const buyConflictPos = remaining.find(
-            p => p.underlying === underlying && p.type === spreadType && p.expiry === sExpiry && Number(p.buyLeg.strike) === bStrike
+            p => p.underlying === underlying && p.type === spreadType && Number(p.buyLeg.strike) === bStrike
           ) || newEntries.find(
-            p => p.underlying === underlying && p.type === spreadType && p.expiry === sExpiry && Number(p.buyLeg.strike) === bStrike
+            p => p.underlying === underlying && p.type === spreadType && Number(p.buyLeg.strike) === bStrike
           );
 
           // Sell strike conflict check (ignore long-only held positions — their short leg is gone)
           const sellConflictPos = remaining.find(
-            p => p.underlying === underlying && p.type === spreadType && p.expiry === sExpiry && p.sellQty > 0 && Number(p.sellLeg.strike) === sStrike
+            p => p.underlying === underlying && p.type === spreadType && p.sellQty > 0 && Number(p.sellLeg.strike) === sStrike
           ) || newEntries.find(
-            p => p.underlying === underlying && p.type === spreadType && p.expiry === sExpiry && Number(p.sellLeg.strike) === sStrike
+            p => p.underlying === underlying && p.type === spreadType && Number(p.sellLeg.strike) === sStrike
           );
 
           if (buyConflictPos) {
@@ -2013,9 +1981,9 @@ async function startSingleAccountEngine(account) {
           const entrySellIv = tickerSellEntry?.bidIv ?? tickerSellEntry?.iv ?? null;
 
           // Calculate ATM ratio scaling
-          const buyIntrinsic = getTickerPrice(atmStrike, spreadType, 'bid', sExpiry);
+          const buyIntrinsic = getTickerPrice(atmStrike, spreadType, 'bid', config.expiry);
           const targetSellStrike = spreadType === 'call' ? atmStrike + spread.strikeDiff : atmStrike - spread.strikeDiff;
-          const sellIntrinsic = getTickerPrice(targetSellStrike, spreadType, 'ask', sExpiry);
+          const sellIntrinsic = getTickerPrice(targetSellStrike, spreadType, 'ask', config.expiry);
 
           const entryAtmRatio = computeEntryAtmRatio(buyIntrinsic, sellIntrinsic);
           const ratioToUse = computeScaledSellQty(spread.sellQty, entryAtmRatio, spreadType, effectiveConfig);
@@ -2078,7 +2046,7 @@ async function startSingleAccountEngine(account) {
           const id = `T${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
           const newPos = {
-            id, underlying, expiry: sExpiry, type: spreadType,
+            id, underlying, expiry: config.expiry, type: spreadType,
             buyLeg: buyLegWithIv, sellLeg: sellLegWithIv, sellQty: adjustedSellQty,
             strikeDiff: spread.strikeDiff, entryTime: new Date(),
             entryBuyPrice, entrySellPrice, entrySpotPrice: spotPrice,
@@ -2165,7 +2133,7 @@ async function startSingleAccountEngine(account) {
             // Buy strike uniqueness per account
             const { data: buyConflict } = await supabase.from('active_positions').select('id')
               .eq('account_id', accountState.id)
-              .eq('underlying', underlying).eq('type', t.type).eq('expiry', t.expiry)
+              .eq('underlying', underlying).eq('type', t.type)
               .eq('buy_strike', t.buyLeg.strike).limit(1);
             if (buyConflict && buyConflict.length > 0) {
               logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} blocked. Buy strike conflict on DB.`);
@@ -2175,7 +2143,7 @@ async function startSingleAccountEngine(account) {
             // Sell strike uniqueness per account (ignore long-only held positions)
             const { data: sellConflict } = await supabase.from('active_positions').select('id')
               .eq('account_id', accountState.id)
-              .eq('underlying', underlying).eq('type', t.type).eq('expiry', t.expiry)
+              .eq('underlying', underlying).eq('type', t.type)
               .eq('sell_strike', t.sellLeg.strike).gt('sell_qty', 0).limit(1);
             if (sellConflict && sellConflict.length > 0) {
               logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} blocked. Sell strike conflict on DB.`);
@@ -2231,7 +2199,7 @@ async function startSingleAccountEngine(account) {
             }
 
             const { error: insertError } = await supabase.from('active_positions').insert([{
-              id: t.id, underlying, expiry: t.expiry, type: t.type,
+              id: t.id, underlying, expiry: config.expiry, type: t.type,
               buy_leg: JSON.stringify(t.buyLeg), sell_leg: JSON.stringify(t.sellLeg),
               sell_qty: t.sellQty, strike_diff: t.strikeDiff,
               entry_time: t.entryTime.toISOString(),
@@ -2427,7 +2395,7 @@ async function startSingleAccountEngine(account) {
   }
 
   // 5. Build symbol map and backfill tickers via REST
-  symbolMeta = buildSymbolMeta(products, scanExpiries(), config.underlying, positions);
+  symbolMeta = buildSymbolMeta(products, config.expiry, config.underlying, positions);
   tickerData = await backfillTickers(config.underlying, symbolMeta, tickerData);
   log(`[${accountState.name}] Ticker backfill complete: ${Object.keys(tickerData).length} symbols`);
 
@@ -2481,7 +2449,7 @@ async function startSingleAccountEngine(account) {
     try {
       await refreshProducts();
       // Rebuild symbol meta and restart WS if needed
-      const newMeta = buildSymbolMeta(products, scanExpiries(), config.underlying, positions);
+      const newMeta = buildSymbolMeta(products, config.expiry, config.underlying, positions);
       const newSymbols = Object.keys(newMeta).sort().join(',');
       const oldSymbols = Object.keys(symbolMeta).sort().join(',');
       if (newSymbols !== oldSymbols) {
