@@ -227,7 +227,7 @@ no manual cancellation). This replaces the old mark-price disaster backstop.
 ### Live position sizing — balance allocation (Sub-stage A)
 
 Live accounts size positions from the **live Delta USDT wallet balance**, not the
-paper `$200k` notional cap:
+paper `$195k` notional cap:
 
 - Each account has a **`balance_allocation_pct`** (default **90**) — the share of
   wallet balance used for trading; the rest is buffer.
@@ -242,7 +242,7 @@ integer contracts on the exchange — destroying the ratio. The current model sc
 
 1. **setMargin** = margin of ONE "set" (the natural long lot + the ATM-scaled short
    ratio): `calcMargin(entryBuyPrice, longLot, spot, ratioToUse, shortLot)` =
-   `entryBuyPrice × longLot + min($200k, spot × ratioToUse × shortLot) ÷ 200`
+   `entryBuyPrice × longLot + min($195k, spot × ratioToUse × shortLot) ÷ 200`
    (`longLot`/`shortLot` = each leg's `contract_size`; leverage 200; `ratioToUse` = the
    ATM-scaled sell quantity).
 2. **factor** = `max(1, floor(part ÷ setMargin))` — how many whole sets fit in one part,
@@ -264,7 +264,7 @@ entry.
 > can differ slightly from the exact scaled ratio when `adjustedSellQty` isn't a whole
 > number.
 
-Paper accounts keep the `$200k` / 200× branch **unchanged** (the sizing branch is
+Paper accounts keep the `$195k` / 200× branch **unchanged** (the sizing branch is
 gated on `mode==='live' && live_enabled`). Dry-run logs the full breakdown
 (`💰 LIVE size <TYPE> <buy>/<sell>: set margin $… | part $… → factor … | long … short …
 (ratio 1:…) | est margin $…`) so the numbers — especially that the contract sizes and

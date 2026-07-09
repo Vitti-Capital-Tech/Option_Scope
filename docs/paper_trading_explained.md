@@ -296,12 +296,12 @@ This lets you capture a percentage (e.g. 50%) of the extra ratio available at AT
 > [!NOTE]
 > This is the **entry-time** scaling, computed from the natural `sellQty` using **fresh** ATM prices at the moment of entry. It is the same formula used during the scan for the [Max Net Premium filter](#how-the-sell-quantity-ratio-is-calculated), but evaluated independently — both stages start from the natural `sellQty`, so the scale is never compounded.
 
-### Guard 7: $200K Short Value Cap
+### Guard 7: $195K Short Value Cap
 ```
 shortValue = spotPrice × sellQty × sellLotSize
-If shortValue ≥ $200,000 → scale down both lot size and sell qty proportionally
+If shortValue ≥ $195,000 → scale down both lot size and sell qty proportionally
 ```
-Ensures no single position has more than $200K notional exposure on the short side.
+Ensures no single position has more than $195K notional exposure on the short side.
 
 
 
@@ -471,8 +471,8 @@ STOP:   Can't go below 0.50 (50% floor of initial scaled lot size)
 
 | Field | Meaning |
 |-------|---------|
-| `originalLotSize` | The lot size before any `$200K` cap scaling was applied |
-| `initialScaledLotSize` | The lot size after the `$200K` cap at entry (this is the "100%" baseline) |
+| `originalLotSize` | The lot size before any `$195K` cap scaling was applied |
+| `initialScaledLotSize` | The lot size after the `$195K` cap at entry (this is the "100%" baseline) |
 | `lastCheckpointPnl` | The gross PnL at the last scaling event |
 | `lastCheckpointAtmPnl` | The ATM PnL at the last scaling event |
 | `accumulatedSellPnl` | ⚠️ Misleading DB column name — actually stores accumulated **buy leg** partial exit PnL |
@@ -632,7 +632,7 @@ Here's every safety guard in one table:
 | ATM PnL ≥ $50 | `paperTradingEngine.js` | Only enters spreads that would profit $50+ at ATM |
 | Days to Expiry | `paperTradingEngine.js` | Rejects candidates whose expiry is fewer than `daysToExpiry` days away |
 | Portfolio cap | `paperTradingEngine.js` | Max **full-spread** calls (`config.numberOfCalls`) and puts (`config.numberOfPuts`) per account — held long-only positions (`sellQty = 0`) excluded |
-| $200K short value cap | `paperTradingEngine.js` | Scales down lot sizes if short notional ≥ $200K |
+| $195K short value cap | `paperTradingEngine.js` | Scales down lot sizes if short notional ≥ $195K |
 | DB count guard | `paperTradingEngine.js` | Database-level check: max `config.numberOfCalls`/`config.numberOfPuts` **full spreads** (`.gt('sell_qty', 0)`) |
 | DB buy strike uniqueness | `paperTradingEngine.js` | Database-level: no duplicate buy strikes |
 | DB sell strike uniqueness | `paperTradingEngine.js` | Database-level: no duplicate sell strikes among full spreads (`.gt('sell_qty', 0)`) |
@@ -1000,7 +1000,7 @@ flowchart TD
 | Max **full-spread** positions per type | Configurable | Max calls (`config.numberOfCalls`) or puts (`config.numberOfPuts`) per account (default: 3); held long-only positions excluded |
 | Short-leg exit trigger | ask ≤ 1.1 | Short leg's live ask `≤ 1.1` → buy back short, hold long (gap-safe, once per position) |
 | Long-only exit levels | 10 equidistant | Evenly-spaced **bid** levels in [current bid, max(entry, last 2hr high)]; exit 1/10 long per crossed level (bid-triggered) |
-| $200K cap | $200,000 | Max short notional value |
+| $195K cap | $195,000 | Max short notional value |
 | Scaling step | 10% | Lot size reduction per scaling event (full spreads only) |
 | Scaling floor | 50% | Minimum lot size as % of initial (full spreads only) |
 | ATM PnL minimum | $50 | Min simulated ATM profit for entry |

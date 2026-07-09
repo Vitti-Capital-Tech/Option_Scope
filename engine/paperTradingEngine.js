@@ -652,12 +652,16 @@ async function startSingleAccountEngine(account) {
   // remain engine-driven catch-alls: they cancel any still-resting orders and
   // market-close the remainder. Fills are detected by order id (restart-safe).
   const fixedLadderLevels = (bid) => ((bid ?? 0) < 25 ? [10, 20, 30, 40, 50] : [25, 50, 75, 100, 125]);
+  // Split `total` long contracts EVENLY across `n` ladder levels (≈ total/n each) so a
+  // properly-scaled long laddering out into real slices, not [1,1,1,1,bulk]. Fewer
+  // contracts than levels → 1 each (fewer, but real, slices). Any remainder goes on the
+  // HIGHEST levels (better price = less loss).
   const splitContracts = (total, n) => {
     if (total <= 0) return [];
     if (total <= n) return Array(total).fill(1);
-    const arr = Array(n).fill(1);
-    arr[n - 1] = total - (n - 1); // remainder on the LAST (highest) level
-    return arr;
+    const base = Math.floor(total / n);
+    const rem = total - base * n; // 0..n-1 — added to the top `rem` levels
+    return Array.from({ length: n }, (_, i) => base + (i >= n - rem ? 1 : 0));
   };
   async function cancelRestingOrders(pos) {
     const toCancel = [];
@@ -1131,11 +1135,11 @@ async function startSingleAccountEngine(account) {
         let adjustedSellQty = ratioToUse;
         let scale = 1;
 
-        if (shortValue >= 200000) {
-          scale = 200000 / shortValue;
+        if (shortValue >= 195000) {
+          scale = 195000 / shortValue;
           adjustedLotSize = Number((lotSize * scale).toFixed(2));
           adjustedSellQty = Number((ratioToUse * scale).toFixed(2));
-          shortValue = 200000;
+          shortValue = 195000;
         }
 
         const atmPnl = ((buyIntrinsic - spread.buyPrice) + (spread.sellPrice - sellIntrinsic) * ratioToUse) * adjustedLotSize;
@@ -1996,29 +2000,32 @@ async function startSingleAccountEngine(account) {
           let scale = 1;
 
           if (liveArmed) {
-            // LIVE: size the position to ~1 "part" of allocated balance while keeping
-            // the ratio. baseMargin = margin of ONE set (1 long + N short contracts);
-            // factor = how many whole sets fit in 1 part (floored so the ratio stays
-            // exact), min 1 (can't trade less than one set of integer contracts).
-            //   e.g. set margin $0.5, part $10 → factor 20 → 1:4 becomes 20:80.
+            // LIVE: scale the 1:ratio base UNIT by (part budget ÷ one-unit margin), then
+            // round EACH leg to the nearest whole contract — long = round(1 × scale),
+            // short = round(ratio × scale). Not floored, so the full part is used; min 1
+            // unit if the part can't fund even one. Independent rounding means the integer
+            // ratio can drift slightly from the exact ratio.
+            //   e.g. base 1:7.25, scale 3.8 → long round(3.8)=4, short round(27.55)=28.
             const baseMargin = calcMargin(entryBuyPrice, originalLotSize, spotPrice, ratioToUse, sellLotSize);
-            const factor = (baseMargin > 0) ? Math.max(1, Math.floor(partMargin / baseMargin)) : 1;
-            adjustedLotSize = Number((originalLotSize * factor).toFixed(4));
-            adjustedSellQty = Number((ratioToUse * factor).toFixed(2));
-            scale = factor;
-            const finalMargin = calcMargin(entryBuyPrice, adjustedLotSize, spotPrice, adjustedSellQty, sellLotSize);
-            if (baseMargin > partMargin) {
-              logWarn(`[${accountState.name}] LIVE size: one set (margin $${baseMargin.toFixed(2)}) exceeds 1 part ($${partMargin.toFixed(2)}) — trading the minimum 1 set.`);
+            scale = (baseMargin > 0) ? (partMargin / baseMargin) : 1;
+            if (scale < 1) {
+              logWarn(`[${accountState.name}] LIVE size: one unit (margin $${baseMargin.toFixed(2)}) exceeds 1 part ($${partMargin.toFixed(2)}) — trading the minimum 1 unit.`);
+              scale = 1;
             }
-            log(`[${accountState.name}] 💰 LIVE size ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: set margin $${baseMargin.toFixed(2)} | part $${partMargin.toFixed(2)} → factor ${factor} | long ${adjustedLotSize} short ${adjustedSellQty} (ratio 1:${ratioToUse}) | est margin $${finalMargin.toFixed(2)}`);
+            const longC = Math.max(1, Math.round(scale));
+            const shortC = Math.max(1, Math.round(ratioToUse * scale));
+            adjustedLotSize = Number((originalLotSize * longC).toFixed(4));
+            adjustedSellQty = shortC;
+            const finalMargin = calcMargin(entryBuyPrice, adjustedLotSize, spotPrice, adjustedSellQty, sellLotSize);
+            log(`[${accountState.name}] 💰 LIVE size ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: unit margin $${baseMargin.toFixed(2)} | part $${partMargin.toFixed(2)} → scale ${scale.toFixed(2)}× | long ${longC} short ${shortC} (base 1:${ratioToUse}) | est margin $${finalMargin.toFixed(2)}`);
           } else {
-            // PAPER (unchanged): $200,000 / 200x notional cap.
+            // PAPER (unchanged): $195,000 / 200x notional cap.
             let shortValue = spotPrice * ratioToUse * sellLotSize;
-            if (shortValue >= 200000) {
-              scale = 200000 / shortValue;
+            if (shortValue >= 195000) {
+              scale = 195000 / shortValue;
               adjustedLotSize = Number((originalLotSize * scale).toFixed(2));
               adjustedSellQty = Number((ratioToUse * scale).toFixed(2));
-              shortValue = 200000;
+              shortValue = 195000;
             }
           }
 

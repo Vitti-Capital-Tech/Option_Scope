@@ -2174,7 +2174,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     const spot = spotPrice || p.entrySpotPrice || 0;
     const sellQty = p.sellQty;
     const longMargin = buyPrice * buyLot;
-    const shortValue = Math.min(200000, spot * sellQty * sellLot);
+    const shortValue = Math.min(195000, spot * sellQty * sellLot);
     const leverage = 200;
     return longMargin + (shortValue / leverage);
   }, [spotPrice]);

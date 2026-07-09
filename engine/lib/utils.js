@@ -42,7 +42,7 @@ export function safeParseLeg(value) {
  */
 export function calcMargin(buyPrice, buyLot, spot, sellQty, sellLot = 1) {
   const longMargin = (buyPrice || 0) * (buyLot || 1);
-  const shortValue = Math.min(200000, (spot || 0) * (sellQty || 0) * sellLot);
+  const shortValue = Math.min(195000, (spot || 0) * (sellQty || 0) * sellLot);
   const leverage = 200; // Fixed leverage as 200
   return longMargin + (shortValue / leverage);
 }

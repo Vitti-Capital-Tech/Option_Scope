@@ -176,11 +176,11 @@ export default function ResultTable({
                   let adjustedSellQty = totalSellQty;
                   let scale = 1;
 
-                  if (shortValue >= 200000) {
-                    scale = 200000 / shortValue;
+                  if (shortValue >= 195000) {
+                    scale = 195000 / shortValue;
                     adjustedLotSize = Number((lotSize * scale).toFixed(2));
                     adjustedSellQty = Number((totalSellQty * scale).toFixed(2));
-                    shortValue = 200000;
+                    shortValue = 195000;
                   }
 
                   const leverage = 200; // Fixed leverage as 200

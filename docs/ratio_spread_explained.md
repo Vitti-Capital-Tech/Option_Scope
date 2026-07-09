@@ -13,7 +13,7 @@ This document explains **every** logic, condition, and mathematical formula in t
 5. [Key Calculations & Formulas](#key-calculations--formulas)
    - [Delta-Neutral Ratio Calculation](#delta-neutral-ratio-calculation)
    - [ATM Ratio Scaling](#atm-ratio-scaling)
-   - [$200K Short Value Portfolio Cap](#200k-short-value-portfolio-cap)
+   - [$195K Short Value Portfolio Cap](#195k-short-value-portfolio-cap)
    - [At ATM P&L & Margin (ROI %)](#at-atm-pl--margin-roi-)
 6. [Quote Freshness & REST Backfill](#quote-freshness--rest-backfill)
 7. [Grouped Strikes & ROI Sorting](#grouped-strikes--roi-sorting)
@@ -126,18 +126,18 @@ When the **ATM Ratio Entry** checkbox (`atmRatioScaling`) is enabled in the conf
   This is then rounded to the nearest 0.25. The percentage adjustment is set via `atmRatioPctCall` and `atmRatioPctPut` config variables.
 * **Order of Operations**: The base delta-neutral `sellQty` is computed first (and checked against `maxSellQty`), then it is scaled to `scaledSellQty`, and only then is the **Max Debit** (`maxNetPremium`) filter applied to the scaled net premium. Scaling up the short quantity raises the net premium (more credit / less debit), so this ordering lets candidates that would fail the max-debit cap on their natural ratio survive once scaled. The base `sellQty` is preserved alongside the scaled value.
 * **Golden Highlighting**: If the scaled ratio deviates from the natural ratio, the ratio indicator in the table dynamically shifts and is highlighted in **golden text** (`var(--accent)`, `#f0b90b`) to visually emphasize that ATM ratio scaling is active for that candidate.
-* **Portfolio Cap Interactivity**: The adjusted ratio continues to interact with the **$200K Short Value Portfolio Cap**, meaning if the scaled short value exceeds $200,000, both the buy leg lot size and final sell quantity are scaled down proportionally.
+* **Portfolio Cap Interactivity**: The adjusted ratio continues to interact with the **$195K Short Value Portfolio Cap**, meaning if the scaled short value exceeds $195,000, both the buy leg lot size and final sell quantity are scaled down proportionally.
 * **Legacy "Base/Extra" Toggle Deprecation**: The legacy, manual dollar-based "Base/Extra" toggle has been completely removed from both the scanner layout and computation logic. The automated ATM Ratio Scaling provides a much cleaner, streamlined approach to simulating ratio shifts.
 
-### $200K Short Value Portfolio Cap
+### $195K Short Value Portfolio Cap
 
-To restrict exposure, the system enforces a strict portfolio notional cap on the short side. At 200× leverage, a maximum notional short value of **$200,000** is allowed per position.
+To restrict exposure, the system enforces a strict portfolio notional cap on the short side. At 200× leverage, a maximum notional short value of **$195,000** is allowed per position.
 
 $$\text{Short Value} = \text{Spot Price} \times \text{Adjusted Sell Qty} \times \text{Sell Leg Lot Size}$$
 
-If $\text{Short Value} \ge \$200,000$, the scanner scales down both the buy leg lot size and sell leg quantity proportionally:
+If $\text{Short Value} \ge \$195,000$, the scanner scales down both the buy leg lot size and sell leg quantity proportionally:
 
-$$\text{Scale Factor} = \frac{200,000}{\text{Short Value}}$$
+$$\text{Scale Factor} = \frac{195,000}{\text{Short Value}}$$
 
 $$\text{Adjusted Lot Size} = \text{Buy Leg Lot Size} \times \text{Scale Factor}$$
 
@@ -155,7 +155,7 @@ $$\text{sellIntrinsic} = \text{OTM Sell leg Ask price (at ATM} \pm \text{strikeD
 
 $$\text{ATM PnL} = [(\text{buyIntrinsic} - \text{Entry Buy Price}) + (\text{Entry Sell Price} - \text{sellIntrinsic}) \times \text{originalSellQty}] \times \text{Adjusted Lot Size}$$
 
-$$\text{Margin Requirement} = (\text{Entry Buy Price} \times \text{Adjusted Lot Size}) + \frac{\$200,000}{\text{Leverage (200)}}$$
+$$\text{Margin Requirement} = (\text{Entry Buy Price} \times \text{Adjusted Lot Size}) + \frac{\$195,000}{\text{Leverage (200)}}$$
 
 $$\text{ROI} = \left(\frac{\text{ATM PnL}}{\text{Margin Requirement}}\right) \times 100$$
 
@@ -207,7 +207,7 @@ flowchart TD
     E --> G["O(N²) Pair Generation"]
     G --> H["Apply Entry Filters (Strike Diff, IV Diff, Quote Freshness)"]
     H --> I["Calculate Delta-Neutral Ratio → ATM Scaling → Max Debit Filter"]
-    I --> J["Apply 200k Short Value Cap (Scale Lot & Qty)"]
+    I --> J["Apply 195k Short Value Cap (Scale Lot & Qty)"]
     J --> K["Group by Buy Strike"]
     K --> L["Sort groups by Distance-to-ATM & sub-rows by ROI%"]
     L --> M["Update Results UI & Sync BroadcastChannel"]

@@ -239,11 +239,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_active_positions_sell_strike_unique
 Applied at entry in both engines and dynamically in the frontend UI:
 
 - **Leverage**: Fixed at **200×**
-- **Short Value Cap**: Capped at **$200,000** (`Math.min(200000, shortValue)`)
+- **Short Value Cap**: Capped at **$195,000** (`Math.min(195000, shortValue)`)
 - **Static Entry Margin**: `margin = (entryBuyPrice × buyLotSize) + (shortValue / leverage)`
 - **Dynamic Live UI Margin**: In the frontend UI (`PaperTrading.jsx`), the margin for active positions is calculated in real-time as:
   `liveMargin = (currentBuyPrice × buyLotSize) + (shortValue / leverage)`
-  where `currentBuyPrice` is the live option premium quote (falling back to `entryBuyPrice` if unavailable) and `shortValue` uses the live underlying spot price (capped at `$200,000` exposure), allowing the margin to tick dynamically in real-time.
+  where `currentBuyPrice` is the live option premium quote (falling back to `entryBuyPrice` if unavailable) and `shortValue` uses the live underlying spot price (capped at `$195,000` exposure), allowing the margin to tick dynamically in real-time.
 
 ---
 
@@ -347,7 +347,7 @@ Evaluated only if no exit was triggered, the position's expiry matches `selExpir
    - Always checked first (even if the active position is still in the top protected unique candidate strikes).
    - Looks for a candidate in `uniqueTopSpreads` with the exact same sell strike as the active position, but a better (closer to ATM) buy strike.
    - Enforces the **0.5% Spot Step Movement Guard** on the spot price relative to the active position's entry spot base.
-   - Enforces the **Net Premium Swap Cost Check**: calculates `netPremiumSwap = (deltaQty * latestSell) - (s.buyPrice - latestBuy)`, where `deltaQty = getScaledSellQty(s) - pos.sellQty` (enforcing the $200,000 portfolio cap scaling at 200× leverage on the candidate's `s.sellQty` first) and `latestSell` is the ask price of the sell leg. If `netPremiumSwap < config.legSwapNetPremium`, the candidate is rejected.
+   - Enforces the **Net Premium Swap Cost Check**: calculates `netPremiumSwap = (deltaQty * latestSell) - (s.buyPrice - latestBuy)`, where `deltaQty = getScaledSellQty(s) - pos.sellQty` (enforcing the $195,000 portfolio cap scaling at 200× leverage on the candidate's `s.sellQty` first) and `latestSell` is the ask price of the sell leg. If `netPremiumSwap < config.legSwapNetPremium`, the candidate is rejected.
    - If a valid swap target is found, `shouldExit` is set to `true`, and `exitReason` is set to `Leg Swap: Buy [currentStrike] -> [targetStrike]`.
 
 2. **Fallback to Standard Rotation (Only if not in Top Protected Ranks)**:
@@ -374,7 +374,7 @@ When a leg swap is executed, the engine performs a specialized partial exit:
    - **Increase** (`deltaQty > 0`): The sell entry price is **weighted-averaged**: `newEntryPrice = (oldQty × oldPrice + deltaQty × livePrice) / newQty`.
    - **Decrease** (`deltaQty < 0`): The excess short quantity is bought back, and the realized PnL is added to `accumulatedSellPnl`.
 4. **In-Place Update**: The `active_positions` row is **updated** (not deleted+inserted) with the new buy leg, adjusted sell qty, recalculated margin, and new entry time/spot price.
-5. **$200K Cap Scaling**: The target spread's lot size and sell quantity are scaled down if the short notional value exceeds $200,000, same as regular entries.
+5. **$195K Cap Scaling**: The target spread's lot size and sell quantity are scaled down if the short notional value exceeds $195,000, same as regular entries.
 
 ### E. Full Portfolio Rotation
 
@@ -398,9 +398,9 @@ New entries are opened from `uniqueTopSpreads` (the deduplicated, ROI-ranked can
 3. **Strike Uniqueness (Local)**: Block if buy or sell strike already active in `remaining` or `newEntries` (same type/underlying).
 4. **Portfolio Cap (Local)**: Block if `remaining + newEntries count >= config.numberOfCalls` (for calls) or `config.numberOfPuts` (for puts) for this type.
 4. **Execution**: `entryBuyPrice = spread.ask`, `entrySellPrice = spread.bid`. Entry IVs captured: `entryBuyIv = ticker.askIv`, `entrySellIv = ticker.bidIv`. Baseline ATM ratio (`entryAtmRatio`) and unscaled lot size (`originalLotSize`) are computed.
-   - **ATM Ratio Entry Scaling**: If `atmRatioScaling` is enabled, the target ratio is scaled using a percentage offset: `targetRatio = originalRatio + (pct / 100) * (atmRatioVal - originalRatio)`, where `pct` is `atmRatioPctCall`/`atmRatioPctPut` and `atmRatioVal` is the live ATM ratio rounded to 0.25. The entry ratio to use is `ratioToUse = Math.max(spread.sellQty, Math.round(targetRatio / 0.25) * 0.25)`. Both long lot size and short quantity are scaled under the 200X leverage limit ($200k cap) using this `ratioToUse`.
+   - **ATM Ratio Entry Scaling**: If `atmRatioScaling` is enabled, the target ratio is scaled using a percentage offset: `targetRatio = originalRatio + (pct / 100) * (atmRatioVal - originalRatio)`, where `pct` is `atmRatioPctCall`/`atmRatioPctPut` and `atmRatioVal` is the live ATM ratio rounded to 0.25. The entry ratio to use is `ratioToUse = Math.max(spread.sellQty, Math.round(targetRatio / 0.25) * 0.25)`. Both long lot size and short quantity are scaled under the 200X leverage limit ($195k cap) using this `ratioToUse`.
    - The final scaled values are written to `buy_leg` JSON metadata and stored inside Supabase `active_positions`.
-5. **$200K Short Value Cap**: If `spotPrice × sellQty × sellLotSize >= $200,000`, both lot size and sell qty are scaled down proportionally to bring the short notional to exactly $200K.
+5. **$195K Short Value Cap**: If `spotPrice × sellQty × sellLotSize >= $195,000`, both lot size and sell qty are scaled down proportionally to bring the short notional to exactly $195K.
 6. **Supabase Insert (with three DB-level guards)**:
    - Count guard: `SELECT id WHERE underlying AND type AND account_id` — abort if count `>= config.numberOfCalls` (for calls) or `config.numberOfPuts` (for puts).
    - Buy strike uniqueness: `SELECT id WHERE buy_strike = X AND account_id` — abort if exists (`buyConflict`).
@@ -451,7 +451,7 @@ Each account engine subscribes to `postgres_changes` events on the `paper_tradin
 The manual, dollar-based visual "Base/Extra" credit simulation has been completely removed from both the scanner and paper trading screens. 
 
 - **Ratio Spread Scanner Simulation**: Driven directly by the configuration-level ATM Ratio Entry settings (`atmRatioScaling` toggle and `atmRatioPctCall` / `atmRatioPctPut` offsets). When enabled:
-  - The visual scanner (`ResultTable.jsx`) recalculates candidate quantities, margins, net premiums, and projected ATM P&Ls in real-time under the 200X leverage limit ($200k portfolio cap).
+  - The visual scanner (`ResultTable.jsx`) recalculates candidate quantities, margins, net premiums, and projected ATM P&Ls in real-time under the 200X leverage limit ($195k portfolio cap).
   - Ratios that differ from their default baseline values due to scaling are highlighted in golden text (`var(--accent)`).
 - **Paper Trading Interface**: Does not perform local client-side visual simulation; it renders active position metrics (`sellQty`, `lotSize`, `margin`, `PnL`) as-is from the database. The scaled quantity values are computed and locked directly in Supabase by the backend engine at entry-time.
 
@@ -523,7 +523,7 @@ All ATM price lookups go through `getTickerPrice(strike, optType, priceField, ex
 
 ### 5. At ATM Margin
 - **Margin Calculation**: Derived from **spread entry prices** (not ATM chain data), so it is always available:
-  `shortValue = Math.min(200000, spot × sellQty × sellLotSize)`
+  `shortValue = Math.min(195000, spot × sellQty × sellLotSize)`
   `leverage = 200`
   `margin = (buyPrice × buyLotSize) + (shortValue / leverage)`
 - **Always rendered**: Because margin does not depend on ATM quote availability, it is never suppressed.
