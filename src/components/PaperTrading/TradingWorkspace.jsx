@@ -414,7 +414,7 @@ function LiveOrderHistoryTab({ orderHistory }) {
         <th>Symbol</th><th>Side</th><th>Status</th><th className="r">Qty (Lot)</th>
         <th className="r">Filled</th><th>Type</th><th className="r">Limit Price</th>
         <th className="r">Trigger Price</th><th className="r">Exec Price</th><th className="r">Size</th>
-        <th className="r">Cashflow</th><th className="r">Realized PnL</th><th className="r">Fees (GST)</th>
+        <th className="r">Realized PnL</th>
         <th className="r">Reduce Only</th><th className="r">Order ID</th><th className="r">Time</th>
       </tr></thead><tbody>
         {orderHistory.map((o, i) => {
@@ -425,9 +425,12 @@ function LiveOrderHistoryTab({ orderHistory }) {
           const cv = num(o.product?.contract_value) ?? 0.001;
           const unit = o.product?.underlying_asset?.symbol || 'BTC';
           const sizeBtc = parseFloat((size * cv).toFixed(6)) * (sell ? -1 : 1);
-          const cashflow = num(o.cashflow ?? o.cash_flow);
-          const rpnl = num(o.realized_pnl ?? o.realised_pnl);
-          const fees = num(o.paid_commission ?? o.commission);
+          // Realized PnL: Delta carries it on the order record under a few possible
+          // names depending on endpoint version; fall back through them, then meta.
+          const rpnl = num(
+            o.realized_pnl ?? o.realised_pnl ??
+            o.meta_data?.realized_pnl ?? o.meta_data?.pnl ?? o.pnl,
+          );
           const status = statusLabel(o);
           const isCall = (o.product_symbol || '').startsWith('C-');
           const sideLabel = `${o.reduce_only ? 'Close' : 'Open'} ${cap(o.side)}`;
@@ -443,9 +446,7 @@ function LiveOrderHistoryTab({ orderHistory }) {
               <td className="r">{o.stop_price ? fmtNum(o.stop_price) : '—'}</td>
               <td className="r">{o.average_fill_price ? fmtNum(o.average_fill_price) : '—'}</td>
               <td className="r"><span style={{ color: sell ? 'var(--put)' : 'var(--call)' }}>{sizeBtc > 0 ? '+' : ''}{sizeBtc} {unit}</span></td>
-              <td className="r">{cashflow != null ? `${fmtNum(cashflow)} USD` : '—'}</td>
               <td className="r">{rpnl != null ? <span className={`pt-pnl ${rpnl > 0 ? 'positive' : rpnl < 0 ? 'negative' : 'zero'}`}>{rpnl > 0 ? '+' : ''}{fmtNum(rpnl)}</span> : '—'}</td>
-              <td className="r">{fees != null ? `${fmtNum(fees)} USD` : '—'}</td>
               <td className="r">{o.reduce_only ? '✓' : '✕'}</td>
               <td className="r"><span className="pt-dim" style={{ fontSize: 11 }}>{o.id ?? '—'}</span></td>
               <td className="r"><span className="pt-dim" style={{ fontSize: 11 }}>{fmtTs(o.created_at)}</span></td>

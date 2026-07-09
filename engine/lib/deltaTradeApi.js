@@ -57,6 +57,35 @@ async function signedRequest(creds, method, path, { query = '', body = null } = 
 }
 
 /**
+ * Like signedRequest but returns the FULL response envelope ({ result, meta }) so
+ * callers can page through cursor-paginated endpoints (meta.after / meta.before).
+ */
+async function signedRequestFull(creds, method, path, { query = '', body = null } = {}) {
+  if (!creds?.apiKey || !creds?.apiSecret) throw new Error('Missing Delta credentials');
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const bodyStr = body ? JSON.stringify(body) : '';
+  const message = method + timestamp + path + query + bodyStr;
+  const signature = signPayload(creds.apiSecret, message);
+  const res = await fetch(BASE_URL + path + query, {
+    method,
+    headers: {
+      'api-key': creds.apiKey, signature, timestamp,
+      'Content-Type': 'application/json', 'User-Agent': 'optionscope-engine',
+    },
+    ...(bodyStr ? { body: bodyStr } : {}),
+  });
+  let json = null;
+  try { json = await res.json(); } catch { /* non-JSON */ }
+  if (!res.ok || json?.success === false) {
+    let msg = json?.error?.code || json?.error?.message || `Delta API ${res.status} on ${path}`;
+    const clientIp = json?.error?.context?.client_ip;
+    if (clientIp) msg += ` (client_ip: ${clientIp})`;
+    throw new Error(String(msg));
+  }
+  return { result: json?.result, meta: json?.meta };
+}
+
+/**
  * Place an order. `order` fields:
  *   product_symbol | product_id, size (int contracts), side ('buy'|'sell'),
  *   order_type ('limit_order'|'market_order'), limit_price (string),
@@ -133,11 +162,25 @@ export async function getFills(creds, { pageSize = 50 } = {}) {
 
 /**
  * Order history — every past order for the account (filled + cancelled), newest
- * first. This is Delta's Order History feed: each record carries execution price,
- * cashflow, realized pnl, commission, reduce-only, etc. Used to mirror Delta's
- * Order History tab in the UI (read-only). `pageSize` caps the page.
+ * first. This is Delta's Order History feed. Delta paginates this endpoint with a
+ * cursor (meta.after), so a single page only returns the most recent slice — we
+ * walk the cursor and concatenate up to `maxPages` pages so the UI shows the FULL
+ * history, not just the latest page. Read-only.
  */
-export async function getOrderHistory(creds, { pageSize = 100 } = {}) {
-  const query = `?page_size=${encodeURIComponent(pageSize)}`;
-  return signedRequest(creds, 'GET', '/v2/orders/history', { query });
+export async function getOrderHistory(creds, { pageSize = 100, maxPages = 20 } = {}) {
+  const all = [];
+  let after = null;
+  for (let i = 0; i < maxPages; i++) {
+    const params = new URLSearchParams();
+    params.set('page_size', String(pageSize));
+    if (after) params.set('after', after);
+    const { result, meta } = await signedRequestFull(
+      creds, 'GET', '/v2/orders/history', { query: `?${params.toString()}` },
+    );
+    if (Array.isArray(result) && result.length) all.push(...result);
+    after = meta?.after || null;
+    // Stop when there's no next cursor or the page came back short (last page).
+    if (!after || !Array.isArray(result) || result.length < pageSize) break;
+  }
+  return all;
 }

@@ -1847,7 +1847,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     try {
       const { data, error } = await supabase
         .from('live_exchange_state')
-        .select('updated_at, positions, orders, stop_orders, fills, order_history, balances, wallet')
+        // Select all columns so a not-yet-migrated `order_history` column can't
+        // make the whole query fail (which would blank every live tab). It stays
+        // undefined until migration 017 + the engine deploy land.
+        .select('*')
         .eq('account_id', activeAccountId)
         .maybeSingle();
       if (error || !data) { setLiveExchangeState(null); return; }
