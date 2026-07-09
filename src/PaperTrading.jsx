@@ -905,6 +905,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     }
     setPositions(prev => prev.map(p => ({ ...p, exitRequested: true })));
     setLiveExchangeState(prev => prev ? { ...prev, positions: [] } : prev);
+    // Confirm from the server once the engine has flattened + booked.
+    setTimeout(() => syncAll(), 2500);
+    setTimeout(() => syncAll(), 6000);
   };
 
   const handleConfirmDelete = async () => {
@@ -1574,6 +1577,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         } : prev);
         setPositionToExit(null);
         setIsExitingPosition(false);
+        // Confirm from the server once the engine has processed the close.
+        setTimeout(() => syncAll(), 2500);
+        setTimeout(() => syncAll(), 6000);
         return; // engine handles close + book + delete (Realtime removes the row)
       }
 
@@ -1849,6 +1855,22 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       setIsSyncing(false);
     }
   }, [fetchSupabaseActivePositions, fetchSupabaseTradeHistory, fetchHistoryStats, fetchHeartbeat, fetchLiveExchangeState]);
+
+  // Periodic auto-refresh of the live view (positions + snapshot + heartbeat) every
+  // 5s while the tab is visible, so open positions stay current without a manual
+  // page refresh. Lightweight — skips the heavier trade-history/stats reads (those
+  // refresh on trade close and via their own effects).
+  useEffect(() => {
+    if (!activeAccountId) return;
+    const tick = () => {
+      if (document.visibilityState !== 'visible') return;
+      fetchSupabaseActivePositions();
+      fetchHeartbeat();
+      if (isActiveLive) fetchLiveExchangeState();
+    };
+    const id = setInterval(tick, 5000);
+    return () => clearInterval(id);
+  }, [activeAccountId, isActiveLive, fetchSupabaseActivePositions, fetchHeartbeat, fetchLiveExchangeState]);
 
   useEffect(() => {
     if (!isActiveLive) { setLiveExchangeState(null); return; }
