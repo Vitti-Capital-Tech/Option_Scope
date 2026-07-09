@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useForm } from 'react-hook-form';
 import {
   loadProducts, getExpiries, getStrikes, getSpotPrice,
@@ -2312,14 +2312,42 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         .filter(p => p.underlying === underlying)
         .reduce((s, p) => s + (includeFees ? (p.unrealizedNetPnl || 0) : (p.unrealizedGrossPnl || 0)), 0);
 
-  // Cumulative KPIs read straight off the server-aggregated historyStats object
-  // (sums/counts/today buckets computed in get_trade_stats), so no per-trade math
-  // or full-history download is needed. gross/net is selected by the includeFees toggle.
-  const totalRealizedPnl = includeFees ? historyStats.totalNet : historyStats.totalGross;
+  // Realized P&L for the KPI cards.
+  //  • Paper accounts: server-aggregated trade_history stats (get_trade_stats).
+  //  • LIVE accounts: Delta's OWN realized P&L — sum of meta_data.pnl on each
+  //    order-history record (the same number Delta shows in its Realized PnL
+  //    column), so the cards match Delta exactly. Net subtracts Delta's own
+  //    commission (paid_commission). Today = orders whose fill/close time
+  //    (updated_at) falls on the local (IST) calendar day.
+  const liveRealized = useMemo(() => {
+    if (!useLive) return null;
+    const orders = (liveExchangeState?.order_history || [])
+      .filter(o => liveBelongsToUnderlying(o.product_symbol));
+    const today = new Date().toDateString();
+    let grossAll = 0, grossToday = 0, feesAll = 0, feesToday = 0;
+    for (const o of orders) {
+      const pnl = Number(o.meta_data?.pnl);         // realized P&L (USD), closes only
+      const fee = Number(o.paid_commission ?? o.commission);
+      let isToday = false;
+      try { isToday = new Date(o.updated_at ?? o.created_at).toDateString() === today; } catch { /* skip */ }
+      if (Number.isFinite(pnl)) { grossAll += pnl; if (isToday) grossToday += pnl; }
+      if (Number.isFinite(fee)) { feesAll += fee; if (isToday) feesToday += fee; }
+    }
+    return {
+      totalGross: grossAll, totalNet: grossAll - feesAll,
+      todayGross: grossToday, todayNet: grossToday - feesToday,
+    };
+  }, [useLive, liveExchangeState, underlying]);
+
+  const totalRealizedPnl = useLive
+    ? (includeFees ? liveRealized.totalNet : liveRealized.totalGross)
+    : (includeFees ? historyStats.totalNet : historyStats.totalGross);
 
   const totalPnl = totalRealizedPnl + totalUnrealizedPnl;
 
-  const todayRealizedPnl = includeFees ? historyStats.todayNet : historyStats.todayGross;
+  const todayRealizedPnl = useLive
+    ? (includeFees ? liveRealized.todayNet : liveRealized.todayGross)
+    : (includeFees ? historyStats.todayNet : historyStats.todayGross);
 
   const todayPnl = todayRealizedPnl + totalUnrealizedPnl;
   const wins = includeFees ? historyStats.winNet : historyStats.winGross;
