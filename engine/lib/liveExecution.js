@@ -16,7 +16,7 @@
  * `sellQty` for the short). Validate the dry-run order log against your intended
  * real sizes BEFORE arming an account.
  */
-import { placeOrder, cancelOrder, editOrder, editBracket, getLivePositions, getBalance, getLiveOrders, getFills } from './deltaTradeApi.js';
+import { placeOrder, cancelOrder, editOrder, editBracket, closeAllPositions, getLivePositions, getBalance, getLiveOrders, getFills } from './deltaTradeApi.js';
 import { log, logWarn, logError } from './utils.js';
 
 // Default ON. Only the literal string 'false' (any case) disarms the dry-run.
@@ -276,6 +276,29 @@ export function createLiveExecutor(getCtx) {
         return { ok: true };
       } catch (e) {
         logWarn(`[${accountName}] cancelStop failed for id ${id}: ${e.message}`);
+        return { ok: false, error: e.message };
+      }
+    },
+
+    /**
+     * Flatten the whole account in one Delta call (close_all). Returns { ok, res }
+     * on success; callers should fall back to per-position closes on { ok: false }.
+     * No-op (skipped) unless armed; dry-run logs only.
+     */
+    async closeAll() {
+      if (!armed()) return { ok: true, skipped: true };
+      const { accountName, creds } = getCtx();
+      if (DRY_RUN) {
+        log(`[${accountName}] 🧪 DRY-RUN close-all (not sent): POST /v2/positions/close_all`);
+        return { ok: true, dryRun: true };
+      }
+      if (!creds?.apiKey || !creds?.apiSecret) return { ok: false, error: 'no-credentials' };
+      try {
+        const res = await closeAllPositions(creds);
+        log(`[${accountName}] ✅ LIVE close-all sent (account flattened)`);
+        return { ok: true, res };
+      } catch (e) {
+        logError(`[${accountName}] ✖ LIVE close-all FAILED (falling back to per-position):`, e.message);
         return { ok: false, error: e.message };
       }
     },

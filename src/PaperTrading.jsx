@@ -892,10 +892,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     const acc = accounts.find(a => a.id === activeAccountId);
     if (count === 0) { alert('No open positions to close.'); return; }
     if (!window.confirm(`Close ALL ${count} open position(s) for "${acc?.name || 'this account'}"?\n\nEvery trade will be exited at market.`)) return;
+    // One flag → the engine flattens the account (native close_all) in one call,
+    // then books + deletes all positions.
     const { error } = await supabase
-      .from('active_positions')
-      .update({ exit_requested: true })
-      .eq('account_id', activeAccountId);
+      .from('paper_trading_accounts')
+      .update({ close_all_requested: true })
+      .eq('id', activeAccountId);
     if (error) {
       console.error('Close-all failed:', error);
       alert(`Failed to close all: ${error.message}`);
@@ -2333,8 +2335,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               triggerDisarmLive={triggerDisarmLive}
               triggerPauseAccount={triggerPauseAccount}
               triggerResumeAccount={triggerResumeAccount}
-              triggerCloseAll={triggerCloseAll}
-              openPositionsCount={positions.length}
               engineDryRun={engineDryRun}
               userProfile={userProfile}
               session={session}
@@ -2413,6 +2413,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               exitType={findActiveSchedule(schedules, now)?.exitType ?? config.exitType}
               exitPoints={findActiveSchedule(schedules, now)?.exitPoints ?? config.exitPoints}
               onExitPosition={(p) => setPositionToExit(p)}
+              onCloseAll={triggerCloseAll}
               filteredTradeHistory={filteredTradeHistory}
               historyFilterDate={historyFilterDate}
               setHistoryFilterDate={setHistoryFilterDate}
