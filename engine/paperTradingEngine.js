@@ -866,13 +866,22 @@ async function startSingleAccountEngine(account) {
     if (!(accountState.mode === 'live' && accountState.live_enabled)) return;
     try {
       const { data, error } = await supabase
-        .from('delta_close_requests').select('id, product_symbol')
+        .from('delta_close_requests').select('id, product_symbol, created_at')
         .eq('account_id', accountState.id);
       if (error || !data || !data.length) return;
+      // Discard stale requests (e.g. a backlog that piled up while the engine was
+      // down) without acting — so a restart never bulk-closes old clicks.
+      const fresh = [];
+      for (const r of data) {
+        if (Date.now() - new Date(r.created_at).getTime() > 90000) {
+          await supabase.from('delta_close_requests').delete().eq('id', r.id);
+        } else { fresh.push(r); }
+      }
+      if (!fresh.length) return;
       const livePos = await live.positions();
       const sizeBySymbol = {};
       for (const p of (livePos || [])) sizeBySymbol[p.product_symbol] = Number(p.size) || 0;
-      for (const r of data) {
+      for (const r of fresh) {
         const sym = r.product_symbol;
         const sz = sizeBySymbol[sym] || 0;
         if (sz !== 0) {
@@ -927,10 +936,15 @@ async function startSingleAccountEngine(account) {
     if (!(accountState.mode === 'live' && accountState.live_enabled)) return;
     try {
       const { data, error } = await supabase
-        .from('delta_cancel_requests').select('id, order_id, product_id')
+        .from('delta_cancel_requests').select('id, order_id, product_id, created_at')
         .eq('account_id', accountState.id);
       if (error || !data || !data.length) return;
       for (const r of data) {
+        // Skip stale cancel requests (backlog from a down engine) — just remove them.
+        if (Date.now() - new Date(r.created_at).getTime() > 90000) {
+          await supabase.from('delta_cancel_requests').delete().eq('id', r.id);
+          continue;
+        }
         await live.cancelStop({ id: r.order_id, productId: r.product_id });
         await supabase.from('delta_cancel_requests').delete().eq('id', r.id);
       }
@@ -2535,6 +2549,15 @@ async function startSingleAccountEngine(account) {
   // 1. Load config + schedules
   await fetchConfig();
   await loadCredentials();
+  // Safety on startup: clear a stuck close_all flag and purge any request rows that
+  // piled up while the engine was down, so a restart never bulk-executes old clicks.
+  try {
+    await supabase.from('paper_trading_accounts')
+      .update({ close_all_requested: false }).eq('id', accountState.id).eq('close_all_requested', true);
+    accountState.close_all_requested = false;
+    await supabase.from('delta_close_requests').delete().eq('account_id', accountState.id);
+    await supabase.from('delta_cancel_requests').delete().eq('account_id', accountState.id);
+  } catch (e) { /* tables may not exist on older DBs — non-fatal */ }
   await fetchSchedules();
   log(`[${accountState.name}] Schedules loaded: ${schedules.length} window(s)`);
 
