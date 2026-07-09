@@ -696,6 +696,8 @@ export default function TradingWorkspace(props) {
   // counts (they'd flash the wrong numbers before the live tables load).
   const showLoading = !!liveLoading && !live;
   const paperCount = (n) => (showLoading ? null : n);
+  // Open positions right now — drives whether Close All shows (hidden when flat).
+  const openCount = live ? (liveOpenLegs || 0) : visible.length;
   const TABS = [
     { key: 'positions', label: 'Positions', icon: 'positions', count: live ? liveOpenLegs : paperCount(spreadCount) },
     { key: 'open', label: 'Open Orders', icon: 'open', count: live ? (live.orders?.length ?? 0) : paperCount(longCount) },
@@ -708,19 +710,39 @@ export default function TradingWorkspace(props) {
     <div className="pt-tables-container">
       <div className="pt-workspace pt-section">
         <div className="pt-tabbar" role="tablist">
-          {TABS.map(t => (
-            <button
-              key={t.key}
-              role="tab"
-              aria-selected={tab === t.key}
-              className={`pt-tab ${tab === t.key ? 'on' : ''}`}
-              onClick={() => setTab(t.key)}
-            >
-              <Icon name={t.icon} />
-              <span>{t.label}</span>
-              {t.count != null && <span className="pt-tab-count">{t.count}</span>}
-            </button>
-          ))}
+          <div className="pt-tab-group">
+            {TABS.map(t => (
+              <button
+                key={t.key}
+                role="tab"
+                aria-selected={tab === t.key}
+                className={`pt-tab ${tab === t.key ? 'on' : ''}`}
+                onClick={() => setTab(t.key)}
+              >
+                <Icon name={t.icon} />
+                <span>{t.label}</span>
+                {t.count != null && <span className="pt-tab-count">{t.count}</span>}
+              </button>
+            ))}
+          </div>
+          <div className="pt-tab-actions">
+            {props.onSync && (
+              <button type="button" onClick={props.onSync} disabled={props.isSyncing} className="pt-btn-close"
+                title="Refresh positions, orders and history from the engine">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+                  style={props.isSyncing ? { animation: 'spin 0.8s linear infinite' } : undefined}>
+                  <path d="M23 4v6h-6M1 20v-6h6" /><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+                </svg>
+                {props.isSyncing ? 'Syncing…' : 'Sync'}
+              </button>
+            )}
+            {props.onCloseAll && openCount > 0 && (
+              <button type="button" onClick={props.onCloseAll} className="pt-btn-close"
+                style={{ background: '#f85149', color: '#fff', borderColor: '#f85149', fontWeight: 700 }}>
+                ✕ Close All
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="pt-workspace-body">
@@ -728,24 +750,6 @@ export default function TradingWorkspace(props) {
           <>
           {tab === 'positions' && (
             <>
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, padding: '8px 12px 0' }}>
-                {props.onSync && (
-                  <button type="button" onClick={props.onSync} disabled={props.isSyncing} className="pt-btn-close"
-                    title="Refresh positions, orders and history from the engine">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
-                      style={props.isSyncing ? { animation: 'spin 0.8s linear infinite' } : undefined}>
-                      <path d="M23 4v6h-6M1 20v-6h6" /><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
-                    </svg>
-                    {props.isSyncing ? 'Syncing…' : 'Sync'}
-                  </button>
-                )}
-                {props.onCloseAll && (visible.length > 0 || isLiveAccount) && (
-                  <button type="button" onClick={props.onCloseAll} className="pt-btn-close"
-                    style={{ background: '#f85149', color: '#fff', borderColor: '#f85149', fontWeight: 700 }}>
-                    ✕ Close All
-                  </button>
-                )}
-              </div>
               {live ? (
                 <DeltaPositionsTable
                   positions={live.positions}

@@ -5243,12 +5243,32 @@ body.light-theme .pt-btn-apply.active {
 
 .pt-tabbar {
   display: flex;
-  gap: 2px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding: 0 10px;
   background: var(--bg3);
   border-bottom: 1px solid var(--border);
+  overflow: visible;
+}
+
+/* Tabs scroll internally if they ever overflow, but the scrollbar is hidden so
+   it never shows in the headline; the action buttons stay pinned to the right. */
+.pt-tab-group {
+  display: flex;
+  gap: 2px;
   overflow-x: auto;
-  scrollbar-width: thin;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  min-width: 0;
+}
+.pt-tab-group::-webkit-scrollbar { display: none; }
+
+.pt-tab-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .pt-tab {
