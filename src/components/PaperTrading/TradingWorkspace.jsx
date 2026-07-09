@@ -383,18 +383,33 @@ function LiveRiskMargin({ positions, wallet }) {
 // tab (Symbol · Size · Notional · Entry · TP/SL · Index · Mark · Margin · UPNL ·
 // Action), rendering the live exchange snapshot per leg. Close (×) maps the leg
 // back to its engine position so it exits the whole spread.
-function DeltaPositionsTable({ positions, enginePositions, onExitPosition }) {
+function DeltaPositionsTable({ positions, enginePositions, onExitPosition, spotPrice, stopOrders }) {
   const open = (positions || []).filter(p => Number(p.size) !== 0);
   if (open.length === 0) {
     return <EmptyPanel icon="positions" title="No Open Positions"
       desc="Open positions reported by Delta Exchange appear here. The engine enters them automatically when conditions are met." />;
   }
+  const num = (v) => (v == null || v === '' || Number.isNaN(Number(v)) ? null : Number(v));
+
+  // Map each leg back to its engine position (for Close) — by leg symbol.
   const posBySymbol = {};
   for (const ep of (enginePositions || [])) {
     if (ep.buyLeg?.symbol) posBySymbol[ep.buyLeg.symbol] = ep;
     if (ep.sellLeg?.symbol) posBySymbol[ep.sellLeg.symbol] = ep;
   }
-  const num = (v) => (v == null || v === '' || Number.isNaN(Number(v)) ? null : Number(v));
+  // TP/SL per leg come from the resting stop orders, matched by product_symbol.
+  const stopBySymbol = {};
+  for (const so of (stopOrders || [])) {
+    const sym = so.product_symbol;
+    if (!sym) continue;
+    const type = String(so.stop_order_type || '');
+    const level = num(so.stop_price);
+    if (!stopBySymbol[sym]) stopBySymbol[sym] = { tp: null, sl: null };
+    if (type.includes('take_profit')) stopBySymbol[sym].tp = level;
+    else if (type.includes('stop_loss')) stopBySymbol[sym].sl = level;
+  }
+  const idx = num(spotPrice);
+
   return (
     <div className="pt-table-scroll">
       <table className="pt-table pt-delta-table">
@@ -405,13 +420,18 @@ function DeltaPositionsTable({ positions, enginePositions, onExitPosition }) {
         </tr></thead>
         <tbody>
           {open.map((p, i) => {
-            const size = num(p.size) || 0;
-            const isCall = /(^|[^A-Z])C-/.test(p.product_symbol || '') || (p.product_symbol || '').startsWith('C-');
+            const size = num(p.size) || 0;                          // contracts (lots), signed
+            const cv = num(p.product?.contract_value) ?? 0.001;     // BTC per contract
+            const unit = p.product?.underlying_asset?.symbol || 'BTC';
             const long = size > 0;
+            const isCall = (p.product_symbol || '').startsWith('C-');
+            const btc = parseFloat((size * cv).toFixed(6));         // signed size in underlying
+            const notional = idx != null ? Math.abs(size) * cv * idx : null;
             const pnl = num(p.unrealized_pnl ?? p.unrealised_pnl) ?? 0;
-            const notional = num(p.notional) ?? (num(p.mark_price) != null ? Math.abs(size) * num(p.mark_price) : null);
-            const tp = num(p.bracket_take_profit_price ?? p.take_profit_price);
-            const sl = num(p.bracket_stop_loss_price ?? p.stop_loss_price);
+            const entryCost = num(p.entry_price) != null ? Math.abs(size) * cv * num(p.entry_price) : null;
+            const pnlPct = (entryCost && entryCost !== 0) ? (pnl / entryCost) * 100 : null;
+            const margin = num(p.margin);
+            const st = stopBySymbol[p.product_symbol] || { tp: null, sl: null };
             const enginePos = posBySymbol[p.product_symbol];
             return (
               <tr key={p.product_id ?? p.product_symbol ?? i} className={`pt-row-${isCall ? 'call' : 'put'}`}>
@@ -419,24 +439,27 @@ function DeltaPositionsTable({ positions, enginePositions, onExitPosition }) {
                   <span className={`pt-legrail ${isCall ? 'call' : 'put'}`} />
                   <span className="pt-instrument">{p.product_symbol || '—'}</span>
                 </td>
-                <td className="r"><span style={{ color: long ? 'var(--call)' : 'var(--put)', fontWeight: 700 }}>{long ? '+' : ''}{fmtNum(size, 0)}</span></td>
+                <td className="r"><span style={{ color: long ? 'var(--call)' : 'var(--put)', fontWeight: 700 }}>{long ? '+' : ''}{btc} {unit}</span></td>
                 <td className="r">{notional != null ? `$${fmtNum(notional)}` : '—'}</td>
                 <td className="r">{fmtNum(p.entry_price)}</td>
                 <td>
                   <span style={{ fontSize: 11 }}>
-                    <span style={{ color: 'var(--call)' }}>TP {tp != null ? tp : '—'}</span>
+                    <span style={{ color: 'var(--call)' }}>TP {st.tp != null ? st.tp : '—'}</span>
                     <span style={{ color: 'var(--text-dim)' }}> · </span>
-                    <span style={{ color: 'var(--put)' }}>SL {sl != null ? sl : '—'}</span>
+                    <span style={{ color: 'var(--put)' }}>SL {st.sl != null ? st.sl : '—'}</span>
                   </span>
                 </td>
-                <td className="r">{fmtNum(p.index_price)}</td>
+                <td className="r">{idx != null ? fmtNum(idx) : '—'}</td>
                 <td className="r">{fmtNum(p.mark_price)}</td>
-                <td className="r">{num(p.margin) != null ? `$${fmtNum(p.margin)}` : '—'}</td>
-                <td className="r"><span className={`pt-pnl ${pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : 'zero'}`}>{pnl > 0 ? '+' : ''}{fmtNum(pnl)}</span></td>
+                <td className="r">{margin != null && margin > 0 ? `$${fmtNum(margin)}` : '—'}</td>
+                <td className="r">
+                  <span className={`pt-pnl ${pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : 'zero'}`}>{pnl > 0 ? '+' : ''}{fmtNum(pnl)}</span>
+                  {pnlPct != null && <span style={{ display: 'block', fontSize: 10, color: pnl >= 0 ? 'var(--call)' : 'var(--put)' }}>{pnl >= 0 ? '+' : ''}{pnlPct.toFixed(2)}%</span>}
+                </td>
                 <td className="r">
                   {onExitPosition && enginePos
                     ? <button onClick={() => onExitPosition(enginePos)} className="pt-btn-close" title="Close position">✕</button>
-                    : <span style={{ opacity: 0.35 }}>—</span>}
+                    : <span style={{ opacity: 0.35 }} title="No matching engine position — deploy sync fix">—</span>}
                 </td>
               </tr>
             );
@@ -572,6 +595,8 @@ export default function TradingWorkspace(props) {
                   positions={live.positions}
                   enginePositions={props.positions}
                   onExitPosition={props.onExitPosition}
+                  spotPrice={props.spotPrice}
+                  stopOrders={live.stopOrders || live.stop_orders}
                 />
               ) : (
               <ActivePositionsTable
