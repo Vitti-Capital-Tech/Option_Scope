@@ -227,32 +227,47 @@ const Tag = ({ text, color = 'var(--accent)' }) => (
 );
 
 // ── Open Orders (live) — resting limit orders on Delta ────────────────────
-function LiveOrdersTab({ orders }) {
+function LiveOrdersTab({ orders, spotPrice, onCancelOrder }) {
   if (!orders?.length) {
     return <EmptyPanel icon="open" title="No Open Orders"
       desc="Resting limit orders on Delta Exchange appear here. Spread entries rest at their limit price until filled." />;
   }
+  const num = (v) => (v == null || v === '' || Number.isNaN(Number(v)) ? null : Number(v));
+  const idx = num(spotPrice);
   return (
     <div className="pt-table-scroll">
-      <table className="pt-table"><thead><tr>
-        <th>Placed</th><th>Instrument</th><th>Side</th><th>Type</th>
-        <th>Limit Price</th><th>Size<span className="pt-th-sub">filled / total</span></th><th>State</th>
+      <table className="pt-table pt-delta-table"><thead><tr>
+        <th>Symbol</th><th className="r">Qty (Lot)</th><th className="r">Filled</th><th className="r">Size</th>
+        <th className="r">Notional</th><th>Type</th><th className="r">Reduce Only</th><th className="r">Limit Price</th>
+        <th className="r">Exec Price</th><th>TP / SL</th><th className="r">Time</th><th className="r">Action</th>
       </tr></thead><tbody>
         {orders.map(o => {
-          const total = Number(o.size) || 0;
-          const unfilled = Number(o.unfilled_size ?? o.size) || 0;
-          const filled = Math.max(0, total - unfilled);
+          const size = num(o.size) || 0;
+          const sell = String(o.side) === 'sell';
+          const qty = sell ? -size : size;
+          const unfilled = num(o.unfilled_size) ?? size;
+          const filled = Math.max(0, size - unfilled);
+          const cv = num(o.product?.contract_value) ?? 0.001;
+          const unit = o.product?.underlying_asset?.symbol || 'BTC';
+          const sizeBtc = parseFloat((size * cv).toFixed(6));
+          const notional = idx != null ? Math.abs(size) * cv * idx : null;
+          const tp = num(o.bracket_take_profit_price);
+          const sl = num(o.bracket_stop_loss_price);
+          const isCall = (o.product_symbol || '').startsWith('C-');
           return (
-            <tr key={o.id ?? o.client_order_id}>
-              <td><span className="pt-dim">{fmtTs(o.created_at)}</span></td>
-              <td><span className="pt-instrument">{o.product_symbol || '—'}</span></td>
-              <td><Tag text={o.side} color={sideColor(o.side)} /></td>
-              <td><span style={{ fontSize: 11, color: 'var(--text-dim)', fontWeight: 600 }}>
-                {String(o.order_type || '').replace('_order', '')}{o.reduce_only ? ' · reduce' : ''}
-              </span></td>
-              <td><span style={{ fontWeight: 700 }}>{fmtNum(o.limit_price)}</span></td>
-              <td>{fmtNum(filled, 0)} / {fmtNum(total, 0)}</td>
-              <td><Tag text={o.state} /></td>
+            <tr key={o.id ?? o.client_order_id} className={`pt-row-${isCall ? 'call' : 'put'}`}>
+              <td><span className={`pt-legrail ${isCall ? 'call' : 'put'}`} /><span className="pt-instrument">{o.product_symbol || '—'}</span></td>
+              <td className="r"><span style={{ color: sell ? 'var(--put)' : 'var(--call)', fontWeight: 700 }}>{qty > 0 ? '+' : ''}{qty}</span></td>
+              <td className="r">{fmtNum(filled, 0)}</td>
+              <td className="r">{sizeBtc} {unit}</td>
+              <td className="r">{notional != null ? `$${fmtNum(notional)}` : '—'}</td>
+              <td>{String(o.order_type || '').replace('_order', '').replace(/^\w/, c => c.toUpperCase())}</td>
+              <td className="r">{o.reduce_only ? '✓' : '—'}</td>
+              <td className="r">{fmtNum(o.limit_price)}</td>
+              <td className="r">{o.average_fill_price ? fmtNum(o.average_fill_price) : '—'}</td>
+              <td><span style={{ fontSize: 11 }}><span style={{ color: 'var(--call)' }}>TP {tp != null ? tp : '—'}</span> · <span style={{ color: 'var(--put)' }}>SL {sl != null ? sl : '—'}</span></span></td>
+              <td className="r"><span className="pt-dim" style={{ fontSize: 11 }}>{fmtTs(o.created_at)}</span></td>
+              <td className="r"><button onClick={() => onCancelOrder && onCancelOrder(o)} className="pt-btn-close" title="Cancel order">✕</button></td>
             </tr>
           );
         })}
@@ -546,7 +561,6 @@ export default function TradingWorkspace(props) {
     { key: 'stop', label: 'Stop Orders', icon: 'stop', count: live ? (live.stop_orders?.length ?? 0) : spreadCount },
     { key: 'fills', label: 'Fills', icon: 'fills', count: live ? (live.fills?.length ?? 0) : null },
     { key: 'history', label: 'Order History', icon: 'history', count: histCount },
-    { key: 'risk', label: 'Risk & Margin', icon: 'risk', count: null },
   ];
 
   return (
@@ -629,7 +643,7 @@ export default function TradingWorkspace(props) {
 
           {tab === 'open' && (
             live ? (
-              <LiveOrdersTab orders={live.orders} />
+              <LiveOrdersTab orders={live.orders} spotPrice={props.spotPrice} onCancelOrder={props.onCancelOrder} />
             ) : (
               <ActivePositionsTable
                 positions={props.positions}

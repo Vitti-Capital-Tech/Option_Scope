@@ -922,6 +922,21 @@ async function startSingleAccountEngine(account) {
     } catch (e) { logError(`[${accountState.name}] processCloseRequests error:`, e); }
   }
 
+  // Per-order cancel (UI ✕ on an Open Orders row). Cancels that order on Delta.
+  async function processCancelRequests() {
+    if (!(accountState.mode === 'live' && accountState.live_enabled)) return;
+    try {
+      const { data, error } = await supabase
+        .from('delta_cancel_requests').select('id, order_id, product_id')
+        .eq('account_id', accountState.id);
+      if (error || !data || !data.length) return;
+      for (const r of data) {
+        await live.cancelStop({ id: r.order_id, productId: r.product_id });
+        await supabase.from('delta_cancel_requests').delete().eq('id', r.id);
+      }
+    } catch (e) { logError(`[${accountState.name}] processCancelRequests error:`, e); }
+  }
+
   // "Close All" — the dashboard sets paper_trading_accounts.close_all_requested.
   // Armed real: flatten the account in ONE Delta call (close_all); if that fails,
   // fall back to per-position closes. Then cancel resting orders, book, delete all.
@@ -2708,6 +2723,7 @@ async function startSingleAccountEngine(account) {
     processManualExits().catch(() => {});
     processCloseAll().catch(() => {});
     processCloseRequests().catch(() => {});
+    processCancelRequests().catch(() => {});
   }, 1500);
 
 

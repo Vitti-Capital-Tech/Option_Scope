@@ -932,6 +932,17 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     setTimeout(() => syncAll(), 6000);
   };
 
+  // Cancel a single resting order from the Open Orders table (per-row ✕).
+  const triggerCancelOrder = async (o) => {
+    if (!o?.id) return;
+    const { error } = await supabase
+      .from('delta_cancel_requests')
+      .insert([{ account_id: activeAccountId, order_id: o.id, product_id: o.product_id }]);
+    if (error) { console.error('cancel-order failed', error); alert(`Failed to cancel order: ${error.message}`); return; }
+    setLiveExchangeState(prev => prev ? { ...prev, orders: (prev.orders || []).filter(x => x.id !== o.id) } : prev);
+    setTimeout(() => syncAll(), 2000);
+  };
+
   const handleConfirmDelete = async () => {
     if (!accountToDeleteId) return;
     setIsDeletingAccount(true);
@@ -2484,6 +2495,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               onExitPosition={(p) => setPositionToExit(p)}
               onCloseAll={triggerCloseAll}
               onCloseOrphan={triggerCloseOrphan}
+              onCancelOrder={triggerCancelOrder}
               onSync={syncAll}
               isSyncing={isSyncing}
               filteredTradeHistory={filteredTradeHistory}
