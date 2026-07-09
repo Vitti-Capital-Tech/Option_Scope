@@ -236,14 +236,6 @@ const fmtNum = (v, d = 2) => {
 };
 const fmtTs = (t) => { try { return t ? formatDateTime(new Date(t)) : '—'; } catch { return '—'; } };
 const sideColor = (side) => String(side).toLowerCase() === 'buy' ? 'var(--call)' : 'var(--put)';
-// Delta's Order History lists only orders that actually executed. The resting
-// bracket SL/TP and limit exit orders auto-cancel (zero fill) when a position
-// closes — Delta hides those; we filter them out too so our list matches Delta.
-const orderExecuted = (o) => {
-  const size = Number(o.size) || 0;
-  const unfilled = o.unfilled_size == null ? 0 : Number(o.unfilled_size);
-  return (size - unfilled) > 0;
-};
 const Tag = ({ text, color = 'var(--accent)' }) => (
   <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', padding: '2px 7px', borderRadius: 5, color, border: `1px solid ${color}`, textTransform: 'uppercase', whiteSpace: 'nowrap' }}>
     {String(text ?? '—')}
@@ -419,13 +411,7 @@ function LiveOrderHistoryTab({ orderHistory }) {
   // and Delta sorts by it descending — not by created_at or order id. Sort the same
   // way (updated_at desc, id desc tiebreak) so our sequence + times match Delta.
   const ts = (o) => new Date(o.updated_at ?? o.created_at ?? 0).getTime();
-  const rows = orderHistory
-    .filter(orderExecuted) // hide auto-cancelled bracket/limit noise, like Delta
-    .sort((a, b) => (ts(b) - ts(a)) || (Number(b.id || 0) - Number(a.id || 0)));
-  if (!rows.length) {
-    return <EmptyPanel icon="history" title="No Order History"
-      desc="Filled orders on Delta Exchange appear here, newest first." />;
-  }
+  const rows = [...orderHistory].sort((a, b) => (ts(b) - ts(a)) || (Number(b.id || 0) - Number(a.id || 0)));
 
   const statusLabel = (o) => {
     const s = String(o.state || '').toLowerCase();
@@ -466,17 +452,22 @@ function LiveOrderHistoryTab({ orderHistory }) {
           const rpnl = num(o.meta_data?.pnl ?? o.realized_pnl ?? o.realised_pnl);
           const status = statusLabel(o);
           const isCall = (o.product_symbol || '').startsWith('C-');
+          const optColor = isCall ? 'var(--call)' : 'var(--put)'; // red for puts, green for calls
           const sideLabel = `${o.reduce_only ? 'Close' : 'Open'} ${cap(o.side)}`;
+          // Delta only shows a limit price for limit-type orders; market orders carry
+          // an internal protective limit that Delta hides (shows "—").
+          const isLimitType = String(o.order_type || '').includes('limit');
+          const trigger = num(o.stop_price) ?? num(o.bracket_stop_loss_price) ?? num(o.bracket_take_profit_price);
           return (
             <tr key={o.id ?? `${o.client_order_id}-${i}`} className={`pt-row-${isCall ? 'call' : 'put'}`}>
               <td><span className={`pt-legrail ${isCall ? 'call' : 'put'}`} /><span className="pt-instrument">{o.product_symbol || '—'}</span></td>
               <td><span style={{ color: sell ? 'var(--put)' : 'var(--call)', fontWeight: 600 }}>{sideLabel}</span></td>
               <td><span style={{ color: statusColor(status), fontWeight: 600 }}>{status}</span></td>
-              <td className="r"><span style={{ color: sell ? 'var(--put)' : 'var(--call)', fontWeight: 700 }}>{qty > 0 ? '+' : ''}{qty}</span></td>
+              <td className="r"><span style={{ color: optColor, fontWeight: 700 }}>{Math.abs(size)}</span></td>
               <td className="r">{fmtNum(filled, 0)}</td>
               <td>{typeLabel(o)}</td>
-              <td className="r">{o.limit_price ? fmtNum(o.limit_price) : '—'}</td>
-              <td className="r">{o.stop_price ? fmtNum(o.stop_price) : '—'}</td>
+              <td className="r">{isLimitType && o.limit_price ? fmtNum(o.limit_price) : '—'}</td>
+              <td className="r">{trigger != null ? fmtNum(trigger) : '—'}</td>
               <td className="r">{o.average_fill_price ? fmtNum(o.average_fill_price) : '—'}</td>
               <td className="r"><span style={{ color: sell ? 'var(--put)' : 'var(--call)' }}>{sizeBtc > 0 ? '+' : ''}{sizeBtc} {unit}</span></td>
               <td className="r">{rpnl != null ? <span className={`pt-pnl ${rpnl > 0 ? 'positive' : rpnl < 0 ? 'negative' : 'zero'}`}>{rpnl > 0 ? '+' : ''}{fmtNum(rpnl)}</span> : '—'}</td>
@@ -723,7 +714,7 @@ export default function TradingWorkspace(props) {
     { key: 'open', label: 'Open Orders', icon: 'open', count: live ? (live.orders?.length ?? 0) : paperCount(longCount) },
     { key: 'stop', label: 'Stop Orders', icon: 'stop', count: live ? (live.stop_orders?.length ?? 0) : paperCount(spreadCount) },
     { key: 'fills', label: 'Fills', icon: 'fills', count: live ? (live.fills?.length ?? 0) : null },
-    { key: 'history', label: 'Order History', icon: 'history', count: live ? (live.order_history || []).filter(orderExecuted).length : paperCount(histCount) },
+    { key: 'history', label: 'Order History', icon: 'history', count: live ? (live.order_history?.length ?? 0) : paperCount(histCount) },
   ];
 
   return (
