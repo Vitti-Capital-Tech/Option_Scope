@@ -111,7 +111,7 @@ Every 5 minutes (as well as during startup and configuration updates), the engin
 1. **Stale Expiry Detection**: It computes the remaining days of the current `config.expiry`. If it is less than the configured `daysToExpiry` threshold, the expiry is flagged as stale/invalid.
 2. **Auto-Rollover**: The engine automatically scans all available expiries on the exchange and updates `config.expiry` to the nearest future date that satisfies the `daysToExpiry` requirement, saving this change back to the database.
 3. **Scanner Rollover vs. Position Rollover**: 
-   - **Scanner Rollover**: Changing `config.expiry` only shifts the engine's scanning focus. In the next minute loop, it runs a completely fresh scan for option spreads on the new expiry and will only enter trades if they meet all configuration parameters.
+   - **Scanner Rollover**: `config.expiry` is the **upper bound of the scan range** (see [Step 0: Expiry range](#how-spreads-are-found-scanning)). Changing it (manually or via auto-rollover) shifts the range's top; the next minute loop runs a fresh scan across every expiry from the nearest (respecting `daysToExpiry`) up to the target, and the WebSocket re-subscribes to those expiries' chains.
    - **No Position Rollover**: Active positions are never carried forward or rolled over. Instead, they are always exited 2 minutes prior to their expiration date and recorded as settled in the trade history, starting fresh.
 
 ### The Evaluation Loop Decision
@@ -144,6 +144,19 @@ Before any evaluation runs, these guards must pass:
 
 The `scanTickers()` function is the **spread finder**. It works like this:
 
+### Step 0: Expiry range (which expiries are scanned)
+
+The engine no longer scans a single expiry. Each cycle it builds a **range of expiries** via `scanExpiries()` and unions the same-expiry ratio spreads found in each:
+
+- **`config.expiry` is the UPPER bound** — the target expiry the user picked (e.g. a weekly).
+- **`daysToExpiry` is the LOWER bound** — expiries closer than this are excluded.
+- Range = every available expiry with `daysRemaining ≥ daysToExpiry` **and** `expiry ≤ config.expiry`. So a weekly target scans all the dailies up to it (`d0 … weekly`); a `d1` target scans `d0 … d1`; `daysToExpiry = 1` drops `d0`.
+
+Each expiry is scanned **independently** (`scanTickers` still requires both legs share one expiry — no calendar/cross-expiry spreads), and the results are merged into one candidate list. **Caps are total across the range** (`numberOfCalls`/`numberOfPuts` count all expiries together, not per expiry), so live margin sizing is unchanged. The WebSocket subscribes to **every expiry's option chain** in the range (`buildSymbolMeta` accepts a list), and the heavy O(N²) scan runs **only on entry cycles** (minute boundaries), not the 1-second exit loop.
+
+> [!NOTE]
+> **Backward compatible:** when the target is the nearest expiry (the auto-selected default), the range is a single expiry and behaviour is identical to before. The range only widens when the user picks a farther target.
+
 ### Step 1: Split options into calls and puts
 
 - **Call tickers** = all calls with strikes **at or above** ATM (At The Money)
@@ -174,16 +187,16 @@ Every candidate pair must pass **all** of these filters to be considered:
 | 5 | **Min Sell Premium** | `minSellPremium` (default: $10) | The sell leg's bid price must be at least $10 |
 | 6 | **Ratio Deviation** | `maxRatioDeviation` (default: 0.25) | The premium ratio and delta notional ratio must not deviate by more than 25% |
 | 7 | **Max Sell Qty** | `maxSellQty` (default: 10) | The sell quantity (ratio) must not exceed 10 |
-| 8 | **Max Net Premium** | `maxNetPremium` (default: $20) | The net premium debit cannot exceed $20. **ATM Ratio Scaling is applied first**, so this is checked against the *scaled* short quantity (i.e., `scaledSellQty × sellPrice - buyPrice ≥ -$20`). When scaling is disabled, `scaledSellQty` equals the natural `sellQty`. |
-| 9 | **Days to Expiry** | `daysToExpiry` (default: 0) | The option expiry date must be at least this many days away from the current time. Options closer to expiry are rejected. |
+| 8 | **Max Net Premium** | `maxNetPremium` (default: $20) | The net premium debit cannot exceed $20. **ATM Ratio Scaling is applied first**, so this is checked against the *scaled* short quantity (i.e., `scaledSellQty × sellPrice - buyPrice ≥ -$20`). When scaling is disabled, `scaledSellQty` equals the natural `sellQty`. **Now configured per schedule window** (see [Time-Based Filter Schedules](#time-based-filter-schedules)); the account base value is the gap fallback. |
+| 9 | **Days to Expiry** | `daysToExpiry` (default: 0) | Now the **lower bound of the scan expiry range** — expiries closer than this many days are excluded from the scan (the selected `config.expiry` is the upper bound). See [Step 0: Expiry range](#how-spreads-are-found-scanning). |
 | 10 | **Max Calls (#)** | `numberOfCalls` (default: 3) | Maximum **full-spread** calls allowed concurrently. Only positions with an active short leg (`sellQty > 0`) count — long-only held positions do **not** count toward the cap. Re-applied at entry and whenever a schedule window changes the value. |
 | 11 | **Max Puts (#)** | `numberOfPuts` (default: 3) | Maximum **full-spread** puts allowed concurrently. Same counting rule as Max Calls — held long-only positions are excluded from the cap. |
 | 12 | **ATM Ratio Entry** | `atmRatioScaling` (default: true) | Checkbox toggle to enable scaling of entry sell quantities based on ATM strike option prices. |
 | 13 | **Call ATM Pct (%)** | `atmRatioPctCall` (default: 50) | The scaling percentage for ATM ratio adjustments on call spreads. |
 | 14 | **Put ATM Pct (%)** | `atmRatioPctPut` (default: 25) | The scaling percentage for ATM ratio adjustments on put spreads. |
 | 15 | **Spot Diff (%)** | `spotDiff` (default: 0.5) | The spot diff required for the next entry in the Active Positions table. |
-| 16 | **Exit Type** | `exitType` (default: 'ATM') | Option exit type parameter: `ATM`, `ITM`, or `OTM` |
-| 17 | **Exit Points** | `exitPoints` (default: 0) | Point offset threshold from the buy strike required to exit the position (applicable for ITM/OTM exit types) |
+| 16 | **Exit Type** | `exitType` (default: 'ATM') | Option exit type parameter: `ATM`, `ITM`, or `OTM`. **Now configured per schedule window** — the **currently-active window governs open positions** (active-window-governs), so the exit level follows the live window, not the account default. Account base value is the gap fallback. |
+| 17 | **Exit Points** | `exitPoints` (default: 0) | Point offset threshold from the buy strike required to exit the position (applicable for ITM/OTM exit types). **Per schedule window**, alongside Exit Type. |
 | 18 | **Leg Swap Net Premium** | `legSwapNetPremium` (default: 0) | ⚠️ **Deprecated / unused.** Leg swaps have been removed from the engine. The config field is still loaded for backward compatibility but no longer affects behaviour. |
 | 19 | **Short Exit Price** | `shortExitPrice` (default: 1.1) | The short option's live ASK price threshold below which the short leg is automatically bought back (holding the long leg). |
 | 20 | **Long Exit Slices** | `longExitSlices` (default: 10) | The number of scale-out levels/slices the held long leg is exited in as its own BID price recovers. |
@@ -256,27 +269,27 @@ Once we have the filtered, ranked list of candidate spreads (`uniqueTopSpreads`)
 
 ### Guard 1: Expiry Buffer
 ```
-If less than 5 minutes until expiry → SKIP
+If less than 5 minutes until THIS spread's expiry → SKIP
 ```
-No point entering a trade that's about to expire.
+No point entering a trade that's about to expire. With range scanning, the check uses the **spread's own expiry** (`spread.buyLeg.expiry`), not the range target.
 
 ### Guard 2: Days to Expiry Guard
 ```
-If daysRemaining < daysToExpiry → SKIP
+If daysRemaining(spread's expiry) < daysToExpiry → SKIP
 ```
-Requires the option's expiry to be at least `daysToExpiry` days away from the current time.
+Requires the option's expiry to be at least `daysToExpiry` days away — evaluated against **the spread's own expiry** (a range scan can surface spreads across several expiries).
 
 ### Guard 3: Buy Strike Conflict (Local)
 ```
-If any existing or newly-staged position already has this buy strike → SKIP
+If any existing or newly-staged position of the SAME EXPIRY already has this buy strike → SKIP
 ```
-Prevents duplicate buy strikes within the same option type.
+Prevents duplicate buy strikes within the same option type **and expiry**. The same strike in a *different* expiry is a different instrument and is allowed (range scanning).
 
 ### Guard 4: Sell Strike Conflict (Local)
 ```
-If any existing FULL-SPREAD or newly-staged position already has this sell strike → SKIP
+If any existing FULL-SPREAD or newly-staged position of the SAME EXPIRY already has this sell strike → SKIP
 ```
-Prevents duplicate sell strikes within the same option type. **Long-only held positions are ignored here** (`sellQty > 0` filter) — their short leg is gone, so their old sell strike no longer blocks new entries. (The buy-strike conflict above still applies to held longs, since their long leg is still live at that strike.)
+Prevents duplicate sell strikes within the same option type **and expiry**. **Long-only held positions are ignored here** (`sellQty > 0` filter) — their short leg is gone, so their old sell strike no longer blocks new entries. (The buy-strike conflict above still applies to held longs, since their long leg is still live at that strike.)
 
 ### Guard 5: Portfolio Cap (Local)
 ```
@@ -314,15 +327,17 @@ Double-check against the **database** (not just local memory) to prevent race co
 
 ### Guard 9: DB-Level Buy Strike Uniqueness
 ```
-Query: SELECT * FROM active_positions WHERE buy_strike = X AND type = Y AND account_id = Z
+Query: SELECT * FROM active_positions WHERE buy_strike = X AND type = Y AND expiry = E AND account_id = Z
 If exists → BLOCK
 ```
+Scoped to the spread's **expiry** so the same strike in another expiry is not falsely blocked.
 
 ### Guard 10: DB-Level Sell Strike Uniqueness
 ```
-Query: SELECT * FROM active_positions WHERE sell_strike = X AND type = Y AND account_id = Z
+Query: SELECT * FROM active_positions WHERE sell_strike = X AND type = Y AND expiry = E AND sell_qty > 0 AND account_id = Z
 If exists → BLOCK
 ```
+Also expiry-scoped. The **count guard (Guard 8) stays expiry-agnostic** — caps are total across the whole range.
 
 > [!IMPORTANT]
 > Guards 8-10 are **database-level guards** that act as a second safety net. Even if the in-memory checks pass, the DB checks can still block an entry. This prevents duplicate positions if two evaluation cycles overlap or if the engine restarts.
@@ -401,6 +416,9 @@ We exit **2 minutes early** to avoid settlement mechanics. If a position somehow
 ### Exit: Dynamic Spot Trigger (ATM, ITM, OTM) & Candle Validation Fallback
 
 The engine uses two layers to check exit conditions: **Real-time 1-second ticks** and **1-minute index candle validation**.
+
+> [!NOTE]
+> **`exitType`/`exitPoints` come from the currently-active schedule window** (`effectiveConfig`), not the account base config. If the active window changes while a position is open, its exit level follows the new window (active-window-governs). Account base values apply only during schedule gaps.
 
 #### Layer 1: Real-time Spot Ticker (1-Second Check)
 Every second, the engine checks the latest spot price from the WebSocket stream against the config rules:
@@ -738,7 +756,7 @@ When you click **Reset**:
 Time-Based Filter Schedules allow users to define multiple named time windows per account within a 24-hour cycle. Each window overrides specific entry and portfolio filters during that period.
 
 ### Overridden Parameters
-Only the following 8 parameters are scheduled:
+Only the following 11 parameters are scheduled:
 1. **Max Calls** (`numberOfCalls`)
 2. **Max Puts** (`numberOfPuts`)
 3. **Min Strike Difference** (`minStrikeDiff`)
@@ -747,8 +765,14 @@ Only the following 8 parameters are scheduled:
 6. **Call ATM Pct (%)** (`atmRatioPctCall`)
 7. **Put ATM Pct (%)** (`atmRatioPctPut`)
 8. **Spot Diff (%)** (`spotDiff`)
+9. **Max Net Debit** (`maxNetPremium`) — entry debit cap (migration `012`)
+10. **Exit Type** (`exitType`) — `ATM`/`ITM`/`OTM`; **active-window-governs** open positions (migration `012`)
+11. **Exit Points** (`exitPoints`) — offset for ITM/OTM exit (migration `012`)
 
-All other filter settings (like `minIvDiff`, `exitType`, etc.) default back to the base account config.
+All other filter settings (like `minIvDiff`, `minSellPremium`, etc.) default back to the base account config.
+
+> [!NOTE]
+> **Max Net Debit, Exit Type and Exit Points moved out of the Control Panel** into each window (migration `012_schedule_max_debit_exit_type.sql`). The account-level values remain only as the **gap fallback**. Because Exit Type is active-window-governed: the engine's paper exit check and live spot-cross catch-all both read the currently-active window's exit type each cycle. **Live exchange SL/TP brackets are placed at entry from the then-active window and are NOT auto-moved when the window flips** (they stay as an engine-down backstop; the running engine's catch-all enforces the active window).
 
 > [!NOTE]
 > **These 8 fields are not shown in the Control Panel filter bar** — they are configured per time window in the Schedule Panel. Every account has a permanent **Window 1** that holds the account's initial values: it is **auto-created** (seeded from the account's `paper_trading_config` base values) for any account that has no windows yet, and it **cannot be deleted** (only Window 1 — Windows 2, 3, … are deletable). Window 1 is otherwise a normal window: its name, time range, and values are all editable, and it defaults to a full-day range (`17:30`→`17:29` IST). The base config still acts as the engine's gap fallback (see [Fallback Behavior](#execution-timezones--evaluation)); since Window 1 spans the full day by default, there are normally no gaps.

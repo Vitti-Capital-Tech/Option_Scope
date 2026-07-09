@@ -204,28 +204,33 @@ export function createTickerStream(symbols, onTicker, onStatus) {
  * Also includes symbols from existing active positions.
  */
 export function buildSymbolMeta(products, expiry, underlying, activePositions = []) {
-  const strikes = getStrikes(products, expiry);
+  // `expiry` may be a single expiry or a list (multi-expiry range scan). Subscribe
+  // to every expiry's chain so the engine can scan them all.
+  const expiries = Array.isArray(expiry) ? expiry : [expiry];
   const symbolMeta = {};
 
-  for (const strike of strikes) {
-    const callProd = products.find(p =>
-      p.settlement_time === expiry &&
-      parseFloat(p.strike_price) === parseFloat(strike) &&
-      matchesOptionType(p, 'call')
-    );
-    if (callProd) {
-      const lotSize = parseFloat(callProd.contract_size ?? callProd.quoting_precision ?? 1);
-      symbolMeta[callProd.symbol] = { strike: parseFloat(strike), lotSize, type: 'call', symbol: callProd.symbol, expiry };
-    }
+  for (const exp of expiries) {
+    const strikes = getStrikes(products, exp);
+    for (const strike of strikes) {
+      const callProd = products.find(p =>
+        p.settlement_time === exp &&
+        parseFloat(p.strike_price) === parseFloat(strike) &&
+        matchesOptionType(p, 'call')
+      );
+      if (callProd) {
+        const lotSize = parseFloat(callProd.contract_size ?? callProd.quoting_precision ?? 1);
+        symbolMeta[callProd.symbol] = { strike: parseFloat(strike), lotSize, type: 'call', symbol: callProd.symbol, expiry: exp };
+      }
 
-    const putProd = products.find(p =>
-      p.settlement_time === expiry &&
-      parseFloat(p.strike_price) === parseFloat(strike) &&
-      matchesOptionType(p, 'put')
-    );
-    if (putProd) {
-      const lotSize = parseFloat(putProd.contract_size ?? putProd.quoting_precision ?? 1);
-      symbolMeta[putProd.symbol] = { strike: parseFloat(strike), lotSize, type: 'put', symbol: putProd.symbol, expiry };
+      const putProd = products.find(p =>
+        p.settlement_time === exp &&
+        parseFloat(p.strike_price) === parseFloat(strike) &&
+        matchesOptionType(p, 'put')
+      );
+      if (putProd) {
+        const lotSize = parseFloat(putProd.contract_size ?? putProd.quoting_precision ?? 1);
+        symbolMeta[putProd.symbol] = { strike: parseFloat(strike), lotSize, type: 'put', symbol: putProd.symbol, expiry: exp };
+      }
     }
   }
 

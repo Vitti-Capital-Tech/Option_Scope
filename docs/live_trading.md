@@ -195,6 +195,15 @@ At entry, `openSpread` attaches a **spot-triggered bracket** to each leg's order
 shared exit-type level (`computeIndexTriggerLevel` — ATM = buy strike, ITM/OTM = ±
 points), so the spread is protected even if the engine is down:
 
+> [!NOTE]
+> **Exit Type / Exit Points are now per-schedule-window** (`effectiveConfig`, migration
+> `012`) with **active-window-governs** semantics. The bracket level is computed from the
+> **window active at entry**. When the window later flips, the engine's own spot-cross
+> catch-all follows the new active window (it market-closes at the new level while the
+> engine is up), but the **exchange bracket is NOT auto-moved** — it stays at the entry
+> level as an engine-down backstop. So live exits track the active window whenever the
+> engine is running, with the entry-level bracket as the fallback.
+
 - **Long buy** → `bracket_take_profit_price = exitLevel`
 - **Short sell** → `bracket_stop_loss_price = exitLevel`
 - both `bracket_stop_trigger_method: spot_price`.
@@ -226,26 +235,52 @@ paper `$200k` notional cap:
   schedule windows (`max(numberOfCalls + numberOfPuts)`).
 - **part** = `(balance × allocation%) ÷ max positions`.
 
-**Integer-ratio sizing (replaces fractional scaling).** The old model scaled the lot
-by `part ÷ margin`, producing *fractional* lots that then rounded to `1:1` integer
-contracts on the exchange — destroying the ratio. Now:
+> [!NOTE]
+> **Multi-expiry range scan.** The engine now scans an **expiry range** — every expiry
+> from the nearest (respecting `daysToExpiry`) up to the selected `config.expiry` (the
+> upper bound) — and unions the same-expiry ratio spreads. The WebSocket subscribes to
+> **every expiry's chain** in the range (`buildSymbolMeta` accepts a list), so a live
+> account can hold positions across several expiries at once. **Caps and sizing are
+> unchanged:** `numberOfCalls`/`numberOfPuts` count total across the range (not per
+> expiry), so `max positions` and the `part` math above are unaffected. Only the
+> strike-conflict/uniqueness guards became expiry-aware (same strike in a different
+> expiry is a distinct instrument). See `paper_trading_explained.md → Step 0: Expiry
+> range` for the full logic.
 
-1. Reduce the (0.25-stepped) ratio to **minimal integer contracts** via GCD, e.g.
-   `2.5 → 2L:5S`, `2.75 → 4L:11S`, `4.25 → 4L:17S`.
-2. **unitMargin** = `calcMargin(buyPrem, unitLong×cs, spot, unitShort, cs)` =
-   `buyPrem×unitLong×cs + unitShort×spot×cs/200` (cs = `contract_size`, leverage 200).
-3. Take the largest whole multiple `k` where `k × unitMargin ≤ part`; open
-   `k·unitLong` long / `k·unitShort` short contracts. **If `k < 1` (even the minimal
-   unit exceeds the part) the entry is skipped** (`⏭ LIVE skip …`).
+**"1 part" factor sizing (scale to fill one part, keep the ratio).** The old model
+scaled the lot by `part ÷ margin`, producing *fractional* lots that rounded to `1:1`
+integer contracts on the exchange — destroying the ratio. The current model scales
+**both legs by a single whole integer `factor`**, so the ratio is preserved:
 
-The ratio is thus **locked in whole contracts at entry** — no fractional scaling, no
-partial-exit drift, and the ladder splits cleanly on the integer long count.
+1. **setMargin** = margin of ONE "set" (the natural long lot + the ATM-scaled short
+   ratio): `calcMargin(entryBuyPrice, longLot, spot, ratioToUse, shortLot)` =
+   `entryBuyPrice × longLot + min($200k, spot × ratioToUse × shortLot) ÷ 200`
+   (`longLot`/`shortLot` = each leg's `contract_size`; leverage 200; `ratioToUse` = the
+   ATM-scaled sell quantity).
+2. **factor** = `max(1, floor(part ÷ setMargin))` — how many whole sets fit in one part,
+   **floored** so the ratio stays exact, **min 1**.
+3. `adjustedLotSize = longLot × factor`, `adjustedSellQty = ratioToUse × factor`. Both
+   legs scale by the same `factor`, so the ratio is unchanged — e.g. set margin $0.5,
+   part $10 → `factor 20` → `1:4` becomes `20:80`.
+
+**Minimum one set (no skip):** if even one set's margin exceeds the part
+(`setMargin > part`), `factor` stays `1` and the engine trades that single set anyway,
+logging a warning (`LIVE size: one set … exceeds 1 part …`). It does **not** skip the
+entry.
+
+> [!NOTE]
+> The scaled lots are what the paper bookkeeping stores (and may be fractional). The
+> **integer contract count actually sent to Delta is a separate rounding step at order
+> time**: `longContracts = round(factor)`, `shortContracts = round(adjustedSellQty)`
+> (see the **contract-size mapping** open-item note above). So the on-exchange ratio
+> can differ slightly from the exact scaled ratio when `adjustedSellQty` isn't a whole
+> number.
 
 Paper accounts keep the `$200k` / 200× branch **unchanged** (the sizing branch is
 gated on `mode==='live' && live_enabled`). Dry-run logs the full breakdown
-(`💰 LIVE int-ratio …` with `unitMargin`, `part`, `k`, and `cs`) so the numbers —
-especially that `cs` and the margins match Delta's actual figures — **must be
-validated before arming**.
+(`💰 LIVE size <TYPE> <buy>/<sell>: set margin $… | part $… → factor … | long … short …
+(ratio 1:…) | est margin $…`) so the numbers — especially that the contract sizes and
+margins match Delta's actual figures — **must be validated before arming**.
 
 ### Account controls — Start / Pause (live only)
 
@@ -274,18 +309,26 @@ Delta account state so the workspace tabs (**Positions, Open Orders, Stop Orders
 Fills, Risk & Margin**) can show exchange truth instead of engine-internal
 bookkeeping.
 
-- **Engine** — `live.snapshot()` upserts into `live_exchange_state` every **20s** for
-  armed accounts. It reads `/v2/positions/margined`, `/v2/orders` (split into resting
-  limit orders vs stop orders by `stop_order_type`), `/v2/fills`, and
+- **Engine** — `live.snapshot()` reads `/v2/positions/margined`, `/v2/orders` (split
+  into resting limit orders vs stop orders by `stop_order_type`), `/v2/fills`, and
   `/v2/wallet/balances` via `Promise.allSettled` (one failing endpoint doesn't blank
-  the rest). **Read-only w.r.t. the exchange** — publishing places no orders, and it
-  runs in dry-run too.
+  the rest) every **20s** for armed accounts. **Read-only w.r.t. the exchange** —
+  publishing places no orders, and it runs in dry-run too.
+  - **Change-guarded upsert (egress optimization):** it only writes to
+    `live_exchange_state` when a **structural signature** changed (position set + size,
+    resting/stop orders, fills, wallet — deliberately ignoring tick-by-tick
+    mark/unrealized-PnL noise), else at most once per **60s keepalive** to refresh
+    `updated_at` (liveness; UI marks stale after 120s). Quiet markets therefore emit a
+    Realtime broadcast + UI refetch roughly every 60s instead of every 20s, while a
+    real fill/order/position change still publishes immediately.
 - **Table** — `live_exchange_state` (migration `009_live_exchange_state.sql`): one row
   per account (`positions`, `orders`, `stop_orders`, `fills`, `balances` JSONB +
   `wallet` numeric + `updated_at`). RLS: authenticated read, `service_role` write;
   `ON DELETE CASCADE` with the account.
-- **UI** — `PaperTrading.jsx` fetches + Realtime-subscribes to the row;
-  `TradingWorkspace.jsx` renders Delta data in each tab **only when** the account is
+- **UI** — `PaperTrading.jsx` is **Realtime-driven only** (the redundant 20s poll was
+  removed — another egress cut): it refetches the row on each Realtime change and once
+  when the tab regains focus. `TradingWorkspace.jsx` renders Delta data in each tab
+  **only when** the account is
   live **and** the engine is placing real orders (`engineDryRun === false`) **and**
   the snapshot is fresh. Otherwise the tabs fall back to their engine-derived views —
   in dry-run the exchange has no real orders/positions, so the paper/engine views are
@@ -339,8 +382,9 @@ forwards the signed headers unchanged, so the browser's HMAC stays valid.
 4. When satisfied, set `DELTA_LIVE_DRYRUN=false`, restart, and arm a single account
    (`live_enabled = true`) with **tiny** size. On the first entry, verify in the
    dashboard (or Delta directly):
-   - **Sizing:** the `💰 LIVE int-ratio …` log shows whole-contract lots that hold the
-     ratio, and `unitMargin`/`cs` match Delta's real figures (not 1000× off).
+   - **Sizing:** the `💰 LIVE size …` log shows the `set margin`, `part`, and integer
+     `factor`, with the scaled `long`/`short` holding the ratio, and the margins matching
+     Delta's real figures (not 1000× off).
    - **Open Orders:** the resting short buy-back `@ shortExitPrice` (`-SEX`).
    - **Positions/Stop Orders:** the long-TP and short-SL **brackets** at the exit
      level. Confirm the **PUT bracket does not fire immediately** on entry, and that
