@@ -889,10 +889,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     const count = Math.max(positions.length, liveLegs);
     const isLiveAcc = acc?.mode === 'live';
     if (count === 0 && !isLiveAcc) { alert('No open positions to close.'); return; }
-    const msg = isLiveAcc
-      ? `Flatten this live account on Delta${count ? ` (${count} position/leg${count !== 1 ? 's' : ''})` : ''}?\n\nThis closes EVERY position on the Delta account at market — including any the dashboard isn't showing.`
-      : `Close ALL ${count} open position(s) for "${acc?.name || 'this account'}"?\n\nEvery trade will be exited at market.`;
-    if (!window.confirm(msg)) return;
+    // Live: close directly (no confirm). Paper: keep the confirm as a safety net.
+    if (!isLiveAcc) {
+      const msg = `Close ALL ${count} open position(s) for "${acc?.name || 'this account'}"?\n\nEvery trade will be exited at market.`;
+      if (!window.confirm(msg)) return;
+    }
     // One flag → the engine flattens the account (native close_all) in one call,
     // then books + deletes all positions.
     const { error } = await supabase
@@ -905,7 +906,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       return;
     }
     setPositions(prev => prev.map(p => ({ ...p, exitRequested: true })));
-    setLiveExchangeState(prev => prev ? { ...prev, positions: [] } : prev);
+    // Mark the flatten pending so refetches don't resurrect the positions until
+    // the engine publishes a snapshot showing the account flat.
+    pendingCloseRef.current.closeAll = { since: Date.now() };
+    setLiveExchangeState(prev => prev ? { ...prev, positions: [], orders: [], stop_orders: [] } : prev);
     // Confirm from the server once the engine has flattened + booked.
     setTimeout(() => syncAll(), 2500);
     setTimeout(() => syncAll(), 6000);
@@ -915,11 +919,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   // no longer tracks). The engine reduce_only-market-closes exactly that leg.
   const triggerCloseOrphan = async (symbol) => {
     if (!symbol) return;
-    if (!window.confirm(`Close ${symbol} on Delta at market?`)) return;
+    // Close directly — no confirmation prompt.
     const { error } = await supabase
       .from('delta_close_requests')
       .insert([{ account_id: activeAccountId, product_symbol: symbol }]);
     if (error) { console.error('close-symbol failed', error); alert(`Failed to close ${symbol}: ${error.message}`); return; }
+    // Keep this leg hidden across refetches until the engine snapshot drops it.
+    pendingCloseRef.current.symbols.set(symbol, { since: Date.now() });
     setLiveExchangeState(prev => prev ? { ...prev, positions: (prev.positions || []).filter(p => p.product_symbol !== symbol) } : prev);
     setTimeout(() => syncAll(), 2500);
     setTimeout(() => syncAll(), 6000);
@@ -1587,7 +1593,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         }
         setPositions(prev => prev.map(p => p.id === pos.id ? { ...p, exitRequested: true } : p));
         // Optimistically drop this spread's legs from the live snapshot so the table
-        // updates instantly (the next engine snapshot confirms it).
+        // updates instantly, and keep them hidden across refetches until the engine
+        // snapshot drops them (else a stale refetch flashes them back).
+        const now = Date.now();
+        if (pos.buyLeg?.symbol) pendingCloseRef.current.symbols.set(pos.buyLeg.symbol, { since: now });
+        if (pos.sellLeg?.symbol) pendingCloseRef.current.symbols.set(pos.sellLeg.symbol, { since: now });
         setLiveExchangeState(prev => prev ? {
           ...prev,
           positions: (prev.positions || []).filter(lp =>
@@ -1842,6 +1852,40 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   // for live accounts; paper accounts have no row so this stays null and the
   // workspace tabs fall back to their engine-derived views.
   const isActiveLive = activeAccount?.mode === 'live';
+  // Tracks optimistic closes so a stale live-snapshot refetch can't resurrect
+  // positions the user just closed. The engine only republishes its Delta snapshot
+  // every ~20s, so a refetch in between returns the OLD snapshot (positions still
+  // present) and would flash them back. We keep the just-closed legs hidden until
+  // the engine publishes a snapshot that no longer contains them (or 25s elapses).
+  const pendingCloseRef = useRef({ closeAll: null, symbols: new Map() });
+  const CLOSE_GUARD_MS = 25000;
+  const applyCloseGuard = useCallback((snap) => {
+    if (!snap) return snap;
+    const pc = pendingCloseRef.current;
+    let out = snap;
+    // Account-level flatten: hide ALL positions/orders/stops until the exchange
+    // snapshot reports the account flat (or the guard times out).
+    if (pc.closeAll) {
+      const openLegs = (out.positions || []).filter(p => Number(p.size) !== 0);
+      const timedOut = Date.now() - pc.closeAll.since > CLOSE_GUARD_MS;
+      if (openLegs.length > 0 && !timedOut) {
+        out = { ...out, positions: [], orders: [], stop_orders: [] };
+      } else {
+        pc.closeAll = null; // engine confirmed flat (or timeout) → trust the snapshot
+      }
+    }
+    // Per-leg closes: hide each closed symbol until it's gone from the snapshot.
+    if (pc.symbols.size) {
+      const keep = new Map();
+      for (const [sym, info] of pc.symbols) {
+        const present = (out.positions || []).some(p => p.product_symbol === sym && Number(p.size) !== 0);
+        if (present && Date.now() - info.since <= CLOSE_GUARD_MS) keep.set(sym, info);
+      }
+      pendingCloseRef.current.symbols = keep;
+      if (keep.size) out = { ...out, positions: (out.positions || []).filter(p => !keep.has(p.product_symbol)) };
+    }
+    return out;
+  }, []);
   const fetchLiveExchangeState = useCallback(async () => {
     if (!activeAccountId || !isActiveLive) { setLiveExchangeState(null); return; }
     try {
@@ -1856,9 +1900,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       if (error || !data) { setLiveExchangeState(null); return; }
       // Treat a stale snapshot (engine offline) as absent so tabs don't show ghosts.
       const age = Date.now() - new Date(data.updated_at).getTime();
-      setLiveExchangeState(age < HEARTBEAT_STALE_THRESHOLD ? data : null);
+      setLiveExchangeState(age < HEARTBEAT_STALE_THRESHOLD ? applyCloseGuard(data) : null);
     } catch (e) { setLiveExchangeState(null); }
-  }, [activeAccountId, isActiveLive]);
+  }, [activeAccountId, isActiveLive, applyCloseGuard]);
 
   // Manual "Sync" — pull everything fresh on demand (no page reload needed).
   const [isSyncing, setIsSyncing] = useState(false);
