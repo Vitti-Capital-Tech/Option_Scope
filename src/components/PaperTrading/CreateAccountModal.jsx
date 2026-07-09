@@ -309,21 +309,6 @@ export default function CreateAccountModal({
                   }}
                 />
               </div>
-
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Re-entry Spot Step (%)</label>
-                <CustomInput
-                  type="number"
-                  step="0.1"
-                  {...register('spotDiff', { valueAsNumber: true })}
-                  style={{
-                    padding: '10px 14px',
-                    borderRadius: 8,
-                    fontSize: 13,
-                    outline: 'none'
-                  }}
-                />
-              </div>
             </div>
 
             <div style={{ display: 'flex', gap: '16px', marginTop: '12px' }}>

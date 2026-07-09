@@ -229,15 +229,6 @@ export default function FirstAccountCard({
                     className="first-account-input"
                   />
                 </div>
-                <div className="first-account-form-group">
-                  <label className="first-account-label">Re-entry Spot Step (%)</label>
-                  <CustomInput
-                    type="number"
-                    step="0.1"
-                    {...register('spotDiff', { valueAsNumber: true })}
-                    className="first-account-input"
-                  />
-                </div>
               </div>
 
               <div className="first-account-row">

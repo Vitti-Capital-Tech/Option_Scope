@@ -13,7 +13,6 @@ const DEFAULT_WINDOW = {
   atmRatioScaling: true,
   atmRatioPctCall: 50,
   atmRatioPctPut: 25,
-  spotDiff: 0.5,
   maxNetPremium: 20,
   exitType: 'ATM',
   exitPoints: 0,
@@ -244,7 +243,7 @@ export default function SchedulePanel({
             const endShifted = (endMin - 1050 + 1440) % 1440;
             const isSplit = startShifted > endShifted;
 
-            const tooltip = `${s.label || 'Window'} (${cleanTime(s.startTime)} - ${cleanTime(s.endTime)})\nCalls: ${s.numberOfCalls} | Puts: ${s.numberOfPuts}\nStrike Diff: ${s.minStrikeDiff} | Long Dist: ${s.minLongDist}\nScaling: ${(s.atmRatioScaling ?? true) ? 'ON' : 'OFF'} (C: ${s.atmRatioPctCall ?? 50}%, P: ${s.atmRatioPctPut ?? 25}%)\nSpot Diff: ${s.spotDiff ?? 0.5}%`;
+            const tooltip = `${s.label || 'Window'} (${cleanTime(s.startTime)} - ${cleanTime(s.endTime)})\nCalls: ${s.numberOfCalls} | Puts: ${s.numberOfPuts}\nStrike Diff: ${s.minStrikeDiff} | Long Dist: ${s.minLongDist}\nScaling: ${(s.atmRatioScaling ?? true) ? 'ON' : 'OFF'} (C: ${s.atmRatioPctCall ?? 50}%, P: ${s.atmRatioPctPut ?? 25}%)`;
 
             if (isSplit) {
               return (
@@ -553,19 +552,7 @@ export default function SchedulePanel({
                 />
               </div>
 
-              {/* Spot Diff % */}
-              <div className="schedule-item-block schedule-item-num-block">
-                <span className="schedule-item-label">Re-entry Spot Step</span>
-                <CustomInput
-                  type="number"
-                  min="0"
-                  step="0.1"
-                  suffix="%"
-                  showStepper
-                  value={s.spotDiff ?? 0.5}
-                  onChange={e => handleChange(s.id, 'spotDiff', Number(e.target.value))}
-                />
-              </div>
+
 
               {/* Max Net Debit */}
               <div className="schedule-item-block schedule-item-num-block">
