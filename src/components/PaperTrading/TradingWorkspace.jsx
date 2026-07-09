@@ -416,7 +416,7 @@ function DeltaPositionsTable({ positions, enginePositions, onExitPosition, onClo
         <thead><tr>
           <th>Symbol</th><th className="r">Size</th><th className="r">Notional</th>
           <th className="r">Entry</th><th>TP / SL</th><th className="r">Index</th>
-          <th className="r">Mark</th><th className="r">Margin</th><th className="r">UPNL</th><th></th>
+          <th className="r">Mark</th><th className="r">Margin</th><th className="r">UPNL</th><th className="r">Action</th>
         </tr></thead>
         <tbody>
           {open.map((p, i) => {
