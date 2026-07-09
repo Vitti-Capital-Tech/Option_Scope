@@ -2363,7 +2363,15 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               isLive={activeAccount?.mode === 'live'}
               walletBalance={walletBalance}
               allocationPct={engineAllocationPct ?? activeAccount?.default_config?.balanceAllocationPct ?? 90}
-              maxPositions={engineMaxPositions ?? Math.max(1, (activeAccount?.default_config?.numberOfCalls ?? 3) + (activeAccount?.default_config?.numberOfPuts ?? 3))}
+              maxPositions={(() => {
+                // Per-position margin (allocated ÷ maxPositions) should reflect the
+                // CURRENTLY-ACTIVE schedule window's caps, not a hardcoded base config.
+                const w = findActiveSchedule(schedules, now);
+                if (w) return Math.max(1, (w.numberOfCalls || 0) + (w.numberOfPuts || 0));
+                // No active window (gap): fall back to the engine's published value,
+                // else the account base config.
+                return engineMaxPositions ?? Math.max(1, (activeAccount?.default_config?.numberOfCalls ?? 3) + (activeAccount?.default_config?.numberOfPuts ?? 3));
+              })()}
             />
 
             <TradingWorkspace
