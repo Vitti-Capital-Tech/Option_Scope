@@ -215,7 +215,10 @@ export function buildSymbolMeta(products, expiry, underlying, activePositions = 
     );
     if (callProd) {
       const lotSize = parseFloat(callProd.contract_size ?? callProd.quoting_precision ?? 1);
-      symbolMeta[callProd.symbol] = { strike: parseFloat(strike), lotSize, type: 'call', symbol: callProd.symbol, expiry };
+      // Real per-contract underlying amount (e.g. 0.001 BTC) — used for LIVE margin
+      // sizing so the estimate matches Delta. Distinct from the (paper) lotSize above.
+      const contractValue = parseFloat(callProd.contract_value ?? callProd.contract_size ?? callProd.quoting_precision ?? 1);
+      symbolMeta[callProd.symbol] = { strike: parseFloat(strike), lotSize, contractValue, type: 'call', symbol: callProd.symbol, expiry };
     }
 
     const putProd = products.find(p =>
@@ -225,7 +228,8 @@ export function buildSymbolMeta(products, expiry, underlying, activePositions = 
     );
     if (putProd) {
       const lotSize = parseFloat(putProd.contract_size ?? putProd.quoting_precision ?? 1);
-      symbolMeta[putProd.symbol] = { strike: parseFloat(strike), lotSize, type: 'put', symbol: putProd.symbol, expiry };
+      const contractValue = parseFloat(putProd.contract_value ?? putProd.contract_size ?? putProd.quoting_precision ?? 1);
+      symbolMeta[putProd.symbol] = { strike: parseFloat(strike), lotSize, contractValue, type: 'put', symbol: putProd.symbol, expiry };
     }
   }
 

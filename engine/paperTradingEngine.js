@@ -1998,6 +1998,7 @@ async function startSingleAccountEngine(account) {
           let adjustedLotSize = originalLotSize;
           let adjustedSellQty = ratioToUse;
           let scale = 1;
+          let liveMargin = null; // real (contract_value-based) margin, stored for live positions
 
           if (liveArmed) {
             // LIVE: scale the 1:ratio base UNIT by (part budget ÷ one-unit margin), then
@@ -2006,7 +2007,13 @@ async function startSingleAccountEngine(account) {
             // unit if the part can't fund even one. Independent rounding means the integer
             // ratio can drift slightly from the exact ratio.
             //   e.g. base 1:7.25, scale 3.8 → long round(3.8)=4, short round(27.55)=28.
-            const baseMargin = calcMargin(entryBuyPrice, originalLotSize, spotPrice, ratioToUse, sellLotSize);
+            // Margin uses the REAL per-contract underlying amount (`contractValue`, e.g.
+            // 0.001 BTC) and the CURRENT spot price — NOT the (paper) lotSize=1 — so the
+            // estimate matches Delta's actual margin instead of blowing past the notional
+            // cap and pinning scale to 1.
+            const longCV = symbolMeta[spread.buyLeg.symbol]?.contractValue ?? originalLotSize;
+            const shortCV = symbolMeta[spread.sellLeg.symbol]?.contractValue ?? sellLotSize;
+            const baseMargin = calcMargin(entryBuyPrice, longCV, spotPrice, ratioToUse, shortCV);
             scale = (baseMargin > 0) ? (partMargin / baseMargin) : 1;
             if (scale < 1) {
               logWarn(`[${accountState.name}] LIVE size: one unit (margin $${baseMargin.toFixed(2)}) exceeds 1 part ($${partMargin.toFixed(2)}) — trading the minimum 1 unit.`);
@@ -2016,8 +2023,8 @@ async function startSingleAccountEngine(account) {
             const shortC = Math.max(1, Math.round(ratioToUse * scale));
             adjustedLotSize = Number((originalLotSize * longC).toFixed(4));
             adjustedSellQty = shortC;
-            const finalMargin = calcMargin(entryBuyPrice, adjustedLotSize, spotPrice, adjustedSellQty, sellLotSize);
-            log(`[${accountState.name}] 💰 LIVE size ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: unit margin $${baseMargin.toFixed(2)} | part $${partMargin.toFixed(2)} → scale ${scale.toFixed(2)}× | long ${longC} short ${shortC} (base 1:${ratioToUse}) | est margin $${finalMargin.toFixed(2)}`);
+            liveMargin = calcMargin(entryBuyPrice, longCV * longC, spotPrice, adjustedSellQty, shortCV);
+            log(`[${accountState.name}] 💰 LIVE size ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: unit margin $${baseMargin.toFixed(2)} | part $${partMargin.toFixed(2)} → scale ${scale.toFixed(2)}× | long ${longC} short ${shortC} (base 1:${ratioToUse}) | est margin $${liveMargin.toFixed(2)} | cv ${longCV}/${shortCV}`);
           } else {
             // PAPER (unchanged): $195,000 / 200x notional cap.
             let shortValue = spotPrice * ratioToUse * sellLotSize;
@@ -2046,7 +2053,11 @@ async function startSingleAccountEngine(account) {
           const entryBuyFee = calculateFee(entryBuyPrice, spotPrice, adjustedLotSize, spread.buyLeg.lotSize || 1);
           const entrySellFee = calculateFee(entrySellPrice, spotPrice, adjustedSellQty, spread.sellLeg.lotSize);
           const entryFee = entryBuyFee + entrySellFee;
-          const candidateMargin = calcMargin(entryBuyPrice, adjustedLotSize, spotPrice, adjustedSellQty, spread.sellLeg.lotSize);
+          // Live: store the real contract_value-based margin (matches Delta + feeds the
+          // remaining-budget sizing correctly). Paper: unchanged notional/200 estimate.
+          const candidateMargin = liveMargin != null
+            ? liveMargin
+            : calcMargin(entryBuyPrice, adjustedLotSize, spotPrice, adjustedSellQty, spread.sellLeg.lotSize);
 
 
 
