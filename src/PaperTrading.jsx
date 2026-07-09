@@ -904,6 +904,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       return;
     }
     setPositions(prev => prev.map(p => ({ ...p, exitRequested: true })));
+    setLiveExchangeState(prev => prev ? { ...prev, positions: [] } : prev);
   };
 
   const handleConfirmDelete = async () => {
@@ -1564,6 +1565,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           return;
         }
         setPositions(prev => prev.map(p => p.id === pos.id ? { ...p, exitRequested: true } : p));
+        // Optimistically drop this spread's legs from the live snapshot so the table
+        // updates instantly (the next engine snapshot confirms it).
+        setLiveExchangeState(prev => prev ? {
+          ...prev,
+          positions: (prev.positions || []).filter(lp =>
+            lp.product_symbol !== pos.buyLeg?.symbol && lp.product_symbol !== pos.sellLeg?.symbol),
+        } : prev);
         setPositionToExit(null);
         setIsExitingPosition(false);
         return; // engine handles close + book + delete (Realtime removes the row)
@@ -1824,6 +1832,23 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       setLiveExchangeState(age < HEARTBEAT_STALE_THRESHOLD ? data : null);
     } catch (e) { setLiveExchangeState(null); }
   }, [activeAccountId, isActiveLive]);
+
+  // Manual "Sync" — pull everything fresh on demand (no page reload needed).
+  const [isSyncing, setIsSyncing] = useState(false);
+  const syncAll = useCallback(async () => {
+    setIsSyncing(true);
+    try {
+      await Promise.allSettled([
+        fetchSupabaseActivePositions(),
+        fetchSupabaseTradeHistory(),
+        fetchHistoryStats(),
+        fetchHeartbeat(),
+        fetchLiveExchangeState(),
+      ]);
+    } finally {
+      setIsSyncing(false);
+    }
+  }, [fetchSupabaseActivePositions, fetchSupabaseTradeHistory, fetchHistoryStats, fetchHeartbeat, fetchLiveExchangeState]);
 
   useEffect(() => {
     if (!isActiveLive) { setLiveExchangeState(null); return; }
@@ -2414,6 +2439,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               exitPoints={findActiveSchedule(schedules, now)?.exitPoints ?? config.exitPoints}
               onExitPosition={(p) => setPositionToExit(p)}
               onCloseAll={triggerCloseAll}
+              onSync={syncAll}
+              isSyncing={isSyncing}
               filteredTradeHistory={filteredTradeHistory}
               historyFilterDate={historyFilterDate}
               setHistoryFilterDate={setHistoryFilterDate}

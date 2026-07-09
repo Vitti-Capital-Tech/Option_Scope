@@ -481,14 +481,24 @@ export default function TradingWorkspace(props) {
         <div className="pt-workspace-body">
           {tab === 'positions' && (
             <>
-              {props.onCloseAll && (live ? (live.positions || []).some(p => Number(p.size) !== 0) : visible.length > 0) && (
-                <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '8px 12px 0' }}>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, padding: '8px 12px 0' }}>
+                {props.onSync && (
+                  <button type="button" onClick={props.onSync} disabled={props.isSyncing} className="pt-btn-close"
+                    title="Refresh positions, orders and history from the engine">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+                      style={props.isSyncing ? { animation: 'spin 0.8s linear infinite' } : undefined}>
+                      <path d="M23 4v6h-6M1 20v-6h6" /><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+                    </svg>
+                    {props.isSyncing ? 'Syncing…' : 'Sync'}
+                  </button>
+                )}
+                {props.onCloseAll && (live ? (live.positions || []).some(p => Number(p.size) !== 0) : visible.length > 0) && (
                   <button type="button" onClick={props.onCloseAll} className="pt-btn-close"
                     style={{ background: '#f85149', color: '#fff', borderColor: '#f85149', fontWeight: 700 }}>
                     ✕ Close All
                   </button>
-                </div>
-              )}
+                )}
+              </div>
               {live ? (
               <LivePositionsTab positions={live.positions} enginePositions={props.positions} onExitPosition={props.onExitPosition} />
             ) : (
