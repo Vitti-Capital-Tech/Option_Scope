@@ -885,6 +885,25 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const triggerPauseAccount = (accountId) => updateAccountFlags(accountId, { paused: true });
   const triggerResumeAccount = (accountId) => updateAccountFlags(accountId, { paused: false });
 
+  // Close ALL open positions for the active account at once (like Delta's close-all).
+  // Flags every position; the engine exits them (cancel resting + market-close) within ~1.5s.
+  const triggerCloseAll = async () => {
+    const count = positions.length;
+    const acc = accounts.find(a => a.id === activeAccountId);
+    if (count === 0) { alert('No open positions to close.'); return; }
+    if (!window.confirm(`Close ALL ${count} open position(s) for "${acc?.name || 'this account'}"?\n\nEvery trade will be exited at market.`)) return;
+    const { error } = await supabase
+      .from('active_positions')
+      .update({ exit_requested: true })
+      .eq('account_id', activeAccountId);
+    if (error) {
+      console.error('Close-all failed:', error);
+      alert(`Failed to close all: ${error.message}`);
+      return;
+    }
+    setPositions(prev => prev.map(p => ({ ...p, exitRequested: true })));
+  };
+
   const handleConfirmDelete = async () => {
     if (!accountToDeleteId) return;
     setIsDeletingAccount(true);
@@ -2314,6 +2333,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               triggerDisarmLive={triggerDisarmLive}
               triggerPauseAccount={triggerPauseAccount}
               triggerResumeAccount={triggerResumeAccount}
+              triggerCloseAll={triggerCloseAll}
+              openPositionsCount={positions.length}
               engineDryRun={engineDryRun}
               userProfile={userProfile}
               session={session}

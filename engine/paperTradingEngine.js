@@ -2560,8 +2560,9 @@ async function startSingleAccountEngine(account) {
   // active_positions quickly and stop blocking new entries.
   const reconcileTimer = setInterval(() => { reconcileOrphans().catch(() => {}); }, 12000);
 
-  // Manual-exit poll — every 4s, processes UI-requested exits (exit_requested flag).
-  const manualExitTimer = setInterval(() => { processManualExits().catch(() => {}); }, 4000);
+  // Manual-exit poll — every 1.5s, processes UI-requested exits (exit_requested flag),
+  // including "Close All" which flags every open position at once.
+  const manualExitTimer = setInterval(() => { processManualExits().catch(() => {}); }, 1500);
 
 
   log(`[${accountState.name}] Paper Trading Engine is LIVE`);
