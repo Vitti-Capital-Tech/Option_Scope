@@ -2460,16 +2460,21 @@ async function startSingleAccountEngine(account) {
   async function resyncRestingOrders(oldCfg) {
     if (accountState.mode !== 'live') return;
     const shortPxChanged = (oldCfg.shortExitPrice ?? 1.1) !== (config.shortExitPrice ?? 1.1);
-    const exitChanged = (oldCfg.exitType !== config.exitType) || ((oldCfg.exitPoints ?? 0) !== (config.exitPoints ?? 0));
-    if (!shortPxChanged && !exitChanged) return;
+    if (!shortPxChanged) return;
 
-    log(`[${accountState.name}] 🔧 Exit config changed — re-syncing resting orders on ${positions.length} open position(s) | shortPx ${oldCfg.shortExitPrice}→${config.shortExitPrice} | exit ${oldCfg.exitType}/${oldCfg.exitPoints}→${config.exitType}/${config.exitPoints}`);
+    log(`[${accountState.name}] 🔧 Short-exit price changed — re-syncing resting buy-backs on ${positions.length} open position(s) | shortPx ${oldCfg.shortExitPrice}→${config.shortExitPrice}`);
 
     for (const pos of positions) {
       if (pos.underlying !== config.underlying) continue;
       try {
-        // 1. Short resting buy-back price (short still open + resting order present)
-        if (shortPxChanged && pos.sellQty > 0 && pos.sellLeg?.exitOrderId) {
+        // Short resting buy-back price (short still open + resting order present).
+        // NOTE: exchange SL/TP brackets are deliberately NOT moved here — by design
+        // (see docs/live_trading.md) they stay at the ENTRY level as an engine-down
+        // backstop, while the engine's spot-cross catch-all handles the active exit
+        // level whenever it is running. The old bracket-edit path was removed: Delta's
+        // PUT /v2/orders/bracket needs trigger+limit prices and the parent order id,
+        // so those edits only ever failed with bad_schema (no functional loss).
+        if (pos.sellQty > 0 && pos.sellLeg?.exitOrderId) {
           const newPx = config.shortExitPrice ?? 1.1;
           const r = await live.editOrder({
             id: pos.sellLeg.exitOrderId, symbol: pos.sellLeg.symbol,
@@ -2478,16 +2483,6 @@ async function startSingleAccountEngine(account) {
           if (r.ok && !r.skipped) {
             pos.sellLeg = { ...pos.sellLeg, exitOrderPx: newPx };
             await supabase.from('active_positions').update({ sell_leg: JSON.stringify(pos.sellLeg) }).eq('id', pos.id);
-          }
-        }
-        // 2. SL/TP bracket levels (recomputed from the new exitType/exitPoints)
-        if (exitChanged) {
-          const newLevel = computeIndexTriggerLevel(pos.type, pos.buyLeg.strike, config);
-          if ((pos.buyLeg?.lotSize || 0) > 0) {
-            await live.editBracket({ symbol: pos.buyLeg.symbol, takeProfit: newLevel, tag: `${pos.id}-TP-edit` });
-          }
-          if (pos.sellQty > 0) {
-            await live.editBracket({ symbol: pos.sellLeg.symbol, stopLoss: newLevel, tag: `${pos.id}-SL-edit` });
           }
         }
       } catch (e) {
