@@ -241,7 +241,7 @@ export default function TradeHistoryTable({
         </div>
       ) : (
         <div className="pt-table-scroll">
-          <table className="pt-table pt-lean">
+          <table className="pt-table pt-lean pt-delta-table">
             <thead><tr>
               <th>Time<span className="pt-th-sub">in · out</span></th>
               <th>Position</th>
@@ -249,7 +249,7 @@ export default function TradeHistoryTable({
               <th>Entry<span className="pt-th-sub">prem · iv · atm</span></th>
               <th>Exit<span className="pt-th-sub">prem · iv · atm</span></th>
               <th>Fees<span className="pt-th-sub">entry/exit</span></th>
-              <th>Net P&L</th>
+              <th className="r">Net P&L</th>
               <th>Exit Reason</th>
             </tr></thead>
             <tbody>
