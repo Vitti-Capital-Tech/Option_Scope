@@ -838,6 +838,28 @@ async function startSingleAccountEngine(account) {
     } catch (e) { /* non-fatal */ }
   }
 
+  // Record a single manually-closed leg to trade_history (partial).
+  async function bookLegClose(pos, legSide, exitPx, gross, sym) {
+    try {
+      await supabase.from('trade_history').upsert([{
+        trade_id: `${pos.id}-MLC-${legSide}-${Date.now().toString(36).toUpperCase()}`,
+        underlying: pos.underlying, expiry: pos.expiry, type: pos.type,
+        buy_leg: JSON.stringify(legSide === 'long' ? pos.buyLeg : { ...pos.buyLeg, lotSize: 0 }),
+        sell_leg: JSON.stringify(legSide === 'short' ? pos.sellLeg : { ...pos.sellLeg, lotSize: 0 }),
+        sell_qty: legSide === 'short' ? pos.sellQty : 0,
+        strike_diff: pos.strikeDiff,
+        entry_time: pos.entryTime.toISOString(),
+        entry_buy_price: pos.entryBuyPrice, entry_sell_price: pos.entrySellPrice, entry_spot_price: pos.entrySpotPrice,
+        margin: pos.margin, exit_time: new Date().toISOString(),
+        exit_buy_price: legSide === 'long' ? exitPx : null,
+        exit_sell_price: legSide === 'short' ? exitPx : null,
+        exit_spot_price: spotPrice,
+        realized_gross_pnl: gross, realized_net_pnl: gross, exit_fee: 0, total_fees: 0,
+        exit_reason: `Manual Leg Close (${sym})`, is_partial: true, account_id: accountState.id,
+      }], { onConflict: 'trade_id', ignoreDuplicates: true });
+    } catch (e) { logError(`[${accountState.name}] bookLegClose failed for ${pos.id}:`, e); }
+  }
+
   // Per-symbol close (UI ✕ on a Delta position row, incl. orphans not tracked by
   // the engine). Reduce_only market close of exactly that leg on Delta.
   async function processCloseRequests() {
@@ -851,17 +873,48 @@ async function startSingleAccountEngine(account) {
       const sizeBySymbol = {};
       for (const p of (livePos || [])) sizeBySymbol[p.product_symbol] = Number(p.size) || 0;
       for (const r of data) {
-        const sz = sizeBySymbol[r.product_symbol] || 0;
+        const sym = r.product_symbol;
+        const sz = sizeBySymbol[sym] || 0;
         if (sz !== 0) {
-          const side = sz > 0 ? 'sell' : 'buy'; // close the leg
-          await live.closeSymbol({ symbol: r.product_symbol, side, contracts: Math.abs(sz), tag: `${r.product_symbol}-CX` });
+          const side = sz > 0 ? 'sell' : 'buy'; // close only this leg
+          await live.closeSymbol({ symbol: sym, side, contracts: Math.abs(sz), tag: `${sym}-CX` });
         } else {
-          log(`[${accountState.name}] Close request for ${r.product_symbol}: no open size on Delta (already flat).`);
+          log(`[${accountState.name}] Close request for ${sym}: no open size on Delta (already flat).`);
         }
-        // If this leg belongs to a tracked spread, also book+delete it.
+        lastDbWrite = Date.now();
+        // Per-leg bookkeeping: zero ONLY the closed leg on the matching spread
+        // (do NOT close the other leg). Delete the row only if both legs are gone.
         for (const pos of [...positions]) {
-          if (pos.buyLeg?.symbol === r.product_symbol || pos.sellLeg?.symbol === r.product_symbol) {
-            await manualExitPosition(pos, { skipExchangeClose: true });
+          const tBuy = tickerData[pos.buyLeg?.symbol];
+          const tSell = tickerData[pos.sellLeg?.symbol];
+          let changed = false;
+          if (pos.buyLeg?.symbol === sym && (pos.buyLeg.lotSize || 0) > 0) {
+            const px = tBuy?.bid ?? tBuy?.markPrice ?? tBuy?.lastPrice ?? pos.entryBuyPrice;
+            const gross = (px - pos.entryBuyPrice) * (pos.buyLeg.lotSize || 0);
+            await bookLegClose(pos, 'long', px, gross, sym);
+            pos.buyLeg = { ...pos.buyLeg, lotSize: 0 };
+            changed = true;
+          }
+          if (pos.sellLeg?.symbol === sym && (pos.sellQty || 0) > 0) {
+            const px = tSell?.ask ?? tSell?.markPrice ?? tSell?.lastPrice ?? pos.entrySellPrice;
+            const gross = (pos.entrySellPrice - px) * pos.sellQty * (pos.sellLeg.lotSize || 1);
+            await bookLegClose(pos, 'short', px, gross, sym);
+            pos.sellLeg = { ...pos.sellLeg, lotSize: 0 };
+            pos.sellQty = 0;
+            changed = true;
+          }
+          if (changed) {
+            const fullyClosed = (pos.buyLeg.lotSize || 0) <= 0 && (pos.sellQty || 0) <= 0;
+            try {
+              if (fullyClosed) {
+                await supabase.from('active_positions').delete().eq('id', pos.id);
+                positions = positions.filter(p => p.id !== pos.id);
+              } else {
+                await supabase.from('active_positions').update({
+                  buy_leg: JSON.stringify(pos.buyLeg), sell_leg: JSON.stringify(pos.sellLeg), sell_qty: pos.sellQty,
+                }).eq('id', pos.id);
+              }
+            } catch (e) { logError(`[${accountState.name}] leg-close persist failed for ${pos.id}:`, e); }
           }
         }
         await supabase.from('delta_close_requests').delete().eq('id', r.id);

@@ -457,9 +457,8 @@ function DeltaPositionsTable({ positions, enginePositions, onExitPosition, onClo
                   {pnlPct != null && <span style={{ display: 'block', fontSize: 10, color: pnl >= 0 ? 'var(--call)' : 'var(--put)' }}>{pnl >= 0 ? '+' : ''}{pnlPct.toFixed(2)}%</span>}
                 </td>
                 <td className="r">
-                  {enginePos
-                    ? <button onClick={() => onExitPosition && onExitPosition(enginePos)} className="pt-btn-close" title="Close spread">✕</button>
-                    : <button onClick={() => onCloseOrphan && onCloseOrphan(p.product_symbol)} className="pt-btn-close" title="Close this leg on Delta">✕</button>}
+                  {/* Per-leg close (like Delta): ✕ closes only THIS leg, not the spread. */}
+                  <button onClick={() => onCloseOrphan && onCloseOrphan(p.product_symbol)} className="pt-btn-close" title="Close this leg on Delta">✕</button>
                 </td>
               </tr>
             );
