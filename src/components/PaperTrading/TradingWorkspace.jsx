@@ -467,7 +467,7 @@ function LiveOrderHistoryTab({ orderHistory }) {
                 type="date"
                 value={filterDate}
                 onChange={e => setFilterDate(e.target.value)}
-                style={{ background: 'var(--bg3)', border: '1px solid var(--border)', color: 'var(--text)', borderRadius: 5, padding: '3px 6px', fontSize: 11, fontWeight: 600, colorScheme: 'dark', outline: 'none' }}
+                style={{ background: 'var(--bg3)', border: '1px solid var(--border)', color: 'var(--text)', borderRadius: 5, padding: '3px 6px', fontSize: 11, fontWeight: 600, colorScheme: 'dark', outline: 'none', width: 118, boxSizing: 'border-box' }}
               />
               <button type="button" onClick={() => shiftDate(1)} title="Next day" style={arrowBtn}>
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6" /></svg>
