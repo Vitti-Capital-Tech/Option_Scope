@@ -1939,28 +1939,29 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     }
   }, [fetchSupabaseActivePositions, fetchSupabaseTradeHistory, fetchHistoryStats, fetchHeartbeat, fetchLiveExchangeState]);
 
-  // Periodic auto-refresh of the live view (positions + snapshot + heartbeat) every
-  // 5s while the tab is visible, so open positions stay current without a manual
-  // page refresh. Lightweight — skips the heavier trade-history/stats reads (those
-  // refresh on trade close and via their own effects).
+  // Periodic auto-refresh of the live view (positions + snapshot) every 10s while the
+  // tab is visible, as a safety net behind Realtime. Positions have their own Realtime
+  // subscription (instant patch), so this poll only backstops a missed message — 10s is
+  // plenty and halves the egress vs the old 5s. Heartbeat is NOT fetched here (it has
+  // its own dedicated 30s poll above — fetching it here too was a redundant 5s read).
+  // Skips the heavier trade-history/stats reads (those refresh on trade close).
   const liveSnapPollRef = useRef(0);
   useEffect(() => {
     if (!activeAccountId) return;
     const tick = () => {
       if (document.visibilityState !== 'visible') return;
       fetchSupabaseActivePositions();
-      fetchHeartbeat();
       // The live snapshot is Realtime-driven (subscription below refetches on every
-      // change), so we don't re-pull its heavy payload every 5s. Poll it only as a
-      // slow safety net (every 6th tick ≈ 30s) to catch a missed Realtime message.
+      // change), so we don't re-pull its heavy payload every tick. Poll it only as a
+      // slow safety net (every 3rd tick ≈ 30s) to catch a missed Realtime message.
       if (isActiveLive) {
-        liveSnapPollRef.current = (liveSnapPollRef.current + 1) % 6;
+        liveSnapPollRef.current = (liveSnapPollRef.current + 1) % 3;
         if (liveSnapPollRef.current === 0) fetchLiveExchangeState();
       }
     };
-    const id = setInterval(tick, 5000);
+    const id = setInterval(tick, 10000);
     return () => clearInterval(id);
-  }, [activeAccountId, isActiveLive, fetchSupabaseActivePositions, fetchHeartbeat, fetchLiveExchangeState]);
+  }, [activeAccountId, isActiveLive, fetchSupabaseActivePositions, fetchLiveExchangeState]);
 
   useEffect(() => {
     if (!isActiveLive) { setLiveExchangeState(null); return; }
