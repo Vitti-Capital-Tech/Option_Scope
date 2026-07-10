@@ -324,6 +324,10 @@ function LiveStopOrdersTab({ stopOrders, spotPrice, onCancelOrder }) {
           const notional = idx != null ? Math.abs(size) * cv * idx : null;
           const trigMethod = String(o.stop_trigger_method || '') === 'spot_price' ? 'Index Price'
             : String(o.stop_trigger_method || '') === 'mark_price' ? 'Mark Price' : (o.stop_trigger_method || '—');
+          // Operator like Delta: triggers when index rises to the level (>=) or
+          // falls to it (<=) — inferred from the trigger vs the current index.
+          const trig = num(o.stop_price);
+          const trigOp = (trig != null && idx != null) ? (trig >= idx ? '>=' : '<=') : '';
           const isCall = (o.product_symbol || '').startsWith('C-');
           return (
             <tr key={o.id ?? o.client_order_id} className={`pt-row-${isCall ? 'call' : 'put'}`}>
@@ -331,7 +335,7 @@ function LiveStopOrdersTab({ stopOrders, spotPrice, onCancelOrder }) {
               <td className="r"><span style={{ color: sell ? 'var(--put)' : 'var(--call)', fontWeight: 700 }}>{qty > 0 ? '+' : ''}{qty}</span></td>
               <td className="r">{sizeBtc} {unit}</td>
               <td className="r">{notional != null ? `$${fmtNum(notional)}` : '—'}</td>
-              <td className="r"><span style={{ color: 'var(--accent)', fontWeight: 700 }}>{fmtNum(o.stop_price)}</span></td>
+              <td className="r"><span style={{ color: 'var(--text)', fontWeight: 700 }}>{trig != null ? `${trigOp}${fmtNum(trig)}` : '—'}</span></td>
               <td>{trigMethod}</td>
               <td className="r">{idx != null ? fmtNum(idx) : '—'}</td>
               <td><span style={{ color: typeLabel(o).includes('TP') ? 'var(--call)' : 'var(--put)', fontWeight: 600, fontSize: 11 }}>{typeLabel(o)}</span></td>
