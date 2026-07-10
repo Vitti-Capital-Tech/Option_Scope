@@ -940,6 +940,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     const isLiveAcc = acc?.mode === 'live';
     if (count === 0 && !isLiveAcc) { pushToast('No open positions to close.', 'info'); return; }
     setConfirmDialog({
+      title: 'Close All Positions',
       message: isLiveAcc
         ? `Close ALL positions on Delta${count ? ` (${count} leg${count !== 1 ? 's' : ''})` : ''}? Every position will be closed at market — including any the dashboard isn't showing.`
         : `Close ALL ${count} open position(s)? Every trade will be exited at market.`,
@@ -2703,27 +2704,31 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         includeFees={includeFees}
       />
 
-      {/* In-app confirmation (toast-styled) — replaces the browser confirm dialog */}
+      {/* In-app confirmation — centered modal card (same style as Logout) */}
       {confirmDialog && (
-        <div style={{ position: 'fixed', top: 20, right: 20, zIndex: 10000, maxWidth: 360, pointerEvents: 'auto' }}>
-          <div style={{
-            background: 'rgba(10, 13, 18, 0.98)', border: '1px solid var(--border)',
-            borderLeft: '4px solid var(--put)', padding: '14px 16px', borderRadius: 8,
-            color: 'var(--text)', boxShadow: '0 12px 32px rgba(0,0,0,0.6)', animation: 'slideIn 0.25s ease-out',
-          }}>
-            <div style={{ fontSize: 12.5, fontWeight: 600, lineHeight: 1.45 }}>{confirmDialog.message}</div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+        <div className="modal-overlay-wrapper" onClick={() => setConfirmDialog(null)} style={{ animation: 'fadeIn 0.15s ease-out' }}>
+          <div className="modal-container-delete" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 400, margin: 'auto' }}>
+            <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 700, color: '#f85149', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
+              </svg>
+              {confirmDialog.title || 'Please confirm'}
+            </h3>
+            <p style={{ margin: 0, fontSize: '13px', lineHeight: '1.5', color: 'var(--text)' }}>
+              {confirmDialog.message}
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '6px' }}>
               <button
                 type="button"
                 onClick={() => setConfirmDialog(null)}
-                style={{ padding: '6px 14px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text)', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}
+                style={{ padding: '8px 16px', borderRadius: '6px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--text)', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={() => { const fn = confirmDialog.onConfirm; setConfirmDialog(null); if (fn) fn(); }}
-                style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: 'var(--put)', color: '#fff', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}
+                style={{ padding: '8px 16px', borderRadius: '6px', border: 'none', background: '#f85149', color: '#fff', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}
               >
                 {confirmDialog.confirmLabel || 'Confirm'}
               </button>
