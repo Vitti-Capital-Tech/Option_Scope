@@ -228,6 +228,17 @@ input:focus {
   border-color: #3b82f6;
 }
 
+/* No native up/down spinner arrows on number inputs (steppers removed). */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
 select:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -4864,10 +4875,13 @@ body.light-theme .pt-btn-apply.active {
   gap: 4px;
 }
 
-/* Consistent field widths so wrapped fields line up in tidy columns. */
-.schedule-item-num-block { min-width: 104px; }
-.schedule-item-name-block { min-width: 150px; }
-.schedule-item-time-block { min-width: 118px; }
+/* Fixed, compact field widths so fields stay tidy AND wrap within the card
+   (fixed width + no grow/shrink means the row can never push past the screen). */
+.schedule-item-num-block { flex: 0 0 104px; width: 104px; }
+.schedule-item-name-block { flex: 0 0 160px; width: 160px; }
+.schedule-item-time-block { flex: 0 0 120px; width: 120px; }
+.schedule-item-block .uin,
+.schedule-item-block .custom-input-field { width: 100%; box-sizing: border-box; }
 
 .schedule-item-label {
   font-size: 10px;
