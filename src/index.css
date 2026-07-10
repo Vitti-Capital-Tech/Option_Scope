@@ -239,6 +239,12 @@ input[type="number"] {
   appearance: textfield;
 }
 
+/* Render the native time picker (clock icon + popup) in dark mode so the icon is
+   visible on the dark field and the picker dropdown isn't a white box. */
+input[type="time"] {
+  color-scheme: dark;
+}
+
 select:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -3693,8 +3699,9 @@ body.light-theme .pt-live-badge {
 /* ── Paper Trading Apply & Reset Buttons ───────────────── */
 .pt-filter-actions {
   display: flex;
-  gap: 8px;
-  align-items: center;
+  flex-direction: column;
+  gap: 6px;
+  align-items: stretch;
   margin-left: auto;
 }
 
@@ -4847,16 +4854,36 @@ body.light-theme .pt-btn-apply.active {
 
 .schedule-item {
   display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 14px 18px;
+  flex-direction: column;
+  gap: 16px;
 
   padding: 14px 16px;
   background: rgba(22, 27, 34, 0.4);
   border: 1px solid var(--border);
   border-radius: 8px;
-  /* Fields wrap onto multiple rows within the card — no horizontal scroll, and
-     the Exit Type dropdown is no longer clipped by an overflow container. */
+}
+
+/* Header: window name on the left, dynamic-scaling + lock/delete on the right. */
+.schedule-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.schedule-item-header-right {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-shrink: 0;
+}
+
+/* Fields: everything else in one row (wraps only when the screen is too narrow). */
+.schedule-item-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 14px 16px;
 }
 
 .schedule-item:hover {

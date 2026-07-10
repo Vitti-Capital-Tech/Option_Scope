@@ -113,10 +113,6 @@ export default function ControlPanel({
               </button>
             </div>
           )}
-          <div className="pt-status-badge live pt-algo-inline">
-            <span className="pt-pulse"></span>
-            LIVE ALGO
-          </div>
           <button
             className="pt-filters-toggle-btn"
             onClick={() => setIsFiltersCollapsed(!isFiltersCollapsed)}
@@ -140,8 +136,6 @@ export default function ControlPanel({
             </svg>
           </button>
         </div>
-
-        <div className="hide-mobile pt-control-divider"></div>
 
         <div className={`pt-filters-container ${isFiltersCollapsed ? 'collapsed' : 'expanded'}`}>
           <div className="pt-filter-cluster">

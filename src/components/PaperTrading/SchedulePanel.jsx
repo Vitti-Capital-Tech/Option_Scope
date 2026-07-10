@@ -331,7 +331,14 @@ export default function SchedulePanel({
                 />
                 <span
                   className="schedule-timeline-label"
-                  style={{ left: `${leftPercent}%` }}
+                  style={{
+                    left: `${leftPercent}%`,
+                    // Anchor the edge labels inside the bar so they don't spill past
+                    // the border: first is left-aligned, last is right-aligned.
+                    transform: leftPercent === 0 ? 'translateX(0)'
+                      : leftPercent === 100 ? 'translateX(-100%)'
+                      : 'translateX(-50%)',
+                  }}
                 >
                   {tick.label}
                 </span>
@@ -416,281 +423,151 @@ export default function SchedulePanel({
             <div key={s.id} className={`schedule-item ${s.isActive ? '' : 'inactive'}`} style={{
               borderLeft: `4px solid ${s.isActive ? color : 'var(--border)'}`,
             }}>
-              {/* Window Label */}
-              <div className="schedule-item-block schedule-item-name-block">
-                <span className="schedule-item-label">Window Name</span>
-                <CustomInput
-                  type="text"
-                  className="schedule-inline-input"
-                  value={s.label}
-                  onChange={e => handleChange(s.id, 'label', e.target.value)}
-                  placeholder="e.g. Night Window"
-                />
-              </div>
-
-              {/* Start Time */}
-              <div className="schedule-item-block schedule-item-time-block">
-                <span className="schedule-item-label">Start Time (IST)</span>
-                <CustomInput
-                  type="time"
-                  className="schedule-inline-input"
-                  value={cleanTime(s.startTime)}
-                  onChange={e => handleChange(s.id, 'startTime', e.target.value)}
-                />
-              </div>
-
-              {/* End Time */}
-              <div className="schedule-item-block schedule-item-time-block">
-                <span className="schedule-item-label">End Time (IST)</span>
-                <CustomInput
-                  type="time"
-                  className="schedule-inline-input"
-                  value={cleanTime(s.endTime)}
-                  onChange={e => handleChange(s.id, 'endTime', e.target.value)}
-                />
-              </div>
-
-              {/* Max Calls */}
-              <div className="schedule-item-block schedule-item-num-block">
-                <span className="schedule-item-label">Max Open Calls</span>
-                <CustomInput
-                  type="number"
-                  min="0"
-                  max="20"
-                  showStepper
-                  value={s.numberOfCalls}
-                  onChange={e => handleChange(s.id, 'numberOfCalls', Number(e.target.value))}
-                />
-              </div>
-
-              {/* Max Puts */}
-              <div className="schedule-item-block schedule-item-num-block">
-                <span className="schedule-item-label">Max Open Puts</span>
-                <CustomInput
-                  type="number"
-                  min="0"
-                  max="20"
-                  showStepper
-                  value={s.numberOfPuts}
-                  onChange={e => handleChange(s.id, 'numberOfPuts', Number(e.target.value))}
-                />
-              </div>
-
-              {/* Min Strike Diff */}
-              <div className="schedule-item-block schedule-item-num-block">
-                <span className="schedule-item-label">Min Spread Width</span>
-                <CustomInput
-                  type="number"
-                  min="0"
-                  prefix="$"
-                  showStepper
-                  step="50"
-                  value={s.minStrikeDiff}
-                  onChange={e => handleChange(s.id, 'minStrikeDiff', Number(e.target.value))}
-                />
-              </div>
-
-              {/* Min Long Dist */}
-              <div className="schedule-item-block schedule-item-num-block">
-                <span className="schedule-item-label">Min Spot Distance</span>
-                <CustomInput
-                  type="number"
-                  min="0"
-                  prefix="$"
-                  showStepper
-                  step="50"
-                  value={s.minLongDist}
-                  onChange={e => handleChange(s.id, 'minLongDist', Number(e.target.value))}
-                />
-              </div>
-
-              {/* ATM Ratio Scaling Toggle */}
-              <div className="schedule-item-block schedule-item-checkbox-block" style={{ flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'center', marginTop: 14 }}>
-                <input
-                  type="checkbox"
-                  id={`atmRatioScaling-${s.id}`}
-                  checked={s.atmRatioScaling ?? true}
-                  onChange={e => handleChange(s.id, 'atmRatioScaling', e.target.checked)}
-                  style={{ cursor: 'pointer', width: 14, height: 14 }}
-                />
-                <label htmlFor={`atmRatioScaling-${s.id}`} style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.8, cursor: 'pointer', userSelect: 'none' }}>
-                  Dynamic ATM Scaling
-                </label>
-              </div>
-
-              {/* ATM Ratio % Call */}
-              <div className="schedule-item-block schedule-item-num-block">
-                <span className="schedule-item-label">Call Scaling</span>
-                <CustomInput
-                  type="number"
-                  min="0"
-                  max="100"
-                  suffix="%"
-                  showStepper
-                  step="5"
-                  width={90}
-                  value={s.atmRatioPctCall ?? 50}
-                  disabled={!(s.atmRatioScaling ?? true)}
-                  onChange={e => handleChange(s.id, 'atmRatioPctCall', Number(e.target.value))}
-                />
-              </div>
-
-              {/* ATM Ratio % Put */}
-              <div className="schedule-item-block schedule-item-num-block">
-                <span className="schedule-item-label">Put Scaling</span>
-                <CustomInput
-                  type="number"
-                  min="0"
-                  max="100"
-                  suffix="%"
-                  showStepper
-                  step="5"
-                  width={90}
-                  value={s.atmRatioPctPut ?? 25}
-                  disabled={!(s.atmRatioScaling ?? true)}
-                  onChange={e => handleChange(s.id, 'atmRatioPctPut', Number(e.target.value))}
-                />
-              </div>
-
-
-
-              {/* Max Net Debit */}
-              <div className="schedule-item-block schedule-item-num-block">
-                <span className="schedule-item-label">Max Net Debit</span>
-                <CustomInput
-                  type="number"
-                  prefix="$"
-                  showStepper
-                  value={s.maxNetPremium ?? 20}
-                  onChange={e => handleChange(s.id, 'maxNetPremium', Number(e.target.value))}
-                />
-              </div>
-
-              {/* Exit Type */}
-              <div className="schedule-item-block schedule-item-num-block">
-                <span className="schedule-item-label">Exit Type</span>
-                <CustomSelect
-                  value={s.exitType ?? 'ATM'}
-                  onChange={val => handleChange(s.id, 'exitType', val)}
-                  options={[
-                    { label: 'ATM', value: 'ATM' },
-                    { label: 'ITM', value: 'ITM' },
-                    { label: 'OTM', value: 'OTM' },
-                  ]}
-                  style={{ width: '90px' }}
-                />
-              </div>
-
-              {/* Exit Points (only for ITM/OTM) */}
-              {(s.exitType === 'ITM' || s.exitType === 'OTM') && (
-                <div className="schedule-item-block schedule-item-num-block">
-                  <span className="schedule-item-label">Exit Points</span>
+              {/* Header row: window name (left) · dynamic scaling + lock/delete (right) */}
+              <div className="schedule-item-header">
+                <div className="schedule-item-block schedule-item-name-block">
+                  <span className="schedule-item-label">Window Name</span>
                   <CustomInput
-                    type="number"
-                    min="0"
-                    step="1"
-                    showStepper
-                    value={s.exitPoints ?? 0}
-                    onChange={e => handleChange(s.id, 'exitPoints', Number(e.target.value))}
+                    type="text"
+                    className="schedule-inline-input"
+                    value={s.label}
+                    onChange={e => handleChange(s.id, 'label', e.target.value)}
+                    placeholder="e.g. Night Window"
                   />
                 </div>
-              )}
 
-              {/* Live Utilization */}
-              <div className="schedule-item-block schedule-item-num-block" style={{ minWidth: 80 }}>
-                <span className="schedule-item-label">Live Utilized</span>
-                <div style={{
-                  fontSize: '12px',
-                  fontWeight: '700',
-                  color: '#3b82f6',
-                  height: '30px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  background: 'var(--bg3)',
-                  border: '1px solid var(--border)',
-                  borderRadius: '5px',
-                  padding: '0 10px',
-                  fontFamily: 'JetBrains Mono, monospace',
-                  boxSizing: 'border-box'
-                }} title="Current live utilization of active full-spread positions (calls + puts) divided by the window's total cap. Long-only positions are excluded.">
-                  {avgUtilMap[s.id] !== undefined ? `${avgUtilMap[s.id]}%` : '—'}
+                <div className="schedule-item-header-right">
+                  {/* Dynamic ATM Scaling toggle */}
+                  <div className="schedule-item-checkbox-block" style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <input
+                      type="checkbox"
+                      id={`atmRatioScaling-${s.id}`}
+                      checked={s.atmRatioScaling ?? true}
+                      onChange={e => handleChange(s.id, 'atmRatioScaling', e.target.checked)}
+                      style={{ cursor: 'pointer', width: 14, height: 14 }}
+                    />
+                    <label htmlFor={`atmRatioScaling-${s.id}`} style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.8, cursor: 'pointer', userSelect: 'none' }}>
+                      Dynamic ATM Scaling
+                    </label>
+                  </div>
+
+                  {/* Overlap badge (only when this window collides with another) */}
+                  {overlapWindow && (
+                    <div
+                      style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'rgba(248,81,73,0.1)', border: '1px solid rgba(248,81,73,0.3)', padding: '4px 8px', borderRadius: 4, fontSize: 9, fontWeight: 700, color: '#f85149', cursor: 'help' }}
+                      title={`Time overlaps with "${overlapWindow.label || 'another window'}" (${cleanTime(overlapWindow.startTime)} – ${cleanTime(overlapWindow.endTime)})`}
+                    >
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
+                      OVERLAP
+                    </div>
+                  )}
+
+                  {/* Lock (Window 1) or delete button */}
+                  {i === 0 ? (
+                    <div
+                      title="Window 1 is permanent and cannot be deleted (it holds the account's default filters). You can still edit its time and values."
+                      style={{ display: 'flex', alignItems: 'center', color: 'var(--border)', padding: 5, cursor: 'not-allowed' }}
+                    >
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="watch-delete-btn"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (s.isNew) { handleDelete(s.id); } else { setDeletingId(s.id); }
+                      }}
+                      style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: 5, borderRadius: 5, transition: 'all 0.15s' }}
+                      onMouseOver={e => { e.currentTarget.style.color = '#f85149'; e.currentTarget.style.background = 'rgba(248,81,73,0.1)'; }}
+                      onMouseOut={e => { e.currentTarget.style.color = 'var(--text-dim)'; e.currentTarget.style.background = 'none'; }}
+                      title={s.isNew ? "Cancel window" : "Delete schedule window"}
+                    >
+                      {s.isNew ? (
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                      ) : (
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14H6L5 6" /><path d="M10 11v6M14 11v6" /><path d="M9 6V4h6v2" /></svg>
+                      )}
+                    </button>
+                  )}
                 </div>
               </div>
 
-              {/* Overlap Indicator Badge inside the row */}
-              {overlapWindow ? (
-                <div
-                  className="schedule-item-block schedule-item-status-block"
-                  style={{
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    color: '#f85149',
-                    cursor: 'help'
-                  }}
-                  title={`Time overlaps with "${overlapWindow.label || 'another window'}" (${cleanTime(overlapWindow.startTime)} – ${cleanTime(overlapWindow.endTime)})`}
-                >
-                  <span className="schedule-item-label" style={{ color: '#f85149' }}>Status</span>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'rgba(248,81,73,0.1)', border: '1px solid rgba(248,81,73,0.3)', padding: '4px 8px', borderRadius: 4, fontSize: 9, fontWeight: 700 }}>
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
-                    OVERLAP
-                  </div>
+              {/* Fields row — everything else in one row (wraps only if the screen is narrow) */}
+              <div className="schedule-item-fields">
+                <div className="schedule-item-block schedule-item-time-block">
+                  <span className="schedule-item-label">Start Time (IST)</span>
+                  <CustomInput type="time" className="schedule-inline-input" value={cleanTime(s.startTime)} onChange={e => handleChange(s.id, 'startTime', e.target.value)} />
                 </div>
-              ) : (
-                <div className="schedule-item-block schedule-item-status-block" style={{ opacity: 0, pointerEvents: 'none' }}>
-                  <span className="schedule-item-label">Status</span>
-                  <div style={{ padding: '4px 8px', fontSize: 9 }}>OK</div>
-                </div>
-              )}
 
-              {/* Quick Delete Trash Button — hidden for Window 1 (permanent) */}
-              <div className="schedule-item-block schedule-item-delete-block" style={{ justifyContent: 'center' }}>
-                <span className="schedule-item-label" style={{ opacity: 0 }}>Delete</span>
-                {i === 0 ? (
-                  <div
-                    title="Window 1 is permanent and cannot be deleted (it holds the account's default filters). You can still edit its time and values."
-                    style={{
-                      display: 'flex', alignItems: 'center', color: 'var(--border)',
-                      padding: 5, marginTop: 3, cursor: 'not-allowed',
-                    }}
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>
+                <div className="schedule-item-block schedule-item-time-block">
+                  <span className="schedule-item-label">End Time (IST)</span>
+                  <CustomInput type="time" className="schedule-inline-input" value={cleanTime(s.endTime)} onChange={e => handleChange(s.id, 'endTime', e.target.value)} />
+                </div>
+
+                <div className="schedule-item-block schedule-item-num-block">
+                  <span className="schedule-item-label">Max Open Calls</span>
+                  <CustomInput type="number" min="0" max="20" value={s.numberOfCalls} onChange={e => handleChange(s.id, 'numberOfCalls', Number(e.target.value))} />
+                </div>
+
+                <div className="schedule-item-block schedule-item-num-block">
+                  <span className="schedule-item-label">Max Open Puts</span>
+                  <CustomInput type="number" min="0" max="20" value={s.numberOfPuts} onChange={e => handleChange(s.id, 'numberOfPuts', Number(e.target.value))} />
+                </div>
+
+                <div className="schedule-item-block schedule-item-num-block">
+                  <span className="schedule-item-label">Min Spread Width</span>
+                  <CustomInput type="number" min="0" prefix="$" step="50" value={s.minStrikeDiff} onChange={e => handleChange(s.id, 'minStrikeDiff', Number(e.target.value))} />
+                </div>
+
+                <div className="schedule-item-block schedule-item-num-block">
+                  <span className="schedule-item-label">Min Spot Distance</span>
+                  <CustomInput type="number" min="0" prefix="$" step="50" value={s.minLongDist} onChange={e => handleChange(s.id, 'minLongDist', Number(e.target.value))} />
+                </div>
+
+                <div className="schedule-item-block schedule-item-num-block">
+                  <span className="schedule-item-label">Call Scaling</span>
+                  <CustomInput type="number" min="0" max="100" suffix="%" step="5" value={s.atmRatioPctCall ?? 50} disabled={!(s.atmRatioScaling ?? true)} onChange={e => handleChange(s.id, 'atmRatioPctCall', Number(e.target.value))} />
+                </div>
+
+                <div className="schedule-item-block schedule-item-num-block">
+                  <span className="schedule-item-label">Put Scaling</span>
+                  <CustomInput type="number" min="0" max="100" suffix="%" step="5" value={s.atmRatioPctPut ?? 25} disabled={!(s.atmRatioScaling ?? true)} onChange={e => handleChange(s.id, 'atmRatioPctPut', Number(e.target.value))} />
+                </div>
+
+                <div className="schedule-item-block schedule-item-num-block">
+                  <span className="schedule-item-label">Max Net Debit</span>
+                  <CustomInput type="number" prefix="$" value={s.maxNetPremium ?? 20} onChange={e => handleChange(s.id, 'maxNetPremium', Number(e.target.value))} />
+                </div>
+
+                <div className="schedule-item-block schedule-item-num-block">
+                  <span className="schedule-item-label">Exit Type</span>
+                  <CustomSelect
+                    value={s.exitType ?? 'ATM'}
+                    onChange={val => handleChange(s.id, 'exitType', val)}
+                    options={[{ label: 'ATM', value: 'ATM' }, { label: 'ITM', value: 'ITM' }, { label: 'OTM', value: 'OTM' }]}
+                    style={{ width: '100%' }}
+                  />
+                </div>
+
+                {(s.exitType === 'ITM' || s.exitType === 'OTM') && (
+                  <div className="schedule-item-block schedule-item-num-block">
+                    <span className="schedule-item-label">Exit Points</span>
+                    <CustomInput type="number" min="0" step="1" value={s.exitPoints ?? 0} onChange={e => handleChange(s.id, 'exitPoints', Number(e.target.value))} />
                   </div>
-                ) : (
-                  <button
-                    type="button"
-                    className="watch-delete-btn"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (s.isNew) {
-                        handleDelete(s.id);
-                      } else {
-                        setDeletingId(s.id);
-                      }
-                    }}
-                    style={{
-                      background: 'none', border: 'none', color: 'var(--text-dim)',
-                      cursor: 'pointer', display: 'flex', alignItems: 'center',
-                      padding: 5, borderRadius: 5, transition: 'all 0.15s',
-                      marginTop: 3
-                    }}
-                    onMouseOver={e => {
-                      e.currentTarget.style.color = '#f85149';
-                      e.currentTarget.style.background = 'rgba(248,81,73,0.1)';
-                    }}
-                    onMouseOut={e => {
-                      e.currentTarget.style.color = 'var(--text-dim)';
-                      e.currentTarget.style.background = 'none';
-                    }}
-                    title={s.isNew ? "Cancel window" : "Delete schedule window"}
-                  >
-                    {s.isNew ? (
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-                    ) : (
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14H6L5 6" /><path d="M10 11v6M14 11v6" /><path d="M9 6V4h6v2" /></svg>
-                    )}
-                  </button>
                 )}
+
+                <div className="schedule-item-block schedule-item-num-block">
+                  <span className="schedule-item-label">Live Utilized</span>
+                  <div style={{
+                    fontSize: '12px', fontWeight: '700', color: '#3b82f6', height: '30px',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: '5px',
+                    padding: '0 10px', fontFamily: 'JetBrains Mono, monospace', boxSizing: 'border-box',
+                  }} title="Current live utilization of active full-spread positions (calls + puts) divided by the window's total cap. Long-only positions are excluded.">
+                    {avgUtilMap[s.id] !== undefined ? `${avgUtilMap[s.id]}%` : '—'}
+                  </div>
+                </div>
               </div>
             </div>
           );
