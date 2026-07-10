@@ -55,6 +55,7 @@ export default function AccountSelectorStrip({
   triggerDisarmLive,
   triggerPauseAccount,
   triggerResumeAccount,
+  triggerEditAccount,
   engineDryRun,
   userProfile,
   session,
@@ -161,6 +162,21 @@ export default function AccountSelectorStrip({
           )}
         </div>
 
+        {activeAccount && triggerEditAccount && (
+          <button
+            type="button"
+            onClick={triggerEditAccount}
+            className="account-selector-btn"
+            title="Edit account details"
+            style={{ padding: '6px 8px' }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+              <path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+            </svg>
+          </button>
+        )}
+
         <button
           onClick={triggerCreateAccount}
           className="account-selector-btn new-acc"
@@ -186,21 +202,25 @@ export default function AccountSelectorStrip({
           </button>
         )}
 
+      </div>
+
+      {/* Right side: live status + controls, then user & logout */}
+      <div className="account-selector-right" style={{ display: 'flex', alignItems: 'center', gap: 16, marginLeft: 'auto' }}>
         {/* Live account controls (arm / pause) — live accounts only */}
         {activeAccount?.mode === 'live' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 4, paddingLeft: 8, borderLeft: '1px solid var(--border)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {/* Execution mode: only meaningful once armed */}
             {activeAccount.live_enabled && (
               engineDryRun === false ? (
-                <span title="Engine is placing REAL orders on Delta" style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', padding: '3px 7px', borderRadius: 5, color: '#fff', background: '#f85149' }}>
+                <span title="Engine is placing REAL orders on Delta" style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', padding: '4px 8px', borderRadius: 5, color: '#fff', background: '#f85149' }}>
                   ● REAL ORDERS
                 </span>
               ) : engineDryRun === true ? (
-                <span title="Armed, but engine is in DRY-RUN — orders are simulated, nothing hits Delta" style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', padding: '3px 7px', borderRadius: 5, color: '#3b82f6', background: 'transparent', border: '1px solid #3b82f6' }}>
+                <span title="Armed, but engine is in DRY-RUN — orders are simulated, nothing hits Delta" style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', padding: '4px 8px', borderRadius: 5, color: '#3b82f6', background: 'transparent', border: '1px solid #3b82f6' }}>
                   DRY-RUN
                 </span>
               ) : (
-                <span title="Engine offline or unknown — can't confirm execution mode" style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', padding: '3px 7px', borderRadius: 5, color: 'var(--text-dim)', background: 'transparent', border: '1px solid var(--border)' }}>
+                <span title="Engine offline or unknown — can't confirm execution mode" style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', padding: '4px 8px', borderRadius: 5, color: 'var(--text-dim)', background: 'transparent', border: '1px solid var(--border)' }}>
                   MODE ?
                 </span>
               )
@@ -229,32 +249,32 @@ export default function AccountSelectorStrip({
             )}
           </div>
         )}
-      </div>
 
-      {/* User profile & Logout Button (Aligned to the Right) */}
-      {userProfile && (
-        <div className="account-selector-profile-section">
-          <span className="account-selector-email">
-            {session?.user?.email} 
-            {userProfile.role === 'admin' && (
-              <span className="account-selector-badge-admin">
-                ADMIN
-              </span>
-            )}
-          </span>
-          <button
-            onClick={() => setShowLogoutConfirm(true)}
-            className="account-selector-logout-btn"
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
-              <polyline points="16 17 21 12 16 7"></polyline>
-              <line x1="21" y1="12" x2="9" y2="12"></line>
-            </svg>
-            Logout
-          </button>
-        </div>
-      )}
+        {/* User profile & Logout */}
+        {userProfile && (
+          <div className="account-selector-profile-section" style={{ marginLeft: 0 }}>
+            <span className="account-selector-email">
+              {session?.user?.email}
+              {userProfile.role === 'admin' && (
+                <span className="account-selector-badge-admin">
+                  ADMIN
+                </span>
+              )}
+            </span>
+            <button
+              onClick={() => setShowLogoutConfirm(true)}
+              className="account-selector-logout-btn"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                <polyline points="16 17 21 12 16 7"></polyline>
+                <line x1="21" y1="12" x2="9" y2="12"></line>
+              </svg>
+              Logout
+            </button>
+          </div>
+        )}
+      </div>
 
       {showLogoutConfirm && (
         <div className="modal-overlay-wrapper" onClick={() => setShowLogoutConfirm(false)}>

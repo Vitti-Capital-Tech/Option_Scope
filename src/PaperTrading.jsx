@@ -269,6 +269,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   }, []);
   // In-app confirmation (toast-styled, no browser alert): { message, confirmLabel, onConfirm }.
   const [confirmDialog, setConfirmDialog] = useState(null);
+  // Session-open spot per underlying → drives the % change on the spot bar shown
+  // above the tables (captured once, first time we see a spot for that underlying).
+  const spotOpenRef = useRef({});
 
   const [includeFees, setIncludeFees] = useState(true);
   const [positions, setPositions] = useState([]);
@@ -2333,6 +2336,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         .filter(p => p.underlying === underlying)
         .reduce((s, p) => s + (includeFees ? (p.unrealizedNetPnl || 0) : (p.unrealizedGrossPnl || 0)), 0);
 
+  // Session spot change (%) for the spot bar shown above the tables.
+  if (spotPrice != null && spotOpenRef.current[underlying] == null) spotOpenRef.current[underlying] = spotPrice;
+  const spotOpen = spotOpenRef.current[underlying];
+  const spotChangePct = (spotOpen && spotPrice) ? ((spotPrice - spotOpen) / spotOpen) * 100 : null;
+
   // Realized P&L for the KPI cards.
   //  • Paper accounts: server-aggregated trade_history stats (get_trade_stats).
   //  • LIVE accounts: Delta's OWN realized P&L — sum of meta_data.pnl on each
@@ -2521,6 +2529,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               triggerDisarmLive={triggerDisarmLive}
               triggerPauseAccount={triggerPauseAccount}
               triggerResumeAccount={triggerResumeAccount}
+              triggerEditAccount={triggerEditAccount}
               engineDryRun={engineDryRun}
               userProfile={userProfile}
               session={session}
@@ -2583,6 +2592,21 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
                 return engineMaxPositions ?? Math.max(1, (activeAccount?.default_config?.numberOfCalls ?? 3) + (activeAccount?.default_config?.numberOfPuts ?? 3));
               })()}
             />
+
+            {/* Spot price — shown just above the trading tables */}
+            {spotPrice != null && (
+              <div style={{ display: 'flex', justifyContent: 'flex-end', margin: '0 0 12px' }}>
+                <div className="pt-spot-display">
+                  <span className="pt-spot-label">SPOT</span>
+                  <span className="pt-spot-value">${spotPrice.toLocaleString()}</span>
+                  {spotChangePct != null && (
+                    <span className={`pt-spot-chg ${spotChangePct >= 0 ? 'up' : 'down'}`}>
+                      {spotChangePct >= 0 ? '+' : ''}{spotChangePct.toFixed(2)}%
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
 
             <TradingWorkspace
               positions={positions}

@@ -77,42 +77,6 @@ export default function ControlPanel({
               style={{ width: '160px' }}
             />
           </div>
-          {spotPrice && (
-            <div className="pt-spot-display pt-spot-inline">
-              <span className="pt-spot-label">SPOT</span>
-              <span className="pt-spot-value">${spotPrice.toLocaleString()}</span>
-              {spotChangePct != null && (
-                <span className={`pt-spot-chg ${spotChangePct >= 0 ? 'up' : 'down'}`}>
-                  {spotChangePct >= 0 ? '+' : ''}{spotChangePct.toFixed(2)}%
-                </span>
-              )}
-            </div>
-          )}
-          {activeAccountId && (
-            <div className="pt-account-chip">
-              <svg className="pt-account-avatar" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-                <circle cx="12" cy="7" r="4"></circle>
-              </svg>
-              <span className="pt-account-name">{activeAccount?.name ?? ''}</span>
-              {accountIsLive && (
-                <span className={`pt-live-tag ${accountArmed ? 'armed' : ''}`}
-                  title={accountArmed ? 'Live — real orders armed' : 'Live — credentials linked, orders disarmed'}>
-                  {accountArmed ? 'LIVE ●' : 'LIVE'}
-                </span>
-              )}
-              <button
-                onClick={triggerEditAccount}
-                className="pt-account-edit"
-                title="Edit Account Details"
-              >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                  <path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-                </svg>
-              </button>
-            </div>
-          )}
           <button
             className="pt-filters-toggle-btn"
             onClick={() => setIsFiltersCollapsed(!isFiltersCollapsed)}
