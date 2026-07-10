@@ -235,26 +235,27 @@ points), so the spread is protected even if the engine is down:
 > whether you edit the **base filters** or a **schedule window**. `syncExitBrackets` is
 > **idempotent and effective-level-driven**: for each open leg it compares the stored
 > `brkLevel` against the level the engine would exit at NOW (active window's exit rule if
-> one governs, else base config) and re-posts only the legs that actually drifted. It runs
+> one governs, else base config) and re-syncs only the legs that actually drifted. It runs
 > from **both** Realtime paths (base-config change → `reloadConfigAndSync`; schedule change
-> → after `fetchSchedules`) and on **startup**. Each drifted leg is re-posted via
-> **`POST /v2/orders/bracket`** (`live.changePositionBracket`) — long leg → TP,
-> short leg (while still open) → SL — as a whole-position **market stop** at the new exit
-> level, triggered
-> on `spot_price`. Delta keeps a **single bracket per open position**, so re-posting
-> **updates** it. The call sends `product_id` (looked up from `/v2/positions/margined`) +
-> `product_symbol` and the nested `stop_loss_order` / `take_profit_order` object for the
-> relevant side. Each leg stores its current bracket level (`buyLeg.brkLevel` /
+> → after `fetchSchedules`) and on **startup**. For each drifted leg — long leg → TP,
+> short leg (while still open) → SL — it moves the bracket by **cancel-then-recreate**:
+> cancel the leg's existing bracket (stop) order, then **`POST /v2/orders/bracket`**
+> (`live.changePositionBracket`) a fresh whole-position **market stop** at the new exit
+> level, triggered on `spot_price`, sending `product_id` (from `/v2/positions/margined`) +
+> `product_symbol`. Each leg stores its current bracket level (`buyLeg.brkLevel` /
 > `sellLeg.brkLevel`, set at entry) so resync skips legs already at the target and only
 > moves real drift. Idempotent; positions opened before this feature have no `brkLevel`
 > and resync on the first change.
 >
-> **Endpoint history (important):** `POST /v2/orders/bracket` is the call that works for an
-> **already-filled position**. Two earlier attempts did **not** move a bracket: the
-> order-level `PUT /v2/orders/bracket` only edits brackets that still rest as **unfilled
-> order legs** (needs the parent order id + a matching limit price → `bad_schema` for a
-> filled position), and a `POST /v2/positions/change_bracket_order` endpoint that **does
-> not exist**. The separate `resyncRestingOrders` still re-syncs the **short buy-back limit
+> **Why cancel-then-recreate (important):** Delta has **no "edit position bracket" call**.
+> `POST /v2/orders/bracket` only **creates** — it rejects **`bracket_order_exists`** when
+> the entry bracket is already attached (this was the live bug). `PUT /v2/orders/bracket`
+> edits only **order-attached** brackets (needs a live parent order id, which is gone once
+> the entry order fills), and a `POST /v2/positions/change_bracket_order` endpoint **does
+> not exist**. So the only way to move a filled position's bracket is to cancel the existing
+> bracket order and POST a new one. Only **stop/bracket** orders are cancelled — the resting
+> short buy-back (`-SEX`) and long ladder (`-LE`) are plain limit orders and are left
+> untouched. The separate `resyncRestingOrders` still re-syncs the **short buy-back limit
 > price** (`shortExitPrice` → `editOrder`) on a base-config change. On **startup**,
 > `syncExitBrackets` runs too (idempotent) — legs already at the right level are skipped, so
 > it only corrects exit-level drift that happened while the engine was down.

@@ -2552,12 +2552,18 @@ async function startSingleAccountEngine(account) {
   // ── Move open positions' SL/TP brackets to the CURRENT effective exit level ─────
   // Idempotent: for each open leg it compares the stored bracket level (`brkLevel`, set
   // at entry / last sync) against the level the engine would exit at NOW — the active
-  // schedule window's exit rule if one governs, else the base config — and only re-posts
+  // schedule window's exit rule if one governs, else the base config — and only re-syncs
   // brackets that actually drifted. Because it compares the real target (not old-vs-new
   // config), it works no matter WHAT changed: the base filters, a schedule window, or a
-  // window becoming active. Long leg → TP, short leg (while open) → SL, via
-  // POST /v2/orders/bracket (`changePositionBracket`). Armed real live only; dry-run logs
-  // intended calls (and does NOT latch brkLevel, so the real edit still fires once armed).
+  // window becoming active. Long leg → TP, short leg (while open) → SL.
+  //
+  // Delta has NO "edit position bracket" call: POST /v2/orders/bracket only CREATES (it
+  // rejects `bracket_order_exists` when the entry bracket is already attached), and PUT
+  // /v2/orders/bracket edits only ORDER-attached brackets (needs a live parent order id —
+  // gone once filled). So we MOVE a bracket by cancel-then-recreate: cancel the leg's
+  // existing bracket (stop) order, then POST a fresh bracket at the new level. Armed real
+  // live only; dry-run logs intended calls (and does NOT latch brkLevel, so the real
+  // re-sync still fires once the account is armed).
   async function syncExitBrackets(reason = 'config change') {
     if (accountState.mode !== 'live') return;
     const activeSchedule = getActiveSchedule();
@@ -2579,31 +2585,47 @@ async function startSingleAccountEngine(account) {
 
     log(`[${accountState.name}] 🔧 Exit brackets (${reason}): moving ${drift.length} position(s) to ${effExit.exitType}±${effExit.exitPoints ?? 0}${activeSchedule ? ` [window "${activeSchedule.label}"]` : ''}`);
 
-    // POST /v2/orders/bracket wants the position's product_id — fetch the live positions
-    // once (armed real only; dry-run/paper log without it) and map symbol → product_id.
-    let pidBySymbol = {};
+    // Fetch (armed real only) the product_ids and the CURRENT resting bracket/stop orders
+    // per symbol, so we can cancel the existing bracket before re-posting. Only stop/bracket
+    // orders are collected — the resting short buy-back (-SEX) and ladder (-LE) are plain
+    // limit orders and must NOT be cancelled here.
+    let pidBySymbol = {}, bracketOrdersBySymbol = {};
     if (accountState.live_enabled && !live.dryRun) {
-      const livePos = await live.positions();
+      const [livePos, liveOrders] = await Promise.all([live.positions(), live.orders()]);
       if (livePos != null) for (const p of livePos) pidBySymbol[p.product_symbol] = p.product_id;
+      if (Array.isArray(liveOrders)) {
+        for (const o of liveOrders) {
+          const isBracket = !!(o.bracket_order || o.stop_order_type
+            || o.bracket_stop_loss_price != null || o.bracket_take_profit_price != null);
+          if (isBracket && o.product_symbol) {
+            (bracketOrdersBySymbol[o.product_symbol] ||= []).push({ id: o.id, productId: o.product_id });
+          }
+        }
+      }
     }
+
+    // Cancel the leg's existing bracket order(s), then POST a fresh bracket at newLevel.
+    const moveBracket = async (pos, symbol, side, newLevel) => {
+      for (const bo of (bracketOrdersBySymbol[symbol] || [])) {
+        if (bo.id != null) await live.cancelStop(bo);
+      }
+      return live.changePositionBracket({
+        productId: pidBySymbol[symbol], symbol, side, stopPrice: newLevel,
+        tag: `${pos.id}-${side === 'tp' ? 'TP' : 'SL'}-resync`,
+      });
+    };
 
     for (const { pos, newLevel, needLong, needShort } of drift) {
       try {
         let persist = false;
         if (needLong) {
-          const r = await live.changePositionBracket({
-            productId: pidBySymbol[pos.buyLeg.symbol], symbol: pos.buyLeg.symbol,
-            side: 'tp', stopPrice: newLevel, tag: `${pos.id}-TP-resync`,
-          });
+          const r = await moveBracket(pos, pos.buyLeg.symbol, 'tp', newLevel);
           // Latch brkLevel only on a REAL success so dry-run doesn't mark it done (which
-          // would suppress the real edit once the account is armed).
+          // would suppress the real re-sync once the account is armed).
           if (r.ok && !r.skipped && !r.dryRun) { pos.buyLeg = { ...pos.buyLeg, brkLevel: newLevel }; persist = true; }
         }
         if (needShort) {
-          const r = await live.changePositionBracket({
-            productId: pidBySymbol[pos.sellLeg.symbol], symbol: pos.sellLeg.symbol,
-            side: 'sl', stopPrice: newLevel, tag: `${pos.id}-SL-resync`,
-          });
+          const r = await moveBracket(pos, pos.sellLeg.symbol, 'sl', newLevel);
           if (r.ok && !r.skipped && !r.dryRun) { pos.sellLeg = { ...pos.sellLeg, brkLevel: newLevel }; persist = true; }
         }
         if (persist) {

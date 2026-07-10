@@ -256,14 +256,16 @@ export function createLiveExecutor(getCtx) {
     },
 
     /**
-     * Place/replace the bracket on an OPEN POSITION (POST /v2/orders/bracket). Sets ONE
-     * side per call — `side: 'tp'` for a long leg's take-profit, `'sl'` for a short leg's
-     * stop-loss — as a whole-position MARKET stop at `stopPrice`, triggered on
-     * `triggerMethod` (spot by default). Used to MOVE the exit level when
-     * exitType/exitPoints change on a position that is already open. `productId` identifies
-     * the position (Delta wants it for this endpoint) and `symbol` is sent alongside.
-     * Delta keeps a single bracket per position, so re-posting updates it. Armed real only;
-     * dry-run logs the intended call so the payload can be validated before it fires.
+     * CREATE a bracket on an OPEN POSITION (POST /v2/orders/bracket). Sets ONE side per
+     * call — `side: 'tp'` for a long leg's take-profit, `'sl'` for a short leg's stop-loss —
+     * as a whole-position MARKET stop at `stopPrice`, triggered on `triggerMethod` (spot by
+     * default). `productId` identifies the position (Delta wants it here) and `symbol` is
+     * sent alongside.
+     *
+     * ⚠ This CREATES — Delta rejects it with `bracket_order_exists` if the position already
+     * has a bracket. To MOVE an existing bracket the caller must CANCEL the current bracket
+     * order first, then call this (see `syncExitBrackets`). Armed real only; dry-run logs
+     * the intended call so the payload can be validated before it fires.
      */
     async changePositionBracket({ productId = null, symbol, side, stopPrice, triggerMethod = 'spot_price', tag }) {
       if (!armed()) return { ok: true, skipped: true };
