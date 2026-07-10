@@ -351,7 +351,7 @@ export default function SchedulePanel({
         marginBottom: 8,
       }}>
         <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 1 }}>
-          Time Schedules <span style={{ color: 'var(--accent)', fontWeight: 600 }}>(IST)</span>
+          Time Schedules <span style={{ color: '#3b82f6', fontWeight: 600 }}>(IST)</span>
         </span>
         <button
           type="button"
