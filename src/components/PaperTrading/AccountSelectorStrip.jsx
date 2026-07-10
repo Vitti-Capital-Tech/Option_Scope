@@ -97,8 +97,13 @@ export default function AccountSelectorStrip({
                 <circle cx="12" cy="7" r="4"></circle>
               </svg>
               <span className="account-dropdown-name">{activeAccount?.name || 'Select Account'}</span>
-              <LiveBadge account={activeAccount} />
-              <PausedBadge account={activeAccount} />
+              {/* One status badge only. PAUSED takes precedence over LIVE — a paused
+                  account is not actively trading, so showing "LIVE" too would be
+                  misleading. (Real-money status stays visible via the REAL ORDERS /
+                  Disarm controls and the market-row badge.) */}
+              {activeAccount?.paused
+                ? <PausedBadge account={activeAccount} />
+                : <LiveBadge account={activeAccount} />}
             </div>
             <svg 
               className="account-chevron-icon" 
@@ -139,7 +144,9 @@ export default function AccountSelectorStrip({
                           <line x1="9" y1="3" x2="9" y2="21"></line>
                         </svg>
                         <span>{acc.name}</span>
-                        <LiveBadge account={acc} />
+                        {acc.paused
+                          ? <PausedBadge account={acc} />
+                          : <LiveBadge account={acc} />}
                       </div>
                       {isSelected && (
                         <svg className="account-selected-checkmark" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="3">
