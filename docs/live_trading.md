@@ -224,18 +224,23 @@ shared exit-type level (`computeIndexTriggerLevel` — ATM = buy strike, ITM/OTM
 points), so the spread is protected even if the engine is down:
 
 > [!NOTE]
-> **Exit Type / Exit Points are now per-schedule-window** (`effectiveConfig`, migration
-> `012`) with **active-window-governs** semantics. The bracket level is computed from the
-> **window active at entry**. When the window later flips, the engine's own spot-cross
+> **Exit Type / Exit Points are per-schedule-window** (`effectiveConfig`, migration `012`)
+> with **active-window-governs** semantics. The bracket level is computed from the **window
+> active at entry**. When the window later flips **by time**, the engine's spot-cross
 > catch-all follows the new active window (it market-closes at the new level while the
-> engine is up); the exchange bracket for a window flip is **not** auto-moved and stays
-> at the entry level as an engine-down backstop.
+> engine is up); a purely time-based window flip does **not** auto-move the exchange bracket
+> (it stays as an engine-down backstop until the next config/schedule edit or restart).
 >
-> **Changing `exitType` / `exitPoints` in the filters now MOVES the brackets** on
-> already-open positions. `resyncRestingOrders` re-posts the bracket via
+> **Changing `exitType` / `exitPoints` now MOVES the brackets** on already-open positions —
+> whether you edit the **base filters** or a **schedule window**. `syncExitBrackets` is
+> **idempotent and effective-level-driven**: for each open leg it compares the stored
+> `brkLevel` against the level the engine would exit at NOW (active window's exit rule if
+> one governs, else base config) and re-posts only the legs that actually drifted. It runs
+> from **both** Realtime paths (base-config change → `reloadConfigAndSync`; schedule change
+> → after `fetchSchedules`) and on **startup**. Each drifted leg is re-posted via
 > **`POST /v2/orders/bracket`** (`live.changePositionBracket`) — long leg → TP,
 > short leg (while still open) → SL — as a whole-position **market stop** at the new exit
-> level (using the active window's exit rule if one governs, else base config), triggered
+> level, triggered
 > on `spot_price`. Delta keeps a **single bracket per open position**, so re-posting
 > **updates** it. The call sends `product_id` (looked up from `/v2/positions/margined`) +
 > `product_symbol` and the nested `stop_loss_order` / `take_profit_order` object for the
@@ -249,9 +254,10 @@ points), so the spread is protected even if the engine is down:
 > order-level `PUT /v2/orders/bracket` only edits brackets that still rest as **unfilled
 > order legs** (needs the parent order id + a matching limit price → `bad_schema` for a
 > filled position), and a `POST /v2/positions/change_bracket_order` endpoint that **does
-> not exist**. `resyncRestingOrders` also still re-syncs the **short buy-back limit price**
-> (`shortExitPrice` → `editOrder`). The startup sync passes an all-`null` old config, so
-> the bracket branch is skipped there (no spam) — brackets were already correct at entry.
+> not exist**. The separate `resyncRestingOrders` still re-syncs the **short buy-back limit
+> price** (`shortExitPrice` → `editOrder`) on a base-config change. On **startup**,
+> `syncExitBrackets` runs too (idempotent) — legs already at the right level are skipped, so
+> it only corrects exit-level drift that happened while the engine was down.
 
 - **Long buy** → `bracket_take_profit_price = exitLevel`
 - **Short sell** → `bracket_stop_loss_price = exitLevel`

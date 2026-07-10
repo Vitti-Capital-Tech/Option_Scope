@@ -2521,95 +2521,98 @@ async function startSingleAccountEngine(account) {
 
   // ── Config hot-reload via Supabase Realtime ───────────────────────────
 
-  // ── Re-sync resting exchange orders when exit config is modified ─────────
-  // When exitType/exitPoints/shortExitPrice change on an account that already has
-  // OPEN live positions, the orders resting on Delta were placed with the old
-  // values. Re-sync them: the resting short buy-back's limit price (editOrder), and the
-  // SL/TP bracket levels (re-posted via POST /v2/orders/bracket — the call that moves a
-  // bracket on an already-filled position). Armed real live only; a no-op for paper (no
-  // real resting orders) and harmless in dry-run (logs intended edits).
+  // ── Re-sync the resting short buy-back price when shortExitPrice changes ───
+  // When shortExitPrice changes on an account with OPEN live positions, the resting
+  // buy-back limit order was placed at the old price — edit it in place. Armed real live
+  // only; no-op for paper, dry-run logs the intended edit.
   async function resyncRestingOrders(oldCfg) {
     if (accountState.mode !== 'live') return;
     const shortPxChanged = (oldCfg.shortExitPrice ?? 1.1) !== (config.shortExitPrice ?? 1.1);
-    // Exit-level change → move the brackets. Only when we have a REAL previous value to
-    // compare against (oldCfg.exitType == null on the startup sync → skip: brackets were
-    // already set correctly at entry, and firing on a null baseline would spam edits).
-    const exitLevelChanged = oldCfg.exitType != null && (
-      (oldCfg.exitType !== config.exitType) || ((oldCfg.exitPoints ?? 0) !== (config.exitPoints ?? 0))
-    );
-    if (!shortPxChanged && !exitLevelChanged) return;
+    if (!shortPxChanged) return;
+    log(`[${accountState.name}] 🔧 Short-exit price changed — re-syncing resting buy-backs on ${positions.length} open position(s) | shortPx ${oldCfg.shortExitPrice}→${config.shortExitPrice}`);
+    for (const pos of positions) {
+      if (pos.underlying !== config.underlying) continue;
+      if (!(pos.sellQty > 0 && pos.sellLeg?.exitOrderId)) continue;
+      try {
+        const newPx = config.shortExitPrice ?? 1.1;
+        const r = await live.editOrder({
+          id: pos.sellLeg.exitOrderId, symbol: pos.sellLeg.symbol,
+          price: newPx, size: shortContracts(pos.sellQty), tag: `${pos.id}-SEX-edit`,
+        });
+        if (r.ok && !r.skipped) {
+          pos.sellLeg = { ...pos.sellLeg, exitOrderPx: newPx };
+          await supabase.from('active_positions').update({ sell_leg: JSON.stringify(pos.sellLeg) }).eq('id', pos.id);
+        }
+      } catch (e) {
+        logError(`[${accountState.name}] resyncRestingOrders failed for ${pos.id}:`, e);
+      }
+    }
+  }
 
-    // The bracket must track the level the engine would actually exit at — the ACTIVE
-    // schedule window governs exitType/exitPoints when one is open (active-window-governs,
-    // same as entry brackets and the spot-cross catch-all), else the base config.
+  // ── Move open positions' SL/TP brackets to the CURRENT effective exit level ─────
+  // Idempotent: for each open leg it compares the stored bracket level (`brkLevel`, set
+  // at entry / last sync) against the level the engine would exit at NOW — the active
+  // schedule window's exit rule if one governs, else the base config — and only re-posts
+  // brackets that actually drifted. Because it compares the real target (not old-vs-new
+  // config), it works no matter WHAT changed: the base filters, a schedule window, or a
+  // window becoming active. Long leg → TP, short leg (while open) → SL, via
+  // POST /v2/orders/bracket (`changePositionBracket`). Armed real live only; dry-run logs
+  // intended calls (and does NOT latch brkLevel, so the real edit still fires once armed).
+  async function syncExitBrackets(reason = 'config change') {
+    if (accountState.mode !== 'live') return;
     const activeSchedule = getActiveSchedule();
     const effExit = {
       exitType: activeSchedule?.exitType ?? config.exitType,
       exitPoints: activeSchedule?.exitPoints ?? config.exitPoints,
     };
 
-    // POST /v2/orders/bracket wants the position's product_id. Fetch the live positions
-    // once (armed real only — dry-run/paper log without it) and map symbol → product_id.
-    let pidBySymbol = {};
-    if (exitLevelChanged && accountState.live_enabled && !live.dryRun) {
-      const livePos = await live.positions();
-      if (livePos != null) {
-        for (const p of livePos) pidBySymbol[p.product_symbol] = p.product_id;
-      }
-    }
-
-    if (shortPxChanged) {
-      log(`[${accountState.name}] 🔧 Short-exit price changed — re-syncing resting buy-backs on ${positions.length} open position(s) | shortPx ${oldCfg.shortExitPrice}→${config.shortExitPrice}`);
-    }
-    if (exitLevelChanged) {
-      log(`[${accountState.name}] 🔧 Exit type/points changed — moving SL/TP brackets on ${positions.length} open position(s) | ${oldCfg.exitType}±${oldCfg.exitPoints ?? 0} → ${effExit.exitType}±${effExit.exitPoints ?? 0}`);
-    }
-
+    // Which legs are out of sync? (pure in-memory — no API call unless there's real drift)
+    const drift = [];
     for (const pos of positions) {
       if (pos.underlying !== config.underlying) continue;
-      try {
-        // Short resting buy-back price (short still open + resting order present).
-        if (shortPxChanged && pos.sellQty > 0 && pos.sellLeg?.exitOrderId) {
-          const newPx = config.shortExitPrice ?? 1.1;
-          const r = await live.editOrder({
-            id: pos.sellLeg.exitOrderId, symbol: pos.sellLeg.symbol,
-            price: newPx, size: shortContracts(pos.sellQty), tag: `${pos.id}-SEX-edit`,
-          });
-          if (r.ok && !r.skipped) {
-            pos.sellLeg = { ...pos.sellLeg, exitOrderPx: newPx };
-            await supabase.from('active_positions').update({ sell_leg: JSON.stringify(pos.sellLeg) }).eq('id', pos.id);
-          }
-        }
+      const newLevel = computeIndexTriggerLevel(pos.type, pos.buyLeg.strike, effExit);
+      const needLong = (pos.buyLeg?.lotSize || 0) > 0 && pos.buyLeg?.brkLevel !== newLevel;
+      const needShort = pos.sellQty > 0 && pos.sellLeg?.brkLevel !== newLevel;
+      if (needLong || needShort) drift.push({ pos, newLevel, needLong, needShort });
+    }
+    if (drift.length === 0) return;
 
-        // SL/TP bracket level — move the position-level brackets to the new exit level.
-        // Long leg → TP; short leg (only while still open) → SL. Skip legs already at the
-        // target level (idempotent; positions from before this feature have no brkLevel
-        // → treated as stale so their first resync always fires).
-        if (exitLevelChanged) {
-          const newLevel = computeIndexTriggerLevel(pos.type, pos.buyLeg.strike, effExit);
-          let persist = false;
-          if ((pos.buyLeg?.lotSize || 0) > 0 && pos.buyLeg?.brkLevel !== newLevel) {
-            const r = await live.changePositionBracket({
-              productId: pidBySymbol[pos.buyLeg.symbol], symbol: pos.buyLeg.symbol,
-              side: 'tp', stopPrice: newLevel, tag: `${pos.id}-TP-resync`,
-            });
-            if (r.ok && !r.skipped) { pos.buyLeg = { ...pos.buyLeg, brkLevel: newLevel }; persist = true; }
-          }
-          if (pos.sellQty > 0 && pos.sellLeg?.brkLevel !== newLevel) {
-            const r = await live.changePositionBracket({
-              productId: pidBySymbol[pos.sellLeg.symbol], symbol: pos.sellLeg.symbol,
-              side: 'sl', stopPrice: newLevel, tag: `${pos.id}-SL-resync`,
-            });
-            if (r.ok && !r.skipped) { pos.sellLeg = { ...pos.sellLeg, brkLevel: newLevel }; persist = true; }
-          }
-          if (persist) {
-            await supabase.from('active_positions').update({
-              buy_leg: JSON.stringify(pos.buyLeg), sell_leg: JSON.stringify(pos.sellLeg),
-            }).eq('id', pos.id);
-          }
+    log(`[${accountState.name}] 🔧 Exit brackets (${reason}): moving ${drift.length} position(s) to ${effExit.exitType}±${effExit.exitPoints ?? 0}${activeSchedule ? ` [window "${activeSchedule.label}"]` : ''}`);
+
+    // POST /v2/orders/bracket wants the position's product_id — fetch the live positions
+    // once (armed real only; dry-run/paper log without it) and map symbol → product_id.
+    let pidBySymbol = {};
+    if (accountState.live_enabled && !live.dryRun) {
+      const livePos = await live.positions();
+      if (livePos != null) for (const p of livePos) pidBySymbol[p.product_symbol] = p.product_id;
+    }
+
+    for (const { pos, newLevel, needLong, needShort } of drift) {
+      try {
+        let persist = false;
+        if (needLong) {
+          const r = await live.changePositionBracket({
+            productId: pidBySymbol[pos.buyLeg.symbol], symbol: pos.buyLeg.symbol,
+            side: 'tp', stopPrice: newLevel, tag: `${pos.id}-TP-resync`,
+          });
+          // Latch brkLevel only on a REAL success so dry-run doesn't mark it done (which
+          // would suppress the real edit once the account is armed).
+          if (r.ok && !r.skipped && !r.dryRun) { pos.buyLeg = { ...pos.buyLeg, brkLevel: newLevel }; persist = true; }
+        }
+        if (needShort) {
+          const r = await live.changePositionBracket({
+            productId: pidBySymbol[pos.sellLeg.symbol], symbol: pos.sellLeg.symbol,
+            side: 'sl', stopPrice: newLevel, tag: `${pos.id}-SL-resync`,
+          });
+          if (r.ok && !r.skipped && !r.dryRun) { pos.sellLeg = { ...pos.sellLeg, brkLevel: newLevel }; persist = true; }
+        }
+        if (persist) {
+          await supabase.from('active_positions').update({
+            buy_leg: JSON.stringify(pos.buyLeg), sell_leg: JSON.stringify(pos.sellLeg),
+          }).eq('id', pos.id);
         }
       } catch (e) {
-        logError(`[${accountState.name}] resyncRestingOrders failed for ${pos.id}:`, e);
+        logError(`[${accountState.name}] syncExitBrackets failed for ${pos.id}:`, e);
       }
     }
   }
@@ -2632,6 +2635,7 @@ async function startSingleAccountEngine(account) {
 
       // Modify open positions' resting orders to match the new exit config.
       await resyncRestingOrders(oldExitCfg);
+      await syncExitBrackets('filter change');
     } catch (e) {
       logError(`[${accountState.name}] Error during config reload:`, e);
     }
@@ -2659,7 +2663,12 @@ async function startSingleAccountEngine(account) {
       scheduleReloadTimer = setTimeout(() => {
         scheduleReloadTimer = null;
         log(`[${accountState.name}] Schedules change detected — reloading...`);
-        fetchSchedules().catch(e => logError(`[${accountState.name}] schedules reload failed:`, e));
+        // Exit type/points live PER SCHEDULE WINDOW, so a window edit must also move the
+        // brackets of open positions the window governs — reload the windows first, then
+        // resync brackets to the new effective level (idempotent; no-op if nothing drifted).
+        fetchSchedules()
+          .then(() => syncExitBrackets('schedule change'))
+          .catch(e => logError(`[${accountState.name}] schedules reload failed:`, e));
       }, 400);
     };
     const channel = supabase
@@ -2732,10 +2741,13 @@ async function startSingleAccountEngine(account) {
   await fetchActivePositions();
   log(`[${accountState.name}] Active positions loaded: ${positions.length}`);
 
-  // Sync resting orders to Delta on startup to match the current database config
+  // Sync resting orders + brackets to Delta on startup to match the current DB config.
+  // (shortExitPrice: null → the short-px resync self-skips; the bracket sync is idempotent
+  // and corrects any exit-level drift that happened while the engine was down.)
   try {
     if (accountState.mode === 'live') {
       await resyncRestingOrders({ shortExitPrice: null, exitType: null, exitPoints: null });
+      await syncExitBrackets('startup');
     }
   } catch (e) {
     logError(`[${accountState.name}] Startup resting orders sync failed:`, e.message);
