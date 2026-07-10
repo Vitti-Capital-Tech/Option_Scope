@@ -1,5 +1,6 @@
 "use client";
 import React from 'react';
+import { ChevronUp, ChevronDown } from 'lucide-react';
 
 const CustomInput = React.forwardRef(({
   type = 'text',
@@ -9,9 +10,10 @@ const CustomInput = React.forwardRef(({
   error = false,
   prefix,        // inline unit shown before the value, e.g. "$" or "1:"
   suffix,        // inline unit shown after the value, e.g. "%"
-  showStepper = false, // deprecated — steppers removed; kept for call-site compatibility
+  showStepper = true, // steppers show on number inputs by default; pass false to hide
   step = 1,
   min,
+  max,
   width,         // convenience: sets wrapper width when adorned
   value,
   onChange,
@@ -20,13 +22,14 @@ const CustomInput = React.forwardRef(({
   onKeyDown,
   ...props
 }, ref) => {
-  const hasAdornment = prefix != null || suffix != null;
   const isNumber = type === 'number';
+  const showStep = isNumber && showStepper !== false;
+  const hasAdornment = prefix != null || suffix != null || showStep;
 
   // Number fields keep an editable "draft" string while focused so the user can
   // clear the field (backspace to empty) and type a fresh value, instead of it
-  // snapping to 0 on every keystroke. The default (min, else 0) is only applied on
-  // blur / Enter when the field is left empty. Non-number fields are unaffected.
+  // snapping to 0 on every keystroke. The default (min, else 0) is applied on
+  // blur / Enter when the field is left empty.
   const [focused, setFocused] = React.useState(false);
   const [draft, setDraft] = React.useState('');
   const isPartial = (v) => v === '' || v === '-' || v === '.' || v === '-.';
@@ -45,9 +48,7 @@ const CustomInput = React.forwardRef(({
     if (isNumber) {
       const raw = e.target.value;
       setDraft(raw);
-      // Hold partial/empty input locally — don't push it to the parent (which would
-      // coerce "" → 0). Wait until it's a valid number.
-      if (isPartial(raw)) return;
+      if (isPartial(raw)) return; // hold partial input locally; don't emit "" → 0
       if (onChange) onChange(e);
       return;
     }
@@ -66,11 +67,24 @@ const CustomInput = React.forwardRef(({
   };
 
   const handleKeyDown = (e) => {
-    if (isNumber && e.key === 'Enter') e.target.blur(); // commit + apply default if empty
+    if (isNumber && e.key === 'Enter') e.target.blur();
     if (onKeyDown) onKeyDown(e);
   };
 
-  // Backward-compatible plain input (unchanged from the original component)
+  // Stepper: bump the committed value by `step`, clamped to min/max.
+  const decimals = String(step).includes('.') ? (String(step).split('.')[1] || '').length : 0;
+  const bump = (dir) => {
+    if (disabled) return;
+    const base = Number.isFinite(Number(value)) ? Number(value) : 0;
+    let next = base + dir * (Number(step) || 1);
+    if (min != null) next = Math.max(Number(min), next);
+    if (max != null) next = Math.min(Number(max), next);
+    const out = decimals ? Number(next.toFixed(decimals)) : next;
+    setDraft(String(out));
+    if (onChange) onChange({ target: { value: String(out) } });
+  };
+
+  // Plain input (no adornment) — text/date/time, or number with steppers disabled.
   if (!hasAdornment) {
     return (
       <input
@@ -81,6 +95,7 @@ const CustomInput = React.forwardRef(({
         style={style}
         step={isNumber ? step : undefined}
         min={min}
+        max={max}
         value={displayValue}
         onChange={handleChange}
         onFocus={handleFocus}
@@ -106,6 +121,7 @@ const CustomInput = React.forwardRef(({
         className="uin-input"
         step={isNumber ? step : undefined}
         min={min}
+        max={max}
         value={displayValue}
         onChange={handleChange}
         onFocus={handleFocus}
@@ -114,6 +130,16 @@ const CustomInput = React.forwardRef(({
         {...props}
       />
       {suffix != null && <span className="uin-suf">{suffix}</span>}
+      {showStep && (
+        <span className="uin-step">
+          <button type="button" tabIndex={-1} aria-label="Increase" onClick={() => bump(1)} disabled={disabled}>
+            <ChevronUp size={9} strokeWidth={3} />
+          </button>
+          <button type="button" tabIndex={-1} aria-label="Decrease" onClick={() => bump(-1)} disabled={disabled}>
+            <ChevronDown size={9} strokeWidth={3} />
+          </button>
+        </span>
+      )}
     </div>
   );
 });
