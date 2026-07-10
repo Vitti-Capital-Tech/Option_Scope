@@ -24,8 +24,10 @@ function exitTrigger(p, exitType, exitPoints) {
   const isCall = p.type === 'call';
   const buyStrike = Number(p.buyLeg.strike);
   let triggerPrice = buyStrike;
-  if (exitType === 'ITM') triggerPrice = isCall ? buyStrike + exitPoints : buyStrike - exitPoints;
-  else if (exitType === 'OTM') triggerPrice = isCall ? buyStrike - exitPoints : buyStrike + exitPoints;
+  // ITM/OTM direction reversed per exit convention: ITM = strike − pts (call) / + pts (put);
+  // OTM = strike + pts (call) / − pts (put).
+  if (exitType === 'ITM') triggerPrice = isCall ? buyStrike - exitPoints : buyStrike + exitPoints;
+  else if (exitType === 'OTM') triggerPrice = isCall ? buyStrike + exitPoints : buyStrike - exitPoints;
   const operator = isCall ? '≥' : '≤';
   return { triggerPrice, operator, isCall };
 }

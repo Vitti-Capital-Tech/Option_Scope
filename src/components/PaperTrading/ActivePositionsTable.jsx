@@ -64,8 +64,10 @@ export default function ActivePositionsTable({
     const isCall = p.type === 'call';
     const buyStrike = Number(p.buyLeg.strike);
     let triggerPrice = buyStrike;
-    if (exitType === 'ITM') triggerPrice = isCall ? buyStrike + exitPoints : buyStrike - exitPoints;
-    else if (exitType === 'OTM') triggerPrice = isCall ? buyStrike - exitPoints : buyStrike + exitPoints;
+    // ITM/OTM direction reversed per exit convention: ITM = strike − pts (call) / + pts (put);
+    // OTM = strike + pts (call) / − pts (put).
+    if (exitType === 'ITM') triggerPrice = isCall ? buyStrike - exitPoints : buyStrike + exitPoints;
+    else if (exitType === 'OTM') triggerPrice = isCall ? buyStrike + exitPoints : buyStrike - exitPoints;
     const entrySpot = p.entrySpotPrice || spotPrice || triggerPrice;
     const liveSpot = spotPrice || entrySpot;
     const towardTrigger = isCall ? (liveSpot - entrySpot) : (entrySpot - liveSpot);
@@ -94,10 +96,12 @@ export default function ActivePositionsTable({
     let operator = isCall ? '≥' : '≤';
 
     if (exitType === 'ITM') {
-      triggerPrice = isCall ? buyStrike + exitPoints : buyStrike - exitPoints;
+      // Reversed convention: ITM = strike − pts (call) / + pts (put).
+      triggerPrice = isCall ? buyStrike - exitPoints : buyStrike + exitPoints;
       operator = isCall ? '≥' : '≤';
     } else if (exitType === 'OTM') {
-      triggerPrice = isCall ? buyStrike - exitPoints : buyStrike + exitPoints;
+      // Reversed convention: OTM = strike + pts (call) / − pts (put).
+      triggerPrice = isCall ? buyStrike + exitPoints : buyStrike - exitPoints;
       operator = isCall ? '≥' : '≤';
     } else {
       triggerPrice = buyStrike;
