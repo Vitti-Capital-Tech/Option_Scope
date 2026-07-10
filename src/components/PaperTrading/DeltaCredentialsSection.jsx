@@ -71,7 +71,7 @@ export default function DeltaCredentialsSection({ register, watch, setValue, exi
           }}
         >
           <div style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--text-dim)' }}>
-            <strong style={{ color: '#e3b341' }}>⚠ Live account.</strong> Credentials are
+            <strong style={{ color: '#3b82f6' }}>⚠ Live account.</strong> Credentials are
             encrypted at rest and used by the engine to place <em>real</em> orders once you
             arm the account. Real orders stay off until the kill-switch is enabled.
           </div>

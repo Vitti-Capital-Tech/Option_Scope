@@ -13,9 +13,9 @@ function LiveBadge({ account }) {
         padding: '1px 5px',
         borderRadius: 4,
         marginLeft: 6,
-        color: armed ? '#0d1117' : '#e3b341',
+        color: armed ? '#0d1117' : '#3b82f6',
         background: armed ? '#3fb950' : 'transparent',
-        border: armed ? 'none' : '1px solid #e3b341'
+        border: armed ? 'none' : '1px solid #3b82f6'
       }}
     >
       {armed ? 'LIVE ●' : 'LIVE'}
@@ -196,7 +196,7 @@ export default function AccountSelectorStrip({
                   ● REAL ORDERS
                 </span>
               ) : engineDryRun === true ? (
-                <span title="Armed, but engine is in DRY-RUN — orders are simulated, nothing hits Delta" style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', padding: '3px 7px', borderRadius: 5, color: '#e3b341', background: 'transparent', border: '1px solid #e3b341' }}>
+                <span title="Armed, but engine is in DRY-RUN — orders are simulated, nothing hits Delta" style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', padding: '3px 7px', borderRadius: 5, color: '#3b82f6', background: 'transparent', border: '1px solid #3b82f6' }}>
                   DRY-RUN
                 </span>
               ) : (

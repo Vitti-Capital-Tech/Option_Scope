@@ -125,8 +125,8 @@ function cleanTime(t) {
 
 // Parse a color from a palette by index
 const WINDOW_COLORS = [
-  '#00d9a3', '#2f81f7', '#e3b341', '#ff2ebd', '#f85149',
-  '#a371f7', '#ffa657', '#3fb950', '#79c0ff', '#ff9a8b',
+  '#00d9a3', '#2f81f7', '#22d3ee', '#ff2ebd', '#f85149',
+  '#a371f7', '#818cf8', '#3fb950', '#79c0ff', '#ff9a8b',
 ];
 
 export default function SchedulePanel({

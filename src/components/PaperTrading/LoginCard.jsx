@@ -26,9 +26,9 @@ export default function LoginCard({ authEmail, setAuthEmail, authError, isAuthen
             <rect x="13" y="10" width="4" height="10" rx="1" fill="#f85149" />
             <line x1="15" y1="6" x2="15" y2="10" stroke="#f85149" strokeWidth="1.5" />
             <line x1="15" y1="20" x2="15" y2="25" stroke="#f85149" strokeWidth="1.5" />
-            <rect x="21" y="12" width="4" height="9" rx="1" fill="#e3b341" />
-            <line x1="23" y1="8" x2="23" y2="12" stroke="#e3b341" strokeWidth="1.5" />
-            <line x1="23" y1="21" x2="23" y2="26" stroke="#e3b341" strokeWidth="1.5" />
+            <rect x="21" y="12" width="4" height="9" rx="1" fill="#3b82f6" />
+            <line x1="23" y1="8" x2="23" y2="12" stroke="#3b82f6" strokeWidth="1.5" />
+            <line x1="23" y1="21" x2="23" y2="26" stroke="#3b82f6" strokeWidth="1.5" />
             <rect x="5" y="29" width="22" height="1.5" rx="0.75" fill="#00d9a3" opacity="0.8" />
           </svg>
           <div style={{ textAlign: 'center' }}>

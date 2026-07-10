@@ -2437,7 +2437,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     : engineStatus.status === 'stale' ? 'Engine Stale'
       : 'Engine Offline';
   const engineStatusColor = engineStatus.status === 'online' ? '#0ecb81'
-    : engineStatus.status === 'stale' ? '#f0b90b'
+    : engineStatus.status === 'stale' ? '#3b82f6'
       : '#f85149';
 
   // ── Render ────────────────────────────────────────────────────────────
@@ -2448,7 +2448,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       <div className="app" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
           <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2.5" style={{ animation: 'spin 0.9s linear infinite' }}>
-            <circle cx="12" cy="12" r="10" stroke="rgba(240,185,11,0.15)" />
+            <circle cx="12" cy="12" r="10" stroke="rgba(59, 130, 246,0.15)" />
             <path d="M12 2a10 10 0 0 1 10 10" />
           </svg>
           <span style={{ fontSize: 13, color: 'var(--text-dim)' }}>Loading...</span>

@@ -6,8 +6,8 @@ import CustomInput from '../common/CustomInput';
 // Same palette as the schedule timeline so the capacity chips line up visually
 // with the windows shown in SchedulePanel.
 const WINDOW_COLORS = [
-  '#00d9a3', '#2f81f7', '#e3b341', '#ff2ebd', '#f85149',
-  '#a371f7', '#ffa657', '#3fb950', '#79c0ff', '#ff9a8b',
+  '#00d9a3', '#2f81f7', '#22d3ee', '#ff2ebd', '#f85149',
+  '#a371f7', '#818cf8', '#3fb950', '#79c0ff', '#ff9a8b',
 ];
 
 export default function TradeHistoryTable({
@@ -123,14 +123,14 @@ export default function TradeHistoryTable({
         {/* Row 1: Title (left) and Date navigator (right) */}
         <div className="pt-history-row-1">
           <div className="pt-history-title-area">
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '32px', height: '32px', borderRadius: '8px', background: 'rgba(240, 185, 11, 0.1)', color: 'var(--accent)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '32px', height: '32px', borderRadius: '8px', background: 'rgba(59, 130, 246, 0.1)', color: 'var(--accent)' }}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 8v4l3 3" /><circle cx="12" cy="12" r="10" /></svg>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column' }}>
               <span style={{ fontWeight: 700, fontSize: '14px', letterSpacing: '0.5px', color: 'var(--text)' }}>Order History</span>
               <span style={{ fontSize: '10px', color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '1px' }}>Closed Positions</span>
             </div>
-            <span style={{ background: 'var(--bg3)', color: 'var(--accent)', padding: '2px 10px', borderRadius: '20px', fontSize: '11px', fontWeight: 700, border: '1px solid rgba(240, 185, 11, 0.2)' }}>
+            <span style={{ background: 'var(--bg3)', color: 'var(--accent)', padding: '2px 10px', borderRadius: '20px', fontSize: '11px', fontWeight: 700, border: '1px solid rgba(59, 130, 246, 0.2)' }}>
               {filteredTradeHistory.length}
             </span>
           </div>
@@ -143,7 +143,7 @@ export default function TradeHistoryTable({
             <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, padding: '0 8px', borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)', margin: '0 4px', justifyContent: 'center' }}>
               <CustomInput type="date" value={historyFilterDate} onChange={(e) => setHistoryFilterDate(e.target.value)}
                 style={{ background: 'none', border: 'none', color: 'var(--text)', fontSize: '13px', fontWeight: 600, padding: 0, width: '120px', outline: 'none', cursor: 'pointer', boxShadow: 'none' }} />
-              <span style={{ fontSize: '10px', color: 'var(--accent)', fontWeight: 700, background: 'rgba(240, 185, 11, 0.1)', padding: '2px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
+              <span style={{ fontSize: '10px', color: 'var(--accent)', fontWeight: 700, background: 'rgba(59, 130, 246, 0.1)', padding: '2px 6px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
                 12:00 UTC SESSION
               </span>
             </div>
@@ -154,7 +154,7 @@ export default function TradeHistoryTable({
               TODAY
             </button>
             <button onClick={() => setHistoryFilterDate('')} title="Show All History"
-              style={{ background: historyFilterDate ? 'none' : 'rgba(240, 185, 11, 0.1)', border: 'none', color: historyFilterDate ? 'var(--text-dim)' : 'var(--accent)', cursor: 'pointer', display: 'flex', padding: '6px', borderRadius: '6px', marginLeft: '4px' }}>
+              style={{ background: historyFilterDate ? 'none' : 'rgba(59, 130, 246, 0.1)', border: 'none', color: historyFilterDate ? 'var(--text-dim)' : 'var(--accent)', cursor: 'pointer', display: 'flex', padding: '6px', borderRadius: '6px', marginLeft: '4px' }}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12h18M3 6h18M3 18h18" /></svg>
             </button>
           </div>

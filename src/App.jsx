@@ -158,7 +158,7 @@ const ChartPanel = forwardRef(function ChartPanel({
 
     if (showIvCall && showIvPut) {
       combIvRef.current = chart.addSeries(LineSeries, {
-        priceScaleId: 'ivScale', color: '#e3b341', lineWidth: 1.5, title: 'Comb IV', crosshairMarkerRadius: 3
+        priceScaleId: 'ivScale', color: '#3b82f6', lineWidth: 1.5, title: 'Comb IV', crosshairMarkerRadius: 3
       });
       ivScaleCreated = true;
     } else {
@@ -210,7 +210,7 @@ const ChartPanel = forwardRef(function ChartPanel({
         }
         if (combIvRef.current) {
           const combData = param.seriesData.get(combIvRef.current);
-          if (combData) ivHtml += `<span style="color:#e3b341;margin-left:8px;">Comb IV <span style="color:${valTextColor}">${(combData.value * 100).toFixed(1)}%</span></span>`;
+          if (combData) ivHtml += `<span style="color:#3b82f6;margin-left:8px;">Comb IV <span style="color:${valTextColor}">${(combData.value * 100).toFixed(1)}%</span></span>`;
         }
         legendRef.current.innerHTML = `
           <div style="display:flex;gap:12px;background:${legendBg};padding:6px 10px;border-radius:4px;border:1px solid ${legendBorder};backdrop-filter:blur(4px);align-items:center;">
@@ -306,7 +306,7 @@ const ChartPanel = forwardRef(function ChartPanel({
         console.log('Drawing line at price:', price);
         const line = seriesRef.current.createPriceLine({
           price: price,
-          color: theme === 'dark' ? '#e3b341' : '#d29922',
+          color: theme === 'dark' ? '#3b82f6' : '#2563eb',
           lineWidth: 2,
           lineStyle: 0,
           axisLabelVisible: true,
@@ -606,7 +606,7 @@ const ChartPanel = forwardRef(function ChartPanel({
 
           <div style={{ width: 1, background: 'var(--border)', margin: '4px 4px' }} />
 
-          <button title="Draw S/R Line" className="tv-btn" onClick={toggleDrawMode} style={{ color: drawMode ? '#e3b341' : 'var(--text-dim)', background: drawMode ? 'rgba(227, 179, 65, 0.15)' : 'transparent' }}>
+          <button title="Draw S/R Line" className="tv-btn" onClick={toggleDrawMode} style={{ color: drawMode ? '#3b82f6' : 'var(--text-dim)', background: drawMode ? 'rgba(59, 130, 246, 0.15)' : 'transparent' }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2v20"></path><path d="M8 8l4-4 4 4"></path><path d="M8 16l4 4 4-4"></path></svg>
           </button>
 
@@ -1496,15 +1496,15 @@ export default function App({ onNavigate, theme, toggleTheme }) {
         {toasts.map(t => (
           <div key={t.id} style={{
             background: theme === 'dark' ? 'rgba(10, 13, 18, 0.98)' : 'rgba(255, 255, 255, 0.98)',
-            border: `1px solid ${theme === 'dark' ? 'rgba(227, 179, 65, 0.3)' : 'rgba(227, 179, 65, 0.6)'}`,
-            borderLeft: '4px solid #e3b341',
+            border: `1px solid ${theme === 'dark' ? 'rgba(59, 130, 246, 0.3)' : 'rgba(59, 130, 246, 0.6)'}`,
+            borderLeft: '4px solid #3b82f6',
             padding: '12px 16px', borderRadius: 8,
             color: theme === 'dark' ? '#fff' : '#1e2329',
             fontSize: 12, fontFamily: 'JetBrains Mono, monospace',
             boxShadow: theme === 'dark' ? '0 12px 32px rgba(0,0,0,0.7)' : '0 12px 32px rgba(0,0,0,0.15)',
             animation: 'slideIn 0.3s ease-out'
           }}>
-            <div style={{ color: '#e3b341', fontWeight: 800, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8, letterSpacing: 1 }}>
+            <div style={{ color: '#3b82f6', fontWeight: 800, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8, letterSpacing: 1 }}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
                 <path d="M13.73 21a2 2 0 0 1-3.46 0" />
@@ -1678,7 +1678,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                   display: 'flex', flexDirection: 'column', gap: 2
                 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#e3b341', fontWeight: 800, fontSize: 10 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#3b82f6', fontWeight: 800, fontSize: 10 }}>
                       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
                         <path d="M13.73 21a2 2 0 0 1-3.46 0" />
@@ -1698,7 +1698,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
         <main className="main" style={{ position: 'relative', padding: 12, gap: 12, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
           <div style={{ fontFamily: 'JetBrains Mono', fontSize: 16, fontWeight: 700, color: theme === 'dark' ? '#e6edf3' : '#1e2730', display: 'flex', alignItems: 'center' }}>
-            SPOT: <span style={{ color: '#e3b341', marginLeft: 8 }}>{spotPrice ? spotPrice.toLocaleString(undefined, { maximumFractionDigits: 2 }) : '—'}</span>
+            SPOT: <span style={{ color: '#3b82f6', marginLeft: 8 }}>{spotPrice ? spotPrice.toLocaleString(undefined, { maximumFractionDigits: 2 }) : '—'}</span>
           </div>
 
           <div className="watchlist-container" style={{ flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 8, overflowY: 'auto', overflowX: 'auto', paddingBottom: 8, minHeight: 80, maxHeight: '35vh', zIndex: 11 }}>
@@ -1872,10 +1872,10 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                       {/* Alerts Section */}
                       <div className="watch-alert-pill" style={{ height: 'auto', minHeight: 32, padding: '4px 8px' }}>
                         <div className="watch-alert-icon-wrap" style={{ alignSelf: 'flex-start', marginTop: 4 }}>
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#e3b341" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                             <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
                             <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-                            <circle cx="12" cy="3" r="1" fill="#e3b341" />
+                            <circle cx="12" cy="3" r="1" fill="#3b82f6" />
                           </svg>
                         </div>
 
@@ -2004,7 +2004,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
             title={formatCombinedTitle(activeCall, activePut, priceType)}
             colorUp="#3fb950"
             colorDown="#f85149"
-            iconColor="#e3b341"
+            iconColor="#3b82f6"
             alerts={watchList.find(w => w.id === selectedWatchId)?.alerts || []}
             onAddAlert={(dir, price) => {
               const id = Date.now();
