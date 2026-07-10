@@ -331,7 +331,14 @@ export default function SchedulePanel({
                 />
                 <span
                   className="schedule-timeline-label"
-                  style={{ left: `${leftPercent}%` }}
+                  style={{
+                    left: `${leftPercent}%`,
+                    // Anchor the edge labels inside the bar so they don't spill past
+                    // the border: first is left-aligned, last is right-aligned.
+                    transform: leftPercent === 0 ? 'translateX(0)'
+                      : leftPercent === 100 ? 'translateX(-100%)'
+                      : 'translateX(-50%)',
+                  }}
                 >
                   {tick.label}
                 </span>
