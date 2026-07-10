@@ -5469,7 +5469,9 @@ body.light-theme .pt-btn-apply.active {
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 1px;
   background: var(--border);
+  border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
+  margin-top: 18px;
 }
 
 .pt-kpi-cell {
