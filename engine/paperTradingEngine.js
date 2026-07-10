@@ -2524,10 +2524,10 @@ async function startSingleAccountEngine(account) {
   // ── Re-sync resting exchange orders when exit config is modified ─────────
   // When exitType/exitPoints/shortExitPrice change on an account that already has
   // OPEN live positions, the orders resting on Delta were placed with the old
-  // values. Re-sync them IN PLACE: the resting short buy-back's limit price (editOrder),
-  // and the SL/TP bracket levels (position-level change_bracket_order). Armed real live
-  // only; a no-op for paper (no real resting orders) and harmless in dry-run (logs
-  // intended edits).
+  // values. Re-sync them: the resting short buy-back's limit price (editOrder), and the
+  // SL/TP bracket levels (re-posted via POST /v2/orders/bracket — the call that moves a
+  // bracket on an already-filled position). Armed real live only; a no-op for paper (no
+  // real resting orders) and harmless in dry-run (logs intended edits).
   async function resyncRestingOrders(oldCfg) {
     if (accountState.mode !== 'live') return;
     const shortPxChanged = (oldCfg.shortExitPrice ?? 1.1) !== (config.shortExitPrice ?? 1.1);
@@ -2547,6 +2547,16 @@ async function startSingleAccountEngine(account) {
       exitType: activeSchedule?.exitType ?? config.exitType,
       exitPoints: activeSchedule?.exitPoints ?? config.exitPoints,
     };
+
+    // POST /v2/orders/bracket wants the position's product_id. Fetch the live positions
+    // once (armed real only — dry-run/paper log without it) and map symbol → product_id.
+    let pidBySymbol = {};
+    if (exitLevelChanged && accountState.live_enabled && !live.dryRun) {
+      const livePos = await live.positions();
+      if (livePos != null) {
+        for (const p of livePos) pidBySymbol[p.product_symbol] = p.product_id;
+      }
+    }
 
     if (shortPxChanged) {
       log(`[${accountState.name}] 🔧 Short-exit price changed — re-syncing resting buy-backs on ${positions.length} open position(s) | shortPx ${oldCfg.shortExitPrice}→${config.shortExitPrice}`);
@@ -2580,13 +2590,15 @@ async function startSingleAccountEngine(account) {
           let persist = false;
           if ((pos.buyLeg?.lotSize || 0) > 0 && pos.buyLeg?.brkLevel !== newLevel) {
             const r = await live.changePositionBracket({
-              symbol: pos.buyLeg.symbol, takeProfit: newLevel, tag: `${pos.id}-TP-resync`,
+              productId: pidBySymbol[pos.buyLeg.symbol], symbol: pos.buyLeg.symbol,
+              side: 'tp', stopPrice: newLevel, tag: `${pos.id}-TP-resync`,
             });
             if (r.ok && !r.skipped) { pos.buyLeg = { ...pos.buyLeg, brkLevel: newLevel }; persist = true; }
           }
           if (pos.sellQty > 0 && pos.sellLeg?.brkLevel !== newLevel) {
             const r = await live.changePositionBracket({
-              symbol: pos.sellLeg.symbol, stopLoss: newLevel, tag: `${pos.id}-SL-resync`,
+              productId: pidBySymbol[pos.sellLeg.symbol], symbol: pos.sellLeg.symbol,
+              side: 'sl', stopPrice: newLevel, tag: `${pos.id}-SL-resync`,
             });
             if (r.ok && !r.skipped) { pos.sellLeg = { ...pos.sellLeg, brkLevel: newLevel }; persist = true; }
           }

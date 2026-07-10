@@ -97,8 +97,9 @@ flag is passed to `upsert_delta_credentials` so the stored row's `status` reflec
 **Engine components**
 
 - `engine/lib/deltaTradeApi.js` — signed (HMAC-SHA256) client: `placeOrder`,
-  `cancelOrder`, `editOrder`, `editBracket`, `changeBracketOrder` (position-level
-  `POST /v2/positions/change_bracket_order`), `getLivePositions`, `getBalance`,
+  `cancelOrder`, `editOrder`, `editBracket`, `placeBracketOrder`
+  (`POST /v2/orders/bracket` — set/replace a bracket on an open position),
+  `getLivePositions`, `getBalance`,
   `getLiveOrders`, `getFills`, `getOrderHistory`.
 - `engine/lib/liveExecution.js` — the gated executor: `openSpread`, `closeLeg`,
   `editOrder`, `changePositionBracket`, `placeStop`, `cancelStop`, `positions`,
@@ -231,21 +232,26 @@ points), so the spread is protected even if the engine is down:
 > at the entry level as an engine-down backstop.
 >
 > **Changing `exitType` / `exitPoints` in the filters now MOVES the brackets** on
-> already-open positions. `resyncRestingOrders` calls the **position-level** endpoint
-> `POST /v2/positions/change_bracket_order` (via `live.changePositionBracket`) — long leg
-> → TP, short leg (while still open) → SL — at the new exit level (using the active
-> window's exit rule if one governs, else base config). Each leg stores its current
-> bracket level (`buyLeg.brkLevel` / `sellLeg.brkLevel`, set at entry) so resync skips
-> legs already at the target and only edits real drift. Idempotent; positions opened
-> before this feature have no `brkLevel` and resync on the first change.
+> already-open positions. `resyncRestingOrders` re-posts the bracket via
+> **`POST /v2/orders/bracket`** (`live.changePositionBracket`) — long leg → TP,
+> short leg (while still open) → SL — as a whole-position **market stop** at the new exit
+> level (using the active window's exit rule if one governs, else base config), triggered
+> on `spot_price`. Delta keeps a **single bracket per open position**, so re-posting
+> **updates** it. The call sends `product_id` (looked up from `/v2/positions/margined`) +
+> `product_symbol` and the nested `stop_loss_order` / `take_profit_order` object for the
+> relevant side. Each leg stores its current bracket level (`buyLeg.brkLevel` /
+> `sellLeg.brkLevel`, set at entry) so resync skips legs already at the target and only
+> moves real drift. Idempotent; positions opened before this feature have no `brkLevel`
+> and resync on the first change.
 >
-> This replaces the earlier removed `editBracket` path, which used the **order-level**
-> `PUT /v2/orders/bracket` — that needs the parent order id + a matching limit price and
-> only ever failed with `bad_schema`. The position-level endpoint targets the open leg
-> directly. `resyncRestingOrders` also still re-syncs the **short buy-back limit price**
+> **Endpoint history (important):** `POST /v2/orders/bracket` is the call that works for an
+> **already-filled position**. Two earlier attempts did **not** move a bracket: the
+> order-level `PUT /v2/orders/bracket` only edits brackets that still rest as **unfilled
+> order legs** (needs the parent order id + a matching limit price → `bad_schema` for a
+> filled position), and a `POST /v2/positions/change_bracket_order` endpoint that **does
+> not exist**. `resyncRestingOrders` also still re-syncs the **short buy-back limit price**
 > (`shortExitPrice` → `editOrder`). The startup sync passes an all-`null` old config, so
-> the bracket branch is skipped there (no edit spam) — brackets were already correct at
-> entry.
+> the bracket branch is skipped there (no spam) — brackets were already correct at entry.
 
 - **Long buy** → `bracket_take_profit_price = exitLevel`
 - **Short sell** → `bracket_stop_loss_price = exitLevel`

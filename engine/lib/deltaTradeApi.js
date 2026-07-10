@@ -120,17 +120,18 @@ export async function editBracket(creds, bracket) {
 }
 
 /**
- * Set/replace the bracket (attached SL/TP) on an OPEN POSITION in place. This is the
- * POSITION-level endpoint — unlike PUT /v2/orders/bracket (which edits a pending
- * order's bracket and needs the parent order id + a matching limit price), this
- * targets the position directly, so it can move the SL/TP on an already-open leg.
- * Fields:
- *   product_id | product_symbol (required),
- *   bracket_stop_loss_price / bracket_take_profit_price (trigger prices, string),
+ * Place (or replace) a bracket — attached SL/TP — on an OPEN POSITION.
+ * `POST /v2/orders/bracket`. For an already-FILLED position this is the correct call:
+ * the `PUT /v2/orders/bracket` variant only edits brackets that still rest as unfilled
+ * order legs. Delta allows a single bracket per open position, so re-posting UPDATES it.
+ * Body:
+ *   product_id (required) + product_symbol,
+ *   stop_loss_order / take_profit_order — nested { order_type, stop_price, limit_price? },
  *   bracket_stop_trigger_method ('spot_price' | 'mark_price' | 'last_traded_price').
+ * `size` is not sent — a bracket closes the whole position.
  */
-export async function changeBracketOrder(creds, bracket) {
-  return signedRequest(creds, 'POST', '/v2/positions/change_bracket_order', { body: bracket });
+export async function placeBracketOrder(creds, bracket) {
+  return signedRequest(creds, 'POST', '/v2/orders/bracket', { body: bracket });
 }
 
 /** All open margined positions for the account. */

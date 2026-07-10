@@ -16,7 +16,7 @@
  * `sellQty` for the short). Validate the dry-run order log against your intended
  * real sizes BEFORE arming an account.
  */
-import { placeOrder, cancelOrder, editOrder, editBracket, changeBracketOrder, closeAllPositions, getLivePositions, getBalance, getLiveOrders, getFills, getOrderHistory } from './deltaTradeApi.js';
+import { placeOrder, cancelOrder, editOrder, editBracket, placeBracketOrder, closeAllPositions, getLivePositions, getBalance, getLiveOrders, getFills, getOrderHistory } from './deltaTradeApi.js';
 import { log, logWarn, logError } from './utils.js';
 
 // Default ON. Only the literal string 'false' (any case) disarms the dry-run.
@@ -256,33 +256,37 @@ export function createLiveExecutor(getCtx) {
     },
 
     /**
-     * Set/replace the bracket on an OPEN POSITION (position-level,
-     * POST /v2/positions/change_bracket_order). Moves the SL/TP to a new exit level
-     * when exitType/exitPoints change on a leg that is already open — the correct
-     * endpoint for this (unlike editBracket's order-level PUT, which needs the parent
-     * order id + a matching limit price and always failed with bad_schema here).
-     * Pass only the side(s) you want to set. Armed real only; dry-run logs the intended
-     * change so the payload can be validated before any real edit fires.
+     * Place/replace the bracket on an OPEN POSITION (POST /v2/orders/bracket). Sets ONE
+     * side per call — `side: 'tp'` for a long leg's take-profit, `'sl'` for a short leg's
+     * stop-loss — as a whole-position MARKET stop at `stopPrice`, triggered on
+     * `triggerMethod` (spot by default). Used to MOVE the exit level when
+     * exitType/exitPoints change on a position that is already open. `productId` identifies
+     * the position (Delta wants it for this endpoint) and `symbol` is sent alongside.
+     * Delta keeps a single bracket per position, so re-posting updates it. Armed real only;
+     * dry-run logs the intended call so the payload can be validated before it fires.
      */
-    async changePositionBracket({ symbol, stopLoss = null, takeProfit = null, triggerMethod = 'spot_price', tag }) {
+    async changePositionBracket({ productId = null, symbol, side, stopPrice, triggerMethod = 'spot_price', tag }) {
       if (!armed()) return { ok: true, skipped: true };
       const { accountName, creds } = getCtx();
-      const sl = (stopLoss != null && Number.isFinite(Number(stopLoss))) ? cleanLimitPrice(stopLoss) : null;
-      const tp = (takeProfit != null && Number.isFinite(Number(takeProfit))) ? cleanLimitPrice(takeProfit) : null;
-      const summary = `CHANGE position bracket ${symbol} →${sl ? ` SL@${sl}` : ''}${tp ? ` TP@${tp}` : ''} via ${triggerMethod} [${tag}]`;
-      if (DRY_RUN) { log(`[${accountName}] 🧪 DRY-RUN change-bracket (not sent): ${summary}`); return { ok: true, dryRun: true }; }
-      if (!creds?.apiKey || (!sl && !tp)) return { ok: false, error: 'missing creds/levels' };
+      const stopStr = cleanLimitPrice(stopPrice);
+      const legObj = { order_type: 'market_order', stop_price: stopStr };
+      const summary = `BRACKET ${String(side).toUpperCase()} ${symbol}${productId != null ? ` (pid ${productId})` : ''} @stop ${stopStr ?? '—'} via ${triggerMethod} [${tag}]`;
+      if (DRY_RUN) { log(`[${accountName}] 🧪 DRY-RUN bracket set (not sent): ${summary}`); return { ok: true, dryRun: true }; }
+      if (!creds?.apiKey || !stopStr || (side !== 'sl' && side !== 'tp')) {
+        return { ok: false, error: 'missing creds/stop/side' };
+      }
       try {
-        const res = await changeBracketOrder(creds, {
+        const res = await placeBracketOrder(creds, {
+          ...(productId != null ? { product_id: productId } : {}),
           product_symbol: symbol,
           bracket_stop_trigger_method: triggerMethod,
-          ...(sl ? { bracket_stop_loss_price: sl } : {}),
-          ...(tp ? { bracket_take_profit_price: tp } : {}),
+          ...(side === 'sl' ? { stop_loss_order: legObj } : {}),
+          ...(side === 'tp' ? { take_profit_order: legObj } : {}),
         });
-        log(`[${accountName}] ✅ LIVE position bracket changed: ${summary}`);
+        log(`[${accountName}] ✅ LIVE bracket set: ${summary}`);
         return { ok: true, res };
       } catch (e) {
-        logError(`[${accountName}] ✖ LIVE change-bracket FAILED: ${summary}:`, e.message);
+        logError(`[${accountName}] ✖ LIVE bracket set FAILED: ${summary}: ${e.message}`);
         return { ok: false, error: e.message };
       }
     },
