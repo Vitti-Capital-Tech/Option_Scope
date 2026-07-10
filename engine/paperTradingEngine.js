@@ -2583,7 +2583,9 @@ async function startSingleAccountEngine(account) {
     }
     if (drift.length === 0) return;
 
-    log(`[${accountState.name}] 🔧 Exit brackets (${reason}): moving ${drift.length} position(s) to ${effExit.exitType}±${effExit.exitPoints ?? 0}${activeSchedule ? ` [window "${activeSchedule.label}"]` : ''}`);
+    // ATM = buy strike (points are NOT applied); only ITM/OTM add/subtract exitPoints.
+    const exitDesc = effExit.exitType === 'ATM' ? 'ATM' : `${effExit.exitType}±${effExit.exitPoints ?? 0}`;
+    log(`[${accountState.name}] 🔧 Exit brackets (${reason}): moving ${drift.length} position(s) to ${exitDesc}${activeSchedule ? ` [window "${activeSchedule.label}"]` : ''}`);
 
     // Fetch (armed real only) the product_ids and the CURRENT resting bracket/stop orders
     // per symbol, so we can cancel the existing bracket before re-posting. Only stop/bracket
