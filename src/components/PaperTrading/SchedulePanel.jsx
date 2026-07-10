@@ -358,12 +358,12 @@ export default function SchedulePanel({
           onClick={handleAdd}
           style={{
             display: 'flex', alignItems: 'center', gap: 4,
-            background: 'rgba(0,217,163,0.12)', border: '1px solid rgba(0,217,163,0.3)',
-            color: 'var(--accent)', padding: '4px 12px', borderRadius: 5,
+            background: 'rgba(59,130,246,0.12)', border: '1px solid rgba(59,130,246,0.35)',
+            color: '#3b82f6', padding: '4px 12px', borderRadius: 5,
             fontSize: 11, fontWeight: 600, cursor: 'pointer', transition: 'all 0.15s',
           }}
-          onMouseOver={e => e.currentTarget.style.background = 'rgba(0,217,163,0.2)'}
-          onMouseOut={e => e.currentTarget.style.background = 'rgba(0,217,163,0.12)'}
+          onMouseOver={e => e.currentTarget.style.background = 'rgba(59,130,246,0.2)'}
+          onMouseOut={e => e.currentTarget.style.background = 'rgba(59,130,246,0.12)'}
         >
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
           Add Window
