@@ -324,10 +324,11 @@ function LiveStopOrdersTab({ stopOrders, spotPrice, onCancelOrder }) {
           const notional = idx != null ? Math.abs(size) * cv * idx : null;
           const trigMethod = String(o.stop_trigger_method || '') === 'spot_price' ? 'Index Price'
             : String(o.stop_trigger_method || '') === 'mark_price' ? 'Mark Price' : (o.stop_trigger_method || '—');
-          // Operator like Delta: triggers when index rises to the level (>=) or
-          // falls to it (<=) — inferred from the trigger vs the current index.
+          // Operator like Delta: derived from the order SIDE (standard stop
+          // convention, confirmed against Delta's payload) — a buy stop triggers
+          // when the index rises to the level (>=), a sell stop when it falls (<=).
           const trig = num(o.stop_price);
-          const trigOp = (trig != null && idx != null) ? (trig >= idx ? '>=' : '<=') : '';
+          const trigOp = trig == null ? '' : (String(o.side).toLowerCase() === 'buy' ? '>=' : '<=');
           const isCall = (o.product_symbol || '').startsWith('C-');
           return (
             <tr key={o.id ?? o.client_order_id} className={`pt-row-${isCall ? 'call' : 'put'}`}>
