@@ -5303,7 +5303,7 @@ body.light-theme .pt-btn-apply.active {
   right: 10px;
   bottom: -1px;
   height: 2px;
-  background: var(--accent);
+  background: #3b82f6;
   border-radius: 2px 2px 0 0;
 }
 
@@ -5322,8 +5322,8 @@ body.light-theme .pt-btn-apply.active {
 }
 
 .pt-tab.on .pt-tab-count {
-  color: var(--accent);
-  border-color: rgba(240, 185, 11, 0.4);
+  color: #3b82f6;
+  border-color: rgba(59, 130, 246, 0.45);
 }
 
 /* Embedded tables: no outer card, tab bar owns the identity */
