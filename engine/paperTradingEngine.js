@@ -2186,11 +2186,12 @@ async function startSingleAccountEngine(account) {
 
           if (liveArmed) {
             // LIVE: scale the 1:ratio base UNIT by (part budget ÷ one-unit margin), then
-            // round EACH leg to the nearest whole contract — long = round(1 × scale),
-            // short = round(ratio × scale). Not floored, so the full part is used; min 1
-            // unit if the part can't fund even one. Independent rounding means the integer
-            // ratio can drift slightly from the exact ratio.
-            //   e.g. base 1:7.25, scale 3.8 → long round(3.8)=4, short round(27.55)=28.
+            // round the LONG to the nearest whole contract and derive the SHORT from
+            // (rounded long × base ratio) so the ratio is PRESERVED exactly — no
+            // independent-rounding drift. Not floored, so the full part is used; min 1
+            // unit if the part can't fund even one.
+            //   e.g. base 1:11,   scale 2.75 → long round(2.75)=3, short round(3×11)=33.
+            //   e.g. base 1:7.25, scale 3.8  → long round(3.8)=4,  short round(4×7.25)=29.
             // Margin uses the REAL per-contract underlying amount (`contractValue`, e.g.
             // 0.001 BTC) and the CURRENT spot price — NOT the (paper) lotSize=1 — so the
             // estimate matches Delta's actual margin instead of blowing past the notional
@@ -2204,7 +2205,8 @@ async function startSingleAccountEngine(account) {
               scale = 1;
             }
             const longC = Math.max(1, Math.round(scale));
-            const shortC = Math.max(1, Math.round(ratioToUse * scale));
+            // Short follows the rounded long at the base ratio (keeps 1:ratio exact).
+            const shortC = Math.max(1, Math.round(longC * ratioToUse));
             adjustedLotSize = Number((originalLotSize * longC).toFixed(4));
             adjustedSellQty = shortC;
             liveMargin = calcMargin(entryBuyPrice, longCV * longC, spotPrice, adjustedSellQty, shortCV);
@@ -2514,7 +2516,31 @@ async function startSingleAccountEngine(account) {
     }
   }
 
+  // Debounce timers for Realtime config/schedule reload bursts (cleared in stop()).
+  let configReloadTimer = null;
+  let scheduleReloadTimer = null;
+
   function subscribeConfigChanges() {
+    // Coalesce Realtime bursts into ONE reload. A schedule save is a DELETE-all +
+    // INSERT-all, so it fires many events at once; debouncing (~400ms) collapses that
+    // burst into a single fetch/reload — fewer reads and one log line instead of N,
+    // with no loss of responsiveness.
+    const debounceConfigReload = () => {
+      if (configReloadTimer) clearTimeout(configReloadTimer);
+      configReloadTimer = setTimeout(() => {
+        configReloadTimer = null;
+        log(`[${accountState.name}] Config change detected — reloading...`);
+        reloadConfigAndSync().catch(e => logError(`[${accountState.name}] config reload failed:`, e));
+      }, 400);
+    };
+    const debounceScheduleReload = () => {
+      if (scheduleReloadTimer) clearTimeout(scheduleReloadTimer);
+      scheduleReloadTimer = setTimeout(() => {
+        scheduleReloadTimer = null;
+        log(`[${accountState.name}] Schedules change detected — reloading...`);
+        fetchSchedules().catch(e => logError(`[${accountState.name}] schedules reload failed:`, e));
+      }, 400);
+    };
     const channel = supabase
       .channel(`paper_config_changes_${accountState.id}`)
       .on(
@@ -2522,18 +2548,12 @@ async function startSingleAccountEngine(account) {
         // Server-side filter on account_id keeps Realtime egress scoped to this
         // engine's account (avoids cross-account fan-out when multiple engines run).
         { event: '*', schema: 'public', table: 'paper_trading_config', filter: `account_id=eq.${accountState.id}` },
-        async () => {
-          log(`[${accountState.name}] Config change detected — reloading...`);
-          await reloadConfigAndSync();
-        }
+        debounceConfigReload
       )
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'paper_trading_schedules', filter: `account_id=eq.${accountState.id}` },
-        async () => {
-          log(`[${accountState.name}] Schedules change detected — reloading...`);
-          await fetchSchedules();
-        }
+        debounceScheduleReload
       )
       .on(
         'postgres_changes',
@@ -2782,6 +2802,8 @@ async function startSingleAccountEngine(account) {
       clearInterval(balanceTimer);
       clearInterval(liveSnapshotTimer);
       clearInterval(reconcileTimer);
+      if (configReloadTimer) clearTimeout(configReloadTimer);
+      if (scheduleReloadTimer) clearTimeout(scheduleReloadTimer);
       if (wsHandle) { wsHandle.close(); wsHandle = null; }
       supabase.removeChannel(configChannel);
 
