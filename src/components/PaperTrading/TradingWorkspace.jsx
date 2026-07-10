@@ -405,6 +405,7 @@ function LiveFillsTab({ fills }) {
 // side/status/qty/type/prices, cashflow, realized pnl, commission, reduce-only.
 // Read-only snapshot from `live_exchange_state.order_history`.
 function LiveOrderHistoryTab({ orderHistory }) {
+  const [filterDate, setFilterDate] = useState(''); // '' = all dates; else YYYY-MM-DD (local)
   if (!orderHistory?.length) {
     return <EmptyPanel icon="history" title="No Order History"
       desc="Filled and cancelled orders on Delta Exchange appear here, newest first." />;
@@ -412,11 +413,22 @@ function LiveOrderHistoryTab({ orderHistory }) {
   const num = (v) => (v == null || v === '' || Number.isNaN(Number(v)) ? null : Number(v));
   const cap = (s) => (s ? String(s).replace(/^\w/, c => c.toUpperCase()) : '—');
 
+  // Local (IST for this user) YYYY-MM-DD of an order's fill/close time — matches the
+  // Time column and the date the user picks in the filter.
+  const localYmd = (v) => {
+    try {
+      const d = new Date(v);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    } catch { return ''; }
+  };
+
   // Delta's Order History Time column is the order's updated_at (fill/close time),
   // and Delta sorts by it descending — not by created_at or order id. Sort the same
   // way (updated_at desc, id desc tiebreak) so our sequence + times match Delta.
   const ts = (o) => new Date(o.updated_at ?? o.created_at ?? 0).getTime();
-  const rows = [...orderHistory].sort((a, b) => (ts(b) - ts(a)) || (Number(b.id || 0) - Number(a.id || 0)));
+  const rows = orderHistory
+    .filter(o => !filterDate || localYmd(o.updated_at ?? o.created_at) === filterDate)
+    .sort((a, b) => (ts(b) - ts(a)) || (Number(b.id || 0) - Number(a.id || 0)));
 
   const statusLabel = (o) => {
     const s = String(o.state || '').toLowerCase();
@@ -436,7 +448,28 @@ function LiveOrderHistoryTab({ orderHistory }) {
   };
 
   return (
-    <div className="pt-table-scroll">
+    <>
+      {/* Date filter */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 8, padding: '8px 12px 0' }}>
+        <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.06em', color: 'var(--text-dim)', textTransform: 'uppercase' }}>Date</span>
+        <input
+          type="date"
+          value={filterDate}
+          onChange={e => setFilterDate(e.target.value)}
+          style={{ background: 'var(--bg3)', border: '1px solid var(--border)', color: 'var(--text)', borderRadius: 6, padding: '5px 8px', fontSize: 12, fontWeight: 600, colorScheme: 'dark', outline: 'none' }}
+        />
+        {filterDate && (
+          <button type="button" onClick={() => setFilterDate('')} className="pt-btn-close" style={{ padding: '4px 10px' }} title="Clear date filter">
+            All
+          </button>
+        )}
+      </div>
+
+      {rows.length === 0 ? (
+        <EmptyPanel icon="history" title="No orders on this date"
+          desc="No filled or cancelled orders match the selected date. Clear the filter to see all." />
+      ) : (
+      <div className="pt-table-scroll">
       <table className="pt-table pt-delta-table"><thead><tr>
         <th>Symbol</th><th>Side</th><th>Status</th><th className="r">Qty (Lot)</th>
         <th className="r">Filled</th><th>Type</th><th className="r">Limit Price</th>
@@ -483,7 +516,9 @@ function LiveOrderHistoryTab({ orderHistory }) {
           );
         })}
       </tbody></table>
-    </div>
+      </div>
+      )}
+    </>
   );
 }
 
