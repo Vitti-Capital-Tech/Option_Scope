@@ -486,18 +486,18 @@ async function startSingleAccountEngine(account) {
     return null;
   }
 
-  // Position slots for the CURRENTLY-ACTIVE schedule window (calls + puts) — falls
-  // back to the base config during a schedule gap. Used to divide the allocated
-  // balance into equal "parts" (1 part of margin per position). This is the active
-  // window's cap, NOT the peak across all windows: a smaller-cap window therefore
-  // funds bigger positions. Over-allocation at window transitions is prevented by the
-  // remaining-budget ÷ remaining-slots sizing (positions carried over lock margin and
-  // occupy slots, so the free budget shrinks to ~0 in a larger window until they exit).
+  // Position slots = the PEAK (calls + puts) across ALL active schedule windows —
+  // falls back to base config when there are no windows. Used to divide the
+  // allocated balance into equal "parts" (1 part of margin per position). Sizing on
+  // the busiest window (largest calls+puts sum) means a position is funded so it
+  // never over-allocates regardless of which window opens it; smaller windows just
+  // leave part of the budget unused.
   function computeMaxPositions() {
-    const active = getActiveSchedule();
-    const calls = active ? active.numberOfCalls : config.numberOfCalls;
-    const puts = active ? active.numberOfPuts : config.numberOfPuts;
-    return Math.max(1, (calls || 0) + (puts || 0));
+    const activeWindows = schedules.filter(s => s.isActive);
+    if (activeWindows.length > 0) {
+      return Math.max(1, ...activeWindows.map(s => (s.numberOfCalls || 0) + (s.numberOfPuts || 0)));
+    }
+    return Math.max(1, (config.numberOfCalls || 0) + (config.numberOfPuts || 0));
   }
 
   // ── Live exit handling (armed live accounts only) ────────────────────────
@@ -2080,7 +2080,7 @@ async function startSingleAccountEngine(account) {
           if (bal != null && bal > 0) {
             const allocPct = config.balanceAllocationPct ?? 90;
             const budget = bal * (allocPct / 100);
-            const maxPos = computeMaxPositions(); // ACTIVE-window cap (calls + puts)
+            const maxPos = computeMaxPositions(); // PEAK cap across all windows (calls + puts)
             // Size on the REMAINING budget over the REMAINING free slots, not the raw
             // total ÷ cap. Positions already open (this underlying) lock margin and
             // occupy cap slots — subtracting both means positions carried over from a
@@ -2093,7 +2093,7 @@ async function startSingleAccountEngine(account) {
             const remainingBudget = Math.max(0, budget - usedMargin);
             const remainingSlots = Math.max(1, maxPos - occupiedSlots);
             partMargin = remainingBudget / remainingSlots;
-            log(`[${accountState.name}] 💰 LIVE sizing: balance $${bal.toFixed(2)} × ${allocPct}% = $${budget.toFixed(2)} budget | used $${usedMargin.toFixed(2)} | remaining $${remainingBudget.toFixed(2)} ÷ ${remainingSlots} free slot(s) (active cap ${maxPos}) = $${partMargin.toFixed(2)}/position`);
+            log(`[${accountState.name}] 💰 LIVE sizing: balance $${bal.toFixed(2)} × ${allocPct}% = $${budget.toFixed(2)} budget | used $${usedMargin.toFixed(2)} | remaining $${remainingBudget.toFixed(2)} ÷ ${remainingSlots} free slot(s) (peak cap ${maxPos}) = $${partMargin.toFixed(2)}/position`);
           } else {
             logWarn(`[${accountState.name}] LIVE sizing: wallet balance unavailable — skipping live entries this cycle.`);
           }

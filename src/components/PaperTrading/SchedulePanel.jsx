@@ -697,63 +697,17 @@ export default function SchedulePanel({
         })}
       </div>
 
-      {/* Footer controls with global Save button */}
-      {schedules.length > 0 && (
+      {/* Schedules auto-save (debounced) — no manual button. Show only an overlap
+          warning when active windows collide (which blocks the auto-save). */}
+      {schedules.length > 0 && hasOverlap && (
         <div style={{
           display: 'flex', alignItems: 'center', justifyContent: 'flex-end',
           gap: 12, borderTop: '1px solid var(--border)', paddingTop: 12, marginTop: 12
         }}>
-          {hasOverlap && (
-            <span style={{ fontSize: 10, color: '#f85149', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ transform: 'translateY(-1px)' }}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
-              Cannot save: Time overlap detected between active windows.
-            </span>
-          )}
-
-          <button
-            type="button"
-            onClick={onSave}
-            disabled={isSaving || hasOverlap}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 6,
-              background: hasOverlap 
-                ? 'rgba(248, 81, 73, 0.1)' 
-                : isSaving 
-                  ? 'rgba(240, 185, 11, 0.1)' 
-                  : 'rgba(63, 185, 80, 0.15)',
-              border: hasOverlap
-                ? '1px solid rgba(248, 81, 73, 0.3)'
-                : isSaving
-                  ? '1px solid rgba(240, 185, 11, 0.3)'
-                  : '1px solid rgba(63, 185, 80, 0.3)',
-              color: hasOverlap 
-                ? '#f85149' 
-                : isSaving 
-                  ? 'var(--accent)' 
-                  : '#3fb950',
-              padding: '6px 16px', borderRadius: 5,
-              fontSize: 11, fontWeight: 700, cursor: (isSaving || hasOverlap) ? 'not-allowed' : 'pointer',
-              opacity: 1, transition: 'all 0.15s',
-            }}
-            title={hasOverlap ? "Cannot save: Time overlap detected with another active window" : "Schedules are live-synced to server"}
-          >
-            {isSaving ? (
-              <>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" style={{ animation: 'spin 0.8s linear infinite' }}><circle cx="12" cy="12" r="10" stroke="rgba(240,185,11,0.2)" /><path d="M12 2a10 10 0 0 1 10 10" stroke="var(--accent)" /></svg>
-                Syncing...
-              </>
-            ) : hasOverlap ? (
-              <>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
-                Overlap Detected
-              </>
-            ) : (
-              <>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>
-                ✓ Live Synced
-              </>
-            )}
-          </button>
+          <span style={{ fontSize: 10, color: '#f85149', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ transform: 'translateY(-1px)' }}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
+            Time overlap detected between active windows — fix to auto-save.
+          </span>
         </div>
       )}
 
