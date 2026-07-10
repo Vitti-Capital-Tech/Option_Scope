@@ -833,7 +833,7 @@ async function startSingleAccountEngine(account) {
         if (ids.has(pos.id)) { await manualExitPosition(pos); exited = true; }
       }
       // Republish immediately so the closed position clears from the UI within ~1s.
-      if (exited) await publishLiveSnapshot().catch(() => {});
+      if (exited) await publishLiveSnapshot(true).catch(() => {});
     } catch (e) { /* non-fatal */ }
   }
 
@@ -930,7 +930,7 @@ async function startSingleAccountEngine(account) {
       // Republish the snapshot immediately so the UI reflects the close within ~1s
       // instead of waiting up to the 20s snapshot tick (which made a closed leg
       // reappear on the UI's 5s refetch until then — the "glitch").
-      await publishLiveSnapshot().catch(() => {});
+      await publishLiveSnapshot(true).catch(() => {});
     } catch (e) { logError(`[${accountState.name}] processCloseRequests error:`, e); }
   }
 
@@ -954,7 +954,7 @@ async function startSingleAccountEngine(account) {
         cancelled = true;
       }
       // Republish immediately so the cancelled order clears from the UI within ~1s.
-      if (cancelled) await publishLiveSnapshot().catch(() => {});
+      if (cancelled) await publishLiveSnapshot(true).catch(() => {});
     } catch (e) { logError(`[${accountState.name}] processCancelRequests error:`, e); }
   }
 
@@ -1001,7 +1001,7 @@ async function startSingleAccountEngine(account) {
     }
     // Republish immediately so the flattened account shows empty on the UI within
     // ~1s rather than lingering until the next 20s snapshot tick.
-    await publishLiveSnapshot().catch(() => {});
+    await publishLiveSnapshot(true).catch(() => {});
   }
 
   async function handleLiveRestingExit(pos, remaining, fillIds, eff = config) {
@@ -2748,11 +2748,20 @@ async function startSingleAccountEngine(account) {
   const SNAP_KEEPALIVE_MS = 60000;
   let lastSnapSig = null;
   let lastSnapUpsertAt = 0;
-  const publishLiveSnapshot = async () => {
+  // Order history is the slow part of a snapshot, so fetch it only every 4th tick
+  // (~40s at a 10s interval) and reuse the cached value in between. `force` (Sync
+  // button / after an action) always refreshes it.
+  let snapTick = 0;
+  let cachedOrderHistory = [];
+  const publishLiveSnapshot = async (force = false) => {
     if (!(accountState.mode === 'live' && accountState.live_enabled)) return;
     try {
-      const snap = await live.snapshot();
+      const includeHistory = force || (snapTick % 4 === 0);
+      snapTick++;
+      const snap = await live.snapshot({ includeHistory });
       if (!snap) return;
+      if (includeHistory && Array.isArray(snap.orderHistory)) cachedOrderHistory = snap.orderHistory;
+      snap.orderHistory = cachedOrderHistory; // reuse cache on non-history ticks
       const sig = snapSignature(snap);
       const now = Date.now();
       if (sig === lastSnapSig && (now - lastSnapUpsertAt) < SNAP_KEEPALIVE_MS) return;
@@ -2774,8 +2783,8 @@ async function startSingleAccountEngine(account) {
       logWarn(`[${accountState.name}] live snapshot publish failed: ${e.message}`);
     }
   };
-  const liveSnapshotTimer = setInterval(() => { publishLiveSnapshot(); }, 20000);
-  publishLiveSnapshot(); // prime immediately so the UI isn't blank until the first tick
+  const liveSnapshotTimer = setInterval(() => { publishLiveSnapshot(); }, 10000);
+  publishLiveSnapshot(true); // prime immediately (with history) so the UI isn't blank
 
   // Fast orphan reconcile — every 12s, so exchange-closed positions clear from
   // active_positions quickly and stop blocking new entries.

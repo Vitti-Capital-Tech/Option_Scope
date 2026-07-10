@@ -439,20 +439,26 @@ export function createLiveExecutor(getCtx) {
      * so one failing endpoint doesn't blank the whole snapshot. Returns null if not
      * armed / no creds.
      */
-    async snapshot() {
+    async snapshot({ includeHistory = true } = {}) {
       if (!armed()) return null;
       const { accountName, creds } = getCtx();
       if (!creds?.apiKey) return null;
-      const [posR, ordR, fillR, balR, histR] = await Promise.allSettled([
+      // Order history is large and paginates (several sequential round-trips), so
+      // it's the slowest part of a snapshot. It's not time-critical, so callers can
+      // skip it on most ticks (includeHistory=false) to keep the frequent refresh
+      // fast; positions/orders/fills/balance are one parallel call each.
+      const calls = [
         getLivePositions(creds),
         getLiveOrders(creds),
         getFills(creds),
         getBalance(creds),
-        getOrderHistory(creds),
-      ]);
-      const arr = (r) => (r.status === 'fulfilled' && Array.isArray(r.value) ? r.value : []);
-      if ([posR, ordR, fillR, balR, histR].some(r => r.status === 'rejected')) {
-        const first = [posR, ordR, fillR, balR, histR].find(r => r.status === 'rejected');
+      ];
+      if (includeHistory) calls.push(getOrderHistory(creds));
+      const results = await Promise.allSettled(calls);
+      const [posR, ordR, fillR, balR, histR] = results;
+      const arr = (r) => (r && r.status === 'fulfilled' && Array.isArray(r.value) ? r.value : []);
+      if (results.some(r => r.status === 'rejected')) {
+        const first = results.find(r => r.status === 'rejected');
         logWarn(`[${accountName}] snapshot() partial failure: ${first?.reason?.message || 'unknown'}`);
       }
       const allOrders = arr(ordR);
@@ -463,7 +469,7 @@ export function createLiveExecutor(getCtx) {
         orders: allOrders.filter(o => !isStop(o)),
         stopOrders: allOrders.filter(isStop),
         fills: arr(fillR),
-        orderHistory: arr(histR),
+        orderHistory: includeHistory ? arr(histR) : null, // null → caller keeps cached
         balances,
         wallet: extractBalance(balances),
       };
