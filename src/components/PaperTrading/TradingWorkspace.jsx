@@ -449,20 +449,38 @@ function LiveOrderHistoryTab({ orderHistory }) {
 
   return (
     <>
-      {/* Date filter */}
-      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 8, padding: '8px 12px 0' }}>
-        <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.06em', color: 'var(--text-dim)', textTransform: 'uppercase' }}>Date</span>
-        <input
-          type="date"
-          value={filterDate}
-          onChange={e => setFilterDate(e.target.value)}
-          style={{ background: 'var(--bg3)', border: '1px solid var(--border)', color: 'var(--text)', borderRadius: 6, padding: '5px 8px', fontSize: 12, fontWeight: 600, colorScheme: 'dark', outline: 'none' }}
-        />
-        {filterDate && (
-          <button type="button" onClick={() => setFilterDate('')} className="pt-btn-close" style={{ padding: '4px 10px' }} title="Clear date filter">
-            All
-          </button>
-        )}
+      {/* Date filter — compact, with prev/next day arrows */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 4, padding: '8px 12px 0' }}>
+        {(() => {
+          const arrowBtn = { display: 'flex', alignItems: 'center', justifyContent: 'center', width: 22, height: 22, padding: 0, background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text-dim)', cursor: 'pointer' };
+          const shiftDate = (delta) => {
+            const base = filterDate ? new Date(`${filterDate}T00:00:00`) : new Date();
+            base.setDate(base.getDate() + delta);
+            setFilterDate(`${base.getFullYear()}-${String(base.getMonth() + 1).padStart(2, '0')}-${String(base.getDate()).padStart(2, '0')}`);
+          };
+          return (
+            <>
+              <button type="button" onClick={() => shiftDate(-1)} title="Previous day" style={arrowBtn}>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+              </button>
+              <input
+                type="date"
+                value={filterDate}
+                onChange={e => setFilterDate(e.target.value)}
+                style={{ background: 'var(--bg3)', border: '1px solid var(--border)', color: 'var(--text)', borderRadius: 5, padding: '3px 6px', fontSize: 11, fontWeight: 600, colorScheme: 'dark', outline: 'none' }}
+              />
+              <button type="button" onClick={() => shiftDate(1)} title="Next day" style={arrowBtn}>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6" /></svg>
+              </button>
+              {filterDate && (
+                <button type="button" onClick={() => setFilterDate('')} title="Clear date filter"
+                  style={{ padding: '3px 8px', fontSize: 10, fontWeight: 700, background: 'transparent', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text-dim)', cursor: 'pointer' }}>
+                  All
+                </button>
+              )}
+            </>
+          );
+        })()}
       </div>
 
       {rows.length === 0 ? (
