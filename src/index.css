@@ -4836,20 +4836,16 @@ body.light-theme .pt-btn-apply.active {
 
 .schedule-item {
   display: flex;
-  align-items: center;
-  gap: 16px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 14px 18px;
 
-  padding: 12px 16px;
+  padding: 14px 16px;
   background: rgba(22, 27, 34, 0.4);
   border: 1px solid var(--border);
   border-radius: 8px;
-
-  overflow-x: auto;
-  overflow-y: hidden;
-
-  -webkit-overflow-scrolling: touch;
-  /* iOS smooth scrolling */
-  white-space: nowrap;
+  /* Fields wrap onto multiple rows within the card — no horizontal scroll, and
+     the Exit Type dropdown is no longer clipped by an overflow container. */
 }
 
 .schedule-item:hover {
@@ -4867,6 +4863,11 @@ body.light-theme .pt-btn-apply.active {
   flex-direction: column;
   gap: 4px;
 }
+
+/* Consistent field widths so wrapped fields line up in tidy columns. */
+.schedule-item-num-block { min-width: 104px; }
+.schedule-item-name-block { min-width: 150px; }
+.schedule-item-time-block { min-width: 118px; }
 
 .schedule-item-label {
   font-size: 10px;
