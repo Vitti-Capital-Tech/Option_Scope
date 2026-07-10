@@ -15,9 +15,17 @@ const CustomInput = React.forwardRef(({
   width,         // convenience: sets wrapper width when adorned
   value,
   onChange,
+  onFocus,
   ...props
 }, ref) => {
   const hasAdornment = prefix != null || suffix != null;
+
+  // Select the field's contents on focus so typing REPLACES the value instead of
+  // appending after it (otherwise a field showing "0" turns into "05" when typed).
+  const handleFocus = (e) => {
+    try { e.target.select(); } catch { /* not selectable */ }
+    if (onFocus) onFocus(e);
+  };
 
   // Backward-compatible plain input (unchanged from the original component)
   if (!hasAdornment) {
@@ -32,6 +40,7 @@ const CustomInput = React.forwardRef(({
         min={min}
         value={value}
         onChange={onChange}
+        onFocus={handleFocus}
         {...props}
       />
     );
@@ -54,6 +63,7 @@ const CustomInput = React.forwardRef(({
         min={min}
         value={value}
         onChange={onChange}
+        onFocus={handleFocus}
         {...props}
       />
       {suffix != null && <span className="uin-suf">{suffix}</span>}
