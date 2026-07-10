@@ -267,6 +267,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     setToasts(t => [...t, { id, msg, type }]);
     setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4000);
   }, []);
+  // In-app confirmation (toast-styled, no browser alert): { message, confirmLabel, onConfirm }.
+  const [confirmDialog, setConfirmDialog] = useState(null);
 
   const [includeFees, setIncludeFees] = useState(true);
   const [positions, setPositions] = useState([]);
@@ -896,32 +898,20 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const triggerPauseAccount = (accountId) => updateAccountFlags(accountId, { paused: true });
   const triggerResumeAccount = (accountId) => updateAccountFlags(accountId, { paused: false });
 
-  // Close ALL open positions for the active account at once (like Delta's close-all).
-  // Flags every position; the engine exits them (cancel resting + market-close) within ~1.5s.
-  const triggerCloseAll = async () => {
+  // Actually flatten the account — flags every position; the engine exits them
+  // (cancel resting + market-close) within ~1.5s. Runs after the in-app confirm.
+  const performCloseAll = async () => {
     const acc = accounts.find(a => a.id === activeAccountId);
-    // Count from the live Delta snapshot too — the engine may have lost track of
-    // positions that are still open on Delta (orphans), so don't block on the
-    // engine's count being 0. For a live account, close_all flattens the account.
+    const isLiveAcc = acc?.mode === 'live';
     const liveLegs = (liveExchangeState?.positions || []).filter(p => Number(p.size) !== 0).length;
     const count = Math.max(positions.length, liveLegs);
-    const isLiveAcc = acc?.mode === 'live';
-    if (count === 0 && !isLiveAcc) { alert('No open positions to close.'); return; }
-    // Always confirm Close All (it flattens everything) — per-position close stays
-    // direct (no prompt).
-    const confirmMsg = isLiveAcc
-      ? `Close ALL positions on Delta for "${acc?.name || 'this account'}"?${count ? ` (${count} position/leg${count !== 1 ? 's' : ''})` : ''}\n\nEvery position will be closed at market — including any the dashboard isn't showing.`
-      : `Close ALL ${count} open position(s) for "${acc?.name || 'this account'}"?\n\nEvery trade will be exited at market.`;
-    if (!window.confirm(confirmMsg)) return;
-    // One flag → the engine flattens the account (native close_all) in one call,
-    // then books + deletes all positions.
     const { error } = await supabase
       .from('paper_trading_accounts')
       .update({ close_all_requested: true })
       .eq('id', activeAccountId);
     if (error) {
       console.error('Close-all failed:', error);
-      alert(`Failed to close all: ${error.message}`);
+      pushToast(`Failed to close all: ${error.message}`, 'error');
       return;
     }
     setPositions(prev => prev.map(p => ({ ...p, exitRequested: true })));
@@ -933,6 +923,26 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     // Confirm from the server once the engine has flattened + booked.
     setTimeout(() => syncAll(), 2500);
     setTimeout(() => syncAll(), 6000);
+  };
+
+  // Close ALL open positions for the active account at once (like Delta's close-all).
+  // Shows an in-app confirmation (no browser alert) before flattening.
+  const triggerCloseAll = () => {
+    const acc = accounts.find(a => a.id === activeAccountId);
+    // Count from the live Delta snapshot too — the engine may have lost track of
+    // positions that are still open on Delta (orphans), so don't block on the
+    // engine's count being 0. For a live account, close_all flattens the account.
+    const liveLegs = (liveExchangeState?.positions || []).filter(p => Number(p.size) !== 0).length;
+    const count = Math.max(positions.length, liveLegs);
+    const isLiveAcc = acc?.mode === 'live';
+    if (count === 0 && !isLiveAcc) { pushToast('No open positions to close.', 'info'); return; }
+    setConfirmDialog({
+      message: isLiveAcc
+        ? `Close ALL positions on Delta${count ? ` (${count} leg${count !== 1 ? 's' : ''})` : ''}? Every position will be closed at market — including any the dashboard isn't showing.`
+        : `Close ALL ${count} open position(s)? Every trade will be exited at market.`,
+      confirmLabel: 'Close All',
+      onConfirm: performCloseAll,
+    });
   };
 
   // Close a single Delta position by symbol (per-row ✕ on an orphan leg the engine
@@ -2668,6 +2678,35 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         position={positionToExit}
         includeFees={includeFees}
       />
+
+      {/* In-app confirmation (toast-styled) — replaces the browser confirm dialog */}
+      {confirmDialog && (
+        <div style={{ position: 'fixed', top: 20, right: 20, zIndex: 10000, maxWidth: 360, pointerEvents: 'auto' }}>
+          <div style={{
+            background: 'rgba(10, 13, 18, 0.98)', border: '1px solid var(--border)',
+            borderLeft: '4px solid var(--put)', padding: '14px 16px', borderRadius: 8,
+            color: 'var(--text)', boxShadow: '0 12px 32px rgba(0,0,0,0.6)', animation: 'slideIn 0.25s ease-out',
+          }}>
+            <div style={{ fontSize: 12.5, fontWeight: 600, lineHeight: 1.45 }}>{confirmDialog.message}</div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+              <button
+                type="button"
+                onClick={() => setConfirmDialog(null)}
+                style={{ padding: '6px 14px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text)', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => { const fn = confirmDialog.onConfirm; setConfirmDialog(null); if (fn) fn(); }}
+                style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: 'var(--put)', color: '#fff', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}
+              >
+                {confirmDialog.confirmLabel || 'Confirm'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Toast notifications (top-right) */}
       <div style={{ position: 'fixed', top: 20, right: 20, zIndex: 9999, display: 'flex', flexDirection: 'column', gap: 10, pointerEvents: 'none' }}>
