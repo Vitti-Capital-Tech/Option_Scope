@@ -583,7 +583,7 @@ function DeltaPositionsTable({ positions, enginePositions, onExitPosition, onClo
         <thead><tr>
           <th>Symbol</th><th className="r">Size</th><th className="r">Notional</th>
           <th className="r">Entry</th><th>TP / SL</th><th className="r">Index</th>
-          <th className="r">Mark</th><th className="r">Margin</th><th className="r">UPNL</th><th className="r">Action</th>
+          <th className="r">Mark</th><th className="r">Margin</th><th className="r">UPNL</th><th className="r">Cashflow</th><th className="r">Action</th>
         </tr></thead>
         <tbody>
           {open.map((p, i) => {
@@ -598,6 +598,11 @@ function DeltaPositionsTable({ positions, enginePositions, onExitPosition, onClo
             const entryCost = num(p.entry_price) != null ? Math.abs(size) * cv * num(p.entry_price) : null;
             const pnlPct = (entryCost && entryCost !== 0) ? (pnl / entryCost) * 100 : null;
             const margin = num(p.margin);
+            // Delta's cashflow for the position (premium in/out). Prefer Delta's own
+            // field; fall back to the entry cashflow: short (sold) = cash in (+),
+            // long (bought) = cash out (−).
+            const cashflow = num(p.realized_cashflow ?? p.cashflow ?? p.meta_data?.cashflow)
+              ?? (num(p.entry_price) != null ? -(size * cv * num(p.entry_price)) : null);
             const st = stopBySymbol[p.product_symbol] || { tp: null, sl: null };
             const enginePos = posBySymbol[p.product_symbol];
             return (
@@ -623,6 +628,7 @@ function DeltaPositionsTable({ positions, enginePositions, onExitPosition, onClo
                   <span className={`pt-pnl ${pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : 'zero'}`}>{pnl > 0 ? '+' : ''}{fmtNum(pnl)}</span>
                   {pnlPct != null && <span style={{ display: 'block', fontSize: 10, color: pnl >= 0 ? 'var(--call)' : 'var(--put)' }}>{pnl >= 0 ? '+' : ''}{pnlPct.toFixed(2)}%</span>}
                 </td>
+                <td className="r">{cashflow != null ? <span className={`pt-pnl ${cashflow > 0 ? 'positive' : cashflow < 0 ? 'negative' : 'zero'}`}>{cashflow > 0 ? '+' : ''}{fmtNum(cashflow)}</span> : '—'}</td>
                 <td className="r">
                   {/* Per-leg close (like Delta): ✕ closes only THIS leg, not the spread. */}
                   <button onClick={() => onCloseOrphan && onCloseOrphan(p.product_symbol)} className="pt-btn-close" title="Close this leg on Delta">✕</button>
