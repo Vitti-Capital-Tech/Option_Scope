@@ -907,11 +907,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     const count = Math.max(positions.length, liveLegs);
     const isLiveAcc = acc?.mode === 'live';
     if (count === 0 && !isLiveAcc) { alert('No open positions to close.'); return; }
-    // Live: close directly (no confirm). Paper: keep the confirm as a safety net.
-    if (!isLiveAcc) {
-      const msg = `Close ALL ${count} open position(s) for "${acc?.name || 'this account'}"?\n\nEvery trade will be exited at market.`;
-      if (!window.confirm(msg)) return;
-    }
+    // Always confirm Close All (it flattens everything) — per-position close stays
+    // direct (no prompt).
+    const confirmMsg = isLiveAcc
+      ? `Close ALL positions on Delta for "${acc?.name || 'this account'}"?${count ? ` (${count} position/leg${count !== 1 ? 's' : ''})` : ''}\n\nEvery position will be closed at market — including any the dashboard isn't showing.`
+      : `Close ALL ${count} open position(s) for "${acc?.name || 'this account'}"?\n\nEvery trade will be exited at market.`;
+    if (!window.confirm(confirmMsg)) return;
     // One flag → the engine flattens the account (native close_all) in one call,
     // then books + deletes all positions.
     const { error } = await supabase
