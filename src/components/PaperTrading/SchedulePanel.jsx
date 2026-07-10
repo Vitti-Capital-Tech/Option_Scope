@@ -421,7 +421,7 @@ export default function SchedulePanel({
 
           return (
             <div key={s.id} className={`schedule-item ${s.isActive ? '' : 'inactive'}`} style={{
-              borderLeft: `4px solid ${s.isActive ? color : 'var(--border)'}`,
+              border: `1.5px solid ${s.isActive ? color : 'var(--border)'}`,
             }}>
               {/* Header row: window name (left) · dynamic scaling + lock/delete (right) */}
               <div className="schedule-item-header">

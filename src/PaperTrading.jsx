@@ -260,6 +260,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     if (liveProbeRef.current.hb && liveProbeRef.current.snap) setLiveViewResolved(true);
   }, []);
 
+  // Lightweight toast notifications (top-right, auto-dismiss).
+  const [toasts, setToasts] = useState([]);
+  const pushToast = useCallback((msg, type = 'info') => {
+    const id = Date.now() + Math.random();
+    setToasts(t => [...t, { id, msg, type }]);
+    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4000);
+  }, []);
+
   const [includeFees, setIncludeFees] = useState(true);
   const [positions, setPositions] = useState([]);
   const [tradeHistory, setTradeHistory] = useState([]);
@@ -916,6 +924,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       return;
     }
     setPositions(prev => prev.map(p => ({ ...p, exitRequested: true })));
+    pushToast(isLiveAcc ? 'Closing all positions on Delta…' : `Closing all ${count} position(s)…`, 'success');
     // Mark the flatten pending so refetches don't resurrect the positions until
     // the engine publishes a snapshot showing the account flat.
     pendingCloseRef.current.closeAll = { since: Date.now() };
@@ -2658,6 +2667,25 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         position={positionToExit}
         includeFees={includeFees}
       />
+
+      {/* Toast notifications (top-right) */}
+      <div style={{ position: 'fixed', top: 20, right: 20, zIndex: 9999, display: 'flex', flexDirection: 'column', gap: 10, pointerEvents: 'none' }}>
+        {toasts.map(t => {
+          const accent = t.type === 'error' ? 'var(--put)' : t.type === 'success' ? 'var(--call)' : '#3b82f6';
+          return (
+            <div key={t.id} style={{
+              background: 'rgba(10, 13, 18, 0.98)',
+              border: '1px solid var(--border)',
+              borderLeft: `4px solid ${accent}`,
+              padding: '11px 16px', borderRadius: 8, color: 'var(--text)',
+              fontSize: 12.5, fontWeight: 600, maxWidth: 340,
+              boxShadow: '0 12px 32px rgba(0,0,0,0.6)', animation: 'slideIn 0.25s ease-out',
+            }}>
+              {t.msg}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
