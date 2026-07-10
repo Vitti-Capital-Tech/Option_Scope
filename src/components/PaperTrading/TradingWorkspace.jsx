@@ -324,11 +324,11 @@ function LiveStopOrdersTab({ stopOrders, spotPrice, onCancelOrder }) {
           const notional = idx != null ? Math.abs(size) * cv * idx : null;
           const trigMethod = String(o.stop_trigger_method || '') === 'spot_price' ? 'Index Price'
             : String(o.stop_trigger_method || '') === 'mark_price' ? 'Mark Price' : (o.stop_trigger_method || '—');
-          // Operator like Delta: derived from the order SIDE (standard stop
-          // convention, confirmed against Delta's payload) — a buy stop triggers
-          // when the index rises to the level (>=), a sell stop when it falls (<=).
+          // Trigger price value comes straight from Delta. The >=/<= operator is
+          // NOT in the order feed — Delta fixes it from the index at placement
+          // time, which we can't reproduce — so we show the value without an
+          // operator rather than a possibly-wrong arrow.
           const trig = num(o.stop_price);
-          const trigOp = trig == null ? '' : (String(o.side).toLowerCase() === 'buy' ? '>=' : '<=');
           const isCall = (o.product_symbol || '').startsWith('C-');
           return (
             <tr key={o.id ?? o.client_order_id} className={`pt-row-${isCall ? 'call' : 'put'}`}>
@@ -336,7 +336,7 @@ function LiveStopOrdersTab({ stopOrders, spotPrice, onCancelOrder }) {
               <td className="r"><span style={{ color: sell ? 'var(--put)' : 'var(--call)', fontWeight: 700 }}>{qty > 0 ? '+' : ''}{qty}</span></td>
               <td className="r">{sizeBtc} {unit}</td>
               <td className="r">{notional != null ? `$${fmtNum(notional)}` : '—'}</td>
-              <td className="r"><span style={{ color: 'var(--text)', fontWeight: 700 }}>{trig != null ? `${trigOp}${fmtNum(trig)}` : '—'}</span></td>
+              <td className="r"><span style={{ color: 'var(--text)', fontWeight: 700 }}>{trig != null ? fmtNum(trig) : '—'}</span></td>
               <td>{trigMethod}</td>
               <td className="r">{idx != null ? fmtNum(idx) : '—'}</td>
               <td><span style={{ color: typeLabel(o).includes('TP') ? 'var(--call)' : 'var(--put)', fontWeight: 600, fontSize: 11 }}>{typeLabel(o)}</span></td>
