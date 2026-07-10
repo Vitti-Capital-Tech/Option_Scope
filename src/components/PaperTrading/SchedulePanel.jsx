@@ -602,7 +602,7 @@ export default function SchedulePanel({
                 <div style={{
                   fontSize: '12px',
                   fontWeight: '700',
-                  color: 'var(--accent)',
+                  color: '#3b82f6',
                   height: '30px',
                   display: 'flex',
                   alignItems: 'center',

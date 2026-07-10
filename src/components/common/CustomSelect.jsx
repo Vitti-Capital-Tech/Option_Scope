@@ -74,7 +74,7 @@ export default function CustomSelect({
                     <span>{opt.label}</span>
                   </div>
                   {isSelected && (
-                    <svg className="custom-selected-checkmark" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="3">
+                    <svg className="custom-selected-checkmark" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" strokeWidth="3">
                       <polyline points="20 6 9 17 4 12"></polyline>
                     </svg>
                   )}
