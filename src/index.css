@@ -1714,8 +1714,8 @@ body.light-theme .scanner-logs-body::-webkit-scrollbar-thumb:hover {
   align-items: center;
   gap: 10px;
   padding: 8px 16px;
-  background: rgba(240, 185, 11, 0.06);
-  border: 1px solid rgba(240, 185, 11, 0.2);
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px solid rgba(59, 130, 246, 0.25);
   border-radius: 8px;
   font-family: 'Inter', sans-serif;
   font-variant-numeric: tabular-nums;
@@ -1731,7 +1731,7 @@ body.light-theme .scanner-logs-body::-webkit-scrollbar-thumb:hover {
 .pt-spot-value {
   font-size: 16px;
   font-weight: 700;
-  color: #f0b90b;
+  color: #3b82f6;
   letter-spacing: -0.3px;
 }
 
@@ -5123,8 +5123,8 @@ body.light-theme .pt-btn-apply.active {
 }
 
 .pt-seg-btn.on {
-  background: var(--accent);
-  color: #0d1117;
+  background: #3b82f6;
+  color: #fff;
 }
 
 /* ── Spot session change ── */
@@ -5215,7 +5215,7 @@ body.light-theme .pt-btn-apply.active {
   font-weight: 800;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--accent);
+  color: #3b82f6;
 }
 
 .pt-cluster-fields {
@@ -5733,6 +5733,33 @@ body.light-theme .pt-btn-apply.active {
   background: var(--put);
   color: #fff;
   border-color: var(--put);
+}
+
+/* Sync button — blue variant of the pill button (shares sizing with pt-btn-close). */
+.pt-btn-sync {
+  font-family: 'Inter', sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 5px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #3b82f6;
+  background: rgba(59, 130, 246, 0.13);
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  transition: all 0.15s ease;
+}
+.pt-btn-sync:hover {
+  background: #3b82f6;
+  color: #fff;
+  border-color: #3b82f6;
+}
+.pt-btn-sync:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 /* Long-only badge variant, to sit alongside call/put */

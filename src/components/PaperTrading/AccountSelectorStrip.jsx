@@ -31,7 +31,7 @@ function PausedBadge({ account }) {
       style={{
         fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
         padding: '1px 5px', borderRadius: 4, marginLeft: 6,
-        color: '#e3b341', background: 'transparent', border: '1px solid #e3b341',
+        color: '#3b82f6', background: 'transparent', border: '1px solid #3b82f6',
       }}
     >
       PAUSED

@@ -738,7 +738,7 @@ export default function TradingWorkspace(props) {
           </div>
           <div className="pt-tab-actions">
             {props.onSync && (
-              <button type="button" onClick={props.onSync} disabled={props.isSyncing} className="pt-btn-close"
+              <button type="button" onClick={props.onSync} disabled={props.isSyncing} className="pt-btn-sync"
                 title="Refresh positions, orders and history from the engine">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
                   style={props.isSyncing ? { animation: 'spin 0.8s linear infinite' } : undefined}>
