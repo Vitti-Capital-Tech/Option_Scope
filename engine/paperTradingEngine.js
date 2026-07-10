@@ -1004,7 +1004,7 @@ async function startSingleAccountEngine(account) {
     await publishLiveSnapshot(true).catch(() => {});
   }
 
-  async function handleLiveRestingExit(pos, remaining, fillIds, eff = config) {
+  async function handleLiveRestingExit(pos, remaining, fillIds, sizeBySymbol, eff = config) {
     const tickerBuy = tickerData[pos.buyLeg.symbol];
     const tickerSell = tickerData[pos.sellLeg.symbol];
     const longBid = tickerBuy?.bid ?? tickerBuy?.lastPrice ?? tickerBuy?.markPrice;
@@ -1063,8 +1063,22 @@ async function startSingleAccountEngine(account) {
 
     // ── Full spread: waiting for the resting short-@shortExitPrice BUY to fill ──
     if (pos.sellQty > 0) {
-      const filled = pos.sellLeg.exitOrderId != null && fillIds.has(String(pos.sellLeg.exitOrderId));
-      if (!filled) { remaining.push(pos); return; }
+      // The exit order id appears in `fillIds` on the FIRST partial fill, not only a
+      // full one. Booking the short exit + placing the long ladder on a partial fill
+      // would drop long exit slices while the sell position is still partly open — the
+      // "lot qty not full but exit slices appear" bug. Sequence:
+      //   1) no fill yet → hold (no size fetch needed);
+      //   2) fill started → confirm the short is FULLY flat on the exchange (size 0)
+      //      before converting to long-only. `sizeBySymbol` is only fetched while a
+      //      buy-back is filling; if it's null (fetch failed / not fetched), hold and
+      //      re-check next cycle rather than infer a close.
+      // A confirmed fill (order id in `fillIds`) means the reduce-only buy-back actually
+      // traded, so size 0 is a genuine close — a never-opened phantom short can't fill.
+      const orderFilled = pos.sellLeg.exitOrderId != null && fillIds.has(String(pos.sellLeg.exitOrderId));
+      if (!orderFilled) { remaining.push(pos); return; }
+      if (sizeBySymbol == null) { remaining.push(pos); return; }
+      const shortSize = Math.abs(sizeBySymbol[pos.sellLeg.symbol] ?? 0);
+      if (shortSize > 0) { remaining.push(pos); return; } // partial fill — wait for the rest
 
       lastDbWrite = Date.now();
       const exitPx = pos.sellLeg.exitOrderPx ?? (config.shortExitPrice ?? 1.1);
@@ -1457,7 +1471,32 @@ async function startSingleAccountEngine(account) {
       //    fill inference) to avoid mis-booking.
       const liveResting = accountState.mode === 'live' && !!accountState.live_enabled && !live.dryRun;
       let liveFillIds = null;
-      if (liveResting) liveFillIds = await live.recentFillOrderIds();
+      let liveSizeBySymbol = null;
+      // Only the resting-order model consumes fills, and only when this account actually
+      // holds a position for the current underlying. With no open positions the exit loop
+      // below is a no-op anyway, so an idle account no longer polls Delta fills every ~1s
+      // for nothing. When positions DO exist we still fetch every cycle — the spot-cross /
+      // expiry catch-all and resting-fill detection depend on it.
+      if (liveResting && positions.some(p => p.underlying === underlying)) {
+        liveFillIds = await live.recentFillOrderIds();
+        // Per-symbol position sizes are needed ONLY to confirm a short buy-back has FULLY
+        // closed — i.e. when a full-spread's resting exit order has already begun filling.
+        // This exit loop runs ~once/second, so fetch the positions snapshot only in that
+        // narrow window (not every cycle) to keep Delta API egress low: the common cases
+        // (no open short, short not yet filling, or long-only laddering) never touch it.
+        const needSizes = liveFillIds != null && positions.some(p =>
+          p.underlying === underlying && p.sellQty > 0 && p.sellLeg?.exitOrderId != null
+          && liveFillIds.has(String(p.sellLeg.exitOrderId)));
+        if (needSizes) {
+          // null = fetch failed → leave liveSizeBySymbol null so the short branch holds
+          // rather than inferring a full close from a missing snapshot.
+          const livePos = await live.positions();
+          if (livePos != null) {
+            liveSizeBySymbol = {};
+            for (const p of livePos) liveSizeBySymbol[p.product_symbol] = Number(p.size) || 0;
+          }
+        }
+      }
 
       // Sort worst-first (farthest from ATM)
       const sortedPositions = [...positions].sort((a, b) => {
@@ -1476,7 +1515,9 @@ async function startSingleAccountEngine(account) {
         // Armed REAL live → resting-order exit model (isolated from the active model).
         if (liveResting) {
           if (liveFillIds == null) { remaining.push(pos); continue; } // fills fetch failed → hold
-          await handleLiveRestingExit(pos, remaining, liveFillIds, effectiveConfig);
+          // liveSizeBySymbol may be null when no size check was needed this cycle; the
+          // handler's short branch only consults it once a buy-back has begun filling.
+          await handleLiveRestingExit(pos, remaining, liveFillIds, liveSizeBySymbol, effectiveConfig);
           continue;
         }
 
@@ -2204,9 +2245,31 @@ async function startSingleAccountEngine(account) {
               logWarn(`[${accountState.name}] LIVE size: one unit (margin $${baseMargin.toFixed(2)}) exceeds 1 part ($${partMargin.toFixed(2)}) — trading the minimum 1 unit.`);
               scale = 1;
             }
-            const longC = Math.max(1, Math.round(scale));
-            // Short follows the rounded long at the base ratio (keeps 1:ratio exact).
-            const shortC = Math.max(1, Math.round(longC * ratioToUse));
+            let longC = Math.max(1, Math.round(scale));
+
+            // Ratio-spread max-qty cap: never size the spread past what the ratio spread
+            // itself supports. The SHORT notional (spot × short contracts × contract value)
+            // must not exceed $195k — the same ceiling paper applies — so a large balance
+            // can't fund a position bigger than the spread's max qty. Final qty =
+            // min(balance-allocated qty, notional-cap qty). Min 1 long is still honoured
+            // even if a single unit is already over the cap.
+            const NOTIONAL_CAP = 195000;
+            const shortNotionalPerContract = spotPrice * shortCV;
+            const maxShortByNotional = shortNotionalPerContract > 0
+              ? Math.floor(NOTIONAL_CAP / shortNotionalPerContract) : Infinity;
+            const maxLongByNotional = ratioToUse > 0
+              ? Math.floor(maxShortByNotional / ratioToUse) : Infinity;
+            if (longC > maxLongByNotional) {
+              log(`[${accountState.name}] 🧢 LIVE qty capped by ratio-spread max (short notional ≤ $${NOTIONAL_CAP}): long ${longC} → ${Math.max(1, maxLongByNotional)}`);
+              longC = Math.max(1, maxLongByNotional);
+            }
+
+            // Short follows the rounded long at the base ratio (keeps 1:ratio exact), then
+            // a final clamp so integer rounding can't push the short notional over the cap.
+            let shortC = Math.max(1, Math.round(longC * ratioToUse));
+            if (Number.isFinite(maxShortByNotional) && maxShortByNotional >= 1 && shortC > maxShortByNotional) {
+              shortC = maxShortByNotional;
+            }
             adjustedLotSize = Number((originalLotSize * longC).toFixed(4));
             adjustedSellQty = shortC;
             liveMargin = calcMargin(entryBuyPrice, longCV * longC, spotPrice, adjustedSellQty, shortCV);
@@ -2377,6 +2440,11 @@ async function startSingleAccountEngine(account) {
               logError(`[${accountState.name}] LIVE entry aborted (${liveEntry.legFailed} leg: ${liveEntry.error}) — not persisting ${t.buyLeg.strike}/${t.sellLeg.strike}`);
               continue;
             }
+            // Remember the exchange bracket level on each leg so a later
+            // exitType/exitPoints change can detect the drift and move the bracket
+            // (resyncRestingOrders) instead of leaving it stale at the entry level.
+            t.buyLeg = { ...t.buyLeg, brkLevel: bracketLevel };
+            if (t.sellQty > 0) t.sellLeg = { ...t.sellLeg, brkLevel: bracketLevel };
             if (liveArmed && t.sellQty > 0) {
               log(`[${accountState.name}] 🎯 Brackets: long TP + short SL @ spot ${bracketLevel} (${effectiveConfig.exitType || 'ATM'})`);
             }
@@ -2456,27 +2524,42 @@ async function startSingleAccountEngine(account) {
   // ── Re-sync resting exchange orders when exit config is modified ─────────
   // When exitType/exitPoints/shortExitPrice change on an account that already has
   // OPEN live positions, the orders resting on Delta were placed with the old
-  // values. Edit them IN PLACE (no cancel/replace): the resting short buy-back's
-  // limit price, and the SL/TP bracket levels. Armed real live only; a no-op for
-  // paper (no real resting orders) and harmless in dry-run (logs intended edits).
+  // values. Re-sync them IN PLACE: the resting short buy-back's limit price (editOrder),
+  // and the SL/TP bracket levels (position-level change_bracket_order). Armed real live
+  // only; a no-op for paper (no real resting orders) and harmless in dry-run (logs
+  // intended edits).
   async function resyncRestingOrders(oldCfg) {
     if (accountState.mode !== 'live') return;
     const shortPxChanged = (oldCfg.shortExitPrice ?? 1.1) !== (config.shortExitPrice ?? 1.1);
-    if (!shortPxChanged) return;
+    // Exit-level change → move the brackets. Only when we have a REAL previous value to
+    // compare against (oldCfg.exitType == null on the startup sync → skip: brackets were
+    // already set correctly at entry, and firing on a null baseline would spam edits).
+    const exitLevelChanged = oldCfg.exitType != null && (
+      (oldCfg.exitType !== config.exitType) || ((oldCfg.exitPoints ?? 0) !== (config.exitPoints ?? 0))
+    );
+    if (!shortPxChanged && !exitLevelChanged) return;
 
-    log(`[${accountState.name}] 🔧 Short-exit price changed — re-syncing resting buy-backs on ${positions.length} open position(s) | shortPx ${oldCfg.shortExitPrice}→${config.shortExitPrice}`);
+    // The bracket must track the level the engine would actually exit at — the ACTIVE
+    // schedule window governs exitType/exitPoints when one is open (active-window-governs,
+    // same as entry brackets and the spot-cross catch-all), else the base config.
+    const activeSchedule = getActiveSchedule();
+    const effExit = {
+      exitType: activeSchedule?.exitType ?? config.exitType,
+      exitPoints: activeSchedule?.exitPoints ?? config.exitPoints,
+    };
+
+    if (shortPxChanged) {
+      log(`[${accountState.name}] 🔧 Short-exit price changed — re-syncing resting buy-backs on ${positions.length} open position(s) | shortPx ${oldCfg.shortExitPrice}→${config.shortExitPrice}`);
+    }
+    if (exitLevelChanged) {
+      log(`[${accountState.name}] 🔧 Exit type/points changed — moving SL/TP brackets on ${positions.length} open position(s) | ${oldCfg.exitType}±${oldCfg.exitPoints ?? 0} → ${effExit.exitType}±${effExit.exitPoints ?? 0}`);
+    }
 
     for (const pos of positions) {
       if (pos.underlying !== config.underlying) continue;
       try {
         // Short resting buy-back price (short still open + resting order present).
-        // NOTE: exchange SL/TP brackets are deliberately NOT moved here — by design
-        // (see docs/live_trading.md) they stay at the ENTRY level as an engine-down
-        // backstop, while the engine's spot-cross catch-all handles the active exit
-        // level whenever it is running. The old bracket-edit path was removed: Delta's
-        // PUT /v2/orders/bracket needs trigger+limit prices and the parent order id,
-        // so those edits only ever failed with bad_schema (no functional loss).
-        if (pos.sellQty > 0 && pos.sellLeg?.exitOrderId) {
+        if (shortPxChanged && pos.sellQty > 0 && pos.sellLeg?.exitOrderId) {
           const newPx = config.shortExitPrice ?? 1.1;
           const r = await live.editOrder({
             id: pos.sellLeg.exitOrderId, symbol: pos.sellLeg.symbol,
@@ -2485,6 +2568,32 @@ async function startSingleAccountEngine(account) {
           if (r.ok && !r.skipped) {
             pos.sellLeg = { ...pos.sellLeg, exitOrderPx: newPx };
             await supabase.from('active_positions').update({ sell_leg: JSON.stringify(pos.sellLeg) }).eq('id', pos.id);
+          }
+        }
+
+        // SL/TP bracket level — move the position-level brackets to the new exit level.
+        // Long leg → TP; short leg (only while still open) → SL. Skip legs already at the
+        // target level (idempotent; positions from before this feature have no brkLevel
+        // → treated as stale so their first resync always fires).
+        if (exitLevelChanged) {
+          const newLevel = computeIndexTriggerLevel(pos.type, pos.buyLeg.strike, effExit);
+          let persist = false;
+          if ((pos.buyLeg?.lotSize || 0) > 0 && pos.buyLeg?.brkLevel !== newLevel) {
+            const r = await live.changePositionBracket({
+              symbol: pos.buyLeg.symbol, takeProfit: newLevel, tag: `${pos.id}-TP-resync`,
+            });
+            if (r.ok && !r.skipped) { pos.buyLeg = { ...pos.buyLeg, brkLevel: newLevel }; persist = true; }
+          }
+          if (pos.sellQty > 0 && pos.sellLeg?.brkLevel !== newLevel) {
+            const r = await live.changePositionBracket({
+              symbol: pos.sellLeg.symbol, stopLoss: newLevel, tag: `${pos.id}-SL-resync`,
+            });
+            if (r.ok && !r.skipped) { pos.sellLeg = { ...pos.sellLeg, brkLevel: newLevel }; persist = true; }
+          }
+          if (persist) {
+            await supabase.from('active_positions').update({
+              buy_leg: JSON.stringify(pos.buyLeg), sell_leg: JSON.stringify(pos.sellLeg),
+            }).eq('id', pos.id);
           }
         }
       } catch (e) {

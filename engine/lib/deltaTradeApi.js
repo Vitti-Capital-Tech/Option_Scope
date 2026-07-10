@@ -119,6 +119,20 @@ export async function editBracket(creds, bracket) {
   return signedRequest(creds, 'PUT', '/v2/orders/bracket', { body: bracket });
 }
 
+/**
+ * Set/replace the bracket (attached SL/TP) on an OPEN POSITION in place. This is the
+ * POSITION-level endpoint — unlike PUT /v2/orders/bracket (which edits a pending
+ * order's bracket and needs the parent order id + a matching limit price), this
+ * targets the position directly, so it can move the SL/TP on an already-open leg.
+ * Fields:
+ *   product_id | product_symbol (required),
+ *   bracket_stop_loss_price / bracket_take_profit_price (trigger prices, string),
+ *   bracket_stop_trigger_method ('spot_price' | 'mark_price' | 'last_traded_price').
+ */
+export async function changeBracketOrder(creds, bracket) {
+  return signedRequest(creds, 'POST', '/v2/positions/change_bracket_order', { body: bracket });
+}
+
 /** All open margined positions for the account. */
 export async function getLivePositions(creds) {
   return signedRequest(creds, 'GET', '/v2/positions/margined');

@@ -97,11 +97,13 @@ flag is passed to `upsert_delta_credentials` so the stored row's `status` reflec
 **Engine components**
 
 - `engine/lib/deltaTradeApi.js` — signed (HMAC-SHA256) client: `placeOrder`,
-  `cancelOrder`, `getLivePositions`, `getBalance`, `getLiveOrders`, `getFills`.
+  `cancelOrder`, `editOrder`, `editBracket`, `changeBracketOrder` (position-level
+  `POST /v2/positions/change_bracket_order`), `getLivePositions`, `getBalance`,
+  `getLiveOrders`, `getFills`, `getOrderHistory`.
 - `engine/lib/liveExecution.js` — the gated executor: `openSpread`, `closeLeg`,
-  `placeStop`, `cancelStop`, `positions`, `orders`, `fills`, `snapshot`,
-  `walletBalance`, `reconcile`. Reads the `DELTA_LIVE_DRYRUN` flag and the
-  per-account arm state.
+  `editOrder`, `changePositionBracket`, `placeStop`, `cancelStop`, `positions`,
+  `orders`, `fills`, `recentFillOrderIds`, `snapshot`, `walletBalance`, `reconcile`.
+  Reads the `DELTA_LIVE_DRYRUN` flag and the per-account arm state.
 - `engine/lib/supabase.js` — now prefers `SUPABASE_SERVICE_ROLE_KEY` so the engine
   can decrypt credentials.
 
@@ -113,7 +115,7 @@ logic is byte-for-byte unchanged when paper/disarmed:
 | --- | --- |
 | Entry (before `active_positions` insert) | Buy long @ ask + sell short @ bid (limit, `+entryBuyOffset`/`−entrySellOffset`). Each leg carries a **spot-triggered bracket** at the exit level (long → TP, short → SL). **A failed live send aborts the insert.** |
 | Entry (resting short-exit, armed real) | Resting reduce-only **limit BUY** on the short @ `shortExitPrice` (`${id}-SEX`) — the short buy-back (profit), sitting in Open Orders |
-| Short-leg exit | Active model: buy-to-close @ ask. Resting model: the `-SEX` limit fills on its own → book + place ladder (short SL bracket auto-cancels) |
+| Short-leg exit | Active model: buy-to-close @ ask. Resting model: the `-SEX` limit fills **fully** (order-id in fills **and** short position size 0) → book + place ladder (short SL bracket auto-cancels) |
 | Long laddered exit | Active model: sell reduce_only @ bid per level. Resting model: fixed-ladder resting **limit SELLs** fill on their own |
 | Partial ratio scale-down | Sell-to-close the reduced buy lot (`reduce_only`) @ bid (active model only) |
 | Risk exit (spot hits exit level) | **Brackets** close the whole spread exchange-side; engine's spot-cross catch-all (if up) also market-closes + books (reduce-only guards double-close) |
@@ -180,20 +182,34 @@ Two mechanisms run together — **resting profit exits** (engine-detected) and
   below), and a resting reduce-only **limit BUY** rests on the short leg @
   `shortExitPrice` (default $1.1), tag `${id}-SEX` — the short buy-back (profit),
   sitting in Open Orders.
-- **When the resting @1.1 fills** (detected by its `order_id` in recent `/v2/fills` —
-  restart-safe, id persisted in `sell_leg`): book the short exit (`${id}-SE` @ the
-  limit price), convert to long-only, and place the **fixed long ladder** as resting
-  **limit SELL** orders. (The short's SL bracket auto-cancels once the short is flat.)
+- **When the resting @1.1 fully fills** — detected by its `order_id` in recent
+  `/v2/fills` (restart-safe, id persisted in `sell_leg`) **and** confirmed by the short
+  leg's exchange position size reaching **0**: book the short exit (`${id}-SE` @ the limit
+  price), convert to long-only, and place the **fixed long ladder** as resting **limit
+  SELL** orders. (The short's SL bracket auto-cancels once the short is flat.)
+  - **Why the size-0 confirmation:** an `order_id` appears in `/v2/fills` on the **first
+    partial fill**, not only a full one. Laddering on a partial would drop long exit slices
+    while the short is still partly bought back ("lot qty not full but exit slices appear").
+    On a partial the engine **holds** until the remaining short contracts fill. A confirmed
+    fill (order id in fills) means the reduce-only buy-back genuinely traded, so size 0 is a
+    real close — a never-opened phantom short can't fill, so no separate open-latch is
+    needed.
 - **Fixed ladder** = 5 levels — `[10,20,30,40,50]` if the long bid < 25, else
-  `[25,50,75,100,125]` — with **integer-contract** slices split `[1,1,1,1,S-4]`
-  (remainder on the highest level; `S` = long contracts). Small longs degrade
-  gracefully: `S ≤ 5` → one contract per level, fewer levels; `S = 1` → a single
-  order (no ladder). Each slice books `${id}-LE-${stage}` @ its level as it fills.
+  `[25,50,75,100,125]` — with the `S` long contracts split **evenly** across the levels
+  (`≈ S/5` each; any remainder placed on the **highest** levels for a better price). Small
+  longs degrade gracefully: `S ≤ 5` → one contract per level, fewer levels; `S = 1` → a
+  single order (no ladder). Each slice books `${id}-LE-${stage}` @ its level as it fills.
 - **Risk exit:** the brackets close the whole spread at the exit level exchange-side.
   The engine ALSO runs a redundant spot-cross / expiry catch-all (cancel resting +
   market-close + book `${id}`) for when it is up — reduce-only prevents double-close.
-- **Fill-fetch guard:** the recent-fills fetch failing (null) makes the engine **hold**
-  all positions that cycle — it never infers a fill from a missing/empty result.
+- **Fill-fetch guard & egress gating:** the exit loop runs ~1×/second. To keep Delta API
+  load minimal, `/v2/fills` is fetched **only when this account holds a position for the
+  current underlying** (an idle account polls nothing); a failed fetch (null) still makes
+  the engine **hold** all positions that cycle rather than infer a fill from a missing
+  result. The `/v2/positions` snapshot (for the size-0 short-close confirmation above) is
+  fetched **only** while a short buy-back is mid-fill — i.e. its exit order id is already
+  in `/v2/fills` — not every cycle. So steady state is: idle → no calls; positions open →
+  fills only; short mid-exit → fills + positions for the brief close window.
 
 **Bookkeeping** uses the same deterministic `trade_id`s and idempotent upserts as
 paper. Slice PnL maps integer contracts back to fractional lots
@@ -209,22 +225,27 @@ points), so the spread is protected even if the engine is down:
 > [!NOTE]
 > **Exit Type / Exit Points are now per-schedule-window** (`effectiveConfig`, migration
 > `012`) with **active-window-governs** semantics. The bracket level is computed from the
-> **window active at entry**. When the window later flips (or you change exitType in the
-> filters), the engine's own spot-cross catch-all follows the new active window (it
-> market-closes at the new level while the engine is up), but the **exchange bracket is
-> NOT auto-moved** — it stays at the entry level as an engine-down backstop. So live
-> exits track the active window whenever the engine is running, with the entry-level
-> bracket as the fallback.
+> **window active at entry**. When the window later flips, the engine's own spot-cross
+> catch-all follows the new active window (it market-closes at the new level while the
+> engine is up); the exchange bracket for a window flip is **not** auto-moved and stays
+> at the entry level as an engine-down backstop.
 >
-> **The bracket-move resync was removed (was never functional).** `resyncRestingOrders`
-> previously tried to `editBracket` the SL/TP to the new level on config change. Delta's
-> `PUT /v2/orders/bracket` requires the **trigger price + a matching limit price + the
-> parent order id**, so those partial edits only ever failed with `bad_schema` (spamming
-> the error log on every restart, since startup passed an all-`null` old config that
-> forced the branch). It was dropped — no functional loss, since it never actually moved
-> a bracket. `resyncRestingOrders` now only re-syncs the **short buy-back limit price**
-> (`shortExitPrice` → `editOrder`), which works. exitType/exitPoints changes still take
-> effect live via the engine's spot-cross catch-all (reads `effectiveConfig` every ~1s).
+> **Changing `exitType` / `exitPoints` in the filters now MOVES the brackets** on
+> already-open positions. `resyncRestingOrders` calls the **position-level** endpoint
+> `POST /v2/positions/change_bracket_order` (via `live.changePositionBracket`) — long leg
+> → TP, short leg (while still open) → SL — at the new exit level (using the active
+> window's exit rule if one governs, else base config). Each leg stores its current
+> bracket level (`buyLeg.brkLevel` / `sellLeg.brkLevel`, set at entry) so resync skips
+> legs already at the target and only edits real drift. Idempotent; positions opened
+> before this feature have no `brkLevel` and resync on the first change.
+>
+> This replaces the earlier removed `editBracket` path, which used the **order-level**
+> `PUT /v2/orders/bracket` — that needs the parent order id + a matching limit price and
+> only ever failed with `bad_schema`. The position-level endpoint targets the open leg
+> directly. `resyncRestingOrders` also still re-syncs the **short buy-back limit price**
+> (`shortExitPrice` → `editOrder`). The startup sync passes an all-`null` old config, so
+> the bracket branch is skipped there (no edit spam) — brackets were already correct at
+> entry.
 
 - **Long buy** → `bracket_take_profit_price = exitLevel`
 - **Short sell** → `bracket_stop_loss_price = exitLevel`
@@ -248,8 +269,9 @@ no manual cancellation). This replaces the old mark-price disaster backstop.
 
 ### Live position sizing — balance allocation (Sub-stage A)
 
-Live accounts size positions from the **live Delta USDT wallet balance**, not the
-paper `$195k` notional cap:
+Live accounts size positions from the **live Delta USDT wallet balance** (the paper
+`$195k` figure is not the *budget*), while still honouring `$195k` as a **short-notional
+ceiling** on the resulting quantity (see the max-qty cap below):
 
 - Each account has a **`balance_allocation_pct`** (default **90**) — the share of
   wallet balance used for trading; the rest is buffer.
@@ -257,40 +279,50 @@ paper `$195k` notional cap:
   schedule windows (`max(numberOfCalls + numberOfPuts)`).
 - **part** = `(balance × allocation%) ÷ max positions`.
 
-**"1 part" factor sizing (scale to fill one part, keep the ratio).** The old model
-scaled the lot by `part ÷ margin`, producing *fractional* lots that rounded to `1:1`
-integer contracts on the exchange — destroying the ratio. The current model scales
-**both legs by a single whole integer `factor`**, so the ratio is preserved:
+**"1 unit" scale sizing (fill one part, keep the ratio).** The base unit is
+**1 long : `ratioToUse` short** (`ratioToUse` = the ATM-scaled sell quantity). The unit
+is scaled up to fill one part and both legs move together so the ratio is preserved:
 
-1. **setMargin** = margin of ONE "set" (the natural long lot + the ATM-scaled short
-   ratio): `calcMargin(entryBuyPrice, longLot, spot, ratioToUse, shortLot)` =
-   `entryBuyPrice × longLot + min($195k, spot × ratioToUse × shortLot) ÷ 200`
-   (`longLot`/`shortLot` = each leg's `contract_size`; leverage 200; `ratioToUse` = the
-   ATM-scaled sell quantity).
-2. **factor** = `max(1, floor(part ÷ setMargin))` — how many whole sets fit in one part,
-   **floored** so the ratio stays exact, **min 1**.
-3. `adjustedLotSize = longLot × factor`, `adjustedSellQty = ratioToUse × factor`. Both
-   legs scale by the same `factor`, so the ratio is unchanged — e.g. set margin $0.5,
-   part $10 → `factor 20` → `1:4` becomes `20:80`.
+1. **unit margin** = margin of ONE unit, using the **real per-contract underlying amount**
+   (`contractValue`, e.g. 0.001 BTC) and the **current spot** —
+   `calcMargin(entryBuyPrice, longCV, spot, ratioToUse, shortCV)`. Using the real contract
+   value (not the paper `lotSize = 1`) makes the estimate match Delta's actual margin
+   instead of blowing past the notional cap and pinning the size to 1.
+2. **scale** = `part ÷ unit margin`, floored at **1** (min one unit).
+3. **longC** = `round(scale)`; **shortC** = `round(longC × ratioToUse)` — the short follows
+   the rounded long at the base ratio, so `1:ratio` stays exact. `adjustedLotSize =
+   longLot × longC`, `adjustedSellQty = shortC`.
 
-**Minimum one set (no skip):** if even one set's margin exceeds the part
-(`setMargin > part`), `factor` stays `1` and the engine trades that single set anyway,
-logging a warning (`LIVE size: one set … exceeds 1 part …`). It does **not** skip the
-entry.
+**Ratio-spread max-qty cap (`$195k` short notional).** A large wallet balance would
+otherwise scale the spread past what the ratio spread itself supports. So after the
+balance scale, the quantity is capped so the **short notional**
+(`spot × short contracts × contract value`) never exceeds **`$195,000`** — the same
+ceiling paper applies. Effectively **final qty = `min(balance-allocated qty, notional-cap
+qty)`**:
+
+- `maxShort = floor($195k ÷ (spot × shortCV))`, `maxLong = floor(maxShort ÷ ratioToUse)`.
+- `longC` is capped to `maxLong` (min 1), `shortC` re-derived from it, with a final clamp
+  so integer rounding can't push the short notional back over the cap.
+- Balance funds **less** than the cap → the balance size wins unchanged. Balance funds
+  **more** → the cap wins (logged `🧢 LIVE qty capped by ratio-spread max …: long X → Y`).
+
+**Minimum one unit (no skip):** if even one unit's margin exceeds the part, `scale` stays
+`1` and the engine trades that single unit anyway (warning `LIVE size: one unit … exceeds
+1 part …`) — it does **not** skip the entry. The `$195k` clamp still applies to that unit.
 
 > [!NOTE]
 > The scaled lots are what the paper bookkeeping stores (and may be fractional). The
-> **integer contract count actually sent to Delta is a separate rounding step at order
-> time**: `longContracts = round(factor)`, `shortContracts = round(adjustedSellQty)`
-> (see the **contract-size mapping** open-item note above). So the on-exchange ratio
-> can differ slightly from the exact scaled ratio when `adjustedSellQty` isn't a whole
-> number.
+> **integer contract count sent to Delta** is `longContracts = longC` and
+> `shortContracts = round(adjustedSellQty)` — since `adjustedSellQty` (`shortC`) is already
+> a whole number, the on-exchange ratio matches the sized ratio (see the **contract-size
+> mapping** open-item note above).
 
-Paper accounts keep the `$195k` / 200× branch **unchanged** (the sizing branch is
-gated on `mode==='live' && live_enabled`). Dry-run logs the full breakdown
-(`💰 LIVE size <TYPE> <buy>/<sell>: set margin $… | part $… → factor … | long … short …
-(ratio 1:…) | est margin $…`) so the numbers — especially that the contract sizes and
-margins match Delta's actual figures — **must be validated before arming**.
+Paper accounts keep the `$195k` / 200× branch **unchanged** (the balance-sizing branch is
+gated on `mode==='live' && live_enabled`; only live adds the balance scale on top of the
+shared `$195k` notional ceiling). Dry-run logs the full breakdown
+(`💰 LIVE size <TYPE> <buy>/<sell>: unit margin $… | part $… → scale …× | long … short …
+(base 1:…) | est margin $… | cv …/…`) so the numbers — especially that the contract sizes
+and margins match Delta's actual figures — **must be validated before arming**.
 
 ### Account controls — Start / Pause (live only)
 
@@ -441,9 +473,10 @@ forwards the signed headers unchanged, so the browser's HMAC stays valid.
 4. When satisfied, set `DELTA_LIVE_DRYRUN=false`, restart, and arm a single account
    (`live_enabled = true`) with **tiny** size. On the first entry, verify in the
    dashboard (or Delta directly):
-   - **Sizing:** the `💰 LIVE size …` log shows the `set margin`, `part`, and integer
-     `factor`, with the scaled `long`/`short` holding the ratio, and the margins matching
-     Delta's real figures (not 1000× off).
+   - **Sizing:** the `💰 LIVE size …` log shows the `unit margin`, `part`, and `scale`,
+     with the scaled `long`/`short` holding the ratio and the margins matching Delta's real
+     figures (not 1000× off); if balance is large, confirm the `🧢 … capped by ratio-spread
+     max` line keeps the short notional ≤ `$195k`.
    - **Open Orders:** the resting short buy-back `@ shortExitPrice` (`-SEX`).
    - **Positions/Stop Orders:** the long-TP and short-SL **brackets** at the exit
      level. Confirm the **PUT bracket does not fire immediately** on entry, and that
