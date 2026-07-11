@@ -473,6 +473,11 @@ async function startSingleAccountEngine(account) {
     // Convert current UTC time to IST (UTC + 5:30)
     const istMin = (now.getUTCHours() * 60 + now.getUTCMinutes() + 330) % 1440;
 
+    // Track the most-recently-ended active window so an UNCOVERED gap (e.g. the ~1-min
+    // slot left by the default full-day Window 1 at 17:29–17:30) carries the PREVIOUS
+    // window's config forward instead of dropping to the account base config.
+    let mostRecent = null;
+    let minSinceEnd = Infinity;
     for (const s of schedules) {
       if (!s.isActive) continue;
       const [sh, sm] = s.startTime.split(':').map(Number);
@@ -480,13 +485,16 @@ async function startSingleAccountEngine(account) {
       const startMin = sh * 60 + sm;
       const endMin = eh * 60 + em;
       // Handle overnight windows (e.g. 22:00 -> 06:00)
-      if (startMin > endMin) {
-        if (istMin >= startMin || istMin < endMin) return s;
-      } else {
-        if (istMin >= startMin && istMin < endMin) return s;
-      }
+      const inWin = startMin > endMin
+        ? (istMin >= startMin || istMin < endMin)
+        : (istMin >= startMin && istMin < endMin);
+      if (inWin) return s; // a window that actually covers `now` always wins
+      const sinceEnd = (istMin - endMin + 1440) % 1440; // minutes since this window ended (wraps)
+      if (sinceEnd < minSinceEnd) { minSinceEnd = sinceEnd; mostRecent = s; }
     }
-    return null;
+    // No window covers `now`: fall back to the previous window's config in the gap.
+    // (null only when there are no active windows at all → caller uses base config.)
+    return mostRecent;
   }
 
   // Position slots = the PEAK (calls + puts) across ALL active schedule windows —

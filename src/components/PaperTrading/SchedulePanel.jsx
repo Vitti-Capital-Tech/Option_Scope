@@ -83,6 +83,16 @@ function getUnoccupiedSlots(schedules, excludeId = null) {
   return slots;
 }
 
+// Gaps surfaced in the UI drop trivial ≤1-min leftovers — chiefly the 1-minute
+// 17:29–17:30 slot the default full-day window (17:30→17:29) leaves. At runtime that
+// minute is covered by the previous window's config (see getActiveSchedule), so showing
+// it as "available" only confuses; a 1-min tradeable window is meaningless anyway.
+function getDisplaySlots(schedules, excludeId = null) {
+  return getUnoccupiedSlots(schedules, excludeId).filter(
+    s => ((s.end - s.start + 1440) % 1440) > 1
+  );
+}
+
 // Check if current window overlaps with any other active window
 function checkOverlap(schedules, current) {
   if (!current.isActive) return null;
@@ -387,7 +397,7 @@ export default function SchedulePanel({
           display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap'
         }}>
           <span style={{ fontWeight: 600 }}>Available slots (IST):</span>
-          {getUnoccupiedSlots(schedules).map((slot, idx) => (
+          {getDisplaySlots(schedules).map((slot, idx) => (
             <span key={idx} style={{
               color: 'var(--accent)', background: 'rgba(0,217,163,0.08)',
               padding: '2px 6px', borderRadius: 4, fontWeight: 500
@@ -395,7 +405,7 @@ export default function SchedulePanel({
               {formatMin(slot.start)} – {formatMin(slot.end === 1440 ? 0 : slot.end)}
             </span>
           ))}
-          {getUnoccupiedSlots(schedules).length === 0 && (
+          {getDisplaySlots(schedules).length === 0 && (
             <span style={{ color: '#f85149', fontWeight: 600 }}>All times occupied</span>
           )}
         </div>

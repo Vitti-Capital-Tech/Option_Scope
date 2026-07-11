@@ -102,14 +102,20 @@ const findActiveSchedule = (schedules, nowMs) => {
   const d = new Date(nowMs);
   const istMin = (d.getUTCHours() * 60 + d.getUTCMinutes() + 330) % 1440;
   const toMin = (t) => { const [h, m] = String(t || '00:00').split(':').map(Number); return (h || 0) * 60 + (m || 0); };
+  // Mirrors the engine's getActiveSchedule: a covering window wins; otherwise the gap
+  // carries the previous (most-recently-ended) window's config forward, not the base config.
+  let mostRecent = null, minSinceEnd = Infinity;
   for (const s of schedules) {
     if (s.isActive === false) continue;
     const start = toMin(s.startTime), end = toMin(s.endTime);
     const inWin = start > end ? (istMin >= start || istMin < end) : (istMin >= start && istMin < end);
     if (inWin) return s;
+    const sinceEnd = (istMin - end + 1440) % 1440;
+    if (sinceEnd < minSinceEnd) { minSinceEnd = sinceEnd; mostRecent = s; }
   }
-  return null;
+  return mostRecent;
 };
+
 
 export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const [accounts, setAccounts] = useState([]);
@@ -1239,8 +1245,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         setDraftConfig(loadedConfig);
         setConfigDbId(data.id);
         setIsConfigLoaded(true);
+        // Return the freshly-loaded config so the schedule fetch can seed Window 1 from
+        // it directly, instead of racing the async setConfig → configRef update (which
+        // left a new account's Window 1 seeded from the PREVIOUS account's / default config).
+        return loadedConfig;
       }
     } catch (e) { }
+    return null;
   }, [activeAccountId]);
 
   // Convert UTC time string 'HH:mm' or 'HH:mm:ss' to IST 'HH:mm'
@@ -1267,7 +1278,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     return `${String(utcH).padStart(2, '0')}:${String(utcM).padStart(2, '0')}`;
   };
 
-  const fetchSupabaseSchedules = useCallback(async () => {
+  const fetchSupabaseSchedules = useCallback(async (cfgForSeed = null) => {
     if (!activeAccountId) return;
     try {
       const { data, error } = await supabase
@@ -1300,7 +1311,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         // it persists on the next auto-save (lastSaved snapshot excludes it).
         const finalList = mapped.length > 0
           ? mapped
-          : [makeFirstWindow(configRef.current)];
+          : [makeFirstWindow(cfgForSeed ?? configRef.current)];
         setSchedules(finalList);
         lastSavedSchedulesRef.current = JSON.stringify(mapped.map(s => ({
           label: s.label,
@@ -1745,8 +1756,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
     fetchSupabaseActivePositions();
     fetchHistoryStats();
-    fetchSupabaseConfig();
-    fetchSupabaseSchedules();
+    // Load config FIRST, then seed schedules from it — so a new account's Window 1 is
+    // seeded from its own freshly-loaded config, not a stale configRef (see fetchSupabaseConfig).
+    (async () => {
+      const cfg = await fetchSupabaseConfig();
+      await fetchSupabaseSchedules(cfg);
+    })();
 
     const realtimeChannel = supabase
       .channel(`active_positions_changes_${activeAccountId}`)
