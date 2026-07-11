@@ -118,7 +118,7 @@ logic is byte-for-byte unchanged when paper/disarmed:
 | Entry (resting short-exit, armed real) | Resting reduce-only **limit BUY** on the short @ `shortExitPrice` (`${id}-SEX`) — the short buy-back (profit), sitting in Open Orders |
 | Short-leg exit | Active model: buy-to-close @ ask. Resting model: the `-SEX` limit fills **fully** (order-id in fills **and** short position size 0) → book + place ladder (short SL bracket auto-cancels) |
 | Long laddered exit | Active model: sell reduce_only @ bid per level. Resting model: fixed-ladder resting **limit SELLs** fill on their own |
-| Partial ratio scale-down | Sell-to-close the reduced buy lot (`reduce_only`) @ bid (active model only) |
+| Partial ratio scale-down | Sell-to-close the reduced buy lot (`reduce_only`) @ bid. Runs in **both** models: the active model fires it inline, and the armed-real resting model runs the **same** `applyAtmRatioScaling` helper on the long leg each cycle while the spread is full (the trigger is dynamic, so it actively sells rather than resting) |
 | Risk exit (spot hits exit level) | **Brackets** close the whole spread exchange-side; engine's spot-cross catch-all (if up) also market-closes + books (reduce-only guards double-close) |
 | **Expiry / zombie exit** | **No leg order** — Delta cash-settles expired options; brackets auto-cancel, resting orders cancelled |
 
@@ -200,6 +200,28 @@ Two mechanisms run together — **resting profit exits** (engine-detected) and
   (`≈ S/5` each; any remainder placed on the **highest** levels for a better price). Small
   longs degrade gracefully: `S ≤ 5` → one contract per level, fewer levels; `S = 1` → a
   single order (no ladder). Each slice books `${id}-LE-${stage}` @ its level as it fills.
+- **ATM-ratio scale-down (long leg):** while the spread is still full, each cycle runs
+  the **shared** `applyAtmRatioScaling` helper — the *same* code the active model uses.
+  When the live ATM ratio has risen and gross PnL clears the checkpoint threshold, it
+  reduces the long lot in fractional 10% steps, books each slice as an `${id}-PE-<lots>`
+  partial, and fires a **reduce-only SELL @ bid** (`${id}-PEX-…`). Unlike the short
+  buy-back and the long ladder, this trigger is **dynamic** (depends on the live ratio at
+  the moment), so it can't sit as a resting order — it actively sells, like the spot-cross
+  catch-all. It touches only the long leg (the short's resting buy-back and SL bracket are
+  untouched) and leaves `sellQty` unchanged, so the short-fill sequence above is unaffected.
+  Once the short exits and the position is long-only, scaling stops and the ladder takes over.
+  - **Whole-contract sizing.** The engine's `lotSize` is a fractional notional lot but
+    Delta trades **whole contracts**, so the real order is sized by the change in the
+    *rounded* contract count — `round(lotBefore/base) − round(lotAfter/base)` — **not** by
+    rounding each cycle's fractional 10% chunk independently (which forced a minimum of 1
+    contract and would over-close small positions — a 10% step on a 3-contract position
+    would sell a whole contract = 33%). Sub-contract 10% steps **accumulate** across cycles
+    (the fractional bookkeeping still advances every cycle, like paper) and one contract is
+    sold only when the rounded count actually drops; no order is sent on cycles that don't
+    cross a whole contract. This keeps the exchange position exactly `= round(lotSize/base)`,
+    which is what every long-close path (`longContracts`) also uses, so they reconcile.
+    A position too small for a 10% step to ever reach half a contract (≈ ≤4 contracts for a
+    50% floor) simply doesn't scale — it is never over-closed.
 - **Risk exit:** the brackets close the whole spread at the exit level exchange-side.
   The engine ALSO runs a redundant spot-cross / expiry catch-all (cancel resting +
   market-close + book `${id}`) for when it is up — reduce-only prevents double-close.
