@@ -2211,11 +2211,12 @@ body.light-theme .scanner-logs-body::-webkit-scrollbar-thumb:hover {
 
 .pt-legrail.call,
 .pt-legrail.long {
-  background: var(--call);
+  background: var(--call); /* green — long position / buy order */
 }
 
-.pt-legrail.put {
-  background: var(--put);
+.pt-legrail.put,
+.pt-legrail.short {
+  background: var(--put); /* red — short position / sell order */
 }
 
 .pt-dist {

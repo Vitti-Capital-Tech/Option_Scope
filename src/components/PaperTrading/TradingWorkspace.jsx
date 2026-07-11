@@ -274,7 +274,8 @@ function LiveOrdersTab({ orders, spotPrice, onCancelOrder }) {
           const isCall = (o.product_symbol || '').startsWith('C-');
           return (
             <tr key={o.id ?? o.client_order_id} className={`pt-row-${isCall ? 'call' : 'put'}`}>
-              <td><span className={`pt-legrail ${isCall ? 'call' : 'put'}`} /><span className="pt-instrument">{o.product_symbol || '—'}</span></td>
+              {/* Vertical rail before the symbol: GREEN for a long (buy) order, RED for a short (sell). */}
+              <td className='flex flex-row gap-2 items-center'><span className={`pt-legrail ${sell ? 'short' : 'long'}`}/><span className="pt-instrument">{o.product_symbol || '—'}</span></td>
               <td className="r"><span style={{ color: sell ? 'var(--put)' : 'var(--call)', fontWeight: 700 }}>{qty > 0 ? '+' : ''}{qty}</span></td>
               <td className="r">{fmtNum(filled, 0)}</td>
               <td className="r">{sizeBtc} {unit}</td>
@@ -662,8 +663,9 @@ function DeltaPositionsTable({ positions, enginePositions, onExitPosition, onClo
             const enginePos = posBySymbol[p.product_symbol];
             return (
               <tr key={p.product_id ?? p.product_symbol ?? i} className={`pt-row-${isCall ? 'call' : 'put'}`}>
-                <td>
-                  <span className={`pt-legrail ${isCall ? 'call' : 'put'}`} />
+                <td className='flex flex-row gap-2 items-center'>
+                  {/* Vertical rail before the symbol: GREEN for a long position, RED for a short. */}
+                  <span className={`pt-legrail ${long ? 'long' : 'short'}`} />
                   <span className="pt-instrument">{p.product_symbol || '—'}</span>
                 </td>
                 <td className="r"><span style={{ color: long ? 'var(--call)' : 'var(--put)', fontWeight: 700 }}>{long ? '+' : ''}{btc} {unit}</span></td>
