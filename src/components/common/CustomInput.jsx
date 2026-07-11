@@ -26,10 +26,33 @@ const CustomInput = React.forwardRef(({
   const showStep = isNumber && showStepper !== false;
   const hasAdornment = prefix != null || suffix != null || showStep;
 
+  // Uncontrolled ONLY for the react-hook-form `{...register(...)}` case: RHF passes NO
+  // `value` and DOES forward a `ref` (routed to `ref` here), driving the input through that
+  // ref. Forcing `value=""` there (the earlier bug) blanked the field on mount and wiped it
+  // on blur, because RHF never feeds `value` back. Everything else stays CONTROLLED — a
+  // `value={…}`/`onChange` caller (no ref) that happens to pass `undefined` keeps its old
+  // empty-string behaviour, so no existing usage regresses. The number "draft" UX
+  // (empty-while-typing, default-on-blur) applies to the controlled path only.
+  const isControlled = value !== undefined || ref == null;
+
+  // Keep our own ref so the steppers can read the current value in uncontrolled mode,
+  // while still forwarding the node to the caller's ref (e.g. RHF's register ref). The
+  // forwarded ref is read through a ref cell so `setRefs` stays stable (empty deps) — a
+  // changing callback-ref identity would make React detach/reattach it every render.
+  const innerRef = React.useRef(null);
+  const forwardedRef = React.useRef(ref);
+  forwardedRef.current = ref;
+  const setRefs = React.useCallback((node) => {
+    innerRef.current = node;
+    const r = forwardedRef.current;
+    if (typeof r === 'function') r(node);
+    else if (r) r.current = node;
+  }, []);
+
   // Number fields keep an editable "draft" string while focused so the user can
   // clear the field (backspace to empty) and type a fresh value, instead of it
   // snapping to 0 on every keystroke. The default (min, else 0) is applied on
-  // blur / Enter when the field is left empty.
+  // blur / Enter when the field is left empty. Controlled mode only.
   const [focused, setFocused] = React.useState(false);
   const [draft, setDraft] = React.useState('');
   const isPartial = (v) => v === '' || v === '-' || v === '.' || v === '-.';
@@ -39,12 +62,15 @@ const CustomInput = React.forwardRef(({
     : value;
 
   const handleFocus = (e) => {
-    if (isNumber) { setFocused(true); setDraft(value == null ? '' : String(value)); }
+    if (isNumber && isControlled) { setFocused(true); setDraft(value == null ? '' : String(value)); }
     try { e.target.select(); } catch { /* not selectable */ }
     if (onFocus) onFocus(e);
   };
 
   const handleChange = (e) => {
+    // Uncontrolled (register): the DOM/ref owns the value and RHF reads it — pass the
+    // native event straight through, no local draft handling.
+    if (!isControlled) { if (onChange) onChange(e); return; }
     if (isNumber) {
       const raw = e.target.value;
       setDraft(raw);
@@ -56,7 +82,7 @@ const CustomInput = React.forwardRef(({
   };
 
   const handleBlur = (e) => {
-    if (isNumber) {
+    if (isNumber && isControlled) {
       setFocused(false);
       if (isPartial(draft)) {
         const fallback = min != null ? min : 0;
@@ -71,24 +97,36 @@ const CustomInput = React.forwardRef(({
     if (onKeyDown) onKeyDown(e);
   };
 
-  // Stepper: bump the committed value by `step`, clamped to min/max.
+  // Stepper: bump the committed value by `step`, clamped to min/max. Reads the current
+  // value from the `value` prop (controlled) or the DOM node (uncontrolled / register).
   const decimals = String(step).includes('.') ? (String(step).split('.')[1] || '').length : 0;
   const bump = (dir) => {
     if (disabled) return;
-    const base = Number.isFinite(Number(value)) ? Number(value) : 0;
+    const cur = isControlled ? value : (innerRef.current ? innerRef.current.value : '');
+    const base = Number.isFinite(Number(cur)) ? Number(cur) : 0;
     let next = base + dir * (Number(step) || 1);
     if (min != null) next = Math.max(Number(min), next);
     if (max != null) next = Math.min(Number(max), next);
     const out = decimals ? Number(next.toFixed(decimals)) : next;
-    setDraft(String(out));
-    if (onChange) onChange({ target: { value: String(out) } });
+    if (isControlled) {
+      setDraft(String(out));
+      if (onChange) onChange({ target: { value: String(out) } });
+    } else if (innerRef.current) {
+      // Write through the DOM node so RHF's ref sees the new value, then notify onChange.
+      innerRef.current.value = String(out);
+      if (onChange) onChange({ target: innerRef.current });
+    }
   };
+
+  // `value` is set ONLY in controlled mode; omitting it in uncontrolled mode keeps the
+  // input ref-managed (RHF), which is what fixes the blank-on-open / wipe-on-blur bug.
+  const valueProp = isControlled ? { value: displayValue } : {};
 
   // Plain input (no adornment) — text/date/time, or number with steppers disabled.
   if (!hasAdornment) {
     return (
       <input
-        ref={ref}
+        ref={setRefs}
         type={type}
         disabled={disabled}
         className={`custom-input-field ${error ? 'error' : ''} ${className}`}
@@ -96,7 +134,7 @@ const CustomInput = React.forwardRef(({
         step={isNumber ? step : undefined}
         min={min}
         max={max}
-        value={displayValue}
+        {...valueProp}
         onChange={handleChange}
         onFocus={handleFocus}
         onBlur={handleBlur}
@@ -115,14 +153,14 @@ const CustomInput = React.forwardRef(({
     >
       {prefix != null && <span className="uin-pre">{prefix}</span>}
       <input
-        ref={ref}
+        ref={setRefs}
         type={type}
         disabled={disabled}
         className="uin-input"
         step={isNumber ? step : undefined}
         min={min}
         max={max}
-        value={displayValue}
+        {...valueProp}
         onChange={handleChange}
         onFocus={handleFocus}
         onBlur={handleBlur}
