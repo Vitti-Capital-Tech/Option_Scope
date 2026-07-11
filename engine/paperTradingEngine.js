@@ -516,6 +516,22 @@ async function startSingleAccountEngine(account) {
     return calcMargin(pos.entryBuyPrice, lot, spotPrice, 0, 1);
   }
 
+  // Correct-basis margin for a full/partial spread. A LIVE position is sized on the real
+  // per-contract underlying amount at entry (buyLeg.contractValue, e.g. 0.001 BTC), so its
+  // carried margin MUST use that basis: the paper lotSize basis over-states a live margin
+  // ~100× (short term = spot × sellQty × 1 vs × contractValue), which bloats `usedMargin`
+  // and starves the live entry budget. `longCV` is the long leg's contract value — pass
+  // null for a paper-sized position to get the unchanged notional basis. Mirrors the entry
+  // formula (calcMargin with longCV × contracts for the long, shortCV for the short).
+  function contractBasisMargin(pos, longCV) {
+    if (longCV == null) {
+      return calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, spotPrice, pos.sellQty, pos.sellLeg.lotSize || 1);
+    }
+    const longLot = longCV * longContracts(pos.buyLeg);
+    const shortCV = pos.sellQty > 0 ? (symbolMeta[pos.sellLeg?.symbol]?.contractValue ?? longCV) : 1;
+    return calcMargin(pos.entryBuyPrice, longLot, spotPrice, pos.sellQty, shortCV);
+  }
+
   // ── Live exit handling (armed live accounts only) ────────────────────────
   // Replaces the paper simulated exits. Exits are driven by the shared index
   // trigger level (exitType/exitPoints vs buy strike): SHORT closes first (SL),
@@ -1732,13 +1748,11 @@ async function startSingleAccountEngine(account) {
               pos.buyLeg.lotSize = currentLotSize;
               pos.accumulatedSellPnl = accumulatedPartialBuyPnl; // DB column name is misleading; tracks buy leg partial PnL
 
-              pos.margin = calcMargin(
-                pos.entryBuyPrice,
-                pos.buyLeg.lotSize,
-                spotPrice,
-                pos.sellQty,
-                pos.sellLeg.lotSize || 1
-              );
+              // Correct-basis margin: live positions (buyLeg.contractValue set) use the
+              // contract-value basis like entry; paper positions (contractValue null) keep
+              // the notional lotSize basis unchanged. Gated on the position's OWN stored
+              // contractValue — NOT symbolMeta — so paper accounts are byte-for-byte the same.
+              pos.margin = contractBasisMargin(pos, pos.buyLeg.contractValue ?? null);
 
               // LIVE: sell the reduced buy-leg lot (reduce_only) at the current bid.
               // Delta trades WHOLE contracts, so size the order by the change in the
@@ -2173,6 +2187,65 @@ async function startSingleAccountEngine(account) {
       }
 
       const liveArmed = accountState.mode === 'live' && !!accountState.live_enabled;
+
+      // SELF-HEAL live margin basis. Positions opened before the account was armed (or
+      // before live sizing existed) carry a PAPER notional margin (short term =
+      // spot × sellQty × 1 / 200) that is ~100× a real Delta margin, so their summed
+      // `usedMargin` dwarfs the live budget and blocks all new entries. Recompute each
+      // open live position's margin on the real contract-value basis (the same basis
+      // entry uses), backfill buyLeg.contractValue from symbolMeta, and persist on change
+      // so carried-over positions self-correct over the next cycle. Runs on full cycles
+      // for the current underlying only (spotPrice applies to it); armed-live only, so
+      // paper accounts are untouched.
+      if (liveArmed && !onlyExits) {
+        for (const pos of remaining) {
+          if (pos.underlying !== underlying) continue;
+          // Prefer symbolMeta's contractValue (authoritative exchange constant) over the
+          // stored one, so a WRONG stored value (e.g. a legacy `?? lotSize` default of 1)
+          // self-corrects — not just a missing one. Fall back to the stored value only when
+          // the symbol is no longer in meta (e.g. expired).
+          const metaCV = symbolMeta[pos.buyLeg?.symbol]?.contractValue ?? null;
+          const longCV = metaCV ?? pos.buyLeg?.contractValue ?? null;
+          if (longCV == null) continue; // no contract-value basis available — leave as-is
+          const corrected = contractBasisMargin(pos, longCV);
+          const beforeCV = pos.buyLeg.contractValue;
+          const cvChanged = beforeCV == null || Math.abs((beforeCV || 0) - longCV) > 1e-12;
+
+          // Drift reference = the last value PERSISTED to the DB, anchored to the DB-loaded
+          // margin on first encounter — captured BEFORE the in-memory overwrite below. Drift
+          // is measured against THIS, not the value we rewrite each cycle; otherwise tiny
+          // per-minute steps would each stay under the threshold and the DB would drift
+          // unbounded from reality while never triggering a write.
+          if (pos._persistedMargin == null) pos._persistedMargin = pos.margin ?? corrected;
+          const ref = pos._persistedMargin;
+
+          // Correct IN-MEMORY every cycle so THIS cycle's sizing (usedMargin) is accurate.
+          // Free — no DB write, no realtime egress.
+          if (cvChanged) pos.buyLeg.contractValue = longCV;
+          pos.margin = corrected;
+
+          // Persist (→ a realtime broadcast to every open UI tab) only on a MATERIAL change:
+          // a contractValue fix, or margin drift past max($0.50, 2%) since the last persist.
+          // Routine minute-to-minute spot drift stays in-memory only; a legacy paper→live
+          // correction is large and always persists on the first cycle.
+          const material = Math.abs((ref || 0) - corrected) > Math.max(0.5, 0.02 * Math.abs(ref || corrected));
+          if (cvChanged || material) {
+            try {
+              await supabase.from('active_positions').update({
+                margin: pos.margin,
+                buy_leg: JSON.stringify(pos.buyLeg),
+              }).eq('id', pos.id);
+              pos._persistedMargin = corrected;
+              const cvNote = cvChanged ? `, contractValue ${beforeCV == null ? 'backfilled' : `${beforeCV}→${longCV}`}` : '';
+              const verb = cvChanged ? 'corrected' : 'refreshed';
+              log(`[${accountState.name}] 🔧 Live margin ${verb} ${pos.id}: $${(ref || 0).toFixed(2)} → $${pos.margin.toFixed(2)} (contract-value basis${cvNote})`);
+            } catch (e) {
+              logError(`[${accountState.name}] Live margin self-heal persist failed for ${pos.id}:`, e);
+            }
+          }
+        }
+      }
+
       let partMargin = null;
       if (!onlyExits && !paused && liveArmed) {
         try {
@@ -2297,8 +2370,17 @@ async function startSingleAccountEngine(account) {
             // 0.001 BTC) and the CURRENT spot price — NOT the (paper) lotSize=1 — so the
             // estimate matches Delta's actual margin instead of blowing past the notional
             // cap and pinning scale to 1.
-            const longCV = symbolMeta[spread.buyLeg.symbol]?.contractValue ?? originalLotSize;
-            const shortCV = symbolMeta[spread.sellLeg.symbol]?.contractValue ?? sellLotSize;
+            // Live sizing/margin MUST use the real per-contract underlying amount
+            // (contractValue, e.g. 0.001 BTC). If it's missing from symbolMeta, the old
+            // `?? lotSize` default (=1) silently mis-sized the live order ~1000× (1 vs
+            // 0.001) AND stamped a bad contractValue basis that the margin self-heal
+            // couldn't fix. Skip the entry instead of guessing a size.
+            const longCV = symbolMeta[spread.buyLeg.symbol]?.contractValue ?? null;
+            const shortCV = symbolMeta[spread.sellLeg.symbol]?.contractValue ?? null;
+            if (longCV == null || shortCV == null) {
+              logWarn(`[${accountState.name}] LIVE entry ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: contractValue missing from symbolMeta (buy ${spread.buyLeg.symbol}=${longCV}, sell ${spread.sellLeg.symbol}=${shortCV}) — cannot size a live order safely.`);
+              continue;
+            }
             liveLongCV = longCV; // persist as the leg's margin basis for later long-only recompute
             const baseMargin = calcMargin(entryBuyPrice, longCV, spotPrice, ratioToUse, shortCV);
             scale = (baseMargin > 0) ? (partMargin / baseMargin) : 1;

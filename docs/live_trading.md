@@ -346,6 +346,15 @@ qty)`**:
 1 part …`) — it does **not** skip the entry. The `$195k` clamp still applies to that unit.
 
 > [!IMPORTANT]
+> **Missing `contractValue` → skip, never guess.** The sizing math above needs the real
+> per-contract underlying (`contractValue`) from `symbolMeta` for BOTH legs. If it is absent
+> for either leg, the engine **skips the entry** (warning `LIVE entry … skipped: contractValue
+> missing …`) instead of falling back to `lotSize` (=1). That fallback (the earlier behaviour)
+> would mis-size the live order ~1000× (`1` vs `0.001`) **and** stamp a bad `contractValue`
+> basis onto the position that the margin self-heal below could not later distinguish from a
+> correct value.
+
+> [!IMPORTANT]
 > **Long-only margin uses the live contract-value basis, not the paper `lotSize`.** A live
 > position is sized on `contractValue` (real per-contract underlying, e.g. 0.001 BTC), which
 > is persisted on `buyLeg.contractValue` at entry. When the short exits and the position
@@ -355,6 +364,28 @@ qty)`**:
 > and forcing later entries (into slots freed by short-exits) down to the minimum 1 unit
 > (~$2–3 margin vs the intended part). Paper-sized positions (`contractValue == null`) still
 > use `lotSize`, unchanged.
+
+> [!NOTE]
+> **Margin self-heal (armed-live, each full evaluation cycle).** Positions opened before the
+> account was armed (paper mode), or before `contractValue` was persisted, carry a paper
+> notional margin ~100× a real Delta margin — which bloats `usedMargin`, drives
+> `remainingBudget` to `$0`, and blocks all new live entries. Each full cycle (~1/min) the
+> engine recomputes every open live position's margin on the contract-value basis
+> (`contractBasisMargin`), **preferring `symbolMeta`'s `contractValue`** over the stored one —
+> so a **missing** (`null`) *or* **wrong** (e.g. a legacy `1`) value both self-correct, and
+> `buyLeg.contractValue` is backfilled/updated. A symbol no longer in `symbolMeta` (e.g.
+> expired) falls back to the stored value rather than being skipped.
+>
+> The correction is applied **in-memory every cycle** (so that cycle's sizing is accurate —
+> free, no I/O), but **persisted to the DB only on a material change**: a `contractValue`
+> fix, or margin drift past `max($0.50, 2%)` **since the last persist** (tracked on the
+> transient `pos._persistedMargin`, anchored to the DB value on first encounter so slow
+> per-minute drift can't unbound the stored value). Because every `active_positions` write
+> broadcasts the row to open UI tabs over realtime, this keeps routine minute-to-minute spot
+> drift in-memory only — no per-minute write/broadcast storm — while bounding how far the
+> stored margin can lag reality (≈ one threshold). Logs `🔧 Live margin corrected …` on a
+> `contractValue` fix and `🔧 Live margin refreshed …` on a spot-drift persist. Paper accounts
+> are untouched (armed-live only, `!onlyExits`).
 
 > [!NOTE]
 > The scaled lots are what the paper bookkeeping stores (and may be fractional). The
