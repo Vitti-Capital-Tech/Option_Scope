@@ -323,6 +323,17 @@ qty)`**:
 `1` and the engine trades that single unit anyway (warning `LIVE size: one unit … exceeds
 1 part …`) — it does **not** skip the entry. The `$195k` clamp still applies to that unit.
 
+> [!IMPORTANT]
+> **Long-only margin uses the live contract-value basis, not the paper `lotSize`.** A live
+> position is sized on `contractValue` (real per-contract underlying, e.g. 0.001 BTC), which
+> is persisted on `buyLeg.contractValue` at entry. When the short exits and the position
+> becomes long-only, `longOnlyMargin()` recomputes `pos.margin` on that SAME basis
+> (`contractValue × longContracts`). Using the paper `lotSize` there (the earlier bug)
+> mis-stated a live long-only margin — inflating `usedMargin`, starving `remainingBudget`,
+> and forcing later entries (into slots freed by short-exits) down to the minimum 1 unit
+> (~$2–3 margin vs the intended part). Paper-sized positions (`contractValue == null`) still
+> use `lotSize`, unchanged.
+
 > [!NOTE]
 > The scaled lots are what the paper bookkeeping stores (and may be fractional). The
 > **integer contract count sent to Delta** is `longContracts = longC` and

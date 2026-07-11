@@ -503,6 +503,19 @@ async function startSingleAccountEngine(account) {
     return Math.max(1, (config.numberOfCalls || 0) + (config.numberOfPuts || 0));
   }
 
+  // Margin of a LONG-ONLY position (short already exited). It MUST use the same basis as
+  // the position was sized on, else the live remaining-budget math is skewed: a live
+  // position is sized on the real per-contract underlying amount (`buyLeg.contractValue`,
+  // e.g. 0.001 BTC), NOT the paper `lotSize`. Using lotSize here mis-states a live
+  // long-only margin (inflated when lotSize ≠ contract value), which bloats `usedMargin`,
+  // starves `remainingBudget`, and forces new entries down to the minimum 1 unit. Falls
+  // back to lotSize for paper-sized positions (contractValue == null) — unchanged there.
+  function longOnlyMargin(pos) {
+    const cv = pos.buyLeg?.contractValue;
+    const lot = cv != null ? cv * longContracts(pos.buyLeg) : (pos.buyLeg?.lotSize || 0);
+    return calcMargin(pos.entryBuyPrice, lot, spotPrice, 0, 1);
+  }
+
   // ── Live exit handling (armed live accounts only) ────────────────────────
   // Replaces the paper simulated exits. Exits are driven by the shared index
   // trigger level (exitType/exitPoints vs buy strike): SHORT closes first (SL),
@@ -592,7 +605,7 @@ async function startSingleAccountEngine(account) {
         contracts: longContracts(pos.buyLeg), stopPrice: triggerLevel, tag: `${pos.id}-TP`,
       });
       pos.buyLeg = { ...pos.buyLeg, tpOrderId: tpRes?.order?.id ?? pos.buyLeg.tpOrderId ?? null, longExitBaseLot: pos.buyLeg.lotSize };
-      pos.margin = calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, spotPrice, 0, 1);
+      pos.margin = longOnlyMargin(pos);
       try {
         await supabase.from('active_positions').update({
           buy_leg: JSON.stringify(pos.buyLeg), sell_leg: JSON.stringify(pos.sellLeg),
@@ -1127,7 +1140,7 @@ async function startSingleAccountEngine(account) {
         });
       }
       pos.buyLeg = { ...pos.buyLeg, longExitBaseLot: baseLot, ladderOrders };
-      pos.margin = calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, spotPrice, 0, 1);
+      pos.margin = longOnlyMargin(pos);
       try {
         await supabase.from('active_positions').update({
           buy_leg: JSON.stringify(pos.buyLeg), sell_leg: JSON.stringify(pos.sellLeg),
@@ -1178,7 +1191,7 @@ async function startSingleAccountEngine(account) {
         log(`[${accountState.name}] 🪜 LONG FULLY EXITED (resting ladder): ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | ${newlyFilled.length} slice(s) this cycle`);
         return;
       }
-      pos.margin = calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, spotPrice, 0, 1);
+      pos.margin = longOnlyMargin(pos);
       try {
         await supabase.from('active_positions').update({
           buy_leg: JSON.stringify(pos.buyLeg), entry_fee: pos.entryFee, margin: pos.margin,
@@ -1614,7 +1627,7 @@ async function startSingleAccountEngine(account) {
             longExitStage: 0,
             longExitLevels: generatedLevels,
           };
-          pos.margin = calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, spotPrice, 0, 1);
+          pos.margin = longOnlyMargin(pos);
           log(`[${accountState.name}] 🎚️ Long ladder set: ${pos.buyLeg.strike} | bid at exit: ${longBidAtExit} | config variable: ${config.variableExitSlices} | levels ${JSON.stringify(pos.buyLeg.longExitLevels)}`);
 
           try {
@@ -1739,7 +1752,7 @@ async function startSingleAccountEngine(account) {
                 continue;
               }
 
-              pos.margin = calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, spotPrice, 0, 1);
+              pos.margin = longOnlyMargin(pos);
               try {
                 await supabase.from('active_positions').update({
                   buy_leg: JSON.stringify(pos.buyLeg),
@@ -2229,6 +2242,7 @@ async function startSingleAccountEngine(account) {
           let adjustedSellQty = ratioToUse;
           let scale = 1;
           let liveMargin = null; // real (contract_value-based) margin, stored for live positions
+          let liveLongCV = null; // long-leg contract value — the LIVE margin basis (null = paper-sized)
 
           if (liveArmed) {
             // LIVE: scale the 1:ratio base UNIT by (part budget ÷ one-unit margin), then
@@ -2244,6 +2258,7 @@ async function startSingleAccountEngine(account) {
             // cap and pinning scale to 1.
             const longCV = symbolMeta[spread.buyLeg.symbol]?.contractValue ?? originalLotSize;
             const shortCV = symbolMeta[spread.sellLeg.symbol]?.contractValue ?? sellLotSize;
+            liveLongCV = longCV; // persist as the leg's margin basis for later long-only recompute
             const baseMargin = calcMargin(entryBuyPrice, longCV, spotPrice, ratioToUse, shortCV);
             scale = (baseMargin > 0) ? (partMargin / baseMargin) : 1;
             if (scale < 1) {
@@ -2300,7 +2315,11 @@ async function startSingleAccountEngine(account) {
             maxAtmRatio: entryAtmRatio,
             originalLotSize: spread.buyLeg.lotSize || 1,
             originalSellQty: ratioToUse,
-            initialScaledLotSize: adjustedLotSize
+            initialScaledLotSize: adjustedLotSize,
+            // LIVE margin basis (real per-contract underlying amount). Present only for
+            // live-sized positions; null → paper-sized (margin uses lotSize). Read by
+            // longOnlyMargin() so a short-exit recompute matches the entry margin basis.
+            contractValue: liveLongCV
           };
           const sellLegWithIv = { ...spread.sellLeg, entryIv: entrySellIv };
 
