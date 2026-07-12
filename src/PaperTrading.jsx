@@ -2004,13 +2004,34 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
   useEffect(() => {
     if (!isActiveLive) { setLiveExchangeState(null); return; }
-    // Realtime-driven only — no 20s poll. The engine now upserts live_exchange_state
+    // Realtime-driven only — no 20s poll. The engine upserts live_exchange_state
     // only when it structurally changes (else once per 60s keepalive), and Realtime
-    // pushes each change → we refetch on demand. Dropping the redundant interval poll
-    // removes a full-snapshot read every 20s per open tab. We still refetch once when
-    // the tab regains focus, to catch up on anything missed while hidden.
-    const refresh = () => { if (document.visibilityState === 'visible') fetchLiveExchangeState(); };
-    refresh(); // prime on mount / account switch
+    // pushes each change with the FULL new row in the payload. We apply that row
+    // directly instead of firing a second `.select('*')` read per change — killing
+    // the double-read of the heaviest payload in the app (positions + orders +
+    // fills + order_history) per open tab.
+    fetchLiveExchangeState(); // prime on mount / account switch
+    // Apply an already-delivered row through the same staleness + close-guard path
+    // fetchLiveExchangeState uses, so behaviour is identical minus the extra read.
+    const applyRow = (row) => {
+      if (!row) { setLiveExchangeState(null); return; }
+      const age = Date.now() - new Date(row.updated_at).getTime();
+      setLiveExchangeState(age < HEARTBEAT_STALE_THRESHOLD ? applyCloseGuard(row) : null);
+    };
+    const onChange = (payload) => {
+      const row = payload?.new;
+      // Realtime truncates oversized rows (columns arrive missing). If the payload
+      // looks complete, use it for free; otherwise fall back to a full refetch so a
+      // large snapshot is never dropped or partially applied.
+      if (payload?.eventType !== 'DELETE' && row && typeof row === 'object'
+          && 'updated_at' in row && 'positions' in row) {
+        applyRow(row);
+      } else {
+        fetchLiveExchangeState();
+      }
+    };
+    // On regaining focus, catch up on anything the socket missed while backgrounded
+    // (browsers can suspend WS in hidden tabs). One read on show, not per change.
     const handleVisibility = () => { if (document.visibilityState === 'visible') fetchLiveExchangeState(); };
     document.addEventListener('visibilitychange', handleVisibility);
 
@@ -2018,14 +2039,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       .channel(`live_exchange_state_${activeAccountId}`)
       .on('postgres_changes',
         { event: '*', schema: 'public', table: 'live_exchange_state', filter: `account_id=eq.${activeAccountId}` },
-        refresh)
+        onChange)
       .subscribe();
 
     return () => {
       document.removeEventListener('visibilitychange', handleVisibility);
       supabase.removeChannel(channel);
     };
-  }, [fetchLiveExchangeState, isActiveLive, activeAccountId]);
+  }, [fetchLiveExchangeState, isActiveLive, activeAccountId, applyCloseGuard]);
 
   // ── Spot price (for PnL display math) ────────────────────────────────
   useEffect(() => {

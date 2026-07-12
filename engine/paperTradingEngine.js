@@ -3132,6 +3132,12 @@ async function startSingleAccountEngine(account) {
 
       log(`[${accountState.name}] Paper Trading Engine stopped.`);
     },
+    // Whether this account is currently armed for live trading. The manager uses
+    // this to skip the live-only request polls (delta close/cancel) when nothing
+    // is live — those handlers no-op for paper accounts anyway — and to scope them
+    // to just the live account ids otherwise. Reads live accountState so it tracks
+    // updateAccount() mode flips.
+    isLive() { return accountState.mode === 'live' && accountState.live_enabled; },
     updateAccount(newAccount) {
       const prevMode = accountState.mode;
       accountState = newAccount;
@@ -3345,11 +3351,22 @@ export async function startPaperTradingEngine() {
   async function pollAllRequests() {
     const ids = Object.keys(runningEngines);
     if (!ids.length) return;
+    // delta_close_requests / delta_cancel_requests can only ever have work for
+    // armed live accounts (their handlers no-op for paper). When nothing is live,
+    // skip those two queries entirely — halving idle request-poll egress on a
+    // paper-only deployment — and scope them to just the live ids when present.
+    // closeAll + manualEx still cover ALL accounts, so manual-action responsiveness
+    // is unchanged (same 1.5s cadence, same handlers fire).
+    const liveIds = ids.filter(id => runningEngines[id]?.isLive?.());
     try {
       const [closeAllRes, closeReqRes, cancelReqRes, manualExRes] = await Promise.all([
         supabase.from('paper_trading_accounts').select('id').eq('close_all_requested', true).in('id', ids),
-        supabase.from('delta_close_requests').select('account_id').in('account_id', ids),
-        supabase.from('delta_cancel_requests').select('account_id').in('account_id', ids),
+        liveIds.length
+          ? supabase.from('delta_close_requests').select('account_id').in('account_id', liveIds)
+          : Promise.resolve({ data: [] }),
+        liveIds.length
+          ? supabase.from('delta_cancel_requests').select('account_id').in('account_id', liveIds)
+          : Promise.resolve({ data: [] }),
         supabase.from('active_positions').select('account_id').eq('exit_requested', true).in('account_id', ids),
       ]);
       const pending = {};
