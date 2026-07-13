@@ -110,6 +110,10 @@ CREATE TABLE IF NOT EXISTS public.paper_trading_config (
     short_exit_price NUMERIC NOT NULL DEFAULT 1.1,
     long_exit_slices INTEGER NOT NULL DEFAULT 10,
     variable_exit_slices BOOLEAN NOT NULL DEFAULT false,
+    -- Which strategy logic this account runs: live accounts stay on 1 (stable),
+    -- an experimental paper account is bumped to 2 to test new logic. Engine and
+    -- UI both branch on this value. See migration 018.
+    strategy_version INTEGER NOT NULL DEFAULT 1,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 

@@ -40,6 +40,29 @@ const ENTRY_CHASE = {
 };
 
 /**
+ * ── STRATEGY VERSIONING ──────────────────────────────────────────────────────
+ * `config.strategyVersion` (per-account, from paper_trading_config.strategy_version)
+ * gates experimental strategy logic so it can be tested on a PAPER account without
+ * affecting LIVE accounts. Live accounts stay on version 1; bump an experimental
+ * paper account to 2 to run new logic.
+ *
+ * Add a branch ONLY where behaviour actually changes — everything else stays shared:
+ *
+ *     if (config.strategyVersion >= 2) {
+ *       // new experimental logic
+ *     } else {
+ *       // stable logic — live accounts run this
+ *     }
+ *
+ * `config` is threaded into scanTickers()/schedule windows too, so `config.strategyVersion`
+ * is available there as well. The frontend reads the same value to show/hide any v2-only
+ * UI controls, so a v2 filter neither runs nor appears on a v1 (live) account.
+ *
+ * Promotion: once validated on paper, set the live account's strategy_version to 2 in
+ * the DB (no redeploy). Once ALL accounts are on the new version, DELETE the old branch
+ * so versions don't pile up — keep at most stable (live) + experimental (paper) alive.
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
  * Build `count` equidistant exit price levels (sorted ascending) spanning the
  * long option's current bid up to `upperBound` (= max(entry, last 1-2hr high)).
  * Used to scale a held long-only leg out as its bid recovers. Levels are evenly
@@ -140,7 +163,11 @@ async function startSingleAccountEngine(account) {
     longExitSlices: 10,
     balanceAllocationPct: 90,
     entryBuyOffset: 5,
-    entrySellOffset: 2
+    entrySellOffset: 2,
+    // Which strategy logic to run. 1 = stable (live accounts); an experimental
+    // paper account is set to 2+ to test new logic. Branch on it wherever the
+    // behaviour diverges — see the STRATEGY VERSIONING note below.
+    strategyVersion: 1
   };
   let products = [];
   let expiries = [];
@@ -257,6 +284,7 @@ async function startSingleAccountEngine(account) {
           balance_allocation_pct: 90,
           entry_buy_offset: 5,
           entry_sell_offset: 2,
+          strategy_version: 1,
           updated_at: new Date().toISOString()
         };
         const { data: inserted, error: insertErr } = await supabase
@@ -296,7 +324,8 @@ async function startSingleAccountEngine(account) {
           variableExitSlices: data.variable_exit_slices ?? false,
           balanceAllocationPct: data.balance_allocation_pct ?? 90,
           entryBuyOffset: data.entry_buy_offset ?? 5,
-          entrySellOffset: data.entry_sell_offset ?? 2
+          entrySellOffset: data.entry_sell_offset ?? 2,
+          strategyVersion: data.strategy_version ?? 1
         };
         configDbId = data.id;
         // log(`[${accountState.name}] Config loaded: ${config.underlying} | Expiry: ${config.expiry || 'auto'}`);

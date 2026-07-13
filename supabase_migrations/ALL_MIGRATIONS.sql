@@ -750,3 +750,12 @@ CREATE POLICY "Users manage cancel requests of their own accounts"
 -- can mirror Delta's real order-history feed for armed live accounts. Additive.
 ALTER TABLE public.live_exchange_state
     ADD COLUMN IF NOT EXISTS order_history JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+
+-- ─── 018_strategy_version.sql ───
+-- Per-account strategy_version: lets experimental strategy logic (new filters,
+-- changed entry/exit rules) run on a PAPER account (version 2) while LIVE accounts
+-- stay on the stable version 1. Engine and UI both branch on this value. Defaults
+-- to 1 so existing accounts are unchanged. Additive.
+ALTER TABLE public.paper_trading_config
+  ADD COLUMN IF NOT EXISTS strategy_version INTEGER NOT NULL DEFAULT 1;

@@ -753,7 +753,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           variable_exit_slices: data.variableExitSlices ?? false,
           balance_allocation_pct: data.balanceAllocationPct ?? 90,
           entry_buy_offset: data.entryBuyOffset ?? 5,
-          entry_sell_offset: data.entrySellOffset ?? 2
+          entry_sell_offset: data.entrySellOffset ?? 2,
+          strategy_version: 1
         }]);
 
         // For live accounts, store the (encrypted) Delta credentials via RPC.
@@ -1247,6 +1248,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           exit_points: 0,
           leg_swap_premium: 0,
           variable_exit_slices: false,
+          strategy_version: 1,
           updated_at: new Date().toISOString()
         };
         const { data: inserted, error: insertErr } = await supabase
@@ -1281,7 +1283,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           exitPoints: data.exit_points ?? 0,
           shortExitPrice: data.short_exit_price ?? 1.1,
           longExitSlices: data.long_exit_slices ?? 10,
-          variableExitSlices: data.variable_exit_slices ?? false
+          variableExitSlices: data.variable_exit_slices ?? false,
+          // Which strategy logic this account runs (1 = stable/live, 2+ = experimental
+          // paper). Gate v2-only UI controls on this so they don't show on live accounts,
+          // e.g. {config.strategyVersion >= 2 && <NewFilterField />}. See migration 018.
+          strategyVersion: data.strategy_version ?? 1
         };
         setConfig(loadedConfig);
         setDraftConfig(loadedConfig);
