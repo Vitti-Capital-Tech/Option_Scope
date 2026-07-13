@@ -335,7 +335,7 @@ function LiveStopOrdersTab({ stopOrders, spotPrice, onCancelOrder }) {
           const isCall = (o.product_symbol || '').startsWith('C-');
           return (
             <tr key={o.id ?? o.client_order_id} className={`pt-row-${isCall ? 'call' : 'put'}`}>
-              <td><span className={`pt-legrail ${isCall ? 'call' : 'put'}`} /><span className="pt-instrument">{o.product_symbol || '—'}</span></td>
+              <td><span className={`pt-legrail ${sell ? 'short' : 'long'}`} /><span className="pt-instrument">{o.product_symbol || '—'}</span></td>
               <td className="r"><span style={{ color: sell ? 'var(--put)' : 'var(--call)', fontWeight: 700 }}>{qty > 0 ? '+' : ''}{qty}</span></td>
               <td className="r">{sizeBtc} {unit}</td>
               <td className="r">{notional != null ? `$${fmtNum(notional)}` : '—'}</td>
@@ -384,7 +384,7 @@ function LiveFillsTab({ fills }) {
           const isCall = (f.product_symbol || '').startsWith('C-');
           return (
             <tr key={f.id ?? `${f.order_id}-${f.created_at}`} className={`pt-row-${isCall ? 'call' : 'put'}`}>
-              <td><span className={`pt-legrail ${isCall ? 'call' : 'put'}`} /><span className="pt-instrument">{f.product_symbol || '—'}</span></td>
+              <td><span className={`pt-legrail ${sell ? 'short' : 'long'}`} /><span className="pt-instrument">{f.product_symbol || '—'}</span></td>
               <td className="r"><span style={{ color: sell ? 'var(--put)' : 'var(--call)', fontWeight: 700 }}>{fmtNum(size, 0)}</span></td>
               <td><span style={{ color: sell ? 'var(--put)' : 'var(--call)', fontWeight: 600 }}>{cap(f.side)}</span></td>
               <td className="r">{fmtNum(orderQty, 0)}</td>
@@ -554,7 +554,7 @@ function LiveOrderHistoryTab({ orderHistory }) {
           const trigger = num(o.stop_price) ?? num(o.bracket_stop_loss_price) ?? num(o.bracket_take_profit_price);
           return (
             <tr key={o.id ?? `${o.client_order_id}-${i}`} className={`pt-row-${isCall ? 'call' : 'put'}`}>
-              <td><span className={`pt-legrail ${isCall ? 'call' : 'put'}`} /><span className="pt-instrument">{o.product_symbol || '—'}</span></td>
+              <td><span className={`pt-legrail ${sell ? 'short' : 'long'}`} /><span className="pt-instrument">{o.product_symbol || '—'}</span></td>
               <td><span style={{ color: sell ? 'var(--put)' : 'var(--call)', fontWeight: 600 }}>{sideLabel}</span></td>
               <td><span style={{ color: statusColor(status), fontWeight: 600 }}>{status}</span></td>
               <td className="r"><span style={{ color: optColor, fontWeight: 700 }}>{Math.abs(size)}</span></td>
