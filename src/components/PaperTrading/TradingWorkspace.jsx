@@ -2,21 +2,23 @@ import React, { useState } from 'react';
 import ActivePositionsTable from './ActivePositionsTable';
 import TradeHistoryTable from './TradeHistoryTable';
 import { formatDateTime } from '../../scannerUtils';
+import { Activity, Clock, AlertOctagon, Check, History, Shield, Loader2, ChevronLeft, ChevronRight, Calendar, Download, RefreshCw } from 'lucide-react';
 
 // ── Icons ───────────────────────────────────────────────────────────────
-const ICONS = {
-  positions: <path d="M22 12h-4l-3 9L9 3l-3 9H2" />,
-  open: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 3" /></>,
-  stop: <><path d="M4.9 4.9 19.1 19.1" /><circle cx="12" cy="12" r="9" /></>,
-  fills: <><path d="M20 6 9 17l-5-5" /></>,
-  history: <><path d="M3 3v5h5" /><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8" /><path d="M12 7v5l3 2" /></>,
-  risk: <><path d="M12 2 2 7v6c0 5 4 8 10 9 6-1 10-4 10-9V7z" /></>,
+const IconMap = {
+  positions: Activity,
+  open: Clock,
+  stop: AlertOctagon,
+  fills: Check,
+  history: History,
+  risk: Shield,
 };
 
-const Icon = ({ name, size = 15 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
-    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{ICONS[name]}</svg>
-);
+const Icon = ({ name, size = 15 }) => {
+  const Comp = IconMap[name];
+  if (!Comp) return null;
+  return <Comp size={size} strokeWidth={2} />;
+};
 
 // Exit trigger for a position — mirrors ActivePositionsTable's logic so the
 // Stop Orders tab stays consistent with the distance-to-exit meter there.
@@ -37,10 +39,7 @@ function LoadingPanel() {
   return (
     <div className="pt-empty">
       <div className="pt-empty-icon idle">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="2"
-          strokeLinecap="round" strokeLinejoin="round" style={{ animation: 'spin 0.8s linear infinite' }}>
-          <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-        </svg>
+        <Loader2 size={24} stroke="var(--text-dim)" strokeWidth={2} style={{ animation: 'spin 0.8s linear infinite' }} />
       </div>
       <span className="pt-empty-title">Loading live data…</span>
       <span className="pt-empty-desc">Fetching positions, orders and history from Delta Exchange.</span>
@@ -53,7 +52,7 @@ function EmptyPanel({ icon, title, desc }) {
   return (
     <div className="pt-empty">
       <div className="pt-empty-icon idle">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{ICONS[icon]}</svg>
+        <Icon name={icon} size={24} />
       </div>
       <span className="pt-empty-title">{title}</span>
       <span className="pt-empty-desc">{desc}</span>
@@ -547,7 +546,7 @@ function LiveOrderHistoryTab({ orderHistory }) {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <button type="button" onClick={() => shiftDate(-1)} title="Previous day" style={arrowBtn}>
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+            <ChevronLeft size={11} strokeWidth={3} />
           </button>
           {filterDate ? (
             <input
@@ -560,12 +559,12 @@ function LiveOrderHistoryTab({ orderHistory }) {
           ) : (
             <button type="button" onClick={() => setFilterDate(todayYmd())} title="Filter by date"
               style={{ display: 'flex', alignItems: 'center', gap: 6, height: 22, padding: '0 8px', background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text)', cursor: 'pointer', fontSize: 10, fontWeight: 700, letterSpacing: '0.04em' }}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></svg>
+              <Calendar size={12} strokeWidth={2.2} stroke="#fff" />
               ALL DATES
             </button>
           )}
           <button type="button" onClick={() => shiftDate(1)} title="Next day" style={arrowBtn}>
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6" /></svg>
+            <ChevronRight size={11} strokeWidth={3} />
           </button>
           {filterDate && (
             <button type="button" onClick={() => setFilterDate('')} title="Show all dates"
@@ -588,7 +587,7 @@ function LiveOrderHistoryTab({ orderHistory }) {
                 letterSpacing: '0.04em'
               }}
             >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
+              <Download size={12} strokeWidth={2.5} />
               EXPORT CSV
             </button>
           )}
@@ -937,10 +936,8 @@ export default function TradingWorkspace(props) {
             {props.onSync && (
               <button type="button" onClick={props.onSync} disabled={props.isSyncing} className="pt-btn-sync"
                 title="Refresh positions, orders and history from the engine">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
-                  style={props.isSyncing ? { animation: 'spin 0.8s linear infinite' } : undefined}>
-                  <path d="M23 4v6h-6M1 20v-6h6" /><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
-                </svg>
+                <RefreshCw size={12} strokeWidth={2.5}
+                  style={props.isSyncing ? { animation: 'spin 0.8s linear infinite' } : undefined} />
                 {props.isSyncing ? 'Syncing…' : 'Sync'}
               </button>
             )}

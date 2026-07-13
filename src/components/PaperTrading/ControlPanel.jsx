@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { fmtExpiry } from '../../api';
+import { ChevronDown } from 'lucide-react';
 import CustomSelect from '../common/CustomSelect';
 import CustomInput from '../common/CustomInput';
 import SchedulePanel from './SchedulePanel';
@@ -85,22 +86,14 @@ export default function ControlPanel({
             onClick={() => setIsFiltersCollapsed(!isFiltersCollapsed)}
           >
             <span>{isFiltersCollapsed ? 'SHOW FILTERS' : 'HIDE FILTERS'}</span>
-            <svg
-              width="12"
-              height="12"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
+            <ChevronDown
+              size={12}
+              strokeWidth={2.5}
               style={{
                 transition: 'transform 0.25s ease',
                 transform: isFiltersCollapsed ? 'rotate(0deg)' : 'rotate(180deg)'
               }}
-            >
-              <polyline points="6 9 12 15 18 9"></polyline>
-            </svg>
+            />
           </button>
         </div>
 

@@ -1,5 +1,6 @@
 import React from 'react';
 import { fmtExpiry } from '../../api';
+import { LogOut, Loader2 } from 'lucide-react';
 
 export default function ConfirmExitModal({
   isOpen,
@@ -20,11 +21,7 @@ export default function ConfirmExitModal({
     <div className="modal-overlay-wrapper" style={{ animation: 'fadeIn 0.15s ease-out' }}>
       <div className="modal-container-delete" style={{ maxWidth: 450 }}>
         <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: '#f85149', display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M10 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-4" />
-            <polyline points="17 8 12 3 7 8" />
-            <line x1="12" y1="3" x2="12" y2="15" />
-          </svg>
+          <LogOut width="18" height="18" strokeWidth={2} />
           Confirm Manual Exit
         </h3>
         
@@ -131,10 +128,7 @@ export default function ConfirmExitModal({
           >
             {isExiting ? (
               <>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" style={{ animation: 'spin 0.8s linear infinite' }}>
-                  <circle cx="12" cy="12" r="10" stroke="rgba(255, 255, 255, 0.25)" />
-                  <path d="M12 2a10 10 0 0 1 10 10" stroke="#ffffff" />
-                </svg>
+                <Loader2 size={14} className="animate-spin" strokeWidth={3} />
                 Executing Exit...
               </>
             ) : 'Confirm Exit'}

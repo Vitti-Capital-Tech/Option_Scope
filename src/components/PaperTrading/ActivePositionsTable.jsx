@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Activity, RefreshCw, Loader2 } from 'lucide-react';
 import { fmtExpiry } from '../../api';
 import { formatDateTime } from '../../scannerUtils';
 import CustomSelect from '../common/CustomSelect';
@@ -118,7 +119,7 @@ export default function ActivePositionsTable({
     <div className={embedded ? 'pt-embedded live' : 'pt-section live'}>
       <div className={`pt-section-header pt-pos-header${embedded ? ' pt-embedded-header' : ''}`}>
         <div className="pt-section-title">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></svg>
+          <Activity size={16} strokeWidth={2} />
           {title} · {underlying}
           <span className="pt-section-count">{visiblePositions.length}</span>
         </div>
@@ -148,9 +149,7 @@ export default function ActivePositionsTable({
               title="Refresh now"
               className="pt-status-refresh"
             >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 12C21 16.9706 16.9706 21 12 21C7.02944 21 3 16.9706 3 12C3 7.02944 7.02944 3 12 3C15.5398 3 18.5997 5.04419 20.0886 8M20.0886 8H16.0886M20.0886 8V4" />
-              </svg>
+              <RefreshCw size={13} strokeWidth={2} />
             </button>
           </div>
 
@@ -183,12 +182,7 @@ export default function ActivePositionsTable({
       {visiblePositions.length === 0 ? (
         <div className="pt-empty">
           <div className="pt-empty-icon scanning">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke={engineStatusColor} strokeWidth="2">
-              <circle cx="12" cy="12" r="10" />
-              <path d="M12 2a10 10 0 0 1 0 20" strokeDasharray="4 4">
-                <animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="3s" repeatCount="indefinite" />
-              </path>
-            </svg>
+            <Loader2 width="24" height="24" stroke={engineStatusColor} strokeWidth={2} style={{ animation: 'spin 3s linear infinite' }} />
           </div>
           <span className="pt-empty-title">{emptyTitle}</span>
           <span className="pt-empty-desc">{emptyDesc}</span>

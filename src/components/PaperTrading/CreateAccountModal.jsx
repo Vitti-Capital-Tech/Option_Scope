@@ -1,4 +1,5 @@
 import React from 'react';
+import { Loader2 } from 'lucide-react';
 import CustomSelect from '../common/CustomSelect';
 import CustomInput from '../common/CustomInput';
 import DeltaCredentialsSection from './DeltaCredentialsSection';
@@ -404,10 +405,7 @@ export default function CreateAccountModal({
           >
             {isCreating ? (
               <>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" style={{ animation: 'spin 0.8s linear infinite' }}>
-                  <circle cx="12" cy="12" r="10" stroke="rgba(0,0,0,0.25)" />
-                  <path d="M12 2a10 10 0 0 1 10 10" stroke="#000" />
-                </svg>
+                <Loader2 size={14} className="animate-spin" strokeWidth={3} />
                 Creating...
               </>
             ) : 'Create Account'}

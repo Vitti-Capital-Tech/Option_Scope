@@ -1,4 +1,5 @@
 import React, { useState, useCallback } from 'react';
+import { Plus, AlertTriangle, Lock, X, Trash2 } from 'lucide-react';
 import CustomInput from '../common/CustomInput';
 import CustomSelect from '../common/CustomSelect';
 
@@ -385,7 +386,7 @@ export default function SchedulePanel({
           onMouseOver={e => e.currentTarget.style.background = 'rgba(59,130,246,0.2)'}
           onMouseOut={e => e.currentTarget.style.background = 'rgba(59,130,246,0.12)'}
         >
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+          <Plus size={11} strokeWidth={3} />
           Add Window
         </button>
       </div>
@@ -470,7 +471,7 @@ export default function SchedulePanel({
                       style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'rgba(248,81,73,0.1)', border: '1px solid rgba(248,81,73,0.3)', padding: '4px 8px', borderRadius: 4, fontSize: 9, fontWeight: 700, color: '#f85149', cursor: 'help' }}
                       title={`Time overlaps with "${overlapWindow.label || 'another window'}" (${cleanTime(overlapWindow.startTime)} – ${cleanTime(overlapWindow.endTime)})`}
                     >
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
+                      <AlertTriangle size={10} strokeWidth={3} />
                       OVERLAP
                     </div>
                   )}
@@ -481,7 +482,7 @@ export default function SchedulePanel({
                       title="Window 1 is permanent and cannot be deleted (it holds the account's default filters). You can still edit its time and values."
                       style={{ display: 'flex', alignItems: 'center', color: 'var(--border)', padding: 5, cursor: 'not-allowed' }}
                     >
-                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>
+                      <Lock size={15} strokeWidth={2.5} />
                     </div>
                   ) : (
                     <button
@@ -497,9 +498,9 @@ export default function SchedulePanel({
                       title={s.isNew ? "Cancel window" : "Delete schedule window"}
                     >
                       {s.isNew ? (
-                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                        <X size={15} strokeWidth={2.5} />
                       ) : (
-                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14H6L5 6" /><path d="M10 11v6M14 11v6" /><path d="M9 6V4h6v2" /></svg>
+                        <Trash2 size={15} strokeWidth={2.5} />
                       )}
                     </button>
                   )}
@@ -601,7 +602,7 @@ export default function SchedulePanel({
         }}>
           {hasOverlap && (
             <span style={{ fontSize: 10, color: '#f85149', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4, marginRight: 'auto' }}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ transform: 'translateY(-1px)' }}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
+              <AlertTriangle size={12} strokeWidth={2.5} style={{ transform: 'translateY(-1px)' }} />
               Time overlap detected between active windows.
             </span>
           )}
@@ -643,7 +644,7 @@ export default function SchedulePanel({
         <div className="modal-overlay-wrapper" style={{ animation: 'fadeIn 0.15s ease-out' }}>
           <div className="modal-container-delete" style={{ maxWidth: 360, margin: 'auto' }}>
             <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: '#f85149', display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ transform: 'translateY(-1px)' }}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
+              <AlertTriangle size={16} strokeWidth={2.5} style={{ transform: 'translateY(-1px)' }} />
               Delete Schedule Window
             </h3>
             <p style={{ margin: 0, fontSize: '13px', lineHeight: '1.5', color: 'var(--text)' }}>

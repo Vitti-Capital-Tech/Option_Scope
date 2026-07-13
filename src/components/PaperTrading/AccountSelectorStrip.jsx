@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { User, ChevronDown, Columns, Check, Edit, Plus, Trash2, LogOut } from 'lucide-react';
 
 function LiveBadge({ account }) {
   if (!account || account.mode !== 'live') return null;
@@ -93,10 +94,7 @@ export default function AccountSelectorStrip({
             onClick={() => setIsOpen(!isOpen)}
           >
             <div className="account-dropdown-trigger-content">
-              <svg className="account-icon-avatar" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-                <circle cx="12" cy="7" r="4"></circle>
-              </svg>
+              <User className="account-icon-avatar" size={14} strokeWidth={2.5} />
               <span className="account-dropdown-name">{activeAccount?.name || 'Select Account'}</span>
               {/* One status badge only. PAUSED takes precedence over LIVE — a paused
                   account is not actively trading, so showing "LIVE" too would be
@@ -106,21 +104,15 @@ export default function AccountSelectorStrip({
                 ? <PausedBadge account={activeAccount} />
                 : <LiveBadge account={activeAccount} />}
             </div>
-            <svg 
+            <ChevronDown 
               className="account-chevron-icon" 
-              width="12" 
-              height="12" 
-              viewBox="0 0 24 24" 
-              fill="none" 
-              stroke="currentColor" 
-              strokeWidth="2.5"
+              size={12} 
+              strokeWidth={2.5}
               style={{
                 transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)',
                 transition: 'transform 0.2s ease'
               }}
-            >
-              <polyline points="6 9 12 15 18 9"></polyline>
-            </svg>
+            />
           </button>
 
           {isOpen && (
@@ -140,19 +132,14 @@ export default function AccountSelectorStrip({
                       }}
                     >
                       <div className="account-dropdown-item-left">
-                        <svg className="account-dropdown-item-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-                          <line x1="9" y1="3" x2="9" y2="21"></line>
-                        </svg>
+                        <Columns className="account-dropdown-item-icon" size={14} strokeWidth={2.5} />
                         <span>{acc.name}</span>
                         {acc.paused
                           ? <PausedBadge account={acc} />
                           : <LiveBadge account={acc} />}
                       </div>
                       {isSelected && (
-                        <svg className="account-selected-checkmark" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="3">
-                          <polyline points="20 6 9 17 4 12"></polyline>
-                        </svg>
+                        <Check className="account-selected-checkmark" size={14} strokeWidth={3} stroke="var(--accent)" />
                       )}
                     </button>
                   );
@@ -170,10 +157,7 @@ export default function AccountSelectorStrip({
             title="Edit account details"
             style={{ padding: '6px 8px' }}
           >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-              <path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-            </svg>
+            <Edit size={13} strokeWidth={2.5} />
           </button>
         )}
 
@@ -181,10 +165,7 @@ export default function AccountSelectorStrip({
           onClick={triggerCreateAccount}
           className="account-selector-btn new-acc"
         >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-            <line x1="12" y1="5" x2="12" y2="19"></line>
-            <line x1="5" y1="12" x2="19" y2="12"></line>
-          </svg>
+          <Plus size={12} strokeWidth={2.5} />
           New Account
         </button>
 
@@ -194,10 +175,7 @@ export default function AccountSelectorStrip({
             className="account-selector-btn delete-acc"
             title="Delete Active Account"
           >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <polyline points="3 6 5 6 21 6"></polyline>
-              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-            </svg>
+            <Trash2 size={12} strokeWidth={2.5} />
             Delete
           </button>
         )}
@@ -265,11 +243,7 @@ export default function AccountSelectorStrip({
               onClick={() => setShowLogoutConfirm(true)}
               className="account-selector-logout-btn"
             >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
-                <polyline points="16 17 21 12 16 7"></polyline>
-                <line x1="21" y1="12" x2="9" y2="12"></line>
-              </svg>
+              <LogOut size={12} strokeWidth={2.5} />
               Logout
             </button>
           </div>
@@ -280,11 +254,7 @@ export default function AccountSelectorStrip({
         <div className="modal-overlay-wrapper" onClick={() => setShowLogoutConfirm(false)}>
           <div className="modal-container-delete" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '380px' }}>
             <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
-                <polyline points="16 17 21 12 16 7"></polyline>
-                <line x1="21" y1="12" x2="9" y2="12"></line>
-              </svg>
+              <LogOut size={18} strokeWidth={2.5} stroke="var(--text-dim)" />
               Confirm Logout
             </h3>
             

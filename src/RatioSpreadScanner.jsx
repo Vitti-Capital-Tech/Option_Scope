@@ -12,6 +12,7 @@ import { normalizeIv, toFiniteNumber, matchesOptionType } from './scannerUtils';
 import Navbar from './components/PaperTrading/Navbar';
 import CustomSelect from './components/common/CustomSelect';
 import CustomInput from './components/common/CustomInput';
+import { ChevronDown } from 'lucide-react';
 
 // ── Main Scanner Component ──────────────────────────────────────────────────
 export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
@@ -644,22 +645,15 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
               onClick={() => setIsFiltersCollapsed(!isFiltersCollapsed)}
             >
               <span>{isFiltersCollapsed ? 'SHOW FILTERS' : 'HIDE FILTERS'}</span>
-              <svg
-                width="12"
-                height="12"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
+              <ChevronDown
+                size={12}
+                strokeWidth={2.5}
                 style={{
                   transition: 'transform 0.25s ease',
                   transform: isFiltersCollapsed ? 'rotate(0deg)' : 'rotate(180deg)'
                 }}
-              >
-                <polyline points="6 9 12 15 18 9"></polyline>
-              </svg>
+              />
+
             </button>
           </div>
 

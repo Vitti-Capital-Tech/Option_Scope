@@ -7,6 +7,7 @@ import {
 import { normalizeIv, toFiniteNumber, matchesOptionType, formatTime, formatDateTime } from './scannerUtils';
 import { useTabListener } from './useTabSync';
 import { supabase } from './supabase';
+import { Loader2, AlertTriangle } from 'lucide-react';
 
 import Navbar from './components/PaperTrading/Navbar';
 import LoginCard from './components/PaperTrading/LoginCard';
@@ -2605,10 +2606,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     return (
       <div className="app" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
-          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2.5" style={{ animation: 'spin 0.9s linear infinite' }}>
-            <circle cx="12" cy="12" r="10" stroke="rgba(59, 130, 246,0.15)" />
-            <path d="M12 2a10 10 0 0 1 10 10" />
-          </svg>
+          <Loader2 size={36} className="animate-spin" stroke="var(--accent)" strokeWidth={2.5} style={{ animation: 'spin 0.9s linear infinite' }} />
           <span style={{ fontSize: 13, color: 'var(--text-dim)' }}>Loading...</span>
         </div>
       </div>
@@ -2844,9 +2842,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         <div className="modal-overlay-wrapper" onClick={() => setConfirmDialog(null)} style={{ animation: 'fadeIn 0.15s ease-out' }}>
           <div className="modal-container-delete" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 400, margin: 'auto' }}>
             <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 700, color: '#f85149', display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
-              </svg>
+              <AlertTriangle size={18} strokeWidth={2.5} />
               {confirmDialog.title || 'Please confirm'}
             </h3>
             <p style={{ margin: 0, fontSize: '13px', lineHeight: '1.5', color: 'var(--text)' }}>

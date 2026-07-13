@@ -1,4 +1,5 @@
 import React from 'react';
+import { Loader2 } from 'lucide-react';
 
 export default function DeleteAccountModal({
   isOpen,
@@ -74,10 +75,7 @@ export default function DeleteAccountModal({
           >
             {isDeleting ? (
               <>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" style={{ animation: 'spin 0.8s linear infinite' }}>
-                  <circle cx="12" cy="12" r="10" stroke="rgba(255, 255, 255, 0.25)" />
-                  <path d="M12 2a10 10 0 0 1 10 10" stroke="#ffffff" />
-                </svg>
+                <Loader2 size={14} className="animate-spin" strokeWidth={3} />
                 Deleting...
               </>
             ) : 'Delete Account'}

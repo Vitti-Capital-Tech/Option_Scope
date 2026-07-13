@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Loader2 } from 'lucide-react';
 import CustomSelect from '../common/CustomSelect';
 import CustomInput from '../common/CustomInput';
 import { verifyDeltaCredentials } from '../../deltaAuth';
@@ -192,10 +193,7 @@ export default function DeltaCredentialsSection({ register, watch, setValue, exi
             >
               {verifying ? (
                 <>
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" style={{ animation: 'spin 0.8s linear infinite' }}>
-                    <circle cx="12" cy="12" r="10" stroke="rgba(128,128,128,0.35)" />
-                    <path d="M12 2a10 10 0 0 1 10 10" />
-                  </svg>
+                  <Loader2 size={13} className="animate-spin" strokeWidth={3} />
                   Verifying…
                 </>
               ) : 'Verify Connection'}

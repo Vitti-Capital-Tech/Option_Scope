@@ -2,6 +2,7 @@ import React from 'react';
 import { fmtExpiry } from '../../api';
 import { formatDateTime } from '../../scannerUtils';
 import CustomInput from '../common/CustomInput';
+import { Clock, ChevronLeft, ChevronRight, List, Download } from 'lucide-react';
 
 // Same palette as the schedule timeline so the capacity chips line up visually
 // with the windows shown in SchedulePanel.
@@ -124,7 +125,7 @@ export default function TradeHistoryTable({
         <div className="pt-history-row-1">
           <div className="pt-history-title-area">
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '32px', height: '32px', borderRadius: '8px', background: 'rgba(59, 130, 246, 0.1)', color: 'var(--accent)' }}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 8v4l3 3" /><circle cx="12" cy="12" r="10" /></svg>
+              <Clock size={18} strokeWidth={2.5} />
             </div>
             <div style={{ display: 'flex', flexDirection: 'column' }}>
               <span style={{ fontWeight: 700, fontSize: '14px', letterSpacing: '0.5px', color: 'var(--text)' }}>Order History</span>
@@ -138,7 +139,7 @@ export default function TradeHistoryTable({
           {/* Date navigator (right-aligned) */}
           <div className="pt-history-date-filter">
             <button onClick={() => adjustFilterDay(-1)} title="Previous Day" style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', display: 'flex', padding: '6px', borderRadius: '6px' }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+              <ChevronLeft size={16} strokeWidth={2.5} />
             </button>
             <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, padding: '0 8px', borderLeft: '1px solid var(--border)', borderRight: '1px solid var(--border)', margin: '0 4px', justifyContent: 'center' }}>
               <CustomInput type="date" value={historyFilterDate} onChange={(e) => setHistoryFilterDate(e.target.value)}
@@ -148,14 +149,14 @@ export default function TradeHistoryTable({
               </span>
             </div>
             <button onClick={() => adjustFilterDay(1)} title="Next Day" style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', display: 'flex', padding: '6px', borderRadius: '6px' }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+              <ChevronRight size={16} strokeWidth={2.5} />
             </button>
             <button onClick={resetToToday} style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: '8px', padding: '4px 12px', fontSize: '11px', color: 'var(--text)', fontWeight: 700, cursor: 'pointer', marginLeft: '4px' }}>
               TODAY
             </button>
             <button onClick={() => setHistoryFilterDate('')} title="Show All History"
               style={{ background: historyFilterDate ? 'none' : 'rgba(59, 130, 246, 0.1)', border: 'none', color: historyFilterDate ? 'var(--text-dim)' : 'var(--accent)', cursor: 'pointer', display: 'flex', padding: '6px', borderRadius: '6px', marginLeft: '4px' }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12h18M3 6h18M3 18h18" /></svg>
+              <List size={16} strokeWidth={2.5} />
             </button>
           </div>
         </div>
@@ -224,7 +225,7 @@ export default function TradeHistoryTable({
             </div>
             <button className="pt-export-btn" onClick={exportCSV}
               style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 14px', borderRadius: '8px', background: 'var(--bg3)', border: '1px solid var(--border)', color: 'var(--text)', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
+              <Download size={14} strokeWidth={2} />
               Export CSV
             </button>
           </div>
@@ -234,7 +235,7 @@ export default function TradeHistoryTable({
       {filteredTradeHistory.length === 0 ? (
         <div className="pt-empty">
           <div className="pt-empty-icon idle">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="2"><path d="M12 8v4l3 3" /><circle cx="12" cy="12" r="10" /></svg>
+            <Clock size={24} strokeWidth={2} />
           </div>
           <span className="pt-empty-title">No Closed Trades</span>
           <span className="pt-empty-desc">Trades will appear here once positions are exited for the selected day.</span>

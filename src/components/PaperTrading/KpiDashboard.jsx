@@ -1,4 +1,5 @@
 import React from 'react';
+import { ArrowUp, TrendingUp, Wallet } from 'lucide-react';
 
 export default function KpiDashboard({
   todayPnl,
@@ -32,7 +33,7 @@ export default function KpiDashboard({
       {/* Daily P&L */}
       <div className={`pt-kpi-cell hero ${todayPnl >= 0 ? 'up' : 'down'}`}>
         <span className="pt-k-lbl">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2v20M17 7l-5-5-5 5" /></svg>
+          <ArrowUp size={11} strokeWidth={2} />
           Daily P&amp;L
         </span>
         <span className={`pt-k-val ${cls(todayPnl)}`}>{fmt(todayPnl)}</span>
@@ -44,7 +45,7 @@ export default function KpiDashboard({
       {/* Cumulative P&L */}
       <div className="pt-kpi-cell hero gold">
         <span className="pt-k-lbl">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3v18h18" /><path d="M7 14l4-4 4 4 4-6" /></svg>
+          <TrendingUp size={11} strokeWidth={2} />
           Cumulative P&amp;L
         </span>
         <span className={`pt-k-val ${cls(totalPnl)}`}>{fmt(totalPnl)}</span>
@@ -79,7 +80,7 @@ export default function KpiDashboard({
       {showBalance && (
         <div className="pt-kpi-cell">
           <span className="pt-k-lbl">
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="5" width="20" height="14" rx="2" /><path d="M2 10h20" /></svg>
+            <Wallet size={11} strokeWidth={2} />
             Live Balance
           </span>
           <span className="pt-k-val">{money(walletBalance)} <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>USDT</span></span>

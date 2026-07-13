@@ -1,4 +1,5 @@
 import React from 'react';
+import { PlusSquare, Loader2 } from 'lucide-react';
 import CustomSelect from '../common/CustomSelect';
 import CustomInput from '../common/CustomInput';
 import DeltaCredentialsSection from './DeltaCredentialsSection';
@@ -24,11 +25,7 @@ export default function FirstAccountCard({
         {/* Header Icon & Text */}
         <div className="first-account-header">
           <div className="first-account-icon-wrapper">
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-              <line x1="12" y1="8" x2="12" y2="16"></line>
-              <line x1="8" y1="12" x2="16" y2="12"></line>
-            </svg>
+            <PlusSquare size={28} strokeWidth={2.5} />
           </div>
           <h3 className="first-account-title">
             {isLive ? 'Create Your First Live Account' : 'Create Your First Account'}
@@ -302,10 +299,7 @@ export default function FirstAccountCard({
             >
               {isCreatingAccount ? (
                 <>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" style={{ animation: 'spin 0.8s linear infinite' }}>
-                    <circle cx="12" cy="12" r="10" stroke="rgba(0,0,0,0.2)" />
-                    <path d="M12 2a10 10 0 0 1 10 10" />
-                  </svg>
+                  <Loader2 size={14} className="animate-spin" strokeWidth={3} />
                   Creating Account...
                 </>
               ) : (

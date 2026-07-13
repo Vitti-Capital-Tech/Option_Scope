@@ -9,6 +9,7 @@ import {
   createWS, TF_SECS
 } from './api';
 import { useTabListener } from './useTabSync';
+import { X, ChevronLeft, ChevronRight, ChevronsRight, Undo, Trash2, ZoomOut, ZoomIn, Maximize, Bell, ChevronDown, Activity } from 'lucide-react';
 import './index.css';
 import Navbar from './components/PaperTrading/Navbar';
 import CustomSelect from './components/common/CustomSelect';
@@ -530,10 +531,7 @@ const ChartPanel = forwardRef(function ChartPanel({
                     style={{ cursor: 'pointer', marginLeft: 6, display: 'flex', alignItems: 'center', opacity: 0.7 }}
                     className="alert-delete-icon"
                   >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <line x1="18" y1="6" x2="6" y2="18"></line>
-                      <line x1="6" y1="6" x2="18" y2="18"></line>
-                    </svg>
+                    <X size={14} strokeWidth={2.5} />
                   </div>
                 </div>
               ))}
@@ -573,7 +571,7 @@ const ChartPanel = forwardRef(function ChartPanel({
             const shift = (range.to - range.from) * 0.2;
             ts.setVisibleLogicalRange({ from: range.from - shift, to: range.to - shift });
           }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+            <ChevronLeft size={16} strokeWidth={2} />
           </button>
 
           <button title="Scroll Right" className="tv-btn" onClick={() => {
@@ -584,7 +582,7 @@ const ChartPanel = forwardRef(function ChartPanel({
             const shift = (range.to - range.from) * 0.2;
             ts.setVisibleLogicalRange({ from: range.from + shift, to: range.to + shift });
           }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+            <ChevronRight size={16} strokeWidth={2} />
           </button>
 
           <button title="Go to Current Time" className="tv-btn" onClick={() => {
@@ -601,13 +599,13 @@ const ChartPanel = forwardRef(function ChartPanel({
               to: lastIndex + barsVisible / 2
             });
           }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="13 17 18 12 13 7"></polyline><polyline points="6 17 11 12 6 7"></polyline></svg>
+            <ChevronsRight size={16} strokeWidth={2} />
           </button>
 
           <div style={{ width: 1, background: 'var(--border)', margin: '4px 4px' }} />
 
           <button title="Draw S/R Line" className="tv-btn" onClick={toggleDrawMode} style={{ color: drawMode ? '#3b82f6' : 'var(--text-dim)', background: drawMode ? 'rgba(59, 130, 246, 0.15)' : 'transparent' }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2v20"></path><path d="M8 8l4-4 4 4"></path><path d="M8 16l4 4 4-4"></path></svg>
+            <Activity size={16} strokeWidth={2} />
           </button>
 
           {drawnCount > 0 && (
@@ -619,7 +617,7 @@ const ChartPanel = forwardRef(function ChartPanel({
                   setDrawnCount(drawnLinesRef.current.length);
                 }
               }}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7v6h6"></path><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"></path></svg>
+                <Undo size={16} strokeWidth={2} />
               </button>
               <button title="Clear All S/R Lines" className="tv-btn" onClick={() => {
                 drawnLinesRef.current.forEach(line => {
@@ -628,7 +626,7 @@ const ChartPanel = forwardRef(function ChartPanel({
                 drawnLinesRef.current = [];
                 setDrawnCount(0);
               }} style={{ color: '#f85149' }}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                <Trash2 size={16} strokeWidth={2} />
               </button>
             </>
           )}
@@ -643,7 +641,7 @@ const ChartPanel = forwardRef(function ChartPanel({
             const diff = (range.to - range.from) * 0.2;
             ts.setVisibleLogicalRange({ from: range.from - diff, to: range.to + diff });
           }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line><line x1="8" y1="11" x2="14" y2="11"></line></svg>
+            <ZoomOut size={16} strokeWidth={2} />
           </button>
 
           <button title="Zoom In" className="tv-btn" onClick={() => {
@@ -654,7 +652,7 @@ const ChartPanel = forwardRef(function ChartPanel({
             const diff = (range.to - range.from) * 0.2;
             ts.setVisibleLogicalRange({ from: range.from + diff, to: range.to - diff });
           }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line><line x1="11" y1="8" x2="11" y2="14"></line><line x1="8" y1="11" x2="14" y2="11"></line></svg>
+            <ZoomIn size={16} strokeWidth={2} />
           </button>
 
           <div style={{ width: 1, background: 'var(--border)', margin: '4px 4px' }} />
@@ -662,7 +660,7 @@ const ChartPanel = forwardRef(function ChartPanel({
           <button title="Auto Fit" className="tv-btn" onClick={() => {
             chartRef.current?.timeScale().fitContent();
           }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>
+            <Maximize size={16} strokeWidth={2} />
           </button>
         </div>
       </div>
@@ -1505,10 +1503,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
             animation: 'slideIn 0.3s ease-out'
           }}>
             <div style={{ color: '#3b82f6', fontWeight: 800, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8, letterSpacing: 1 }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-                <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-              </svg>
+               <Bell size={14} strokeWidth={2.5} />
               ALERT TRIGGERED
             </div>
             <div style={{ color: theme === 'dark' ? '#e6edf3' : '#4b5563', lineHeight: 1.5, opacity: 0.9 }}>{t.msg}</div>
@@ -1549,19 +1544,11 @@ export default function App({ onNavigate, theme, toggleTheme }) {
               <span>Configuration</span>
               <span className="mobile-only-toggle" style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '9px', color: 'var(--text-dim)', letterSpacing: '0.5px' }}>
                 <span>{isConfigCollapsed ? 'SHOW' : 'HIDE'}</span>
-                <svg
-                  width="12"
-                  height="12"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
+                <ChevronDown
+                  size={12}
+                  strokeWidth={2.5}
                   style={{ transform: isConfigCollapsed ? 'rotate(0deg)' : 'rotate(180deg)', transition: 'transform 0.2s' }}
-                >
-                  <polyline points="6 9 12 15 18 9"></polyline>
-                </svg>
+                />
               </span>
             </div>
 
@@ -1679,10 +1666,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#3b82f6', fontWeight: 800, fontSize: 10 }}>
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-                        <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-                      </svg>
+                      <Bell size={10} strokeWidth={3} />
                       TRIGGERED
                     </div>
                     <span style={{ color: '#7d8590', fontSize: 10 }}>{log.time}</span>
@@ -1872,11 +1856,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                       {/* Alerts Section */}
                       <div className="watch-alert-pill" style={{ height: 'auto', minHeight: 32, padding: '4px 8px' }}>
                         <div className="watch-alert-icon-wrap" style={{ alignSelf: 'flex-start', marginTop: 4 }}>
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-                            <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-                            <circle cx="12" cy="3" r="1" fill="#3b82f6" />
-                          </svg>
+                          <Bell size={14} strokeWidth={2.2} color="#3b82f6" />
                         </div>
 
                         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -1894,10 +1874,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                                   style={{ cursor: 'pointer', opacity: 0.6, marginLeft: 4, display: 'flex', alignItems: 'center' }}
                                   className="alert-delete-icon"
                                 >
-                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                                    <line x1="18" y1="6" x2="6" y2="18"></line>
-                                    <line x1="6" y1="6" x2="18" y2="18"></line>
-                                  </svg>
+                                  <X size={14} strokeWidth={2.5} />
                                 </div>
                               </div>
                             ))}
@@ -1963,10 +1940,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
                         setListData(prev => { const next = { ...prev }; delete next[item.id]; return next; });
                         if (selectedWatchId === item.id) setSelectedWatchId(null);
                       }}>
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <polyline points="3 6 5 6 21 6"></polyline>
-                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                        </svg>
+                        <Trash2 size={14} strokeWidth={2} />
                       </button>
                     </div>
                   </div>
