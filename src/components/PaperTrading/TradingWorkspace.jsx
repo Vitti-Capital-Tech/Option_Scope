@@ -487,38 +487,112 @@ function LiveOrderHistoryTab({ orderHistory }) {
     setFilterDate(`${base.getFullYear()}-${String(base.getMonth() + 1).padStart(2, '0')}-${String(base.getDate()).padStart(2, '0')}`);
   };
 
+  const exportLiveHistoryCSV = () => {
+    if (!rows.length) return;
+    const headers = [
+      'Time', 'Order ID', 'Symbol', 'Side', 'Status',
+      'Qty (Lot)', 'Filled Qty', 'Type', 'Limit Price',
+      'Trigger Price', 'Exec Price', 'Size', 'Realized PnL',
+      'Exit Reason', 'Reduce Only'
+    ];
+    const csvRows = rows.map((o, idxVal) => {
+      const size = num(o.size) || 0;
+      const sell = String(o.side) === 'sell';
+      const qty = Math.abs(size);
+      const filled = Math.max(0, size - (num(o.unfilled_size) ?? 0));
+      const cv = num(o.product?.contract_value) ?? 0.001;
+      const unit = o.product?.underlying_asset?.symbol || 'BTC';
+      const sizeBtc = parseFloat((size * cv).toFixed(6)) * (sell ? -1 : 1);
+      const rpnl = num(o.meta_data?.pnl ?? o.realized_pnl ?? o.realised_pnl);
+      const status = statusLabel(o);
+      const sideLabel = `${o.reduce_only ? 'Close' : 'Open'} ${cap(o.side)}`;
+      const isLimitType = String(o.order_type || '').includes('limit');
+      const trigger = num(o.stop_price) ?? num(o.bracket_stop_loss_price) ?? num(o.bracket_take_profit_price);
+      const r = exitReasonOf(o);
+
+      return [
+        fmtTs(o.updated_at ?? o.created_at),
+        o.id ?? '',
+        o.product_symbol || '—',
+        sideLabel,
+        status,
+        qty,
+        filled,
+        typeLabel(o),
+        isLimitType && o.limit_price ? o.limit_price : '',
+        trigger != null ? trigger : '',
+        o.average_fill_price ? o.average_fill_price : '',
+        `${sizeBtc > 0 ? '+' : ''}${sizeBtc} ${unit}`,
+        rpnl != null ? rpnl : '',
+        r !== '—' ? r : '',
+        o.reduce_only ? 'TRUE' : 'FALSE'
+      ].map(val => `"${String(val).replace(/"/g, '""')}"`).join(',');
+    });
+
+    const csvContent = [headers.map(h => `"${h}"`).join(','), ...csvRows].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `live_order_history_${filterDate || 'all_time'}_${Date.now()}.csv`;
+    a.click();
+  };
+
   return (
     <>
-      {/* Date filter — compact, right-aligned. Shows an "All dates" chip until a
-          day is picked (no confusing empty dd-mm-yyyy). */}
-      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 4, padding: '8px 12px 0' }}>
-        <button type="button" onClick={() => shiftDate(-1)} title="Previous day" style={arrowBtn}>
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
-        </button>
-        {filterDate ? (
-          <input
-            type="date"
-            className="pt-date-input"
-            value={filterDate}
-            onChange={e => setFilterDate(e.target.value)}
-            style={{ background: 'var(--bg3)', border: '1px solid var(--border)', color: 'var(--text)', borderRadius: 5, padding: '3px 6px', fontSize: 11, fontWeight: 600, colorScheme: 'dark', outline: 'none', width: 118, boxSizing: 'border-box' }}
-          />
-        ) : (
-          <button type="button" onClick={() => setFilterDate(todayYmd())} title="Filter by date"
-            style={{ display: 'flex', alignItems: 'center', gap: 6, height: 22, padding: '0 8px', background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text)', cursor: 'pointer', fontSize: 10, fontWeight: 700, letterSpacing: '0.04em' }}>
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></svg>
-            ALL DATES
+      {/* Date filter & Export CSV header wrapper */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px 0', flexWrap: 'wrap', gap: 8 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+          Delta Live Feed ({rows.length} order{rows.length !== 1 ? 's' : ''})
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button type="button" onClick={() => shiftDate(-1)} title="Previous day" style={arrowBtn}>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
           </button>
-        )}
-        <button type="button" onClick={() => shiftDate(1)} title="Next day" style={arrowBtn}>
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6" /></svg>
-        </button>
-        {filterDate && (
-          <button type="button" onClick={() => setFilterDate('')} title="Show all dates"
-            style={{ padding: '3px 8px', fontSize: 10, fontWeight: 700, background: 'transparent', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text-dim)', cursor: 'pointer' }}>
-            All
+          {filterDate ? (
+            <input
+              type="date"
+              className="pt-date-input"
+              value={filterDate}
+              onChange={e => setFilterDate(e.target.value)}
+              style={{ background: 'var(--bg3)', border: '1px solid var(--border)', color: 'var(--text)', borderRadius: 5, padding: '3px 6px', fontSize: 11, fontWeight: 600, colorScheme: 'dark', outline: 'none', width: 118, boxSizing: 'border-box' }}
+            />
+          ) : (
+            <button type="button" onClick={() => setFilterDate(todayYmd())} title="Filter by date"
+              style={{ display: 'flex', alignItems: 'center', gap: 6, height: 22, padding: '0 8px', background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text)', cursor: 'pointer', fontSize: 10, fontWeight: 700, letterSpacing: '0.04em' }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></svg>
+              ALL DATES
+            </button>
+          )}
+          <button type="button" onClick={() => shiftDate(1)} title="Next day" style={arrowBtn}>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6" /></svg>
           </button>
-        )}
+          {filterDate && (
+            <button type="button" onClick={() => setFilterDate('')} title="Show all dates"
+              style={{ padding: '3px 8px', fontSize: 10, fontWeight: 700, background: 'transparent', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text-dim)', cursor: 'pointer', height: 22, display: 'inline-flex', alignItems: 'center' }}>
+              All
+            </button>
+          )}
+
+          {rows.length > 0 && (
+            <button
+              type="button"
+              className="pt-export-btn"
+              onClick={exportLiveHistoryCSV}
+              style={{
+                display: 'flex', alignItems: 'center', gap: '6px',
+                padding: '4px 10px', borderRadius: '5px',
+                background: 'var(--bg3)', border: '1px solid var(--border)',
+                color: 'var(--text)', fontSize: '10px', fontWeight: 700,
+                cursor: 'pointer', height: 22, margin: 0,
+                letterSpacing: '0.04em'
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
+              EXPORT CSV
+            </button>
+          )}
+        </div>
       </div>
 
       {rows.length === 0 ? (
