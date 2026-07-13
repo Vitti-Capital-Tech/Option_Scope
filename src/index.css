@@ -214,8 +214,9 @@ body.light-theme input[type="date"] {
 
 input[type="date"]::-webkit-calendar-picker-indicator {
   cursor: pointer;
-  filter: invert(1);
-  /* Makes the default black icon white for dark theme */
+  /* Force the icon solid white for the dark theme (brightness(0) → black, then
+     invert → white) regardless of the browser's color-scheme rendering. */
+  filter: brightness(0) invert(1);
 }
 
 body.light-theme input[type="date"]::-webkit-calendar-picker-indicator {
@@ -247,7 +248,7 @@ input[type="time"] {
 
 /* Compact Order-History date filter: white calendar icon on the dark field. */
 .pt-date-input::-webkit-calendar-picker-indicator {
-  filter: invert(1);
+  filter: brightness(0) invert(1);
   opacity: 0.85;
   cursor: pointer;
 }
@@ -2208,10 +2209,12 @@ body.light-theme .scanner-logs-body::-webkit-scrollbar-thumb:hover {
 
 /* ── Position row enhancements (leg rail, distance meter, P&L bar, ladder) ── */
 .pt-legrail {
+  display: inline-block;
   flex: 0 0 auto;
   width: 3px;
-  align-self: stretch;
-  min-height: 30px;
+  height: 14px;
+  vertical-align: middle;
+  margin-right: 7px;
   border-radius: 2px;
   background: var(--text-dim);
 }
