@@ -778,7 +778,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             tickerCount={tickerCount}
             expectedTickerCount={expectedTickerCount}
             config={config}
-            onRefresh={() => computeSpreads(true)}
+            onRefresh={() => { flushTickerBuffer(); computeSpreads(true); }}
             spotPrice={spotPrice}
             lastRefreshed={lastRefreshed}
             trueAtmStrike={globalAtmStrike}
@@ -793,7 +793,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             tickerCount={tickerCount}
             expectedTickerCount={expectedTickerCount}
             config={config}
-            onRefresh={() => computeSpreads(true)}
+            onRefresh={() => { flushTickerBuffer(); computeSpreads(true); }}
             spotPrice={spotPrice}
             lastRefreshed={lastRefreshed}
             trueAtmStrike={globalAtmStrike}
