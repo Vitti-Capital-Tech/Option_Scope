@@ -149,6 +149,40 @@ All orders use limit orders at the engine's computed price and carry a
 - `getLivePositions()` reconciliation runs on the 5-minute sync (log-only) and warns
   on drift between engine and exchange.
 
+### Telegram failure alerts
+
+Critical **live** failures are pushed to a Telegram chat so the user is alerted the
+moment something goes wrong, without watching the logs. Handled entirely server-side
+in `engine/lib/telegram.js` (`notifyLiveFailure`) — fire-and-forget, so a bad token or
+Telegram outage can never crash or block the engine.
+
+**Setup** (env, same mechanism as `DELTA_LIVE_DRYRUN`):
+
+| Var | Required | Meaning |
+| --- | --- | --- |
+| `TELEGRAM_BOT_TOKEN` | yes | Bot token from **@BotFather** |
+| `TELEGRAM_CHAT_ID` | yes | Chat/channel/group id to send alerts to |
+| `TELEGRAM_DEDUPE_MS` | no (default `60000`) | Suppress identical alerts within this window |
+
+To get the ids: create a bot via **@BotFather** (→ token), send the bot a message (or
+add it to a group), then read the chat id from
+`https://api.telegram.org/bot<token>/getUpdates`. If either var is unset, alerts are
+**silently disabled** (logged once) — paper-only / dev deployments need no config.
+
+**What triggers an alert** (armed-real only — one shared chat):
+
+- Order **send** rejected (entry or exit leg) — `submit`
+- Reduce-only **close** failed (unwind / orphan close) — leg may still be open
+- Reduce-only **stop** placement failed — exit stop not resting
+- Exit **bracket** (TP/SL) set failed — risk exit may be unprotected
+- **Entry aborted** after the chase — position unwound, account left flat
+- **Orphan reconcile** failed — engine/exchange state may be out of sync
+- Armed live but **no Delta credentials** — orders cannot be placed
+
+Each message carries the account name, what failed, the Delta error and a UTC
+timestamp. Identical alerts are de-duplicated within `TELEGRAM_DEDUPE_MS` so a failure
+that repeats every cycle doesn't spam the chat.
+
 ### ⚠ Open item — contract size mapping (validate in dry-run)
 
 The paper engine sizes positions as **fractional notional lots** (contract_size

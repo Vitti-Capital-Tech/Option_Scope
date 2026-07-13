@@ -16,6 +16,7 @@
 import { supabase, hasServiceRole } from './lib/supabase.js';
 import { createHeartbeat } from './lib/heartbeat.js';
 import { createLiveExecutor, isLiveDryRun, longContracts, shortContracts, extractBalance } from './lib/liveExecution.js';
+import { notifyLiveFailure } from './lib/telegram.js';
 import { getBalance } from './lib/deltaTradeApi.js';
 import {
   loadProducts, getExpiries, getSpotPrice,
@@ -815,6 +816,7 @@ async function startSingleAccountEngine(account) {
         log(`[${accountState.name}] ♻️ RECONCILE-CLEAN: ${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} absent from Delta → ${pos._everOpenOnDelta ? 'booked + removed' : 'silently removed (never filled)'}`);
       } catch (e) {
         logError(`[${accountState.name}] reconcileOrphans failed for ${pos.id}:`, e);
+        notifyLiveFailure({ account: accountState.name, context: `Orphan reconcile FAILED (${pos.id}) — exchange/engine state may be out of sync`, error: e });
       }
     }
   }
@@ -2619,6 +2621,7 @@ async function startSingleAccountEngine(account) {
             });
             if (!liveEntry.ok) {
               logError(`[${accountState.name}] LIVE entry aborted (${liveEntry.legFailed} leg: ${liveEntry.error}) — not persisting ${t.buyLeg.strike}/${t.sellLeg.strike}`);
+              notifyLiveFailure({ account: accountState.name, context: `Entry ABORTED — ${liveEntry.legFailed} leg could not fill (chase exhausted); position unwound, account left flat`, error: liveEntry.error, extra: `${t.type?.toUpperCase?.() || ''} ${t.buyLeg.strike}/${t.sellLeg.strike}` });
               continue;
             }
             // Remember the exchange bracket level on each leg so a later

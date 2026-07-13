@@ -18,6 +18,7 @@
  */
 import { placeOrder, cancelOrder, editOrder, editBracket, placeBracketOrder, closeAllPositions, getLivePositions, getBalance, getLiveOrders, getFills, getOrderHistory } from './deltaTradeApi.js';
 import { log, logWarn, logError } from './utils.js';
+import { notifyLiveFailure } from './telegram.js';
 
 // Default ON. Only the literal string 'false' (any case) disarms the dry-run.
 const DRY_RUN = String(process.env.DELTA_LIVE_DRYRUN ?? 'true').toLowerCase() !== 'false';
@@ -136,6 +137,7 @@ export function createLiveExecutor(getCtx) {
     if (!creds?.apiKey || !creds?.apiSecret) {
       if (!warnedNoCreds) {
         logError(`[${accountName}] LIVE armed but no decrypted credentials available — cannot place orders. (Is the engine using the service_role key?)`);
+        notifyLiveFailure({ account: accountName, context: 'Armed live but NO Delta credentials — orders cannot be placed', extra: 'Check the engine service_role key / stored credentials.' });
         warnedNoCreds = true;
       }
       return { ok: false, error: 'no-credentials' };
@@ -161,6 +163,7 @@ export function createLiveExecutor(getCtx) {
       return { ok: true, order };
     } catch (e) {
       logError(`[${accountName}] ✖ LIVE order FAILED: ${summary}:`, e.message);
+      notifyLiveFailure({ account: accountName, context: `Order send FAILED (${side} ${symbol})`, error: e, extra: `[${tag}]` });
       return { ok: false, error: e.message };
     }
   }
@@ -184,6 +187,7 @@ export function createLiveExecutor(getCtx) {
       return { ok: true, order };
     } catch (e) {
       logError(`[${accountName}] ✖ LIVE close-symbol FAILED: ${summary}:`, e.message);
+      notifyLiveFailure({ account: accountName, context: `Reduce-only CLOSE FAILED (${side} ${symbol}) — leg may still be OPEN on Delta`, error: e, extra: `[${tag}]` });
       return { ok: false, error: e.message };
     }
   }
@@ -409,6 +413,7 @@ export function createLiveExecutor(getCtx) {
         return { ok: true, res };
       } catch (e) {
         logError(`[${accountName}] ✖ LIVE bracket set FAILED: ${summary}: ${e.message}`);
+        notifyLiveFailure({ account: accountName, context: `Exit bracket (${String(side).toUpperCase()}) set FAILED on ${symbol} — risk exit may be unprotected`, error: e, extra: `[${tag}]` });
         return { ok: false, error: e.message };
       }
     },
@@ -453,6 +458,7 @@ export function createLiveExecutor(getCtx) {
         return { ok: true, order };
       } catch (e) {
         logError(`[${accountName}] ✖ LIVE stop FAILED: ${summary}:`, e.message);
+        notifyLiveFailure({ account: accountName, context: `Reduce-only STOP placement FAILED (${side} ${symbol}) — exit stop not resting`, error: e, extra: `[${tag}]` });
         return { ok: false, error: e.message };
       }
     },
