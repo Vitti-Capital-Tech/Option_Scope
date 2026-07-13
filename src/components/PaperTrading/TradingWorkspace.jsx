@@ -831,7 +831,7 @@ export default function TradingWorkspace(props) {
     { key: 'stop', label: 'Stop Orders', icon: 'stop', count: live ? (live.stop_orders?.length ?? 0) : paperCount(spreadCount) },
     { key: 'fills', label: 'Fills', icon: 'fills', count: live ? (live.fills?.length ?? 0) : null },
     { key: 'history', label: 'Order History', icon: 'history', count: live ? (live.order_history?.length ?? 0) : paperCount(histCount) },
-    { ksy: 'risk', label: 'Risk & Margin', icon: 'risk', count: null },
+    { key: 'risk', label: 'Risk & Margin', icon: 'risk', count: null },
   ];
 
   return (
