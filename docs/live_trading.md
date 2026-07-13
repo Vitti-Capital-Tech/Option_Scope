@@ -437,11 +437,15 @@ the browser) executes them on Delta and cleans up:
 > [!NOTE]
 > **Consolidated request poll (multi-account egress).** These four request types are no
 > longer polled per-account (which was 4 queries × N accounts every 1.5s). A single
-> **manager-level** poll (`pollAllRequests`) runs 4 **batched** queries across all
+> **manager-level** poll (`pollAllRequests`) runs up to 4 **batched** queries across all
 > running accounts every 1.5s and dispatches only to the accounts with pending work — so
-> idle request-poll load stays flat as the account count grows (4 queries/tick instead
-> of 4×N). Manual-action responsiveness is unchanged (~1.5s). After executing, each
-> handler republishes the live snapshot immediately (see [the data pipeline](#live-exchange-data-pipeline-dashboard-tabs)).
+> idle request-poll load stays flat as the account count grows (≤4 queries/tick instead
+> of 4×N). The two **live-only** tables (`delta_close_requests`, `delta_cancel_requests`)
+> are queried **only when at least one running account is armed-live** (scoped to those
+> ids), so a paper-only / all-dry-run deployment issues just **2 queries/tick**
+> (`close_all_requested` + `exit_requested`, which cover every account). Manual-action
+> responsiveness is unchanged (~1.5s). After executing, each handler republishes the live
+> snapshot immediately (see [the data pipeline](#live-exchange-data-pipeline-dashboard-tabs)).
 
 > [!NOTE]
 > **Admins can now run these on managed accounts (migration `016`).** The `delta_close_requests`,
@@ -490,19 +494,40 @@ bookkeeping.
   per account (`positions`, `orders`, `stop_orders`, `fills`, `balances` JSONB +
   `wallet` numeric + `updated_at`). RLS: authenticated read, `service_role` write;
   `ON DELETE CASCADE` with the account.
-- **UI** — `PaperTrading.jsx` is **Realtime-driven** (instant refetch on each Realtime
-  change + on tab focus), backed by a **30s safety-net poll** for a missed Realtime
-  message. The old every-**5s** snapshot refetch (which re-pulled the heavy
-  positions/orders/fills payload 12×/min per tab) was throttled to this 30s net — a
-  large egress cut with no visible staleness, since Realtime still drives immediacy.
+- **UI** — `PaperTrading.jsx` is **Realtime-driven**. Each `live_exchange_state` change
+  arrives with the **full new row in the Realtime payload**, so the UI **applies
+  `payload.new` directly** instead of firing a second `.select('*')` read per change —
+  killing the double-read of the heaviest payload (positions + orders + fills +
+  order_history) per open tab. It falls back to a full refetch only if the payload looks
+  truncated (Delta drops columns on oversized rows) or on tab focus (catch-up for anything
+  missed while backgrounded). The old every-**5s** snapshot refetch was already removed in
+  favour of this Realtime path — a large egress cut with no visible staleness.
   `TradingWorkspace.jsx` renders Delta data in each tab
   **only when** the account is
   live **and** the engine is placing real orders (`engineDryRun === false`) **and**
   the snapshot is fresh. Otherwise the tabs fall back to their engine-derived views —
   in dry-run the exchange has no real orders/positions, so the paper/engine views are
-  the truth. **Order History** always stays engine-sourced (`trade_history`), not raw
-  exchange fills. After entry the disaster backstop should appear here under **Stop
-  Orders** at `4× premium`, state open, not triggered — a quick way to confirm it.
+  the truth. For live, **Order History mirrors Delta's own `order_history` feed** (every
+  filled/cancelled order, per leg) with a derived **Exit Reason** column (see below);
+  paper/dry-run keep the engine's `trade_history` ledger.
+- **Live-fresh unrealized P&L (egress-safe).** The change-guarded upsert above deliberately
+  freezes `mark_price`/`unrealized_pnl` between structural changes (stale up to the 60s
+  keepalive). So the UI does **not** trust those snapshot fields for the money figures — the
+  **Positions UPNL/Mark, the Risk & Margin card, and the Daily P&L KPI all recompute
+  unrealized live from the WebSocket mark feed** (~1s fresh), exactly as Delta does:
+  `size × contract_value × (mark − entry)` (signed size → shorts profit on decay), via the
+  shared `livePnlOf()` helper. Falls back to the snapshot's `unrealized_pnl` when no live mark
+  is available (symbol off the WS feed / cross-expiry / orphan leg). Zero extra egress — it
+  reuses the marks already streaming for P&L display.
+- **Exit Reason (live Order History).** Delta has no native exit-reason field, so it's derived
+  per order from the **bracket stop type** (`stop_order_type` → Take Profit / Stop Loss) and
+  the engine's **`client_order_id` tag**: `SEX` → Short Leg Exit, `PEX` → Partial Exit,
+  `LE/LEX` → Long Leg Exit, `MX*` → Manual Exit, `MLC` → Manual Leg Close, `CX` → Manual Close.
+  The strategy exit tag now carries the reason code — `${id}-XB|XS-<ATM|ITM|OTM|EXP>` from
+  `t.exitReason` — and Close All uses a distinct `${id}-CAXB|CAXS` tag, so those render
+  precisely (`Exit @ ATM/ITM/OTM`, `Close All`); opening legs show "—". (The engine tag change
+  needs a redeploy; orders placed before it fall back to a generic "Strategy Exit".) **Expiry
+  exits have no order row** — Delta cash-settles server-side — so they never appear here.
 
 ### IP whitelisting & the Verify proxy
 

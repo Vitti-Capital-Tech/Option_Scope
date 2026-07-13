@@ -70,6 +70,19 @@ const safeParseLeg = (value) => {
   return null;
 };
 
+// Stable UUID for a schedule row. crypto.randomUUID is available in all modern
+// browsers on https/localhost; getRandomValues is the belt-and-braces fallback so
+// we NEVER hand the DB a non-uuid (which would fail the insert) or a missing id
+// (which would break the "prune removed windows" step in saveSupabaseSchedules).
+const genScheduleId = () => {
+  try { if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID(); } catch { /* fall through */ }
+  const b = globalThis.crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+  const h = [...b].map(x => x.toString(16).padStart(2, '0'));
+  return `${h[0]}${h[1]}${h[2]}${h[3]}-${h[4]}${h[5]}-${h[6]}${h[7]}-${h[8]}${h[9]}-${h[10]}${h[11]}${h[12]}${h[13]}${h[14]}${h[15]}`;
+};
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // Window 1 — the permanent, non-deletable first window. Auto-created (seeded from
 // the account's base/initial config) for any account that has no windows yet, so
 // the initial sizing/scaling values are always visible and editable. Spans the
@@ -495,6 +508,16 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const latestSpotPriceRef = useRef(null);
   const lastDaysToExpiryRef = useRef(null);
   const lastSavedSchedulesRef = useRef(null);
+  // True while our own schedule save round-trip is in flight, and true when the
+  // local schedule state has unsaved edits. Both gate the cross-tab Realtime resync
+  // (below) so it never (a) reacts to our own writes or (b) stomps in-progress edits.
+  const isSavingSchedulesRef = useRef(false);
+  const schedulesDirtyRef = useRef(false);
+  // Same idea for base config: gate the cross-device config resync so it ignores our
+  // own writes and never stomps unsaved form edits (isFiltersDirty mirrored to a ref
+  // so the Realtime callback can read the latest value).
+  const isSavingConfigRef = useRef(false);
+  const configDirtyRef = useRef(false);
 
   const flushTickerBuffer = useCallback(() => {
     flushTimerRef.current = null;
@@ -1020,6 +1043,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       console.warn('[saveSupabaseConfig] missing activeAccountId or configDbId', { activeAccountId, configDbId });
       return;
     }
+    isSavingConfigRef.current = true;
     try {
       const { data, error } = await supabase.from('paper_trading_config').upsert({
         id: configDbId,
@@ -1054,6 +1078,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       }
     } catch (e) {
       console.error('[saveSupabaseConfig] exception:', e);
+    } finally {
+      isSavingConfigRef.current = false;
     }
   }, [activeAccountId, configDbId]);
 
@@ -1153,6 +1179,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       return num1 !== num2;
     });
   }, [draftConfig, config]);
+
+  // Keep a ref copy so the cross-device config resync (below) can read the latest
+  // dirty state from inside its Realtime callback without re-subscribing.
+  useEffect(() => { configDirtyRef.current = isFiltersDirty; }, [isFiltersDirty]);
 
   const handleApplyFilters = () => {
     if (draftConfig) {
@@ -1336,32 +1366,49 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const saveSupabaseSchedules = useCallback(async () => {
     if (!activeAccountId) return;
     setIsSavingSchedules(true);
+    isSavingSchedulesRef.current = true;
     try {
-      const { error: delErr } = await supabase.from('paper_trading_schedules').delete().eq('account_id', activeAccountId);
-      if (delErr) console.error('Delete schedules error:', delErr);
-      if (schedules.length > 0) {
-        const rows = schedules.map((s, i) => ({
-          account_id: activeAccountId,
-          label: s.label || 'Window',
-          start_time: s.startTime,
-          end_time: s.endTime,
-          number_of_calls: s.numberOfCalls ?? 3,
-          number_of_puts: s.numberOfPuts ?? 3,
-          min_long_dist: s.minLongDist ?? 500,
-          min_strike_diff: s.minStrikeDiff ?? 800,
-          atm_ratio_scaling: s.atmRatioScaling ?? true,
-          atm_ratio_distance_call: s.atmRatioPctCall ?? 50,
-          atm_ratio_distance_put: s.atmRatioPctPut ?? 25,
-          max_net_premium: s.maxNetPremium ?? 20,
-          exit_type: s.exitType ?? 'ATM',
-          exit_points: s.exitPoints ?? 0,
-          is_active: s.isActive ?? true,
-          sort_order: i,
-          updated_at: new Date().toISOString(),
-        }));
-        const { error: insErr } = await supabase.from('paper_trading_schedules').insert(rows);
-        if (insErr) console.error('Insert schedules error:', insErr);
+      // Stable ids: reuse a persisted row's uuid, mint one for new/seed windows. This
+      // lets us UPSERT in place instead of DELETE-all-then-INSERT — so a failed write
+      // can NEVER leave the account with zero rows (which would reseed Window 1 from
+      // base config and silently reset the user's filters).
+      const rows = schedules.map((s, i) => ({
+        id: UUID_RE.test(String(s.id)) ? s.id : genScheduleId(),
+        account_id: activeAccountId,
+        label: s.label || 'Window',
+        start_time: s.startTime,
+        end_time: s.endTime,
+        number_of_calls: s.numberOfCalls ?? 3,
+        number_of_puts: s.numberOfPuts ?? 3,
+        min_long_dist: s.minLongDist ?? 500,
+        min_strike_diff: s.minStrikeDiff ?? 800,
+        atm_ratio_scaling: s.atmRatioScaling ?? true,
+        atm_ratio_distance_call: s.atmRatioPctCall ?? 50,
+        atm_ratio_distance_put: s.atmRatioPctPut ?? 25,
+        max_net_premium: s.maxNetPremium ?? 20,
+        exit_type: s.exitType ?? 'ATM',
+        exit_points: s.exitPoints ?? 0,
+        is_active: s.isActive ?? true,
+        sort_order: i,
+        updated_at: new Date().toISOString(),
+      }));
+
+      // 1) Upsert every current window. If this fails we RETURN without deleting
+      //    anything — the existing rows stay intact (no wipe → no reseed).
+      if (rows.length > 0) {
+        const { error: upErr } = await supabase
+          .from('paper_trading_schedules')
+          .upsert(rows, { onConflict: 'id' });
+        if (upErr) { console.error('Upsert schedules error:', upErr); return; }
       }
+
+      // 2) Prune only the windows the user removed (in DB but no longer in state).
+      //    Runs only after a successful upsert, so it can never cause data loss.
+      const keepIds = rows.map(r => r.id);
+      let delQuery = supabase.from('paper_trading_schedules').delete().eq('account_id', activeAccountId);
+      if (keepIds.length > 0) delQuery = delQuery.not('id', 'in', `(${keepIds.map(id => `"${id}"`).join(',')})`);
+      const { error: delErr } = await delQuery;
+      if (delErr) console.error('Prune removed schedules error:', delErr);
 
       const savedJson = JSON.stringify(schedules.map(s => ({
         label: s.label,
@@ -1380,10 +1427,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         isActive: s.isActive
       })));
       lastSavedSchedulesRef.current = savedJson;
+      schedulesDirtyRef.current = false;
 
       await fetchSupabaseSchedules();
     } catch (e) { console.error('Schedule save error', e); }
-    finally { setIsSavingSchedules(false); }
+    finally { setIsSavingSchedules(false); isSavingSchedulesRef.current = false; }
   }, [activeAccountId, schedules, fetchSupabaseSchedules]);
 
   // Auto-save schedules when they change (debounced)
@@ -1428,9 +1476,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       return null;
     };
 
-    const hasOverlap = schedules.some(s => s.isActive && checkOverlapLocal(schedules, s) !== null);
-    if (hasOverlap) return; // Do not auto-save if they overlap
-
     const currentJson = JSON.stringify(schedules.map(s => ({
       label: s.label,
       startTime: s.startTime,
@@ -1447,6 +1492,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       exitPoints: s.exitPoints,
       isActive: s.isActive
     })));
+    // Dirty = local edits not yet in the DB. Gates the cross-tab resync so a foreign
+    // change never clobbers what the user is currently editing here.
+    schedulesDirtyRef.current = lastSavedSchedulesRef.current !== currentJson;
+
+    const hasOverlap = schedules.some(s => s.isActive && checkOverlapLocal(schedules, s) !== null);
+    if (hasOverlap) return; // Do not auto-save if they overlap
 
     if (lastSavedSchedulesRef.current === currentJson) {
       return; // Skip if it matches the DB version
@@ -1459,6 +1510,65 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
     return () => clearTimeout(timer);
   }, [schedules, activeAccountId, saveSupabaseSchedules]);
+
+  // Cross-tab / cross-device schedule sync. Without this, a second open tab (or
+  // phone) keeps a STALE copy of the schedules; the next local edit there re-saves
+  // the whole stale set and silently reverts filters changed elsewhere. We subscribe
+  // to this account's schedule changes and refetch — but skip while our OWN save is
+  // in flight (our own events) or while there are unsaved local edits (don't stomp
+  // what the user is typing). The burst of a save is coalesced into one refetch.
+  useEffect(() => {
+    if (!activeAccountId) return;
+    let debounce = null;
+    const channel = supabase
+      .channel(`paper_trading_schedules_${activeAccountId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'paper_trading_schedules', filter: `account_id=eq.${activeAccountId}` },
+        () => {
+          if (debounce) clearTimeout(debounce);
+          debounce = setTimeout(() => {
+            if (isSavingSchedulesRef.current) return; // our own write
+            if (schedulesDirtyRef.current) return;    // unsaved local edits — don't clobber
+            fetchSupabaseSchedules();
+          }, 400);
+        }
+      )
+      .subscribe();
+    return () => {
+      if (debounce) clearTimeout(debounce);
+      supabase.removeChannel(channel);
+    };
+  }, [activeAccountId, fetchSupabaseSchedules]);
+
+  // Cross-DEVICE base-config sync. Same-browser tabs already sync via BroadcastChannel
+  // (useTabListener → CONFIG_SYNC), but a second DEVICE stays stale. Subscribe to this
+  // account's config row and refetch on change — skipping our own writes (isSavingConfigRef)
+  // and unsaved form edits (configDirtyRef) so we never clobber in-progress changes.
+  // Bonus: the engine's expiry auto-select now reflects across devices too.
+  useEffect(() => {
+    if (!activeAccountId) return;
+    let debounce = null;
+    const channel = supabase
+      .channel(`paper_trading_config_${activeAccountId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'paper_trading_config', filter: `account_id=eq.${activeAccountId}` },
+        () => {
+          if (debounce) clearTimeout(debounce);
+          debounce = setTimeout(() => {
+            if (isSavingConfigRef.current) return; // our own write
+            if (configDirtyRef.current) return;    // unsaved local edits — don't clobber
+            fetchSupabaseConfig();
+          }, 400);
+        }
+      )
+      .subscribe();
+    return () => {
+      if (debounce) clearTimeout(debounce);
+      supabase.removeChannel(channel);
+    };
+  }, [activeAccountId, fetchSupabaseConfig]);
 
   // ── Supabase reads ────────────────────────────────────────────────────
   // Shared DB-row → position mapper (preserves client-computed live fields).

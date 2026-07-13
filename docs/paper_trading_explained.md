@@ -68,10 +68,19 @@ Each account runs in complete isolation — its own WebSocket, its own positions
 Manual actions — **per-leg close** (`delta_close_requests`), **order cancel**
 (`delta_cancel_requests`), **Close All** (`paper_trading_accounts.close_all_requested`),
 and **manual exit** (`active_positions.exit_requested`) — are polled at the **manager
-level**, not per-account. A single `pollAllRequests` timer runs **4 batched queries**
+level**, not per-account. A single `pollAllRequests` timer runs **up to 4 batched queries**
 (one per table, filtered to all running account ids) every **1.5s** and dispatches to
 each account engine's `processRequests(flags)` **only** for the request types that
 actually have pending rows.
+
+> [!NOTE]
+> **Live-only queries are skipped when nothing is live (egress).** `delta_close_requests`
+> and `delta_cancel_requests` only ever have work for **armed-live** accounts (their
+> handlers no-op for paper). So the poll queries those two tables **only when at least one
+> running account is armed-live** — and scopes them to just those account ids. A
+> paper-only (or all-dry-run) deployment therefore issues just **2 queries/tick**
+> (`close_all_requested` + `exit_requested`), which cover both paper and live. Manual-action
+> responsiveness is unchanged (~1.5s), since the always-run pair covers every account.
 
 > [!NOTE]
 > **Why:** previously every account engine ran its own 1.5s timer firing 4 queries — i.e.
@@ -753,9 +762,9 @@ When you click **Reset**:
 3. Immediately upserts those defaults to Supabase.
 4. The same Realtime listener picks it up and reloads the config.
 
-### Tab Synchronization
-- Changes are synchronized across browser tabs in real-time using a local broadcast channel (`CONFIG_SYNC` event).
-- To prevent database write loop collisions, receiving tabs update only their local React state buffers and do **not** trigger redundant database writes, preserving the correct, newly applied configuration.
+### Tab & Device Synchronization
+- **Same browser (tabs):** changes are synchronized instantly via a local broadcast channel (`CONFIG_SYNC` event). To prevent database write-loop collisions, receiving tabs update only their local React state buffers and do **not** trigger redundant database writes, preserving the correct, newly applied configuration.
+- **Across devices (Realtime):** a `BroadcastChannel` is per-origin **on one machine only**, so a second **device** would otherwise stay stale. `PaperTrading.jsx` also subscribes to `paper_trading_config` **Realtime** changes for the active account and refetches on a foreign change — so a base-config edit (or the engine's expiry auto-select) reflects on other devices within ~1s without a refresh. Guards mirror the schedule sync: the refetch is **skipped while our own save is in flight** (ignores our own write) and **while the form is dirty** (`isFiltersDirty` — never clobbers in-progress edits), and the write burst is debounced into a single refetch.
 
 ---
 
@@ -906,13 +915,35 @@ Margin**.
   engine's exit triggers), Order History from `trade_history`, and Fills is a
   placeholder.
 - **Armed real-orders live accounts:** Positions / Open Orders / Stop Orders / Fills /
-  Risk & Margin render **real Delta data** from the `live_exchange_state` snapshot the
-  engine publishes (see
+  Order History / Risk & Margin render **real Delta data** from the `live_exchange_state`
+  snapshot the engine publishes (see
   [live_trading.md](live_trading.md#live-exchange-data-pipeline-dashboard-tabs)).
   The switch is gated on `engineDryRun === false` **and** a fresh snapshot; otherwise
-  the tabs fall back to the engine-derived views. **Order History always stays
-  engine-sourced** (`trade_history`) — it's the strategy's closed-trade ledger, not raw
-  exchange fills.
+  the tabs fall back to the engine-derived views. **Live Order History mirrors Delta's own
+  `order_history` feed** (every filled/cancelled order, per leg) — with an **Exit Reason**
+  column derived to match paper's reasons (see below).
+
+> [!NOTE]
+> **Live-fresh unrealized P&L (Positions UPNL/Mark, Risk & Margin card, Daily P&L KPI).**
+> The engine's snapshot deliberately suppresses mark/unrealized-PnL updates to keep egress
+> flat (so the snapshot's `unrealized_pnl`/`mark_price` are stale up to the 60s keepalive).
+> To avoid a laggy P&L, the UI **recomputes unrealized live from the WebSocket mark feed**
+> (~1s fresh), exactly as Delta does — `size × contract_value × (mark − entry)`, signed size
+> so shorts profit on decay — via the shared `livePnlOf()` helper, falling back to the
+> snapshot value when no live mark is available (symbol off the WS feed / cross-expiry /
+> orphan). Zero extra Supabase egress (reuses the marks already streaming for P&L display).
+
+> [!NOTE]
+> **Exit Reason column (live Order History).** Delta has no native "exit reason" field, so
+> it's derived per order from (a) the **bracket stop type** (`stop_order_type` → Take
+> Profit / Stop Loss) and (b) the engine's **`client_order_id` tag**, which encodes intent:
+> `SEX` → Short Leg Exit, `PEX` → Partial Exit, `LE/LEX` → Long Leg Exit, `MX*` → Manual
+> Exit, `MLC` → Manual Leg Close, `CX` → Manual Close. The strategy exit (`XB/XS`) now carries
+> the reason code (`-ATM`/`-ITM`/`-OTM`/`-EXP` from `t.exitReason`) and Close All uses a
+> distinct `CAXB/CAXS` tag, so those show precisely (`Exit @ ATM/ITM/OTM`, `Close All`).
+> Opening legs show "—". (Engine tag change needs a redeploy; pre-redeploy orders fall back
+> to a generic "Strategy Exit".) Expiry exits have **no order row** — Delta cash-settles
+> server-side — so they don't appear in the Delta-native feed.
 
 ### Trade History Date Filter
 
@@ -933,6 +964,28 @@ if (hasOverlap) return; // do not write overlapping schedules to DB
 ```
 
 A save only proceeds once all windows are non-overlapping. The overlap check handles both normal and overnight windows. Manual overlap resolution is required before changes persist.
+
+> [!IMPORTANT]
+> **Safe save — upsert + prune, never DELETE-all (no wipe → no accidental reset).** The
+> save used to `DELETE` every row for the account then `INSERT` the whole set. If the
+> INSERT failed (network blip, transient error), the account was left with **zero rows**,
+> and the next load reseeded a single **Window 1 from base config** — silently resetting
+> the user's filters (a "filters changed by themselves" report). The save now gives each
+> window a **stable UUID** (reuse the persisted id; mint one for new windows) and:
+> 1. **Upserts** all current windows (`onConflict: 'id'`). If this fails it **returns
+>    without deleting anything** — existing rows stay intact.
+> 2. Only **after** a successful upsert does it **prune** the windows the user actually
+>    removed (`delete … where id not in (keptIds)`). Data loss from a failed write is now
+>    impossible, and there are no transient duplicates (upsert updates in place).
+
+> [!NOTE]
+> **Cross-tab / cross-device schedule sync.** Same-browser tabs share state, but a second
+> **device** would keep a stale copy — and because the save writes the whole set, the next
+> edit there could revert filters changed elsewhere. `PaperTrading.jsx` subscribes to
+> `paper_trading_schedules` **Realtime** for the active account and refetches on a foreign
+> change (debounced), so a stale tab/device re-syncs instead of clobbering. The refetch is
+> **skipped while our own save is in flight** and **while there are unsaved local edits**
+> (a dirty ref), so it never stomps what the user is currently editing.
 
 ### Window Capacity Row
 
