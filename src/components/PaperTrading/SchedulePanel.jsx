@@ -142,7 +142,10 @@ const WINDOW_COLORS = [
 export default function SchedulePanel({
   schedules,
   setSchedules,
-  onSave,
+  onApply,
+  onCancel,
+  onReset,
+  isDirty,
   isSaving,
   positions = [],
   tradeHistory = [],
@@ -584,17 +587,54 @@ export default function SchedulePanel({
         })}
       </div>
 
-      {/* Schedules auto-save (debounced) — no manual button. Show only an overlap
-          warning when active windows collide (which blocks the auto-save). */}
-      {schedules.length > 0 && hasOverlap && (
+      {/* Schedules manual actions: Apply, Cancel, and Reset */}
+      {schedules.length > 0 && (
         <div style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'flex-end',
-          gap: 12, borderTop: '1px solid var(--border)', paddingTop: 12, marginTop: 12
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'flex-end',
+          gap: 10,
+          borderTop: '1px solid var(--border)',
+          paddingTop: 12,
+          marginTop: 12,
+          flexWrap: 'wrap'
         }}>
-          <span style={{ fontSize: 10, color: '#f85149', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ transform: 'translateY(-1px)' }}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
-            Time overlap detected between active windows — fix to auto-save.
-          </span>
+          {hasOverlap && (
+            <span style={{ fontSize: 10, color: '#f85149', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4, marginRight: 'auto' }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ transform: 'translateY(-1px)' }}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
+              Time overlap detected between active windows.
+            </span>
+          )}
+
+          <button
+            type="button"
+            className={`pt-btn-filter pt-btn-apply ${isDirty && !hasOverlap ? 'active' : ''}`}
+            onClick={onApply}
+            disabled={!isDirty || hasOverlap || isSaving}
+            style={{ minWidth: 100 }}
+          >
+            {isSaving ? 'Syncing...' : 'Apply'}
+          </button>
+
+          <button
+            type="button"
+            className="pt-btn-filter pt-btn-cancel"
+            onClick={onCancel}
+            disabled={!isDirty || isSaving}
+            style={{ minWidth: 80 }}
+          >
+            Cancel
+          </button>
+
+          <button
+            type="button"
+            className="pt-btn-filter pt-btn-reset"
+            onClick={onReset}
+            disabled={isSaving}
+            style={{ minWidth: 80 }}
+          >
+            Reset
+          </button>
         </div>
       )}
 

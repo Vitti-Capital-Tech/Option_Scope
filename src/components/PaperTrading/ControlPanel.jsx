@@ -24,8 +24,11 @@ export default function ControlPanel({
   spotPrice,
   schedules,
   setSchedules,
-  onSaveSchedules,
   isSavingSchedules,
+  isSchedulesDirty,
+  onApplySchedules,
+  onCancelSchedules,
+  onResetSchedules,
   positions,
   tradeHistory,
 }) {
@@ -185,7 +188,10 @@ export default function ControlPanel({
         <SchedulePanel
           schedules={schedules}
           setSchedules={setSchedules}
-          onSave={onSaveSchedules}
+          onApply={onApplySchedules}
+          onCancel={onCancelSchedules}
+          onReset={onResetSchedules}
+          isDirty={isSchedulesDirty}
           isSaving={isSavingSchedules}
           positions={positions}
           tradeHistory={tradeHistory}

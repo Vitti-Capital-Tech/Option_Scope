@@ -1445,48 +1445,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     finally { setIsSavingSchedules(false); isSavingSchedulesRef.current = false; }
   }, [activeAccountId, schedules, fetchSupabaseSchedules]);
 
-  // Auto-save schedules when they change (debounced)
-  useEffect(() => {
-    if (!activeAccountId) return;
-
-    // Check if there is any overlap in the schedules
-    const toMin = (t) => {
-      if (!t) return 0;
-      const [h, m] = t.split(':').map(Number);
-      return h * 60 + m;
-    };
-    const checkOverlapLocal = (list, current) => {
-      if (!current.isActive) return null;
-      const curStart = toMin(current.startTime);
-      const curEnd = toMin(current.endTime);
-      const curIsOvernight = curStart > curEnd;
-      const overlaps = (s1, e1, s2, e2) => Math.max(s1, s2) < Math.min(e1, e2);
-
-      for (const s of list) {
-        if (s.id === current.id || !s.isActive) continue;
-        const start = toMin(s.startTime);
-        const end = toMin(s.endTime);
-        const isOvernight = start > end;
-
-        if (curIsOvernight && isOvernight) {
-          return s;
-        } else if (curIsOvernight) {
-          if (overlaps(curStart, 1440, start, end) || overlaps(0, curEnd, start, end)) {
-            return s;
-          }
-        } else if (isOvernight) {
-          if (overlaps(start, 1440, curStart, curEnd) || overlaps(0, end, curStart, curEnd)) {
-            return s;
-          }
-        } else {
-          if (overlaps(curStart, curEnd, start, end)) {
-            return s;
-          }
-        }
-      }
-      return null;
-    };
-
+  const isSchedulesDirty = React.useMemo(() => {
+    if (!schedules || lastSavedSchedulesRef.current === null) return false;
     const currentJson = JSON.stringify(schedules.map(s => ({
       label: s.label,
       startTime: s.startTime,
@@ -1503,24 +1463,20 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       exitPoints: s.exitPoints,
       isActive: s.isActive
     })));
-    // Dirty = local edits not yet in the DB. Gates the cross-tab resync so a foreign
-    // change never clobbers what the user is currently editing here.
-    schedulesDirtyRef.current = lastSavedSchedulesRef.current !== currentJson;
+    return lastSavedSchedulesRef.current !== currentJson;
+  }, [schedules]);
 
-    const hasOverlap = schedules.some(s => s.isActive && checkOverlapLocal(schedules, s) !== null);
-    if (hasOverlap) return; // Do not auto-save if they overlap
+  useEffect(() => {
+    schedulesDirtyRef.current = isSchedulesDirty;
+  }, [isSchedulesDirty]);
 
-    if (lastSavedSchedulesRef.current === currentJson) {
-      return; // Skip if it matches the DB version
-    }
+  const handleCancelSchedules = useCallback(async () => {
+    await fetchSupabaseSchedules();
+  }, [fetchSupabaseSchedules]);
 
-    const timer = setTimeout(async () => {
-      lastSavedSchedulesRef.current = currentJson;
-      await saveSupabaseSchedules();
-    }, 1200);
-
-    return () => clearTimeout(timer);
-  }, [schedules, activeAccountId, saveSupabaseSchedules]);
+  const handleResetSchedules = useCallback(() => {
+    setSchedules([makeFirstWindow(configRef.current)]);
+  }, []);
 
   // Cross-tab / cross-device schedule sync. Without this, a second open tab (or
   // phone) keeps a STALE copy of the schedules; the next local edit there re-saves
@@ -2731,8 +2687,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
               spotPrice={spotPrice}
               schedules={schedules}
               setSchedules={setSchedules}
-              onSaveSchedules={saveSupabaseSchedules}
               isSavingSchedules={isSavingSchedules}
+              isSchedulesDirty={isSchedulesDirty}
+              onApplySchedules={saveSupabaseSchedules}
+              onCancelSchedules={handleCancelSchedules}
+              onResetSchedules={handleResetSchedules}
               positions={positions}
               tradeHistory={tradeHistory}
             />
