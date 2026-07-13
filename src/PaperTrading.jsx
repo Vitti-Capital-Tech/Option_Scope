@@ -104,6 +104,7 @@ const makeFirstWindow = (cfg = {}) => ({
   maxNetPremium: cfg.maxNetPremium ?? 20,
   exitType: cfg.exitType ?? 'ATM',
   exitPoints: cfg.exitPoints ?? 0,
+  daysToExpiry: cfg.daysToExpiry ?? 0,
   isActive: true,
   sort_order: 0,
 });
@@ -258,15 +259,25 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   const [expiries, setExpiries] = useState([]);
   const [spotPrice, setSpotPrice] = useState(null);
 
+  // Effective min-days-to-expiry driving expiry selection. For an experimental paper
+  // account (strategy_version >= 2) days-to-expiry lives per schedule window, so mirror
+  // the engine and use the PEAK across active windows; v1 uses the account-level value.
+  const effectiveMinDte = React.useMemo(() => {
+    const activeWins = (schedules || []).filter(s => s.isActive);
+    return (config?.strategyVersion >= 2 && activeWins.length > 0)
+      ? Math.max(0, ...activeWins.map(s => s.daysToExpiry ?? 0))
+      : (config?.daysToExpiry || 0);
+  }, [config?.strategyVersion, config?.daysToExpiry, schedules]);
+
   const filteredExpiries = React.useMemo(() => {
     if (!expiries || expiries.length === 0) return [];
-    const minDays = config?.daysToExpiry || 0;
+    const minDays = effectiveMinDte;
     const filtered = expiries.filter(exp => {
       const daysRemaining = (new Date(exp).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
       return daysRemaining >= minDays;
     });
     return filtered.length > 0 ? filtered : expiries;
-  }, [expiries, config?.daysToExpiry]);
+  }, [expiries, effectiveMinDte]);
 
   const [engineStatus, setEngineStatus] = useState({ status: 'offline', lastHeartbeat: null, data: null });
   const [walletBalance, setWalletBalance] = useState(null); // live USDT balance from heartbeat
@@ -549,19 +560,19 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     if (isConfigLoaded && products.length > 0) {
       const exps = getExpiries(products);
       if (exps.length) {
-        // Did daysToExpiry filter actually change?
-        const daysFilterChanged = lastDaysToExpiryRef.current !== null && lastDaysToExpiryRef.current !== config.daysToExpiry;
-        lastDaysToExpiryRef.current = config.daysToExpiry;
+        // Did the effective days-to-expiry filter actually change? (v2 = peak of windows)
+        const daysFilterChanged = lastDaysToExpiryRef.current !== null && lastDaysToExpiryRef.current !== effectiveMinDte;
+        lastDaysToExpiryRef.current = effectiveMinDte;
 
         let isExpiryInvalid = !selExpiry || !exps.includes(selExpiry);
 
-        // If the daysToExpiry filter changed, we ALWAYS want to select the nearest matching expiry
+        // If the effective filter changed, we ALWAYS want to select the nearest matching expiry
         if (daysFilterChanged) {
           isExpiryInvalid = true;
         } else if (!isExpiryInvalid && selExpiry) {
           // If the filter did not change, we only invalidate the expiry if it violates the minimum days requirement
           const daysRemaining = (new Date(selExpiry).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
-          if (daysRemaining < (config.daysToExpiry || 0)) {
+          if (daysRemaining < effectiveMinDte) {
             isExpiryInvalid = true;
           }
         }
@@ -570,7 +581,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           let selectedExpiry = null;
           for (const exp of exps) {
             const daysRemaining = (new Date(exp).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
-            if (daysRemaining >= (config.daysToExpiry || 0)) {
+            if (daysRemaining >= effectiveMinDte) {
               selectedExpiry = exp;
               break;
             }
@@ -584,9 +595,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         }
       }
     } else if (isConfigLoaded) {
-      lastDaysToExpiryRef.current = config.daysToExpiry;
+      lastDaysToExpiryRef.current = effectiveMinDte;
     }
-  }, [isConfigLoaded, products, selExpiry, config.daysToExpiry]);
+  }, [isConfigLoaded, products, selExpiry, effectiveMinDte]);
 
   useEffect(() => {
     setExpiries([]);
@@ -754,7 +765,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           balance_allocation_pct: data.balanceAllocationPct ?? 90,
           entry_buy_offset: data.entryBuyOffset ?? 5,
           entry_sell_offset: data.entrySellOffset ?? 2,
-          strategy_version: 1
+          // Paper accounts are the experimental testbed → v2; live starts on stable v1.
+          strategy_version: accountMode === 'live' ? 1 : 2
         }]);
 
         // For live accounts, store the (encrypted) Delta credentials via RPC.
@@ -1351,6 +1363,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           maxNetPremium: s.max_net_premium ?? 20,
           exitType: s.exit_type ?? 'ATM',
           exitPoints: s.exit_points ?? 0,
+          daysToExpiry: s.days_to_expiry ?? 0,
           isActive: s.is_active ?? true,
           sort_order: s.sort_order ?? 0,
         }));
@@ -1375,6 +1388,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           maxNetPremium: s.maxNetPremium,
           exitType: s.exitType,
           exitPoints: s.exitPoints,
+          daysToExpiry: s.daysToExpiry,
           isActive: s.isActive
         })));
       }
@@ -1406,6 +1420,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         max_net_premium: s.maxNetPremium ?? 20,
         exit_type: s.exitType ?? 'ATM',
         exit_points: s.exitPoints ?? 0,
+        days_to_expiry: s.daysToExpiry ?? 0,
         is_active: s.isActive ?? true,
         sort_order: i,
         updated_at: new Date().toISOString(),
@@ -1442,6 +1457,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         maxNetPremium: s.maxNetPremium,
         exitType: s.exitType,
         exitPoints: s.exitPoints,
+        daysToExpiry: s.daysToExpiry,
         isActive: s.isActive
       })));
       lastSavedSchedulesRef.current = savedJson;
@@ -1468,6 +1484,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       maxNetPremium: s.maxNetPremium,
       exitType: s.exitType,
       exitPoints: s.exitPoints,
+      daysToExpiry: s.daysToExpiry,
       isActive: s.isActive
     })));
     return lastSavedSchedulesRef.current !== currentJson;
@@ -2698,6 +2715,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
               onResetSchedules={handleResetSchedules}
               positions={positions}
               tradeHistory={tradeHistory}
+              strategyVersion={config.strategyVersion ?? 1}
             />
 
 

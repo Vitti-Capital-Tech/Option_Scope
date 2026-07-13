@@ -17,6 +17,7 @@ const DEFAULT_WINDOW = {
   maxNetPremium: 20,
   exitType: 'ATM',
   exitPoints: 0,
+  daysToExpiry: 0,
   isActive: true,
 };
 
@@ -151,6 +152,7 @@ export default function SchedulePanel({
   positions = [],
   tradeHistory = [],
   currentUnderlying = 'BTC',
+  strategyVersion = 1,
 }) {
   const avgUtilMap = React.useMemo(() => {
     if (!positions || !schedules || schedules.length === 0) return {};
@@ -568,6 +570,15 @@ export default function SchedulePanel({
                   <div className="schedule-item-block schedule-item-num-block">
                     <span className="schedule-item-label">Exit Points</span>
                     <CustomInput type="number" min="0" step="1" value={s.exitPoints ?? 0} onChange={e => handleChange(s.id, 'exitPoints', Number(e.target.value))} />
+                  </div>
+                )}
+
+                {/* Per-window Min Days to Expiry — experimental (strategy_version >= 2)
+                    paper accounts only. Live/v1 accounts keep this in the Control Panel. */}
+                {strategyVersion >= 2 && (
+                  <div className="schedule-item-block schedule-item-num-block">
+                    <span className="schedule-item-label">Min Days to Expiry</span>
+                    <CustomInput type="number" min="0" step="1" value={s.daysToExpiry ?? 0} onChange={e => handleChange(s.id, 'daysToExpiry', Number(e.target.value))} />
                   </div>
                 )}
 

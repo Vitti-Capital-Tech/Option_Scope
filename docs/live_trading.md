@@ -29,6 +29,24 @@ A `paper_trading_accounts` row now carries two extra columns:
 
 Switching an account back to `paper` in the UI also forces `live_enabled = false`.
 
+## Strategy version (live = stable)
+
+Trading logic is gated by a per-account **`strategy_version`** (`paper_trading_config`,
+migrations `018`–`020`). **Live accounts run version 1 — the stable, validated logic.**
+Experimental changes (new filters, changed entry/exit rules) land on **paper** accounts at
+version 2 first and reach live only after validation — either by flipping a live account's
+`strategy_version` to `2` (a single DB change, so you can promote **one** live account first,
+then the rest for a staged real-money rollout) or by folding the change into the shared v1
+path so it becomes the new stable. This keeps real money on proven logic while paper acts as
+the testbed. Full mechanism:
+[paper_trading_explained.md → Strategy Versioning](./paper_trading_explained.md#strategy-versioning-paper-vs-live).
+
+> [!NOTE]
+> A filter that a v2 (paper) account has moved **per schedule window** — e.g. **Days to
+> Expiry** (migration `019`) — stays an **account-level Control Panel field** on a v1 (live)
+> account, and the per-window control is not shown there. Live keeps the account-level
+> value; only the experimental paper testbed sees the per-window version.
+
 ## Credential storage & security model
 
 Credentials live in a dedicated `delta_credentials` table (one row per account):

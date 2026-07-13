@@ -32,6 +32,7 @@ export default function ControlPanel({
   onResetSchedules,
   positions,
   tradeHistory,
+  strategyVersion = 1,
 }) {
   const UNDERLYINGS = ['BTC', 'ETH'];
 
@@ -106,7 +107,9 @@ export default function ControlPanel({
                 { label: 'Max Delta Deviation', key: 'maxRatioDeviation', width: 110, step: '0.01' },
                 { label: 'Min Short Premium', key: 'minSellPremium', width: 110, prefix: '$' },
                 { label: 'Max Short Ratio', key: 'maxSellQty', width: 110, step: '0.25', prefix: '1:' },
-                { label: 'Min Days to Expiry', key: 'daysToExpiry', width: 100 }
+                // Min Days to Expiry lives here only for v1 (live) accounts. For
+                // strategy_version >= 2 (experimental paper) it moves to each schedule window.
+                ...(strategyVersion >= 2 ? [] : [{ label: 'Min Days to Expiry', key: 'daysToExpiry', width: 100 }])
               ].map(({ label, key, width, step, prefix, suffix }) => (
                 <div key={key} className="form-group">
                   <label className="pt-field-label" style={{ marginBottom: 0 }}>{label}</label>
@@ -189,6 +192,7 @@ export default function ControlPanel({
           positions={positions}
           tradeHistory={tradeHistory}
           currentUnderlying={underlying}
+          strategyVersion={strategyVersion}
         />
       </div>
     </>

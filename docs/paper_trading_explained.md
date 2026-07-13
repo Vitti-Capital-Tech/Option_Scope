@@ -7,23 +7,24 @@ This document explains **every** logic and condition in the Paper Trading engine
 ## Table of Contents
 
 1. [The Big Picture](#the-big-picture)
-2. [Multi-Account Supervisor](#multi-account-supervisor)
-3. [Engine Startup (Boot Sequence)](#engine-startup)
-4. [The Heartbeat (1-Second Loop)](#the-heartbeat)
-5. [How Spreads Are Found (Scanning)](#how-spreads-are-found)
-6. [Entry Filters (What Makes a Good Spread)](#entry-filters)
-7. [How Entries Are Placed](#how-entries-are-placed)
-8. [Exit Priority Tree](#exit-priority-tree)
-9. [Partial Exit / Scaling Logic](#partial-exit--scaling-logic)
-10. [Short-Leg-Only Exit ($1.1)](#short-leg-only-exit)
-11. [Long-Only Laddered Exit](#long-only-laddered-exit)
-12. [Manual Exit (Liquidation)](#manual-exit-liquidation)
-13. [Duplicate Exit Prevention (Idempotent Writes)](#duplicate-exit-prevention-idempotent-writes)
-14. [Safety Guards Summary](#safety-guards-summary)
-15. [Diagnostic Logging (0 Candidates)](#diagnostic-logging-0-candidates)
-16. [Config Synchronization](#config-synchronization)
-17. [Time-Based Filter Schedules](#time-based-filter-schedules)
-18. [Frontend Dashboard Architecture](#frontend-dashboard-architecture)
+2. [Strategy Versioning (Paper vs Live)](#strategy-versioning-paper-vs-live)
+3. [Multi-Account Supervisor](#multi-account-supervisor)
+4. [Engine Startup (Boot Sequence)](#engine-startup)
+5. [The Heartbeat (1-Second Loop)](#the-heartbeat)
+6. [How Spreads Are Found (Scanning)](#how-spreads-are-found)
+7. [Entry Filters (What Makes a Good Spread)](#entry-filters)
+8. [How Entries Are Placed](#how-entries-are-placed)
+9. [Exit Priority Tree](#exit-priority-tree)
+10. [Partial Exit / Scaling Logic](#partial-exit--scaling-logic)
+11. [Short-Leg-Only Exit ($1.1)](#short-leg-only-exit)
+12. [Long-Only Laddered Exit](#long-only-laddered-exit)
+13. [Manual Exit (Liquidation)](#manual-exit-liquidation)
+14. [Duplicate Exit Prevention (Idempotent Writes)](#duplicate-exit-prevention-idempotent-writes)
+15. [Safety Guards Summary](#safety-guards-summary)
+16. [Diagnostic Logging (0 Candidates)](#diagnostic-logging-0-candidates)
+17. [Config Synchronization](#config-synchronization)
+18. [Time-Based Filter Schedules](#time-based-filter-schedules)
+19. [Frontend Dashboard Architecture](#frontend-dashboard-architecture)
 
 ---
 
@@ -37,6 +38,33 @@ Think of the engine as a **robot trader** that runs 24/7 on a server. It:
 4. Writes everything to a Supabase database so the UI dashboard can display it in real time
 
 The strategy is a **ratio spread** — you buy 1 option (the long/buy leg) and sell multiple options at a different strike (the short/sell leg). The goal is to collect more premium from selling than you pay for buying.
+
+---
+
+## Strategy Versioning (Paper vs Live)
+
+**Column**: `paper_trading_config.strategy_version` (default `1`) · **Migrations**: `018`, `019`, `020`
+
+The strategy logic is one shared codebase, but a per-account **`strategy_version`** flag lets experimental changes (new filters, changed entry/exit rules) run on **paper** accounts without touching **live** accounts:
+
+- **Live accounts → version 1 (stable).** They only ever run logic that has already been validated.
+- **Paper accounts → version 2 (experimental testbed).** New logic lands here first.
+
+Both the **engine** (behaviour) and the **UI** (which controls are shown) branch on the **same** value — the engine reads `config.strategyVersion`, the dashboard reads it off the loaded config — so a v2-only feature neither runs nor appears on a v1 (live) account.
+
+**Adding a versioned change**: branch only where behaviour actually diverges; everything else stays shared.
+
+```js
+if (config.strategyVersion >= 2) { /* new experimental logic */ }
+else { /* stable logic — live accounts run this */ }
+```
+
+**Promotion (paper → live)**: once validated on paper, either flip a live account's `strategy_version` to `2` in the DB (a single change, no redeploy — lets you roll out to one live account first, then the rest), **or** fold the v2 code into the shared path so it becomes the new stable v1. Keep at most two generations alive (stable + experimental) and delete the old branch once every account is promoted.
+
+> [!NOTE]
+> **Current fleet policy (migration `020`)**: **all paper accounts are v2, all live accounts are v1**, and new accounts inherit this from their `mode` at creation (paper → 2, live → 1). This makes paper the experimental testbed rather than an exact mirror of live. The `strategy_version` column is kept (not replaced by a raw `mode` check) so a single live account can still be promoted to v2 independently for a staged real-money rollout.
+
+**First v2-gated feature — per-window Days to Expiry** (migration `019`): see filter [#9](#entry-filters) and [Time-Based Filter Schedules](#time-based-filter-schedules).
 
 ---
 
@@ -135,8 +163,11 @@ After startup, four timers run continuously, all wrapped inside **try-catch** bl
 
 Every 5 minutes (as well as during startup and configuration updates), the engine refreshes the list of active option products. As part of this sequence, it validates the active expiry selection:
 
-1. **Stale Expiry Detection**: It computes the remaining days of the current `config.expiry`. If it is less than the configured `daysToExpiry` threshold, the expiry is flagged as stale/invalid.
+1. **Stale Expiry Detection**: It computes the remaining days of the current `config.expiry`. If it is less than the effective `daysToExpiry` threshold, the expiry is flagged as stale/invalid.
 2. **Auto-Rollover**: The engine automatically scans all available expiries on the exchange and updates `config.expiry` to the nearest future date that satisfies the `daysToExpiry` requirement, saving this change back to the database.
+
+> [!NOTE]
+> **Which `daysToExpiry` drives expiry selection** (`expirySelectionMinDte`): on **v1 (live)** it is the account-level `config.daysToExpiry`. On **v2 (paper)** — where the value is per schedule window (migration `019`) — the engine trades **one** expiry at a time, so it must satisfy the **strictest (largest) days-to-expiry across active windows** (the *peak*); each window then guards its own entries with its own value (Guard 2). The frontend expiry dropdown mirrors this peak logic. See [Strategy Versioning](#strategy-versioning-paper-vs-live).
 3. **Scanner Rollover vs. Position Rollover**: 
    - **Scanner Rollover**: Changing `config.expiry` only shifts the engine's scanning focus. In the next minute loop, it runs a completely fresh scan for option spreads on the new expiry and will only enter trades if they meet all configuration parameters.
    - **No Position Rollover**: Active positions are never carried forward or rolled over. Instead, they are always exited 2 minutes prior to their expiration date and recorded as settled in the trade history, starting fresh.
@@ -202,7 +233,7 @@ Every candidate pair must pass **all** of these filters to be considered:
 | 6 | **Ratio Deviation** | `maxRatioDeviation` (default: 0.25) | The premium ratio and delta notional ratio must not deviate by more than 25% |
 | 7 | **Max Sell Qty** | `maxSellQty` (default: 10) | The sell quantity (ratio) must not exceed 10 |
 | 8 | **Max Net Premium** | `maxNetPremium` (default: $20) | The net premium debit cannot exceed $20. **ATM Ratio Scaling is applied first**, so this is checked against the *scaled* short quantity (i.e., `scaledSellQty × sellPrice - buyPrice ≥ -$20`). When scaling is disabled, `scaledSellQty` equals the natural `sellQty`. **Now configured per schedule window** (see [Time-Based Filter Schedules](#time-based-filter-schedules)); the account base value is the gap fallback. |
-| 9 | **Days to Expiry** | `daysToExpiry` (default: 0) | The option expiry date must be at least this many days away from the current time. Options closer to expiry are rejected. |
+| 9 | **Days to Expiry** | `daysToExpiry` (default: 0) | The option expiry date must be at least this many days away from the current time. Options closer to expiry are rejected. **Location depends on `strategy_version`** (migration `019`): on **v1 (live)** it is an account-level Control Panel field; on **v2 (experimental paper)** it moves **per schedule window** (see [Time-Based Filter Schedules](#time-based-filter-schedules)) — each window guards its own entries, while account-global expiry auto-selection uses the **peak** value across active windows (the engine trades one expiry at a time). See [Strategy Versioning](#strategy-versioning-paper-vs-live). |
 | 10 | **Max Calls (#)** | `numberOfCalls` (default: 3) | Maximum **full-spread** calls allowed concurrently. Only positions with an active short leg (`sellQty > 0`) count — long-only held positions do **not** count toward the cap. Re-applied at entry and whenever a schedule window changes the value. |
 | 11 | **Max Puts (#)** | `numberOfPuts` (default: 3) | Maximum **full-spread** puts allowed concurrently. Same counting rule as Max Calls — held long-only positions are excluded from the cap. |
 | 12 | **ATM Ratio Entry** | `atmRatioScaling` (default: true) | Checkbox toggle to enable scaling of entry sell quantities based on ATM strike option prices. |
@@ -291,7 +322,7 @@ No point entering a trade that's about to expire.
 ```
 If daysRemaining < daysToExpiry → SKIP
 ```
-Requires the option's expiry to be at least `daysToExpiry` days away from the current time.
+Requires the option's expiry to be at least `daysToExpiry` days away from the current time. On **v2 (paper)** accounts this uses the **currently-active schedule window's** value (`effectiveConfig.daysToExpiry`, migration `019`); on **v1 (live)** it uses the account-level config value. See [Strategy Versioning](#strategy-versioning-paper-vs-live).
 
 ### Guard 3: Buy Strike Conflict (Local)
 ```
@@ -775,7 +806,7 @@ When you click **Reset**:
 Time-Based Filter Schedules allow users to define multiple named time windows per account within a 24-hour cycle. Each window overrides specific entry and portfolio filters during that period.
 
 ### Overridden Parameters
-Only the following 11 parameters are scheduled:
+The following parameters are scheduled per window:
 1. **Max Calls** (`numberOfCalls`)
 2. **Max Puts** (`numberOfPuts`)
 3. **Min Strike Difference** (`minStrikeDiff`)
@@ -787,6 +818,7 @@ Only the following 11 parameters are scheduled:
 9. **Max Net Debit** (`maxNetPremium`) — entry debit cap (migration `012`)
 10. **Exit Type** (`exitType`) — `ATM`/`ITM`/`OTM`; **active-window-governs** open positions (migration `012`)
 11. **Exit Points** (`exitPoints`) — offset for ITM/OTM exit (migration `012`)
+12. **Days to Expiry** (`daysToExpiry`) — **v2 (experimental paper) accounts only** (migration `019`). The window's value guards its own entries; account-global expiry selection uses the **peak** across active windows. On v1 (live) this stays an account-level Control Panel field and is **not** shown per window. See [Strategy Versioning](#strategy-versioning-paper-vs-live).
 
 All other filter settings (like `minIvDiff`, `minSellPremium`, etc.) default back to the base account config.
 

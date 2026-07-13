@@ -759,3 +759,13 @@ ALTER TABLE public.live_exchange_state
 -- to 1 so existing accounts are unchanged. Additive.
 ALTER TABLE public.paper_trading_config
   ADD COLUMN IF NOT EXISTS strategy_version INTEGER NOT NULL DEFAULT 1;
+
+
+-- ─── 019_schedule_days_to_expiry.sql ───
+-- Per-window Min Days to Expiry: days_to_expiry moves from account-level config into
+-- each schedule window for experimental paper accounts (strategy_version >= 2). Live
+-- accounts (v1) keep the account-level field. Expiry auto-selection uses the PEAK
+-- days_to_expiry across active windows; each window guards its own entries. Defaults
+-- to 0 (unchanged behaviour). Additive.
+ALTER TABLE public.paper_trading_schedules
+  ADD COLUMN IF NOT EXISTS days_to_expiry NUMERIC NOT NULL DEFAULT 0;

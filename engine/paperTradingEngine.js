@@ -284,7 +284,8 @@ async function startSingleAccountEngine(account) {
           balance_allocation_pct: 90,
           entry_buy_offset: 5,
           entry_sell_offset: 2,
-          strategy_version: 1,
+          // Paper = experimental testbed (v2), live = stable (v1).
+          strategy_version: accountState.mode === 'live' ? 1 : 2,
           updated_at: new Date().toISOString()
         };
         const { data: inserted, error: insertErr } = await supabase
@@ -362,6 +363,9 @@ async function startSingleAccountEngine(account) {
           maxNetPremium: s.max_net_premium ?? config.maxNetPremium ?? 20,
           exitType: s.exit_type ?? config.exitType ?? 'ATM',
           exitPoints: s.exit_points ?? config.exitPoints ?? 0,
+          // Per-window min-days-to-expiry (strategy_version >= 2 only). Falls back to
+          // the account-level config value for rows that predate migration 019.
+          daysToExpiry: s.days_to_expiry ?? config.daysToExpiry ?? 0,
           isActive: s.is_active ?? true,
         }));
       }
@@ -402,20 +406,36 @@ async function startSingleAccountEngine(account) {
 
   // ── Product + expiry management ───────────────────────────────────────
 
+  // Min days-to-expiry that drives account-global expiry auto-selection. For
+  // strategy_version >= 2 (per-window DTE, migration 019) the engine still trades ONE
+  // expiry, so it must satisfy the STRICTEST (largest) days_to_expiry across active
+  // windows — then each window guards its own entries with its own value. v1 (live)
+  // uses the single account-level config value, unchanged.
+  function expirySelectionMinDte() {
+    if (config.strategyVersion >= 2) {
+      const active = schedules.filter(s => s.isActive);
+      if (active.length > 0) {
+        return Math.max(0, ...active.map(s => s.daysToExpiry ?? 0));
+      }
+    }
+    return config.daysToExpiry || 0;
+  }
+
   async function refreshProducts() {
     try {
       const prods = await loadProducts(config.underlying);
       products = prods;
       expiries = getExpiries(prods);
 
+      const minDte = expirySelectionMinDte();
       const currentDaysRemaining = config.expiry ? (new Date(config.expiry).getTime() - Date.now()) / (24 * 60 * 60 * 1000) : 0;
-      const isExpiryStale = config.expiry && currentDaysRemaining < (config.daysToExpiry || 0);
+      const isExpiryStale = config.expiry && currentDaysRemaining < minDte;
 
       if (expiries.length && (!config.expiry || !expiries.includes(config.expiry) || isExpiryStale)) {
         let selectedExpiry = null;
         for (const exp of expiries) {
           const daysRemaining = (new Date(exp).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
-          if (daysRemaining >= (config.daysToExpiry || 0)) {
+          if (daysRemaining >= minDte) {
             selectedExpiry = exp;
             break;
           }
@@ -1336,6 +1356,11 @@ async function startSingleAccountEngine(account) {
           maxNetPremium: activeSchedule.maxNetPremium ?? config.maxNetPremium,
           exitType: activeSchedule.exitType ?? config.exitType,
           exitPoints: activeSchedule.exitPoints ?? config.exitPoints,
+          // Per-window min-days-to-expiry only for strategy_version >= 2 (migration 019);
+          // v1 keeps the account-level value spread from config above.
+          ...(config.strategyVersion >= 2
+            ? { daysToExpiry: activeSchedule.daysToExpiry ?? config.daysToExpiry }
+            : {}),
         }
         : { ...config };
 
@@ -2341,10 +2366,12 @@ async function startSingleAccountEngine(account) {
             continue;
           }
 
-          // Days to expiry guard
+          // Days to expiry guard. Uses effectiveConfig so a strategy_version >= 2
+          // account applies the ACTIVE WINDOW's min-days-to-expiry; v1 falls back to
+          // the account-level config value (effectiveConfig.daysToExpiry === config).
           const daysRemaining = (new Date(config.expiry).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
-          if (daysRemaining < (config.daysToExpiry || 0)) {
-            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: days to expiry (${daysRemaining.toFixed(2)}) is less than min required (${config.daysToExpiry})`);
+          if (daysRemaining < (effectiveConfig.daysToExpiry || 0)) {
+            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: days to expiry (${daysRemaining.toFixed(2)}) is less than min required (${effectiveConfig.daysToExpiry})`);
             continue;
           }
 
