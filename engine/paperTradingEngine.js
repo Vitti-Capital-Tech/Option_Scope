@@ -277,7 +277,6 @@ async function startSingleAccountEngine(account) {
           number_of_puts: 3,
           exit_type: 'ATM',
           exit_points: 0,
-          leg_swap_premium: 0,
           short_exit_price: 1.1,
           long_exit_slices: 10,
           variable_exit_slices: false,

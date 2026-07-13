@@ -758,7 +758,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           number_of_puts: data.numberOfPuts ?? 3,
           exit_type: data.exitType ?? 'ATM',
           exit_points: data.exitPoints ?? 0,
-          leg_swap_premium: 0,
           short_exit_price: data.shortExitPrice ?? 1.1,
           long_exit_slices: data.longExitSlices ?? 10,
           variable_exit_slices: data.variableExitSlices ?? false,
@@ -1090,7 +1089,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         number_of_puts: newCfg.numberOfPuts ?? 3,
         exit_type: newCfg.exitType ?? 'ATM',
         exit_points: newCfg.exitPoints ?? 0,
-        leg_swap_premium: 0,
         short_exit_price: newCfg.shortExitPrice ?? 1.1,
         long_exit_slices: newCfg.longExitSlices ?? 10,
         variable_exit_slices: newCfg.variableExitSlices ?? false,
@@ -1258,7 +1256,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           number_of_puts: 3,
           exit_type: 'ATM',
           exit_points: 0,
-          leg_swap_premium: 0,
           variable_exit_slices: false,
           strategy_version: 1,
           updated_at: new Date().toISOString()
