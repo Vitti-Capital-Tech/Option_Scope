@@ -1068,11 +1068,12 @@ async function startSingleAccountEngine(account) {
       const exitShort = shortAsk ?? pos.entrySellPrice;
       // Market-close remaining legs unless expiry (Delta cash-settles expired options).
       if (!atExpiry) {
+        // CAXS/CAXB tags (vs the strategy exit's XS/XB) so the Order History UI shows "Close All".
         if (pos.sellQty > 0) {
-          await live.closeLeg({ symbol: pos.sellLeg.symbol, side: 'buy', contracts: shortContracts(pos.sellQty), price: exitShort, tag: `${pos.id}-XS` });
+          await live.closeLeg({ symbol: pos.sellLeg.symbol, side: 'buy', contracts: shortContracts(pos.sellQty), price: exitShort, tag: `${pos.id}-CAXS` });
         }
         if (longLot > 0) {
-          await live.closeLeg({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: longContracts(pos.buyLeg), price: exitLong, tag: `${pos.id}-XB` });
+          await live.closeLeg({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: longContracts(pos.buyLeg), price: exitLong, tag: `${pos.id}-CAXB` });
         }
       }
       const grossLong = (exitLong - pos.entryBuyPrice) * longLot;
@@ -2509,19 +2510,25 @@ async function startSingleAccountEngine(account) {
           // LIVE: close remaining legs. Skip on expiry — Delta cash-settles expired
           // options exchange-side, and orders that close to expiry are rejected.
           const isExpirySettlement = /expiry/i.test(t.exitReason || '');
+          // Encode the strategy exit reason into the order tag (client_order_id) so the
+          // live Order History UI can show ATM/ITM/OTM/Expiry — matching paper's exit_reason.
+          const exReason = String(t.exitReason || '');
+          const exCode = /expiry/i.test(exReason) ? 'EXP'
+            : /ITM/.test(exReason) ? 'ITM'
+              : /OTM/.test(exReason) ? 'OTM' : 'ATM';
           if (!isExpirySettlement) {
             if (t.buyLeg?.lotSize > 0) {
               await live.closeLeg({
                 symbol: t.buyLeg.symbol, side: 'sell',
                 contracts: longContracts(t.buyLeg),
-                price: t._latestBuy, tag: `${t.id}-XB`,
+                price: t._latestBuy, tag: `${t.id}-XB-${exCode}`,
               });
             }
             if (t.sellQty > 0) {
               await live.closeLeg({
                 symbol: t.sellLeg.symbol, side: 'buy',
                 contracts: shortContracts(t.sellQty),
-                price: t._latestSell, tag: `${t.id}-XS`,
+                price: t._latestSell, tag: `${t.id}-XS-${exCode}`,
               });
             }
           }

@@ -450,6 +450,35 @@ function LiveOrderHistoryTab({ orderHistory }) {
     return String(o.order_type || '').replace('_order', '').replace(/^\w/, c => c.toUpperCase()) || '—';
   };
 
+  // Exit reason — mirrors the paper Order History's reason, derived from what Delta
+  // echoes back per order: the bracket stop type (exchange-side TP/SL exits) and the
+  // engine's own `client_order_id` tag, which encodes why each closing order was sent.
+  // Opening legs (entry) and unmatched orders show "—" since they have no exit reason.
+  const exitReasonOf = (o) => {
+    const st = String(o.stop_order_type || '');
+    if (st.includes('take_profit')) return 'Take Profit';
+    if (st.includes('stop_loss')) return 'Stop Loss';
+    const coid = String(o.client_order_id || '');
+    if (/-CAX[BS]\b/.test(coid)) return 'Close All';
+    if (/-X[BS]-EXP\b/.test(coid)) return 'Expiry';
+    if (/-X[BS]-ITM\b/.test(coid)) return 'Exit @ ITM';
+    if (/-X[BS]-OTM\b/.test(coid)) return 'Exit @ OTM';
+    if (/-X[BS]-ATM\b/.test(coid)) return 'Exit @ ATM';
+    if (/-X[BS]\b/.test(coid)) return 'Strategy Exit';        // legacy tag (no reason code)
+    if (/-SEX(\b|-)/.test(coid)) return 'Short Leg Exit';
+    if (/-PEX(\b|-)/.test(coid)) return 'Partial Exit';
+    if (/-LEX?(\b|-)/.test(coid)) return 'Long Leg Exit';
+    if (/-MX[BS]\b/.test(coid)) return 'Manual Exit';
+    if (/-MLC(\b|-)/.test(coid)) return 'Manual Leg Close';
+    if (/-CX\b/.test(coid)) return 'Manual Close';
+    if (/-TP(\b|-)/.test(coid)) return 'Take Profit';
+    return '—'; // entry legs (-EB/-ES) and anything unmatched
+  };
+  const reasonColor = (r) =>
+    r === 'Take Profit' ? 'var(--call)'
+      : r === 'Stop Loss' ? 'var(--put)'
+        : r === '—' ? 'var(--text-dim)' : 'var(--text)';
+
   return (
     <>
       {/* Date filter — compact, with prev/next day arrows */}
@@ -495,7 +524,7 @@ function LiveOrderHistoryTab({ orderHistory }) {
         <th>Symbol</th><th>Side</th><th>Status</th><th className="r">Qty (Lot)</th>
         <th className="r">Filled</th><th>Type</th><th className="r">Limit Price</th>
         <th className="r">Trigger Price</th><th className="r">Exec Price</th><th className="r">Size</th>
-        <th className="r">Realized PnL</th>
+        <th className="r">Realized PnL</th><th>Exit Reason</th>
         <th className="r">Reduce Only</th><th className="r">Order ID</th><th className="r">Time</th>
       </tr></thead><tbody>
         {rows.map((o, i) => {
@@ -530,6 +559,7 @@ function LiveOrderHistoryTab({ orderHistory }) {
               <td className="r">{o.average_fill_price ? fmtNum(o.average_fill_price) : '—'}</td>
               <td className="r"><span style={{ color: sell ? 'var(--put)' : 'var(--call)' }}>{sizeBtc > 0 ? '+' : ''}{sizeBtc} {unit}</span></td>
               <td className="r">{rpnl != null ? <span className={`pt-pnl ${rpnl > 0 ? 'positive' : rpnl < 0 ? 'negative' : 'zero'}`}>{rpnl > 0 ? '+' : ''}{fmtNum(rpnl)}</span> : '—'}</td>
+              <td>{(() => { const r = exitReasonOf(o); return <span style={{ color: reasonColor(r), fontWeight: r === '—' ? 400 : 600, fontSize: 11 }}>{r}</span>; })()}</td>
               <td className="r">{o.reduce_only ? '✓' : '✕'}</td>
               <td className="r"><span className="pt-dim" style={{ fontSize: 11 }}>{o.id ?? '—'}</span></td>
               <td className="r"><span className="pt-dim" style={{ fontSize: 11 }}>{fmtTs(o.updated_at ?? o.created_at)}</span></td>
@@ -543,11 +573,28 @@ function LiveOrderHistoryTab({ orderHistory }) {
   );
 }
 
+// Live unrealized P&L + mark for one Delta position leg. The engine's snapshot suppresses
+// mark/unrealized updates to keep egress flat (~60s stale), so prefer the live WS mark
+// (~1s fresh) and recompute exactly as Delta does: size × contract_value × (mark − entry) —
+// signed size makes shorts profit on decay. Falls back to the snapshot's own unrealized_pnl /
+// mark_price when no live mark is available (symbol not on the WS feed / cross-expiry / orphan).
+function livePnlOf(p, liveMarks) {
+  const n = (v) => (v == null || v === '' || Number.isNaN(Number(v)) ? null : Number(v));
+  const size = n(p.size) || 0;
+  const cv = n(p.product?.contract_value) ?? 0.001;
+  const entry = n(p.entry_price);
+  const liveMark = n(liveMarks?.[p.product_symbol]?.markPrice);
+  if (liveMark != null && entry != null) {
+    return { pnl: size * cv * (liveMark - entry), mark: liveMark };
+  }
+  return { pnl: n(p.unrealized_pnl ?? p.unrealised_pnl) ?? 0, mark: n(p.mark_price) };
+}
+
 // ── Risk & Margin (live) — real margin/liquidation from Delta ──────────────
-function LiveRiskMargin({ positions, wallet }) {
+function LiveRiskMargin({ positions, wallet, liveMarks }) {
   const open = (positions || []).filter(p => Number(p.size) !== 0);
   const totalMargin = open.reduce((s, p) => s + (Number(p.margin) || 0), 0);
-  const totalUnrl = open.reduce((s, p) => s + (Number(p.unrealized_pnl ?? p.unrealised_pnl) || 0), 0);
+  const totalUnrl = open.reduce((s, p) => s + livePnlOf(p, liveMarks).pnl, 0);
   const usedPct = wallet ? Math.min(100, (totalMargin / wallet) * 100) : 0;
 
   const cards = [
@@ -606,7 +653,7 @@ function LiveRiskMargin({ positions, wallet }) {
 // tab (Symbol · Size · Notional · Entry · TP/SL · Index · Mark · Margin · UPNL ·
 // Action), rendering the live exchange snapshot per leg. Close (×) maps the leg
 // back to its engine position so it exits the whole spread.
-function DeltaPositionsTable({ positions, enginePositions, onExitPosition, onCloseOrphan, spotPrice, stopOrders }) {
+function DeltaPositionsTable({ positions, enginePositions, onExitPosition, onCloseOrphan, spotPrice, stopOrders, liveMarks }) {
   const open = (positions || []).filter(p => Number(p.size) !== 0);
   if (open.length === 0) {
     return <EmptyPanel icon="positions" title="No Open Positions"
@@ -650,7 +697,8 @@ function DeltaPositionsTable({ positions, enginePositions, onExitPosition, onClo
             const isCall = (p.product_symbol || '').startsWith('C-');
             const btc = parseFloat((size * cv).toFixed(6));         // signed size in underlying
             const notional = idx != null ? Math.abs(size) * cv * idx : null;
-            const pnl = num(p.unrealized_pnl ?? p.unrealised_pnl) ?? 0;
+            // Fresh mark-to-market from the live WS mark (falls back to the snapshot).
+            const { pnl, mark } = livePnlOf(p, liveMarks);
             const entryCost = num(p.entry_price) != null ? Math.abs(size) * cv * num(p.entry_price) : null;
             const pnlPct = (entryCost && entryCost !== 0) ? (pnl / entryCost) * 100 : null;
             const margin = num(p.margin);
@@ -679,7 +727,7 @@ function DeltaPositionsTable({ positions, enginePositions, onExitPosition, onClo
                   </span>
                 </td>
                 <td className="r">{idx != null ? fmtNum(idx) : '—'}</td>
-                <td className="r">{fmtNum(p.mark_price)}</td>
+                <td className="r">{fmtNum(mark)}</td>
                 <td className="r">{margin != null && margin > 0 ? `$${fmtNum(margin)}` : '—'}</td>
                 <td className="r">
                   <span className={`pt-pnl ${pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : 'zero'}`}>{pnl > 0 ? '+' : ''}{fmtNum(pnl)}</span>
@@ -837,6 +885,7 @@ export default function TradingWorkspace(props) {
                   onCloseOrphan={props.onCloseOrphan}
                   spotPrice={props.spotPrice}
                   stopOrders={live.stopOrders || live.stop_orders}
+                  liveMarks={props.liveMarks}
                 />
               ) : (
               <ActivePositionsTable
@@ -952,7 +1001,7 @@ export default function TradingWorkspace(props) {
 
           {tab === 'risk' && (
             live ? (
-              <LiveRiskMargin positions={live.positions} wallet={live.wallet} />
+              <LiveRiskMargin positions={live.positions} wallet={live.wallet} liveMarks={props.liveMarks} />
             ) : (
               <RiskMarginTab
                 positions={props.positions}

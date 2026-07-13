@@ -2696,6 +2696,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
               tradeHistory={tradeHistory}
               isLiveAccount={activeAccount?.mode === 'live'}
               liveExchangeState={liveExchangeState}
+              liveMarks={tickerData}
               engineDryRun={engineDryRun}
               liveLoading={activeAccount?.mode === 'live' && !liveViewResolved}
             />
