@@ -1,6 +1,7 @@
 import React from 'react';
 import CustomSelect from '../common/CustomSelect';
 import CustomInput from '../common/CustomInput';
+import DeltaCredentialsSection from './DeltaCredentialsSection';
 
 export default function FirstAccountCard({
   onSubmit,
@@ -11,9 +12,11 @@ export default function FirstAccountCard({
   watchCreateExitType,
   onCancel,
   setValue,
-  watch
+  watch,
+  mode = 'paper'
 }) {
   const watchVariableExitSlices = watch('variableExitSlices');
+  const isLive = mode === 'live';
 
   return (
     <div className="first-account-wrapper">
@@ -27,9 +30,13 @@ export default function FirstAccountCard({
               <line x1="8" y1="12" x2="16" y2="12"></line>
             </svg>
           </div>
-          <h3 className="first-account-title">Create Your First Account</h3>
+          <h3 className="first-account-title">
+            {isLive ? 'Create Your First Live Account' : 'Create Your First Account'}
+          </h3>
           <p className="first-account-desc">
-            To start paper trading, you must create a trading account first. Set up your account name and default strategy filters below.
+            {isLive
+              ? 'To start live trading on Delta Exchange, create a live trading account first. Add your account name, Delta API credentials and default strategy filters below.'
+              : 'To start paper trading, you must create a trading account first. Set up your account name and default strategy filters below.'}
           </p>
         </div>
 
@@ -58,6 +65,13 @@ export default function FirstAccountCard({
                   </span>
                 )}
               </div>
+
+              <DeltaCredentialsSection
+                register={register}
+                watch={watch}
+                setValue={setValue}
+                lockedMode={mode}
+              />
 
               <div className="first-account-row">
                 <div className="first-account-form-group">

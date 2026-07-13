@@ -15,7 +15,8 @@ export default function CreateAccountModal({
   profiles,
   userRole,
   setValue,
-  watch
+  watch,
+  mode = 'paper'
 }) {
   if (!isOpen) return null;
 
@@ -24,7 +25,9 @@ export default function CreateAccountModal({
   return (
     <div className="modal-overlay-wrapper">
       <form onSubmit={onSubmit} className="modal-form-create">
-        <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: 'var(--text)', borderBottom: '1px solid var(--border)', paddingBottom: '8px' }}>Create New Trading Account</h3>
+        <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: 'var(--text)', borderBottom: '1px solid var(--border)', paddingBottom: '8px' }}>
+          {mode === 'live' ? 'Create New Live Trading Account' : 'Create New Paper Trading Account'}
+        </h3>
 
         <div className="modal-columns-create">
           {/* Left Column: Account Details */}
@@ -55,7 +58,7 @@ export default function CreateAccountModal({
               )}
             </div>
 
-            <DeltaCredentialsSection register={register} watch={watch} setValue={setValue} />
+            <DeltaCredentialsSection register={register} watch={watch} setValue={setValue} lockedMode={mode} />
 
             <div style={{ display: 'flex', gap: '16px' }}>
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>

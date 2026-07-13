@@ -51,6 +51,41 @@ export function cleanLimitPrice(price) {
   return String(Number(Number(price).toFixed(4)));
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Fresh marketable limit for an entry chase re-price: cross the spread by `offset`
+ * (premium $) plus an escalating `bump` so a quote that has widened/moved still
+ * fills. `quote` is the leg's latest ticker ({ bid, ask, markPrice, lastPrice }).
+ * Returns null when no usable reference price is available (caller skips the edit).
+ */
+export function marketableChasePrice(side, quote, offset = 0, bump = 0) {
+  const q = quote || {};
+  const ref = side === 'buy'
+    ? (q.ask ?? q.lastPrice ?? q.markPrice)
+    : (q.bid ?? q.lastPrice ?? q.markPrice);
+  if (ref == null || !Number.isFinite(Number(ref))) return null;
+  return side === 'buy'
+    ? Number(ref) + offset + bump
+    : Math.max(0.05, Number(ref) - offset - bump);
+}
+
+/**
+ * Remaining unfilled contracts for a resting order id. Returns 0 when the order is
+ * no longer working (during an entry chase we only cancel intentionally at the very
+ * end, so "gone" means fully filled), or null when the orders fetch failed so the
+ * caller can retry rather than assume a fill.
+ */
+async function unfilledContracts(creds, id) {
+  let orders;
+  try { orders = await getLiveOrders(creds, { states: 'open,pending' }); }
+  catch { return null; }
+  if (!Array.isArray(orders)) return null;
+  const o = orders.find((x) => String(x.id) === String(id));
+  if (!o) return 0;
+  return Math.abs(Number(o.unfilled_size) || 0);
+}
+
 /**
  * Extract a usable wallet balance from Delta's /v2/wallet/balances response,
  * tolerant of asset naming/shape: prefer USDT, then USD, else the wallet with the
@@ -130,6 +165,82 @@ export function createLiveExecutor(getCtx) {
     }
   }
 
+  // Reduce-only MARKET close of a single leg by symbol. Shared by the public
+  // closeSymbol() action and openSpread's abort/unwind paths.
+  async function marketClose({ symbol, side, contracts, tag }) {
+    if (!armed()) return { ok: true, skipped: true };
+    const { accountName, creds } = getCtx();
+    const size = Math.max(1, Math.round(Math.abs(contracts || 0)));
+    const summary = `CLOSE ${side.toUpperCase()} ${size}x ${symbol} reduceOnly [${tag}]`;
+    if (DRY_RUN) { log(`[${accountName}] 🧪 DRY-RUN close-symbol (not sent): ${summary}`); return { ok: true, dryRun: true }; }
+    if (!creds?.apiKey || !creds?.apiSecret) return { ok: false, error: 'no-credentials' };
+    try {
+      const order = await placeOrder(creds, {
+        product_symbol: symbol, size, side,
+        order_type: 'market_order', reduce_only: true, time_in_force: 'ioc',
+        client_order_id: tag,
+      });
+      log(`[${accountName}] ✅ LIVE close-symbol: ${summary} → id ${order?.id ?? '?'}`);
+      return { ok: true, order };
+    } catch (e) {
+      logError(`[${accountName}] ✖ LIVE close-symbol FAILED: ${summary}:`, e.message);
+      return { ok: false, error: e.message };
+    }
+  }
+
+  /**
+   * Place a marketable limit and CHASE it to a full fill: if it doesn't fill
+   * immediately, re-price it in place (edit — keeps the order id AND any attached
+   * bracket) toward the market a few times. Returns
+   *   { ok, order, id, productId, filled, unfilled }
+   * where `ok` is true only when fully filled. In dry-run, when disarmed, or when no
+   * `chase` config is supplied it degrades to a single submit (assumed filled), so
+   * the pre-chase behaviour is preserved on every non-armed-real path.
+   */
+  async function submitChase({ symbol, side, contracts, price, reduceOnly = false, tag, bracket = null, chase = null }) {
+    const first = await submit({ symbol, side, contracts, price, reduceOnly, tag, bracket });
+    if (!first.ok) return { ok: false, error: first.error, filled: 0 };
+    if (first.dryRun || first.skipped || !chase) return { ok: true, order: first.order, filled: contracts };
+
+    const { accountName, creds } = getCtx();
+    const id = first.order?.id;
+    const productId = first.order?.product_id;
+    let unfilled = Number(first.order?.unfilled_size);
+    if (!Number.isFinite(unfilled)) unfilled = contracts; // unknown → assume resting, poll
+    // Common case: a marketable limit fills instantly — no polling, no extra calls.
+    if (unfilled === 0 || String(first.order?.state) === 'closed') {
+      return { ok: true, order: first.order, id, productId, filled: contracts, unfilled: 0 };
+    }
+
+    const attempts = Math.max(0, chase.attempts ?? 3);
+    const pollMs = Math.max(200, chase.pollMs ?? 1500);
+    const offset = side === 'buy' ? (chase.buyOffset ?? 0) : (chase.sellOffset ?? 0);
+    for (let a = 1; a <= attempts; a++) {
+      await sleep(pollMs);
+      const u = await unfilledContracts(creds, id);
+      if (u === 0) { unfilled = 0; break; }
+      if (u == null) continue;                 // fetch hiccup — retry next loop
+      unfilled = u;
+      // Re-price toward the market, escalating the cross a little each attempt.
+      const bump = (chase.bump ?? 1) * a;
+      const newPx = cleanLimitPrice(marketableChasePrice(side, chase.quote?.(symbol), offset, bump));
+      if (!newPx) continue;
+      try {
+        // Send the ORIGINAL total size: Delta keeps the already-filled portion and
+        // re-rests the remainder at the new price (a smaller size would be < filled).
+        await editOrder(creds, { id, product_id: productId, limit_price: newPx, size: Math.max(1, Math.round(contracts)) });
+        log(`[${accountName}] 🏃 CHASE ${side} ${symbol}: ${unfilled} unfilled → reprice ${newPx} (attempt ${a}/${attempts}) [${tag}]`);
+      } catch (e) {
+        logWarn(`[${accountName}] chase reprice failed for ${symbol} [${tag}]: ${e.message}`);
+      }
+    }
+    const uFinal = await unfilledContracts(creds, id);
+    if (uFinal === 0) unfilled = 0;
+    else if (uFinal != null) unfilled = uFinal;
+    const filled = Math.max(0, contracts - unfilled);
+    return { ok: unfilled === 0, order: first.order, id, productId, filled, unfilled };
+  }
+
   return {
     isArmed: armed,
     dryRun: DRY_RUN,
@@ -140,34 +251,60 @@ export function createLiveExecutor(getCtx) {
      *   longTp → bracket TAKE-PROFIT on the long buy
      *   shortSl → bracket STOP-LOSS on the short sell
      * Both fire at the shared exit level even if the engine is down.
-     * Returns { ok }. On the SELL leg failing after the BUY succeeded (live send
-     * only), the caller should NOT persist the position; we log for reconciliation.
+     *
+     * CHASE-FILL (armed-real only, when `chase` is supplied): each leg is a
+     * marketable limit that is re-priced in place a few times until it fully fills
+     * (see submitChase). To guarantee we never carry a naked/mismatched leg, entry
+     * is ALL-OR-NOTHING — if a leg can't be fully filled after the chase we unwind
+     * whatever filled (reduce-only market) and abort:
+     *   • BUY can't fill  → cancel/unwind the partial long, abort (nothing opened).
+     *   • SELL can't fill → unwind the full long + any partial short, abort.
+     * Returns { ok }. On any abort the caller must NOT persist the position; the
+     * account is left flat (no manual reconciliation needed).
      */
-    async openSpread(pos, { long, short, buyPrice, sellPrice, longTp = null, shortSl = null }) {
+    async openSpread(pos, { long, short, buyPrice, sellPrice, longTp = null, shortSl = null, chase = null }) {
       if (!armed()) return { ok: true, skipped: true };
+      const { accountName, creds } = getCtx();
+
       const buyBracket = (longTp != null && Number.isFinite(longTp))
         ? { bracket_take_profit_price: String(longTp), bracket_stop_trigger_method: 'spot_price' }
         : null;
-      const buy = await submit({
+      const buy = await submitChase({
         symbol: pos.buyLeg.symbol, side: 'buy', contracts: long,
         price: buyPrice ?? pos.entryBuyPrice, reduceOnly: false, tag: `${pos.id}-EB`,
-        bracket: buyBracket,
+        bracket: buyBracket, chase,
       });
-      if (!buy.ok) return { ok: false, legFailed: 'buy', error: buy.error };
+      if (!buy.ok) {
+        // Long couldn't be fully filled — stay flat: unwind any partial, else cancel.
+        if (buy.filled > 0) {
+          logWarn(`[${accountName}] ⚠ Entry BUY only ${buy.filled}/${long} filled for ${pos.id} — unwinding to abort cleanly.`);
+          await marketClose({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: buy.filled, tag: `${pos.id}-EAB` }).catch(() => {});
+        } else if (buy.id) {
+          await cancelOrder(creds, { id: buy.id, product_id: buy.productId }).catch(() => {});
+        }
+        return { ok: false, legFailed: 'buy', error: buy.error || 'buy leg unfilled after chase' };
+      }
 
       if (short > 0) {
         const sellBracket = (shortSl != null && Number.isFinite(shortSl))
           ? { bracket_stop_loss_price: String(shortSl), bracket_stop_trigger_method: 'spot_price' }
           : null;
-        const sell = await submit({
+        const sell = await submitChase({
           symbol: pos.sellLeg.symbol, side: 'sell', contracts: short,
           price: sellPrice ?? pos.entrySellPrice, reduceOnly: false, tag: `${pos.id}-ES`,
-          bracket: sellBracket,
+          bracket: sellBracket, chase,
         });
         if (!sell.ok) {
-          const { accountName } = getCtx();
-          logError(`[${accountName}] ⚠ Entry SELL leg failed after BUY leg placed for ${pos.id} — manual reconciliation may be required.`);
-          return { ok: false, legFailed: 'sell', error: sell.error, buyOrder: buy.order };
+          // Short couldn't be fully filled — unwind the FILLED long (and any partial
+          // short) so we never carry a naked/mismatched leg. All-or-nothing entry.
+          logError(`[${accountName}] ⚠ Entry SELL only ${sell.filled}/${short} filled after chase for ${pos.id} — unwinding long + partial short to abort.`);
+          await marketClose({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: long, tag: `${pos.id}-EAB` }).catch(() => {});
+          if (sell.filled > 0) {
+            await marketClose({ symbol: pos.sellLeg.symbol, side: 'buy', contracts: sell.filled, tag: `${pos.id}-EAB` }).catch(() => {});
+          } else if (sell.id) {
+            await cancelOrder(creds, { id: sell.id, product_id: sell.productId }).catch(() => {});
+          }
+          return { ok: false, legFailed: 'sell', error: sell.error || 'sell leg unfilled after chase', buyOrder: buy.order };
         }
         return { ok: true, buyOrder: buy.order, sellOrder: sell.order };
       }
@@ -186,24 +323,7 @@ export function createLiveExecutor(getCtx) {
      * `side` is the closing side (sell to close a long, buy to close a short).
      */
     async closeSymbol({ symbol, side, contracts, tag }) {
-      if (!armed()) return { ok: true, skipped: true };
-      const { accountName, creds } = getCtx();
-      const size = Math.max(1, Math.round(Math.abs(contracts || 0)));
-      const summary = `CLOSE ${side.toUpperCase()} ${size}x ${symbol} reduceOnly [${tag}]`;
-      if (DRY_RUN) { log(`[${accountName}] 🧪 DRY-RUN close-symbol (not sent): ${summary}`); return { ok: true, dryRun: true }; }
-      if (!creds?.apiKey || !creds?.apiSecret) return { ok: false, error: 'no-credentials' };
-      try {
-        const order = await placeOrder(creds, {
-          product_symbol: symbol, size, side,
-          order_type: 'market_order', reduce_only: true, time_in_force: 'ioc',
-          client_order_id: tag,
-        });
-        log(`[${accountName}] ✅ LIVE close-symbol: ${summary} → id ${order?.id ?? '?'}`);
-        return { ok: true, order };
-      } catch (e) {
-        logError(`[${accountName}] ✖ LIVE close-symbol FAILED: ${summary}:`, e.message);
-        return { ok: false, error: e.message };
-      }
+      return marketClose({ symbol, side, contracts, tag });
     },
 
     /**

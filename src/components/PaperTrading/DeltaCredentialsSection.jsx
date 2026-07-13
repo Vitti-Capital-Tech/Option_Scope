@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import CustomSelect from '../common/CustomSelect';
 import CustomInput from '../common/CustomInput';
 import { verifyDeltaCredentials } from '../../deltaAuth';
@@ -20,12 +20,25 @@ const labelStyle = { fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' };
  *
  * The secret is never displayed back: in edit mode `existingMeta` shows only the
  * last-4 and current status; re-entering a secret replaces it.
+ *
+ * When `lockedMode` is set (e.g. 'live' on the Live Trading tab), the Paper/Live
+ * dropdown is replaced by a read-only badge and the mode is pinned to that value,
+ * so a dashboard only ever creates accounts of its own mode.
  */
-export default function DeltaCredentialsSection({ register, watch, setValue, existingMeta = null }) {
+export default function DeltaCredentialsSection({ register, watch, setValue, existingMeta = null, lockedMode = null }) {
   const [verifying, setVerifying] = useState(false);
   const [result, setResult] = useState(null); // { ok, error }
 
-  const mode = watch('mode') || 'paper';
+  const selectedMode = watch('mode') || 'paper';
+  const mode = lockedMode ? (lockedMode === 'live' ? 'live' : 'paper') : selectedMode;
+
+  // Keep the form field in step with a locked mode, so submit persists the right
+  // value even if the form was initialised with a different default.
+  useEffect(() => {
+    if (lockedMode && selectedMode !== mode) {
+      setValue('mode', mode);
+    }
+  }, [lockedMode, selectedMode, mode, setValue]);
 
   const handleVerify = async () => {
     setVerifying(true);
@@ -48,14 +61,41 @@ export default function DeltaCredentialsSection({ register, watch, setValue, exi
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10, paddingTop: 8 }}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         <label style={labelStyle}>Account Mode</label>
-        <CustomSelect
-          value={mode}
-          onChange={onModeChange}
-          options={[
-            { label: 'Paper (simulated)', value: 'paper' },
-            { label: 'Live — Delta Exchange', value: 'live' }
-          ]}
-        />
+        {lockedMode ? (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '10px 14px',
+              borderRadius: 8,
+              border: '1px solid var(--border)',
+              background: 'var(--bg3)',
+              fontSize: 13,
+              fontWeight: 600,
+              color: mode === 'live' ? '#3b82f6' : 'var(--text)'
+            }}
+          >
+            <span
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: '50%',
+                background: mode === 'live' ? '#3b82f6' : '#3fb950'
+              }}
+            />
+            {mode === 'live' ? 'Live — Delta Exchange' : 'Paper (simulated)'}
+          </div>
+        ) : (
+          <CustomSelect
+            value={mode}
+            onChange={onModeChange}
+            options={[
+              { label: 'Paper (simulated)', value: 'paper' },
+              { label: 'Live — Delta Exchange', value: 'live' }
+            ]}
+          />
+        )}
       </div>
 
       {mode === 'live' && (

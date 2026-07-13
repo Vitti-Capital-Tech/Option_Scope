@@ -69,6 +69,18 @@ export default function Navbar({
               </svg>
             </span> <span className="nav-tab-text">Paper Trading</span>
           </button>
+          <button
+            className={`nav-tab ${activeTab === 'live' ? 'active' : ''}`}
+            onClick={() => onNavigate('live')}
+          >
+            <span className="nav-tab-icon" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="2.5" fill="currentColor" stroke="none" />
+                <path d="M6.3 6.3a8 8 0 0 0 0 11.4M17.7 6.3a8 8 0 0 1 0 11.4" />
+                <path d="M3.5 3.5a12 12 0 0 0 0 17M20.5 3.5a12 12 0 0 1 0 17" />
+              </svg>
+            </span> <span className="nav-tab-text">Live Trading</span>
+          </button>
         </div>
 
         <div className="nav-actions-container">
@@ -140,6 +152,19 @@ export default function Navbar({
             </svg>
           </span>
           <span className="mobile-bottom-text">Paper Trading</span>
+        </button>
+        <button
+          className={`mobile-bottom-tab ${activeTab === 'live' ? 'active' : ''}`}
+          onClick={() => onNavigate('live')}
+        >
+          <span className="mobile-bottom-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="2.5" fill="currentColor" stroke="none" />
+              <path d="M6.3 6.3a8 8 0 0 0 0 11.4M17.7 6.3a8 8 0 0 1 0 11.4" />
+              <path d="M3.5 3.5a12 12 0 0 0 0 17M20.5 3.5a12 12 0 0 1 0 17" />
+            </svg>
+          </span>
+          <span className="mobile-bottom-text">Live Trading</span>
         </button>
       </div>
     </>

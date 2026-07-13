@@ -9,7 +9,7 @@ import { useTabSync } from './useTabSync.js'
 function Root() {
   const [page, setPage] = useState(() => {
     const path = window.location.pathname.replace(/^\//, '') || 'charts';
-    return ['charts', 'scanner', 'trading'].includes(path) ? path : 'charts';
+    return ['charts', 'scanner', 'trading', 'live'].includes(path) ? path : 'charts';
   });
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
 
@@ -28,7 +28,7 @@ function Root() {
   useEffect(() => {
     const handlePopState = () => {
       const path = window.location.pathname.replace(/^\//, '') || 'charts';
-      const validPages = ['charts', 'scanner', 'trading'];
+      const validPages = ['charts', 'scanner', 'trading', 'live'];
       if (validPages.includes(path)) {
         setPage(path);
       } else {
@@ -59,7 +59,10 @@ function Root() {
         <RatioSpreadScanner onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} broadcast={broadcast} />
       </div>
       <div style={{ display: page === 'trading' ? 'block' : 'none', height: '100%', width: '100%' }}>
-        <PaperTrading onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} broadcast={broadcast} />
+        <PaperTrading mode="paper" onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} broadcast={broadcast} />
+      </div>
+      <div style={{ display: page === 'live' ? 'block' : 'none', height: '100%', width: '100%' }}>
+        <PaperTrading mode="live" onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} broadcast={broadcast} />
       </div>
     </>
   );

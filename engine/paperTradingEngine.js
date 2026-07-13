@@ -28,6 +28,16 @@ import {
   pickTopUniqueStrikes, log, logWarn, logError
 } from './lib/utils.js';
 
+// Entry chase-fill tuning (armed-real only): re-price each entry leg toward the
+// market up to `attempts` times, waiting `pollMs` between checks, escalating the
+// cross by `bump` (premium $) each attempt so a widening quote still fills. If a
+// leg still can't fully fill, openSpread unwinds and aborts the entry. Env-overridable.
+const ENTRY_CHASE = {
+  attempts: Math.max(0, Number(process.env.ENTRY_CHASE_ATTEMPTS ?? 3)),
+  pollMs: Math.max(200, Number(process.env.ENTRY_CHASE_POLL_MS ?? 5000)),
+  bump: Math.max(0, Number(process.env.ENTRY_CHASE_BUMP ?? 1)),
+};
+
 /**
  * Build `count` equidistant exit price levels (sorted ascending) spanning the
  * long option's current bid up to `upperBound` (= max(entry, last 1-2hr high)).
@@ -2597,6 +2607,15 @@ async function startSingleAccountEngine(account) {
               sellPrice: Math.max(0.05, t.entrySellPrice - sellOff),
               longTp: bracketLevel,
               shortSl: bracketLevel,
+              // Chase each leg to a full fill; unwind + abort if it can't complete.
+              chase: {
+                attempts: ENTRY_CHASE.attempts,
+                pollMs: ENTRY_CHASE.pollMs,
+                bump: ENTRY_CHASE.bump,
+                buyOffset: buyOff,
+                sellOffset: sellOff,
+                quote: (sym) => tickerData[sym],
+              },
             });
             if (!liveEntry.ok) {
               logError(`[${accountState.name}] LIVE entry aborted (${liveEntry.legFailed} leg: ${liveEntry.error}) — not persisting ${t.buyLeg.strike}/${t.sellLeg.strike}`);

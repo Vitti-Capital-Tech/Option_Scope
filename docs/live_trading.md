@@ -114,7 +114,7 @@ logic is byte-for-byte unchanged when paper/disarmed:
 
 | Point | Live order |
 | --- | --- |
-| Entry (before `active_positions` insert) | Buy long @ ask + sell short @ bid (limit, `+entryBuyOffset`/`−entrySellOffset`). Each leg carries a **spot-triggered bracket** at the exit level (long → TP, short → SL). **A failed live send aborts the insert.** |
+| Entry (before `active_positions` insert) | Buy long @ ask + sell short @ bid (limit, `+entryBuyOffset`/`−entrySellOffset`). Each leg carries a **spot-triggered bracket** at the exit level (long → TP, short → SL). Each leg is **chased to a full fill** (re-priced in place until filled — see [Entry chase-fill](#entry-chase-fill)). **All-or-nothing:** a failed send OR a leg that can't fully fill after the chase **unwinds any partial and aborts the insert** (account left flat). |
 | Entry (resting short-exit, armed real) | Resting reduce-only **limit BUY** on the short @ `shortExitPrice` (`${id}-SEX`) — the short buy-back (profit), sitting in Open Orders |
 | Short-leg exit | Active model: buy-to-close @ ask. Resting model: the `-SEX` limit fills **fully** (order-id in fills **and** short position size 0) → book + place ladder (short SL bracket auto-cancels) |
 | Long laddered exit | Active model: sell reduce_only @ bid per level. Resting model: fixed-ladder resting **limit SELLs** fill on their own |
@@ -129,8 +129,11 @@ All orders use limit orders at the engine's computed price and carry a
 > **Price sanitization (`cleanLimitPrice`).** Every limit/stop price is rounded to 4
 > decimals and stringified before it is sent to Delta. Computed prices carry
 > float-representation noise (e.g. `2.7 − 2 === 0.7000000000000002`); sending that raw
-> makes Delta reject the order with **`bad_schema`** — a silent failure that, on the
-> entry SELL leg, could leave an **orphan long** (the BUY filled, the SELL rejected).
+> makes Delta reject the order with **`bad_schema`**. On the entry SELL leg this used
+> to leave an **orphan long** (the BUY filled, the SELL rejected); the all-or-nothing
+> entry (see [Entry chase-fill](#entry-chase-fill)) now unwinds the filled BUY and
+> aborts, so a rejection costs a needless entry + unwind rather than a naked leg —
+> sanitization still matters to avoid that wasted round-trip.
 > Inputs are already tick-aligned (exchange bid/ask/mark ± integer offsets), so rounding
 > only strips the noise (`0.7000000000000002 → "0.7"`, `0.05 → "0.05"`). Applied
 > centrally in `liveExecution.js` to entry buy/sell, the resting short buy-back
@@ -464,6 +467,45 @@ fill: **buy at ask + `entry_buy_offset`** (default 5), **sell at bid −
 `entry_sell_offset`** (default 2), editable per account in the live section of the
 Create/Edit modal. The offsets affect only the order limit price sent to Delta — the
 stored entry price (used for PnL/margin) remains the ask/bid. Paper ignores them.
+
+### Entry chase-fill
+
+A marketable limit usually fills instantly, but a fast/wide quote can leave a leg
+resting or partially filled — historically that risked a **naked or size-mismatched
+leg** (one strike fills, the other doesn't). `openSpread` in `liveExecution.js` now
+**chases each entry leg to a full fill** and treats entry as **all-or-nothing**.
+
+Per leg (`submitChase`):
+
+1. Place the marketable limit (with its bracket). If Delta reports it **fully filled
+   immediately** (`unfilled_size === 0` / `state === 'closed'`), done — **no polling,
+   no extra API calls** (the common path is unchanged).
+2. Otherwise poll `/v2/orders` every `pollMs` for the order's `unfilled_size`. While
+   it's still resting, **re-price in place** (`editOrder`, keeping the order id **and
+   its attached bracket**) toward the market — fresh ask/bid + the offset + an
+   escalating `bump` (premium $) per attempt — up to `attempts` times. The edit sends
+   the **original total size** so Delta keeps the already-filled portion and re-rests
+   only the remainder.
+
+If a leg still can't fully fill after the chase, the entry **unwinds and aborts** so
+the account is left flat (no manual reconciliation):
+
+- **BUY** can't fill → reduce-only **market-close** any partial long (else cancel the
+  resting order), then abort — nothing is persisted.
+- **SELL** can't fill → reduce-only **market-close the full long + any partial short**,
+  then abort. `openSpread` returns `{ ok: false, legFailed }` and the engine skips the
+  `active_positions` insert.
+
+**Tuning** (env, armed-real only; defaults are conservative):
+
+| Var | Default | Meaning |
+| --- | --- | --- |
+| `ENTRY_CHASE_ATTEMPTS` | `3` | Max in-place re-prices (retries) before abort |
+| `ENTRY_CHASE_POLL_MS` | `5000` | Wait between fill checks (ms) — check after ~5s |
+| `ENTRY_CHASE_BUMP` | `1` | Extra cross ($) added per attempt |
+
+**Dry-run / paper / disarmed:** chase is skipped entirely — a single submit is
+assumed filled, so behaviour on every non-armed-real path is byte-for-byte unchanged.
 
 ### Live exchange data pipeline (dashboard tabs)
 

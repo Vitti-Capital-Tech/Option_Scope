@@ -130,7 +130,12 @@ const findActiveSchedule = (schedules, nowMs) => {
 };
 
 
-export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
+export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'paper' }) {
+  // Which dashboard this instance is: 'paper' (Paper Trading) or 'live' (Live
+  // Trading). The two tabs mount separate instances of this same component; they
+  // share all logic but each only ever sees, manages and syncs accounts whose
+  // account.mode matches this dashboard's mode.
+  const dashboardMode = mode === 'live' ? 'live' : 'paper';
   const [accounts, setAccounts] = useState([]);
   const [activeAccountId, setActiveAccountId] = useState(null);
   const [configDbId, setConfigDbId] = useState(null);
@@ -170,7 +175,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     defaultValues: {
       name: '',
       ownerId: '',
-      mode: 'paper',
+      mode: mode === 'live' ? 'live' : 'paper',
       apiKey: '',
       apiSecret: '',
       credVerified: false,
@@ -602,10 +607,16 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       }
       const { data, error } = await query.order('created_at', { ascending: true });
       if (data && !error) {
-        const normalizedAccounts = data.map(acc => ({
+        const mappedAccounts = data.map(acc => ({
           ...acc,
           default_config: normalizeAccountDefaultConfig(acc.default_config)
         }));
+
+        // This dashboard only ever manages accounts matching its mode: the Paper
+        // Trading tab shows mode !== 'live', the Live Trading tab shows mode === 'live'.
+        const normalizedAccounts = mappedAccounts.filter(
+          acc => (acc.mode === 'live' ? 'live' : 'paper') === dashboardMode
+        );
 
         setAccounts(normalizedAccounts);
         if (normalizedAccounts.length > 0) {
@@ -617,7 +628,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
           setActiveAccountId(null);
         }
 
-        const staleAccounts = normalizedAccounts.filter((acc, index) => {
+        const staleAccounts = mappedAccounts.filter((acc, index) => {
           const original = data[index]?.default_config || {};
           return Object.keys(ACCOUNT_CONFIG_DEFAULTS).some(key => original[key] === undefined || original[key] === null);
         });
@@ -633,7 +644,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
         try {
           const ch = new BroadcastChannel('option-scope-sync');
-          ch.postMessage({ type: 'ACCOUNTS_SYNC', payload: { accounts: normalizedAccounts }, senderId: 'paper-trading-dashboard', timestamp: Date.now() });
+          ch.postMessage({ type: `ACCOUNTS_SYNC_${dashboardMode}`, payload: { accounts: normalizedAccounts }, senderId: 'paper-trading-dashboard', timestamp: Date.now() });
           ch.close();
         } catch (e) { }
       }
@@ -647,7 +658,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     fetchAccounts();
 
     const accountsChannel = supabase
-      .channel('accounts_changes_ui')
+      .channel(`accounts_changes_ui_${dashboardMode}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'paper_trading_accounts' },
@@ -777,7 +788,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   const triggerCreateAccount = () => {
     resetCreate({
       name: `Account ${accounts.length + 1}`,
-      mode: 'paper',
+      mode: dashboardMode,
       apiKey: '',
       apiSecret: '',
       credVerified: false,
@@ -1120,7 +1131,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
     setConfig(c => {
       const newConfig = { ...c, ...parsedUpdates };
       setTimeout(() => {
-        tabBroadcast('CONFIG_SYNC', { config: newConfig });
+        tabBroadcast(`CONFIG_SYNC_${dashboardMode}`, { config: newConfig });
         saveSupabaseConfig(newConfig);
       }, 0);
       return newConfig;
@@ -1200,7 +1211,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
       const resetConfig = { ...c, ...DEFAULT_FILTERS };
       setTimeout(() => {
         saveSupabaseConfig(resetConfig);
-        tabBroadcast('CONFIG_SYNC', { config: resetConfig });
+        tabBroadcast(`CONFIG_SYNC_${dashboardMode}`, { config: resetConfig });
       }, 0);
       return resetConfig;
     });
@@ -2382,13 +2393,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
 
   // ── Cross-tab sync (config only) ──────────────────────────────────────
   const { broadcast: tabBroadcast } = useTabListener({
-    CONFIG_SYNC: (payload) => {
+    [`CONFIG_SYNC_${dashboardMode}`]: (payload) => {
       if (payload.config) {
         setConfig(payload.config);
         setDraftConfig(payload.config);
       }
     },
-    ACCOUNTS_SYNC: (payload) => {
+    [`ACCOUNTS_SYNC_${dashboardMode}`]: (payload) => {
       if (payload.accounts) {
         setAccounts(payload.accounts);
         if (payload.accounts.length > 0) {
@@ -2651,7 +2662,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
   return (
     <div className="app">
       <Navbar
-        activeTab="trading"
+        activeTab={dashboardMode === 'live' ? 'live' : 'trading'}
         onNavigate={onNavigate}
         theme={theme}
         toggleTheme={toggleTheme}
@@ -2679,6 +2690,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
             onCancel={handleLogout}
             setValue={setValueCreate}
             watch={watchCreate}
+            mode={dashboardMode}
           />
         ) : (
           <>
@@ -2827,6 +2839,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme }) {
         userRole={userProfile?.role}
         setValue={setValueCreate}
         watch={watchCreate}
+        mode={dashboardMode}
       />
 
       <DeleteAccountModal
