@@ -1891,18 +1891,14 @@ async function startSingleAccountEngine(account) {
                   contracts: contractsToSell,
                   price: liveExitBuy, tag: `${pos.id}-PEX-${pos.buyLeg.lotSize}`,
                 });
+                const batchNet = partialExitsToRecord.reduce((s, r) => s + (r.realized_net_pnl || 0), 0);
+                notifyTrade({ title: '🔻 PARTIAL SCALE-DOWN', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike} · sold ${contractsToSell} contract(s) · remaining lot ${pos.buyLeg.lotSize}`, pnl: batchNet });
               }
 
               // FIX B6: batched insert
               try {
                 await supabase.from('trade_history').upsert(partialExitsToRecord, { onConflict: 'trade_id', ignoreDuplicates: true });
                 log(`📤 PARTIAL EXITS RECORDED: ${pos.id} | ${partialExitsToRecord.length} exits | Total reduced: ${partialExitsToRecord.length * deltaBuyQty} lots`);
-                // Telegram: notify on every BOOKED partial (matches the app's records), whether
-                // or not a whole contract sold on Delta this cycle. Sub-contract 10% steps
-                // accumulate, so `contractsToSell` can be 0 even though a partial was recorded —
-                // gating the notify on it (the old bug) silently dropped those partials.
-                const batchNet = partialExitsToRecord.reduce((s, r) => s + (r.realized_net_pnl || 0), 0);
-                notifyTrade({ title: '🔻 PARTIAL EXIT', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike} · reduced ${totalReducedLot} lot(s) · ${contractsToSell} contract(s) sold on Delta · remaining lot ${pos.buyLeg.lotSize}`, pnl: batchNet });
               } catch (e) {
                 logError(`Failed to insert partial exit history for position ${pos.id}:`, e);
               }
