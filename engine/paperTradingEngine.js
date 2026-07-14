@@ -16,7 +16,7 @@
 import { supabase, hasServiceRole } from './lib/supabase.js';
 import { createHeartbeat } from './lib/heartbeat.js';
 import { createLiveExecutor, isLiveDryRun, longContracts, shortContracts, extractBalance } from './lib/liveExecution.js';
-import { notifyLiveFailure } from './lib/telegram.js';
+import { notifyLiveFailure, notifyLiveTrade } from './lib/telegram.js';
 import { getBalance } from './lib/deltaTradeApi.js';
 import {
   loadProducts, getExpiries, getSpotPrice,
@@ -167,7 +167,10 @@ async function startSingleAccountEngine(account) {
     // Which strategy logic to run. 1 = stable (live accounts); an experimental
     // paper account is set to 2+ to test new logic. Branch on it wherever the
     // behaviour diverges — see the STRATEGY VERSIONING note below.
-    strategyVersion: 1
+    strategyVersion: 1,
+    // Weekdays new entries are allowed on (0=Sun..6=Sat), aligned to the 17:30 IST
+    // trading-day boundary. All seven = trade every day. v2/paper entry-gate only.
+    tradeDays: [0, 1, 2, 3, 4, 5, 6]
   };
   let products = [];
   let expiries = [];
@@ -192,6 +195,14 @@ async function startSingleAccountEngine(account) {
     liveEnabled: accountState.live_enabled,
     creds: liveCreds,
   }));
+
+  // Push a live trade event (entry/exit) to Telegram. Gated on armed REAL live
+  // (mode live + armed + NOT dry-run) so paper and dry-run validation never notify.
+  // Fire-and-forget — telegram.js swallows all errors.
+  function notifyTrade({ title, detail = '', pnl = null }) {
+    if (!(accountState.mode === 'live' && accountState.live_enabled && !live.dryRun)) return;
+    notifyLiveTrade({ account: accountState.name, title, detail, pnl });
+  }
 
   // Load + decrypt Delta credentials for live accounts. Requires the engine to
   // run with the service_role key; otherwise live trading stays disabled.
@@ -285,6 +296,7 @@ async function startSingleAccountEngine(account) {
           entry_sell_offset: 2,
           // Paper = experimental testbed (v2), live = stable (v1).
           strategy_version: accountState.mode === 'live' ? 1 : 2,
+          trade_days: [0, 1, 2, 3, 4, 5, 6],
           updated_at: new Date().toISOString()
         };
         const { data: inserted, error: insertErr } = await supabase
@@ -325,7 +337,8 @@ async function startSingleAccountEngine(account) {
           balanceAllocationPct: data.balance_allocation_pct ?? 90,
           entryBuyOffset: data.entry_buy_offset ?? 5,
           entrySellOffset: data.entry_sell_offset ?? 2,
-          strategyVersion: data.strategy_version ?? 1
+          strategyVersion: data.strategy_version ?? 1,
+          tradeDays: Array.isArray(data.trade_days) ? data.trade_days : [0, 1, 2, 3, 4, 5, 6]
         };
         configDbId = data.id;
         // log(`[${accountState.name}] Config loaded: ${config.underlying} | Expiry: ${config.expiry || 'auto'}`);
@@ -525,6 +538,22 @@ async function startSingleAccountEngine(account) {
   }
 
   // ── Core strategy evaluation (Phase 2) ────────────────────────────────
+
+  // Day-of-week ENTRY gate (strategy_version >= 2 / paper only). A "trading day" is
+  // aligned to the schedule timeline's 17:30 IST boundary: the day named for weekday W
+  // runs (W-1) 17:30 → W 17:30 IST, so at/after 17:30 IST the active trading day is
+  // TOMORROW's weekday. Returns true (entries allowed) for v1 accounts, or when the
+  // current trading-day weekday (0=Sun..6=Sat) is enabled in config.tradeDays. This
+  // only blocks NEW entries — exits and position management are never gated (like `paused`).
+  function isTradingDayEnabled() {
+    if (config.strategyVersion < 2) return true;
+    const days = Array.isArray(config.tradeDays) ? config.tradeDays : null;
+    if (!days) return true; // missing/misconfigured → don't block
+    const ist = new Date(Date.now() + 330 * 60000); // shift UTC → IST wall clock
+    const istMin = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+    const tradingWeekday = istMin >= 1050 ? (ist.getUTCDay() + 1) % 7 : ist.getUTCDay(); // 1050 = 17:30 IST
+    return days.includes(tradingWeekday);
+  }
 
   // Returns active schedule window for current IST time (UTC + 5:30), or null if none match
   function getActiveSchedule() {
@@ -862,6 +891,9 @@ async function startSingleAccountEngine(account) {
         }
         await supabase.from('active_positions').delete().eq('id', pos.id);
         log(`[${accountState.name}] ♻️ RECONCILE-CLEAN: ${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} absent from Delta → ${pos._everOpenOnDelta ? 'booked + removed' : 'silently removed (never filled)'}`);
+        if (pos._everOpenOnDelta) {
+          notifyTrade({ title: '♻️ EXCHANGE CLOSE (bracket/external)', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} · closed on Delta`, pnl: net });
+        }
       } catch (e) {
         logError(`[${accountState.name}] reconcileOrphans failed for ${pos.id}:`, e);
         notifyLiveFailure({ account: accountState.name, context: `Orphan reconcile FAILED (${pos.id}) — exchange/engine state may be out of sync`, error: e });
@@ -918,6 +950,7 @@ async function startSingleAccountEngine(account) {
     positions = positions.filter(p => p.id !== pos.id);
     heartbeat.update({ active_positions: positions.length });
     log(`[${accountState.name}] 🙋 MANUAL EXIT: ${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} | PnL $${net.toFixed(2)}`);
+    notifyTrade({ title: '🙋 MANUAL EXIT', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''}`, pnl: net });
   }
 
   // Poll for UI-requested exits and process them promptly.
@@ -1159,6 +1192,7 @@ async function startSingleAccountEngine(account) {
         await supabase.from('active_positions').delete().eq('id', pos.id);
       } catch (e) { logError(`[${accountState.name}] Resting full-exit booking failed for ${pos.id}:`, e); }
       log(`[${accountState.name}] 📤 LIVE ${atExpiry ? 'EXPIRY' : 'FULL EXIT'}: ${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} | ${reason} | PnL $${net.toFixed(2)}`);
+      notifyTrade({ title: atExpiry ? '📤 EXPIRY EXIT' : '📤 FULL EXIT', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} · ${reason}`, pnl: net });
       return; // closed
     }
 
@@ -1244,6 +1278,7 @@ async function startSingleAccountEngine(account) {
         }).eq('id', pos.id);
       } catch (e) { logError(`[${accountState.name}] Resting short-exit persist failed for ${pos.id}:`, e); }
       log(`[${accountState.name}] ✂️ RESTING SHORT EXIT: ${pos.type.toUpperCase()} ${pos.buyLeg.strike} @ $${exitPx} | ladder ${alloc.join('/')} contracts @ [${levels.join(',')}] | PnL $${net.toFixed(2)}`);
+      notifyTrade({ title: '✂️ SHORT EXIT', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike} · short bought back @ $${exitPx} · long ladder placed`, pnl: net });
       remaining.push(pos);
       return;
     }
@@ -1254,12 +1289,14 @@ async function startSingleAccountEngine(account) {
     if (newlyFilled.length > 0) {
       lastDbWrite = Date.now();
       const rows = [];
+      let cycleNet = 0; // sum of this cycle's slice net PnL (for the Telegram notify)
       for (const lo of newlyFilled) {
         const px = lo.level;
         const gross = (px - pos.entryBuyPrice) * lo.lot;
         const entryFee = Math.min(pos.entryFee || 0, calculateFee(pos.entryBuyPrice, pos.entrySpotPrice, lo.lot, pos.buyLeg.originalLotSize || 1));
         const exitFee = calculateFee(px, spotPrice, lo.lot, pos.buyLeg.originalLotSize || 1);
         const net = gross - (entryFee + exitFee);
+        cycleNet += net;
         rows.push({
           trade_id: `${pos.id}-LE-${lo.stage}`, underlying: pos.underlying, expiry: pos.expiry, type: pos.type,
           buy_leg: JSON.stringify({ ...pos.buyLeg, lotSize: lo.lot, ladderOrders: undefined, exitIv: tickerBuy?.bidIv ?? tickerBuy?.iv ?? null }),
@@ -1285,6 +1322,7 @@ async function startSingleAccountEngine(account) {
         try { await supabase.from('active_positions').delete().eq('id', pos.id); }
         catch (e) { logError(`[${accountState.name}] Resting ladder final delete failed for ${pos.id}:`, e); }
         log(`[${accountState.name}] 🪜 LONG FULLY EXITED (resting ladder): ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | ${newlyFilled.length} slice(s) this cycle`);
+        notifyTrade({ title: '🪜 LONG FULLY EXITED', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike} · ${newlyFilled.length} slice(s) this cycle · position closed`, pnl: cycleNet });
         return;
       }
       pos.margin = longOnlyMargin(pos);
@@ -1294,6 +1332,7 @@ async function startSingleAccountEngine(account) {
         }).eq('id', pos.id);
       } catch (e) { logError(`[${accountState.name}] Resting ladder persist failed for ${pos.id}:`, e); }
       log(`[${accountState.name}] 🪜 LONG SLICE EXIT (resting): ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | ${newlyFilled.length} slice(s) | remaining lot ${pos.buyLeg.lotSize}`);
+      notifyTrade({ title: '🪜 LONG SLICE EXIT', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike} · ${newlyFilled.length} slice(s) · remaining lot ${pos.buyLeg.lotSize}`, pnl: cycleNet });
     }
     remaining.push(pos);
   }
@@ -1851,6 +1890,8 @@ async function startSingleAccountEngine(account) {
                   contracts: contractsToSell,
                   price: liveExitBuy, tag: `${pos.id}-PEX-${pos.buyLeg.lotSize}`,
                 });
+                const batchNet = partialExitsToRecord.reduce((s, r) => s + (r.realized_net_pnl || 0), 0);
+                notifyTrade({ title: '🔻 PARTIAL SCALE-DOWN', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike} · sold ${contractsToSell} contract(s) · remaining lot ${pos.buyLeg.lotSize}`, pnl: batchNet });
               }
 
               // FIX B6: batched insert
@@ -2260,6 +2301,13 @@ async function startSingleAccountEngine(account) {
         log(`[${accountState.name}] ⏸ Paused — skipping new entries (open positions still managed).`);
       }
 
+      // Day-of-week entry gate (v2/paper). Blocks NEW entries on a disabled weekday
+      // (17:30 IST trading-day boundary); open positions still managed. v1 → always true.
+      const dayAllowsEntry = isTradingDayEnabled();
+      if (!dayAllowsEntry && !onlyExits && !paused) {
+        log(`[${accountState.name}] 📅 Trading day disabled — skipping new entries (open positions still managed).`);
+      }
+
       const liveArmed = accountState.mode === 'live' && !!accountState.live_enabled;
 
       // SELF-HEAL live margin basis. Positions opened before the account was armed (or
@@ -2321,7 +2369,7 @@ async function startSingleAccountEngine(account) {
       }
 
       let partMargin = null;
-      if (!onlyExits && !paused && liveArmed) {
+      if (!onlyExits && !paused && dayAllowsEntry && liveArmed) {
         try {
           const bal = await live.walletBalance();
           if (bal != null && bal > 0) {
@@ -2349,7 +2397,7 @@ async function startSingleAccountEngine(account) {
         }
       }
 
-      if (!onlyExits && !paused) {
+      if (!onlyExits && !paused && dayAllowsEntry) {
         for (const spread of uniqueTopSpreads) {
           // Live accounts need a valid per-position margin part to size safely.
           if (liveArmed && partMargin == null) continue;
@@ -2731,6 +2779,7 @@ async function startSingleAccountEngine(account) {
               const originalLotSize = t.sellLeg.lotSize || 1;
               const ratioLong = t.buyLeg.lotSize / originalLotSize;
               log(`[${accountState.name}] 📥 ENTRY: ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} | Qty: ${ratioLong.toFixed(2)}:${t.sellQty} | Net: $${(t.sellQty * t.entrySellPrice - t.entryBuyPrice * ratioLong).toFixed(2)}`);
+              notifyTrade({ title: '📥 LIVE ENTRY', detail: `${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} · qty ${ratioLong.toFixed(2)}:${t.sellQty} · net $${(t.sellQty * t.entrySellPrice - t.entryBuyPrice * ratioLong).toFixed(2)} · spot ${Math.round(t.entrySpotPrice)}` });
             }
           } catch (err) { logError(`[${accountState.name}] Entry persistence error:`, err); }
         }

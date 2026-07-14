@@ -769,3 +769,12 @@ ALTER TABLE public.paper_trading_config
 -- to 0 (unchanged behaviour). Additive.
 ALTER TABLE public.paper_trading_schedules
   ADD COLUMN IF NOT EXISTS days_to_expiry NUMERIC NOT NULL DEFAULT 0;
+
+
+-- ─── 021_trade_days.sql ───
+-- Per-account Trading Days: the weekdays an account may OPEN new positions on (JSONB
+-- array, JS getDay() 0=Sun..6=Sat), aligned to the 17:30 IST trading-day boundary.
+-- Entry-only gate; experimental paper (strategy_version >= 2) only. Default all seven
+-- (trade every day) so existing accounts are unchanged. Additive.
+ALTER TABLE public.paper_trading_config
+  ADD COLUMN IF NOT EXISTS trade_days JSONB NOT NULL DEFAULT '[0,1,2,3,4,5,6]'::jsonb;

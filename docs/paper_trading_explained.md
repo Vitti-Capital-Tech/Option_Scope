@@ -64,7 +64,9 @@ else { /* stable logic — live accounts run this */ }
 > [!NOTE]
 > **Current fleet policy (migration `020`)**: **all paper accounts are v2, all live accounts are v1**, and new accounts inherit this from their `mode` at creation (paper → 2, live → 1). This makes paper the experimental testbed rather than an exact mirror of live. The `strategy_version` column is kept (not replaced by a raw `mode` check) so a single live account can still be promoted to v2 independently for a staged real-money rollout.
 
-**First v2-gated feature — per-window Days to Expiry** (migration `019`): see filter [#9](#entry-filters) and [Time-Based Filter Schedules](#time-based-filter-schedules).
+**v2-gated features so far:**
+- **Per-window Days to Expiry** (migration `019`): see filter [#9](#entry-filters) and [Time-Based Filter Schedules](#time-based-filter-schedules).
+- **Trading Days (day-of-week entry filter)** (migration `021`): see [Trading Days](#trading-days-day-of-week-entry-filter).
 
 ---
 
@@ -311,6 +313,9 @@ Only spreads that meet this adjusted minimum floor survive the filter.
 **File**: [paperTradingEngine.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js)
 
 Once we have the filtered, ranked list of candidate spreads (`uniqueTopSpreads`), the engine tries to open new positions. Each candidate must pass these checks **in order**:
+
+> [!NOTE]
+> **Pre-entry gates (whole cycle, not per-candidate):** before the per-candidate guards below, the engine skips **all** new entries this cycle if the account is **paused**, or — on **v2 (paper)** accounts — if the current [trading day is disabled](#trading-days-day-of-week-entry-filter). Both leave open positions fully managed (exits continue); they only block opening new ones.
 
 ### Guard 1: Expiry Buffer
 ```
@@ -846,6 +851,21 @@ All other filter settings (like `minIvDiff`, `minSellPremium`, etc.) default bac
 - **Overnight Windows**: The engine correctly handles overnight ranges in IST (e.g. `22:29` to `06:30` IST) by splitting/wrapping time comparisons relative to the 24-hour cycle.
 - **Fallback Behavior**: If the current IST time does not fall into any active scheduled window, the engine automatically falls back to using the base account configuration parameters.
 - **Live Auto-Sync & Real-time Updates**: Changes made in the UI are automatically synced (debounced auto-save) to Supabase. The background engine subscribes to real-time postgres changes on `paper_trading_schedules` and reloads them instantly upon edits.
+
+### Trading Days (Day-of-Week Entry Filter)
+
+**File**: [paperTradingEngine.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js) (`isTradingDayEnabled`), [ControlPanel.jsx](file:///c:/Users/ASUS/Documents/Option_Scope/src/components/PaperTrading/ControlPanel.jsx) · **Column**: `paper_trading_config.trade_days` · **Migration**: `021`
+
+An **account-level** day-of-week filter that chooses which weekdays the account may **open new positions** on. It sits **on top of** the time-of-day schedule windows: entries need both an active window (time) **and** an enabled trading day. Experimental — **`strategy_version >= 2` (paper) only**; v1 (live) accounts ignore it and the control is hidden. See [Strategy Versioning](#strategy-versioning-paper-vs-live).
+
+- **Storage**: a JSONB array of weekday numbers matching JS `getDay()` — `0 = Sunday … 6 = Saturday`. Default is all seven, so existing accounts trade every day unchanged.
+- **UI**: a Mon–Sun toggle row in the Control Panel (shown only on v2 accounts), immediate-apply like the Underlying/Expiry selectors.
+- **Entry-only gate**: a disabled day blocks **new entries** but never exits or position management — exactly like `paused`. When it blocks, the engine logs `📅 Trading day disabled — skipping new entries`.
+
+> [!IMPORTANT]
+> **The trading-day boundary is 17:30 IST** — the same boundary the schedule timeline uses (17:30 IST = the Delta daily rollover). A trading day named for weekday **W** runs from **(W-1) 17:30 IST → W 17:30 IST**. So the engine computes the *active* trading-day weekday as: **if IST time ≥ 17:30 → tomorrow's weekday, else today's weekday** (`isTradingDayEnabled`, `1050` min = 17:30).
+>
+> Examples: **Friday enabled** ⇒ tradeable **Thu 17:30 → Fri 17:30 IST**. **Sunday disabled** ⇒ no new entries **Sat 17:30 → Sun 17:30 IST**.
 
 ---
 

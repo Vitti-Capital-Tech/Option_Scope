@@ -82,6 +82,41 @@ export default function ControlPanel({
               style={{ width: '160px' }}
             />
           </div>
+
+          {/* Trading Days — day-of-week ENTRY gate (experimental paper / strategy_version >= 2
+              only). A disabled day blocks NEW entries for that trading day (17:30 IST
+              boundary); open positions are still managed. Immediate-apply like Underlying. */}
+          {strategyVersion >= 2 && (
+            <div className="form-group" style={{ marginBottom: 0, display: 'flex', flexDirection: 'column', gap: 5, alignItems: 'flex-start' }}>
+              <label className="pt-field-label" style={{ marginBottom: 0 }}>
+                Trading Days <span style={{ color: 'var(--text-dim)', fontWeight: 400 }}>(entries only)</span>
+              </label>
+              <div className="pt-seg" role="group" aria-label="Trading Days" style={{ flexWrap: 'wrap' }}>
+                {[
+                  { label: 'Mon', v: 1 }, { label: 'Tue', v: 2 }, { label: 'Wed', v: 3 },
+                  { label: 'Thu', v: 4 }, { label: 'Fri', v: 5 }, { label: 'Sat', v: 6 }, { label: 'Sun', v: 0 },
+                ].map(({ label, v }) => {
+                  const days = Array.isArray(draftConfig?.tradeDays) ? draftConfig.tradeDays : [0, 1, 2, 3, 4, 5, 6];
+                  const on = days.includes(v);
+                  return (
+                    <button
+                      key={v}
+                      type="button"
+                      className={`pt-seg-btn ${on ? 'on' : ''}`}
+                      title={on ? `${label}: trading enabled` : `${label}: no new entries`}
+                      onClick={() => {
+                        const set = new Set(days);
+                        if (set.has(v)) set.delete(v); else set.add(v);
+                        updateConfig('tradeDays', [...set].sort((a, b) => a - b));
+                      }}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           <button
             className="pt-filters-toggle-btn"
             onClick={() => setIsFiltersCollapsed(!isFiltersCollapsed)}

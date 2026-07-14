@@ -110,3 +110,31 @@ export function notifyLiveFailure({ account = '—', context = 'Live failure', e
   // Fire-and-forget — never block the engine on the network round-trip.
   sendTelegram(lines.join('\n')).catch(() => {});
 }
+
+/**
+ * Notify the user of a LIVE trade event — an entry or an exit. Fire-and-forget and
+ * NOT de-duplicated (every trade is a distinct event). Callers gate this on armed-real
+ * live accounts, so paper and dry-run runs never notify.
+ *
+ * @param {Object} p
+ * @param {string} p.account   account name
+ * @param {string} p.title     short event title incl. emoji (e.g. "📥 LIVE ENTRY")
+ * @param {string} [p.detail]  one-line detail (strikes / qty / reason)
+ * @param {number} [p.pnl]     realized net PnL for exits (omit for entries)
+ */
+export function notifyLiveTrade({ account = '—', title = 'Trade', detail = '', pnl = null } = {}) {
+  if (!ENABLED) return;
+  const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  const hasPnl = pnl != null && Number.isFinite(Number(pnl));
+  const pnlLine = hasPnl
+    ? `<b>PnL:</b> ${Number(pnl) >= 0 ? '🟢 +' : '🔴 −'}$${Math.abs(Number(pnl)).toFixed(2)}`
+    : '';
+  const lines = [
+    `<b>${escapeHtml(title) || 'Trade'}</b>`,
+    `<b>Account:</b> ${escapeHtml(account)}`,
+    detail ? escapeHtml(detail) : '',
+    pnlLine,
+    `<i>${ts} UTC</i>`,
+  ].filter(Boolean);
+  sendTelegram(lines.join('\n')).catch(() => {});
+}

@@ -241,7 +241,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     exitPoints: 0,
     shortExitPrice: 1.1,
     longExitSlices: 10,
-    variableExitSlices: false
+    variableExitSlices: false,
+    strategyVersion: 1,
+    tradeDays: [0, 1, 2, 3, 4, 5, 6]
   }));
   const [draftConfig, setDraftConfig] = useState(() => ({ ...config }));
   const [isConfigLoaded, setIsConfigLoaded] = useState(false);
@@ -765,7 +767,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           entry_buy_offset: data.entryBuyOffset ?? 5,
           entry_sell_offset: data.entrySellOffset ?? 2,
           // Paper accounts are the experimental testbed → v2; live starts on stable v1.
-          strategy_version: accountMode === 'live' ? 1 : 2
+          strategy_version: accountMode === 'live' ? 1 : 2,
+          trade_days: [0, 1, 2, 3, 4, 5, 6]
         }]);
 
         // For live accounts, store the (encrypted) Delta credentials via RPC.
@@ -1092,6 +1095,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         short_exit_price: newCfg.shortExitPrice ?? 1.1,
         long_exit_slices: newCfg.longExitSlices ?? 10,
         variable_exit_slices: newCfg.variableExitSlices ?? false,
+        trade_days: Array.isArray(newCfg.tradeDays) ? newCfg.tradeDays : [0, 1, 2, 3, 4, 5, 6],
         updated_at: new Date().toISOString()
       }).select();
       if (error) {
@@ -1129,7 +1133,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     const parsedUpdates = {};
     for (const k of Object.keys(updates)) {
       const val = updates[k];
-      if (k === 'exitType' || k === 'variableExitSlices' || k === 'atmRatioScaling' || k === 'underlying' || k === 'expiry') {
+      if (k === 'exitType' || k === 'variableExitSlices' || k === 'atmRatioScaling' || k === 'underlying' || k === 'expiry' || k === 'tradeDays') {
         parsedUpdates[k] = val;
       } else {
         const num = (val === '' || val === '-' || val == null) ? null : Number(val);
@@ -1258,6 +1262,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           exit_points: 0,
           variable_exit_slices: false,
           strategy_version: 1,
+          trade_days: [0, 1, 2, 3, 4, 5, 6],
           updated_at: new Date().toISOString()
         };
         const { data: inserted, error: insertErr } = await supabase
@@ -1296,7 +1301,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           // Which strategy logic this account runs (1 = stable/live, 2+ = experimental
           // paper). Gate v2-only UI controls on this so they don't show on live accounts,
           // e.g. {config.strategyVersion >= 2 && <NewFilterField />}. See migration 018.
-          strategyVersion: data.strategy_version ?? 1
+          strategyVersion: data.strategy_version ?? 1,
+          // Weekdays new entries are allowed on (0=Sun..6=Sat). v2/paper entry-gate. See migration 021.
+          tradeDays: Array.isArray(data.trade_days) ? data.trade_days : [0, 1, 2, 3, 4, 5, 6]
         };
         setConfig(loadedConfig);
         setDraftConfig(loadedConfig);

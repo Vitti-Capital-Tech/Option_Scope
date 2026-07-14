@@ -112,6 +112,10 @@ CREATE TABLE IF NOT EXISTS public.paper_trading_config (
     -- an experimental paper account is bumped to 2 to test new logic. Engine and
     -- UI both branch on this value. See migration 018.
     strategy_version INTEGER NOT NULL DEFAULT 1,
+    -- Weekdays the account may OPEN new positions on (JS getDay(): 0=Sun..6=Sat),
+    -- aligned to the 17:30 IST trading-day boundary. Entry-only gate, v2/paper only.
+    -- See migration 021.
+    trade_days JSONB NOT NULL DEFAULT '[0,1,2,3,4,5,6]'::jsonb,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
