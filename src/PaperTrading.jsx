@@ -1125,7 +1125,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     'exitPoints',
     'shortExitPrice',
     'longExitSlices',
-    'variableExitSlices'
+    'variableExitSlices',
+    'tradeDays'
   ];
 
   const updateConfig = (keyOrObj, value) => {
@@ -1198,6 +1199,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     return FILTER_KEYS.some(k => {
       const val1 = draftConfig[k];
       const val2 = config[k];
+      if (k === 'tradeDays') {
+        const arr1 = Array.isArray(val1) ? val1 : [];
+        const arr2 = Array.isArray(val2) ? val2 : [];
+        if (arr1.length !== arr2.length) return true;
+        return arr1.some((v, idx) => v !== arr2[idx]);
+      }
       if (k === 'exitType' || k === 'variableExitSlices' || k === 'atmRatioScaling' || k === 'underlying' || k === 'expiry') {
         return val1 !== val2;
       }

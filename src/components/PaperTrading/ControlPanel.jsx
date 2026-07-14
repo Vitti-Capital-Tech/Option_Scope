@@ -107,7 +107,7 @@ export default function ControlPanel({
                       onClick={() => {
                         const set = new Set(days);
                         if (set.has(v)) set.delete(v); else set.add(v);
-                        updateConfig('tradeDays', [...set].sort((a, b) => a - b));
+                        updateDraftConfig('tradeDays', [...set].sort((a, b) => a - b));
                       }}
                     >
                       {label}
