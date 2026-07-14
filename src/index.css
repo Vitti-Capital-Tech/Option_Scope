@@ -4889,12 +4889,28 @@ body.light-theme .pt-btn-apply.active {
   flex-shrink: 0;
 }
 
-/* Fields: everything else in one row (wraps only when the screen is too narrow). */
+/* Fields: everything else in one row (scrolls horizontally on overflow). */
 .schedule-item-fields {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow-x: auto;
   align-items: flex-end;
   gap: 14px 16px;
+  padding-bottom: 8px;
+}
+
+.schedule-item-fields::-webkit-scrollbar {
+  height: 6px;
+}
+.schedule-item-fields::-webkit-scrollbar-track {
+  background: transparent;
+}
+.schedule-item-fields::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+.schedule-item-fields::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
 }
 
 .schedule-item:hover {
@@ -4911,11 +4927,12 @@ body.light-theme .pt-btn-apply.active {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  flex-shrink: 0;
 }
 
-/* Fixed, compact field widths so fields stay tidy AND wrap within the card
-   (fixed width + no grow/shrink means the row can never push past the screen). */
-.schedule-item-num-block { flex: 0 0 104px; width: 104px; }
+/* Fixed, compact field widths so fields stay tidy
+   (fixed width + no shrink means fields maintain proper alignment). */
+.schedule-item-num-block { flex: 0 0 115px; width: 115px; }
 .schedule-item-name-block { flex: 0 0 160px; width: 160px; }
 .schedule-item-time-block { flex: 0 0 120px; width: 120px; }
 .schedule-item-block .uin,
@@ -4935,8 +4952,10 @@ body.light-theme .pt-btn-apply.active {
   border-radius: 5px;
   color: var(--text);
   font-family: 'Inter', sans-serif;
-  font-size: 12px;
-  padding: 6px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 12px;
+  height: 36px;
   outline: none;
   transition: all 0.15s ease;
   box-sizing: border-box;
@@ -5891,3 +5910,57 @@ body.light-theme .pt-btn-apply.active {
 .pt-delta-table th, .pt-delta-table td { white-space: nowrap; }
 .pt-delta-table .pt-instrument { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .pt-delta-table .pt-btn-close { padding: 2px 8px; line-height: 1.2; }
+
+/* Premium Inline Toggle Switch */
+.pt-switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 22px;
+}
+
+.pt-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.pt-slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--border);
+  transition: .2s ease-out;
+  border-radius: 22px;
+  border: 1.5px solid var(--border);
+}
+
+.pt-slider:before {
+  position: absolute;
+  content: "";
+  height: 14px;
+  width: 14px;
+  left: 3px;
+  bottom: 2.5px;
+  background-color: var(--text);
+  transition: .2s ease-out;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+.pt-switch input:checked + .pt-slider {
+  background-color: rgba(0, 217, 163, 0.2);
+  border-color: #00d9a3;
+}
+
+.pt-switch input:checked + .pt-slider:before {
+  transform: translateX(20px);
+  background-color: #00d9a3;
+}
+
+.pt-switch input:focus + .pt-slider {
+  box-shadow: 0 0 1px #00d9a3;
+}

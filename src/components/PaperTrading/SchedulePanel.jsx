@@ -439,78 +439,16 @@ export default function SchedulePanel({
             <div key={s.id} className={`schedule-item ${s.isActive ? '' : 'inactive'}`} style={{
               border: `1.5px solid ${s.isActive ? color : 'var(--border)'}`,
             }}>
-              {/* Header row: window name (left) · dynamic scaling + lock/delete (right) */}
-              <div className="schedule-item-header">
-                <div className="schedule-item-block schedule-item-name-block">
-                  <span className="schedule-item-label">Window Name</span>
-                  <CustomInput
-                    type="text"
-                    className="schedule-inline-input"
-                    value={s.label}
-                    onChange={e => handleChange(s.id, 'label', e.target.value)}
-                    placeholder="e.g. Night Window"
-                  />
-                </div>
 
-                <div className="schedule-item-header-right">
-                  {/* Dynamic ATM Scaling toggle */}
-                  <div className="schedule-item-checkbox-block" style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <input
-                      type="checkbox"
-                      id={`atmRatioScaling-${s.id}`}
-                      checked={s.atmRatioScaling ?? true}
-                      onChange={e => handleChange(s.id, 'atmRatioScaling', e.target.checked)}
-                      style={{ cursor: 'pointer', width: 14, height: 14 }}
-                    />
-                    <label htmlFor={`atmRatioScaling-${s.id}`} style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 0.8, cursor: 'pointer', userSelect: 'none' }}>
-                      Dynamic ATM Scaling
-                    </label>
-                  </div>
-
-                  {/* Overlap badge (only when this window collides with another) */}
-                  {overlapWindow && (
-                    <div
-                      style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'rgba(248,81,73,0.1)', border: '1px solid rgba(248,81,73,0.3)', padding: '4px 8px', borderRadius: 4, fontSize: 9, fontWeight: 700, color: '#f85149', cursor: 'help' }}
-                      title={`Time overlaps with "${overlapWindow.label || 'another window'}" (${cleanTime(overlapWindow.startTime)} – ${cleanTime(overlapWindow.endTime)})`}
-                    >
-                      <AlertTriangle size={10} strokeWidth={3} />
-                      OVERLAP
-                    </div>
-                  )}
-
-                  {/* Lock (Window 1) or delete button */}
-                  {i === 0 ? (
-                    <div
-                      title="Window 1 is permanent and cannot be deleted (it holds the account's default filters). You can still edit its time and values."
-                      style={{ display: 'flex', alignItems: 'center', color: 'var(--border)', padding: 5, cursor: 'not-allowed' }}
-                    >
-                      <Lock size={15} strokeWidth={2.5} />
-                    </div>
-                  ) : (
-                    <button
-                      type="button"
-                      className="watch-delete-btn"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (s.isNew) { handleDelete(s.id); } else { setDeletingId(s.id); }
-                      }}
-                      style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: 5, borderRadius: 5, transition: 'all 0.15s' }}
-                      onMouseOver={e => { e.currentTarget.style.color = '#f85149'; e.currentTarget.style.background = 'rgba(248,81,73,0.1)'; }}
-                      onMouseOut={e => { e.currentTarget.style.color = 'var(--text-dim)'; e.currentTarget.style.background = 'none'; }}
-                      title={s.isNew ? "Cancel window" : "Delete schedule window"}
-                    >
-                      {s.isNew ? (
-                        <X size={15} strokeWidth={2.5} />
-                      ) : (
-                        <Trash2 size={15} strokeWidth={2.5} />
-                      )}
-                    </button>
-                  )}
-                </div>
-              </div>
 
               {/* Fields row — everything else in one row (wraps only if the screen is narrow) */}
               <div className="schedule-item-fields">
+                <div className="schedule-item-block" style={{ flex: '0 0 85px', width: '85px', justifyContent: 'flex-end', height: '56px', boxSizing: 'border-box', paddingBottom: '8px' }}>
+                  <span style={{ fontSize: '13px', fontWeight: 800, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>
+                    Window {i + 1}
+                  </span>
+                </div>
+
                 <div className="schedule-item-block schedule-item-time-block">
                   <span className="schedule-item-label">Start Time (IST)</span>
                   <CustomInput type="time" className="schedule-inline-input" value={cleanTime(s.startTime)} onChange={e => handleChange(s.id, 'startTime', e.target.value)} />
@@ -539,6 +477,20 @@ export default function SchedulePanel({
                 <div className="schedule-item-block schedule-item-num-block">
                   <span className="schedule-item-label">Min Spot Distance</span>
                   <CustomInput type="number" min="0" prefix="$" step="50" value={s.minLongDist} onChange={e => handleChange(s.id, 'minLongDist', Number(e.target.value))} />
+                </div>
+
+                <div className="schedule-item-block schedule-item-num-block">
+                  <span className="schedule-item-label">ATM Scaling</span>
+                  <div style={{ height: '36px', display: 'flex', alignItems: 'center' }}>
+                    <label className="pt-switch" title="Toggle dynamic scaling of short leg based on ATM ratio">
+                      <input
+                        type="checkbox"
+                        checked={s.atmRatioScaling ?? true}
+                        onChange={e => handleChange(s.id, 'atmRatioScaling', e.target.checked)}
+                      />
+                      <span className="pt-slider"></span>
+                    </label>
+                  </div>
                 </div>
 
                 <div className="schedule-item-block schedule-item-num-block">
@@ -585,12 +537,58 @@ export default function SchedulePanel({
                 <div className="schedule-item-block schedule-item-num-block">
                   <span className="schedule-item-label">Live Utilized</span>
                   <div style={{
-                    fontSize: '12px', fontWeight: '700', color: '#3b82f6', height: '30px',
+                    fontSize: '13px', fontWeight: '700', color: '#3b82f6', height: '36px',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                     background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: '5px',
                     padding: '0 10px', fontFamily: 'JetBrains Mono, monospace', boxSizing: 'border-box',
                   }} title="Current live utilization of active full-spread positions (calls + puts) divided by the window's total cap. Long-only positions are excluded.">
                     {avgUtilMap[s.id] !== undefined ? `${avgUtilMap[s.id]}%` : '—'}
+                  </div>
+                </div>
+
+                {/* Overlap badge inline */}
+                {overlapWindow && (
+                  <div className="schedule-item-block" style={{ justifyContent: 'flex-end', height: '56px', boxSizing: 'border-box', paddingBottom: '8px' }}>
+                    <div
+                      style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'rgba(248,81,73,0.1)', border: '1px solid rgba(248,81,73,0.3)', padding: '0 12px', borderRadius: 5, fontSize: 9, fontWeight: 700, color: '#f85149', cursor: 'help', height: '36px', boxSizing: 'border-box' }}
+                      title={`Time overlaps with "Window ${schedules.findIndex(x => x.id === overlapWindow.id) + 1}" (${cleanTime(overlapWindow.startTime)} – ${cleanTime(overlapWindow.endTime)})`}
+                    >
+                      <AlertTriangle size={10} strokeWidth={3} />
+                      OVERLAP
+                    </div>
+                  </div>
+                )}
+
+                {/* Lock (Window 1) or delete button inline */}
+                <div className="schedule-item-block" style={{ flex: '0 0 50px', width: '50px', justifyContent: 'flex-end', height: '56px', boxSizing: 'border-box', paddingBottom: '8px', alignItems: 'center' }}>
+                  <div style={{ height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    {i === 0 ? (
+                      <div
+                        title="Window 1 is permanent and cannot be deleted (it holds the account's default filters). You can still edit its time and values."
+                        style={{ display: 'flex', alignItems: 'center', color: 'var(--border)', cursor: 'not-allowed' }}
+                      >
+                        <Lock size={15} strokeWidth={2.5} />
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        className="watch-delete-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (s.isNew) { handleDelete(s.id); } else { setDeletingId(s.id); }
+                        }}
+                        style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: 8, borderRadius: 5, transition: 'all 0.15s' }}
+                        onMouseOver={e => { e.currentTarget.style.color = '#f85149'; e.currentTarget.style.background = 'rgba(248,81,73,0.1)'; }}
+                        onMouseOut={e => { e.currentTarget.style.color = 'var(--text-dim)'; e.currentTarget.style.background = 'none'; }}
+                        title={s.isNew ? "Cancel window" : "Delete schedule window"}
+                      >
+                        {s.isNew ? (
+                          <X size={15} strokeWidth={2.5} />
+                        ) : (
+                          <Trash2 size={15} strokeWidth={2.5} />
+                        )}
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>

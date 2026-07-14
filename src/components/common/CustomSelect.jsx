@@ -13,6 +13,7 @@ export default function CustomSelect({
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef(null);
+  const [menuCoords, setMenuCoords] = useState({ top: 0, left: 0, width: 0 });
 
   useEffect(() => {
     function handleClickOutside(event) {
@@ -25,6 +26,30 @@ export default function CustomSelect({
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, []);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    function updatePosition() {
+      if (dropdownRef.current) {
+        const rect = dropdownRef.current.getBoundingClientRect();
+        setMenuCoords({
+          top: rect.bottom,
+          left: rect.left,
+          width: rect.width
+        });
+      }
+    }
+
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    document.addEventListener('scroll', updatePosition, true);
+
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      document.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [isOpen]);
 
   const selectedOption = options.find(opt => opt.value === value || (opt.value != null && value != null && String(opt.value) === String(value))) || options[0];
 
@@ -51,7 +76,17 @@ export default function CustomSelect({
       </button>
 
       {isOpen && !disabled && (
-        <div className="custom-dropdown-menu">
+        <div 
+          className="custom-dropdown-menu"
+          style={{
+            position: 'fixed',
+            top: `${menuCoords.top + 6}px`,
+            left: `${menuCoords.left}px`,
+            width: `${menuCoords.width}px`,
+            zIndex: 10000,
+            visibility: menuCoords.width > 0 ? 'visible' : 'hidden'
+          }}
+        >
           <div className="custom-dropdown-list">
             {options.map(opt => {
               const isSelected = opt.value === value || (opt.value != null && value != null && String(opt.value) === String(value));
