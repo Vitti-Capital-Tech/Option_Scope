@@ -881,6 +881,13 @@ export default function TradingWorkspace(props) {
 
   const [tab, setTab] = useState('positions');
 
+  const [sessionOpen, setSessionOpen] = useState({});
+  if (props.spotPrice != null && sessionOpen[underlying] == null) {
+    setSessionOpen(prev => (prev[underlying] == null ? { ...prev, [underlying]: props.spotPrice } : prev));
+  }
+  const openSpot = sessionOpen[underlying];
+  const spotChangePct = (openSpot && props.spotPrice) ? ((props.spotPrice - openSpot) / openSpot) * 100 : null;
+
   const visible = positions.filter(p => p.underlying === underlying);
   const spreadCount = visible.filter(p => (p.sellQty || 0) > 0).length;
   const longCount = visible.filter(p => (p.sellQty || 0) === 0).length;
@@ -933,18 +940,29 @@ export default function TradingWorkspace(props) {
             ))}
           </div>
           <div className="pt-tab-actions">
+            {props.spotPrice != null && (
+              <div className="pt-spot-display" style={{ height: '28px', padding: '0 12px', gap: '6px', border: '1px solid rgba(63, 185, 80, 0.25)', background: 'rgba(63, 185, 80, 0.08)', borderRadius: '8px', fontSize: '11px', display: 'flex', alignItems: 'center', marginRight: '8px' }}>
+                <span className="pt-spot-label" style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.5px', color: 'var(--text-dim)' }}>SPOT</span>
+                <span className="pt-spot-value" style={{ fontWeight: 700, color: 'var(--text)', fontFamily: 'Inter', fontVariantNumeric: 'tabular-nums' }}>${props.spotPrice.toLocaleString()}</span>
+                {spotChangePct != null && (
+                  <span className={`pt-spot-chg ${spotChangePct >= 0 ? 'up' : 'down'}`} style={{ fontSize: '10px', fontWeight: 700, color: spotChangePct >= 0 ? 'var(--call)' : 'var(--put)' }}>
+                    {spotChangePct >= 0 ? '+' : ''}{spotChangePct.toFixed(2)}%
+                  </span>
+                )}
+              </div>
+            )}
             {props.onSync && (
               <button type="button" onClick={props.onSync} disabled={props.isSyncing} className="pt-btn-sync"
                 title="Refresh positions, orders and history from the engine">
                 <RefreshCw size={12} strokeWidth={2.5}
                   style={props.isSyncing ? { animation: 'spin 0.8s linear infinite' } : undefined} />
-                {props.isSyncing ? 'Syncing…' : 'Sync'}
+                <span className="pt-btn-text">{props.isSyncing ? 'Syncing…' : 'Sync'}</span>
               </button>
             )}
             {props.onCloseAll && openCount > 0 && (
               <button type="button" onClick={props.onCloseAll} className="pt-btn-close"
                 style={{ background: '#f85149', color: '#fff', borderColor: '#f85149', fontWeight: 700 }}>
-                ✕ Close All
+                ✕ <span className="pt-btn-text">Close All</span>
               </button>
             )}
           </div>

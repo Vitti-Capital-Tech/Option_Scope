@@ -5964,3 +5964,35 @@ body.light-theme .pt-btn-apply.active {
 .pt-switch input:focus + .pt-slider {
   box-shadow: 0 0 1px #00d9a3;
 }
+
+/* ── Mobile responsiveness for trading workspace tabbar ── */
+@media (max-width: 768px) {
+  .pt-tabbar {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 8px 10px;
+    gap: 10px;
+  }
+  .pt-tab-group {
+    width: 100%;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    padding-bottom: 4px;
+    justify-content: flex-start;
+  }
+  .pt-tab {
+    padding: 10px 12px 8px;
+    font-size: 12px;
+  }
+  .pt-tab-actions {
+    justify-content: space-between;
+    width: 100%;
+    margin-top: 2px;
+  }
+  .pt-tab-actions .pt-btn-text {
+    display: none;
+  }
+  .pt-btn-sync, .pt-btn-close {
+    padding: 6px 10px;
+    gap: 0;
+  }
+}

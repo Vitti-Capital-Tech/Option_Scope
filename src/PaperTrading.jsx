@@ -2792,21 +2792,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
               })()}
             />
 
-            {/* Spot price — shown just above the trading tables */}
-            {spotPrice != null && (
-              <div style={{ display: 'flex', justifyContent: 'flex-end', margin: '0 0 12px' }}>
-                <div className="pt-spot-display">
-                  <span className="pt-spot-label">SPOT</span>
-                  <span className="pt-spot-value">${spotPrice.toLocaleString()}</span>
-                  {spotChangePct != null && (
-                    <span className={`pt-spot-chg ${spotChangePct >= 0 ? 'up' : 'down'}`}>
-                      {spotChangePct >= 0 ? '+' : ''}{spotChangePct.toFixed(2)}%
-                    </span>
-                  )}
-                </div>
-              </div>
-            )}
-
             <TradingWorkspace
               positions={positions}
               underlying={underlying}
