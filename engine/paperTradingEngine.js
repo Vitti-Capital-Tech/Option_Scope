@@ -2629,6 +2629,7 @@ async function startSingleAccountEngine(account) {
           let scale = 1;
           let liveMargin = null; // real (contract_value-based) margin, stored for live positions
           let liveLongCV = null; // long-leg contract value — the LIVE margin basis (null = paper-sized)
+          let liveShortCV = null; // short-leg contract value — persisted for the leg objects below
 
           if (liveArmed) {
             // LIVE: scale the 1:ratio base UNIT by (part budget ÷ one-unit margin), then
@@ -2654,6 +2655,7 @@ async function startSingleAccountEngine(account) {
               continue;
             }
             liveLongCV = longCV; // persist as the leg's margin basis for later long-only recompute
+            liveShortCV = shortCV; // persist for the short leg object built after this block
             const baseMargin = calcMargin(entryBuyPrice, longCV, spotPrice, ratioToUse, shortCV);
             scale = (baseMargin > 0) ? (partMargin / baseMargin) : 1;
             if (scale < 1) {
@@ -2708,7 +2710,7 @@ async function startSingleAccountEngine(account) {
             entryBuyAtmPrice: buyIntrinsic,
             entrySellAtmPrice: sellIntrinsic,
             maxAtmRatio: entryAtmRatio,
-            originalLotSize: liveArmed ? longCV : (spread.buyLeg.lotSize || 1),
+            originalLotSize: liveArmed ? liveLongCV : (spread.buyLeg.lotSize || 1),
             originalSellQty: ratioToUse,
             initialScaledLotSize: adjustedLotSize,
             // LIVE margin basis (real per-contract underlying amount). Present only for
@@ -2719,8 +2721,8 @@ async function startSingleAccountEngine(account) {
           const sellLegWithIv = {
             ...spread.sellLeg,
             entryIv: entrySellIv,
-            lotSize: liveArmed ? shortCV : (spread.sellLeg.lotSize || originalLotSize),
-            contractValue: liveArmed ? shortCV : null
+            lotSize: liveArmed ? liveShortCV : (spread.sellLeg.lotSize || originalLotSize),
+            contractValue: liveArmed ? liveShortCV : null
           };
 
           const entryBuyFee = calculateFee(entryBuyPrice, spotPrice, adjustedLotSize, buyLegWithIv.originalLotSize || 1);
