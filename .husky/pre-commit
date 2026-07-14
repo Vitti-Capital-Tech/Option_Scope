@@ -1,0 +1,18 @@
+# Lint engine (Node) code before commit — catches out-of-scope references
+# like the `longCV` live-trading bug via no-undef. Runs only when engine
+# .js files are staged, so non-engine commits aren't slowed down.
+
+# `|| true` — husky runs this under `sh -e`, where an empty grep result
+# (no engine files staged) exits non-zero and would abort the whole hook.
+staged_engine=$(git diff --cached --name-only --diff-filter=ACM | grep -E '^engine/.*\.js$' | grep -v '/node_modules/' || true)
+
+if [ -z "$staged_engine" ]; then
+  exit 0
+fi
+
+echo "pre-commit: linting staged engine files (no-undef etc.)..."
+npx eslint $staged_engine || {
+  echo ""
+  echo "✖ pre-commit: engine lint failed — fix the errors above, or bypass with 'git commit --no-verify' if you're sure."
+  exit 1
+}
