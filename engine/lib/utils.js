@@ -127,6 +127,14 @@ export function scanTickers(tickers, config, spotPrice, atmStrike = null, getTic
       
       if (buyPrice == null || sellPrice == null || buyPrice <= 0 || sellPrice <= 0) { rejected.noPrice++; continue; }
 
+      // Reject if short leg is already at/below the short exit price threshold (leads to instant exit)
+      const shortExitThreshold = config.shortExitPrice ?? 1.1;
+      const shortLegAsk = sellLeg.ask;
+      if (shortLegAsk != null && shortLegAsk <= shortExitThreshold) {
+        rejected.shortExitZone = (rejected.shortExitZone || 0) + 1;
+        continue;
+      }
+
       // Require WS-confirmed quotes (reject stale REST backfill data)
       const now = Date.now();
       const FRESHNESS_MS = 120000; // 120 seconds
