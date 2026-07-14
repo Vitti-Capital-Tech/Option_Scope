@@ -634,6 +634,51 @@ async function startSingleAccountEngine(account) {
     return calcMargin(pos.entryBuyPrice, longLot, spotPrice, pos.sellQty, shortCV);
   }
 
+  // One-time PnL-basis normalisation for a LIVE position that was opened on the PAPER
+  // basis (originalLotSize=1, lotSize in whole contracts, contractValue null) and later
+  // carried into an armed-live account. Its $ PnL books ~1/contractValue TOO BIG because
+  // the PnL formula (premium × lot) uses the paper lot (contracts) instead of the real
+  // contract-value-scaled lot (contracts × e.g. 0.001 BTC). Rescale the LOT dimension by
+  // contractValue so the position matches a natively live-sized one — WITHOUT changing the
+  // real contract counts: longContracts/shortContracts are round(lot/base) and both legs
+  // scale by the same factor, so the on-exchange order sizes are unchanged. Detected by
+  // contractValue == null (only paper-basis positions have it null after live entry sets
+  // it); sets it, so the conversion runs exactly once and is restart-safe (persisted).
+  // Hedge overlays keep their own (paper) basis and are skipped.
+  async function normalizeLiveBasis(pos) {
+    if (!(accountState.mode === 'live' && accountState.live_enabled)) return false;
+    if (pos.buyLeg?.isHedge) return false;
+    if (pos.buyLeg?.contractValue != null) return false; // already live-basis / converted
+    const longCV = symbolMeta[pos.buyLeg?.symbol]?.contractValue ?? null;
+    if (longCV == null) return false; // no contract-value basis available — leave as-is
+    const shortCV = symbolMeta[pos.sellLeg?.symbol]?.contractValue ?? longCV;
+    pos.buyLeg = {
+      ...pos.buyLeg,
+      lotSize: Number(((pos.buyLeg.lotSize || 0) * longCV).toFixed(8)),
+      originalLotSize: Number(((pos.buyLeg.originalLotSize || 1) * longCV).toFixed(8)),
+      contractValue: longCV,
+    };
+    pos.sellLeg = {
+      ...pos.sellLeg,
+      lotSize: Number(((pos.sellLeg.lotSize || 0) * shortCV).toFixed(8)),
+      contractValue: shortCV,
+    };
+    // Fees scale with the lot basis (≈ contract-value per side); the residual is negligible
+    // versus the now-corrected gross, so this only keeps `net` from being fee-dominated.
+    pos.entryFee = Number(((pos.entryFee || 0) * longCV * longCV).toFixed(8));
+    pos.margin = contractBasisMargin(pos, longCV);
+    try {
+      await supabase.from('active_positions').update({
+        buy_leg: JSON.stringify(pos.buyLeg),
+        sell_leg: JSON.stringify(pos.sellLeg),
+        entry_fee: pos.entryFee,
+        margin: pos.margin,
+      }).eq('id', pos.id);
+      log(`[${accountState.name}] 🔧 Live PnL basis normalised ${pos.id}: ${pos.type.toUpperCase()} ${pos.buyLeg.strike} → contract-value basis (cv ${longCV}) · ${longContracts(pos.buyLeg)} long contract(s) · lot ${pos.buyLeg.lotSize}`);
+    } catch (e) { logError(`[${accountState.name}] normalizeLiveBasis persist failed for ${pos.id}:`, e); }
+    return true;
+  }
+
   // ── Live exit handling (armed live accounts only) ────────────────────────
   // Replaces the paper simulated exits. Exits are driven by the shared index
   // trigger level (exitType/exitPoints vs buy strike): SHORT closes first (SL),
@@ -1939,6 +1984,16 @@ async function startSingleAccountEngine(account) {
               }
             }
           }
+        }
+      }
+
+      // Normalise any legacy PAPER-basis live positions to the contract-value basis
+      // BEFORE exits are evaluated, so THIS cycle books PnL on the correct basis (not
+      // ~1/contractValue inflated). One-time per position (idempotent via contractValue),
+      // so it's a cheap no-op once converted; runs every cycle incl. onlyExits.
+      if (accountState.mode === 'live' && accountState.live_enabled) {
+        for (const pos of positions) {
+          if (pos.underlying === underlying) await normalizeLiveBasis(pos);
         }
       }
 
