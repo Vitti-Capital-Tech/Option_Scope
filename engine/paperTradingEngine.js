@@ -877,6 +877,8 @@ async function startSingleAccountEngine(account) {
       try {
         await cancelRestingOrders(pos);
         if (pos._everOpenOnDelta) {
+          const isTp = pos.sellQty === 0;
+          const label = isTp ? '🎯 TAKE PROFIT (long TP)' : '🚨 STOP LOSS (short SL)';
           await supabase.from('trade_history').upsert([{
             trade_id: pos.id, underlying: pos.underlying, expiry: pos.expiry, type: pos.type,
             buy_leg: JSON.stringify(pos.buyLeg), sell_leg: JSON.stringify(pos.sellLeg),
@@ -886,13 +888,15 @@ async function startSingleAccountEngine(account) {
             margin: pos.margin, exit_time: new Date().toISOString(),
             exit_buy_price: exitLong, exit_sell_price: pos.sellQty > 0 ? exitShort : null, exit_spot_price: spotPrice,
             realized_gross_pnl: gross, realized_net_pnl: net, exit_fee: exitFee, total_fees: entryFee + exitFee,
-            exit_reason: 'Reconciled: closed on exchange (bracket/external)', is_partial: false, account_id: accountState.id,
+            exit_reason: `Reconciled: ${label}`, is_partial: false, account_id: accountState.id,
           }], { onConflict: 'trade_id', ignoreDuplicates: true });
         }
         await supabase.from('active_positions').delete().eq('id', pos.id);
         log(`[${accountState.name}] ♻️ RECONCILE-CLEAN: ${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} absent from Delta → ${pos._everOpenOnDelta ? 'booked + removed' : 'silently removed (never filled)'}`);
         if (pos._everOpenOnDelta) {
-          notifyTrade({ title: '♻️ EXCHANGE CLOSE (bracket/external)', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} · closed on Delta`, pnl: net });
+          const isTp = pos.sellQty === 0;
+          const title = isTp ? '🎯 TAKE PROFIT (long TP)' : '🚨 STOP LOSS (short SL)';
+          notifyTrade({ title, detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} · closed on Delta`, pnl: net + (pos.accumulatedSellPnl || 0) });
         }
       } catch (e) {
         logError(`[${accountState.name}] reconcileOrphans failed for ${pos.id}:`, e);
@@ -949,8 +953,9 @@ async function startSingleAccountEngine(account) {
     } catch (e) { logError(`[${accountState.name}] Manual exit booking failed for ${pos.id}:`, e); }
     positions = positions.filter(p => p.id !== pos.id);
     heartbeat.update({ active_positions: positions.length });
-    log(`[${accountState.name}] 🙋 MANUAL EXIT: ${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} | PnL $${net.toFixed(2)}`);
-    notifyTrade({ title: '🙋 MANUAL EXIT', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''}`, pnl: net });
+    const cumulativeNet = net + (pos.accumulatedSellPnl || 0);
+    log(`[${accountState.name}] 🙋 MANUAL EXIT: ${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} | PnL $${cumulativeNet.toFixed(2)} (cumulative)`);
+    notifyTrade({ title: '🙋 MANUAL EXIT', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''}`, pnl: cumulativeNet });
   }
 
   // Poll for UI-requested exits and process them promptly.
@@ -1192,8 +1197,9 @@ async function startSingleAccountEngine(account) {
         }], { onConflict: 'trade_id', ignoreDuplicates: true });
         await supabase.from('active_positions').delete().eq('id', pos.id);
       } catch (e) { logError(`[${accountState.name}] Resting full-exit booking failed for ${pos.id}:`, e); }
-      log(`[${accountState.name}] 📤 LIVE ${atExpiry ? 'EXPIRY' : 'FULL EXIT'}: ${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} | ${reason} | PnL $${net.toFixed(2)}`);
-      notifyTrade({ title: atExpiry ? '📤 EXPIRY EXIT' : '📤 FULL EXIT', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} · ${reason}`, pnl: net });
+      const cumulativeNet = net + (pos.accumulatedSellPnl || 0);
+      log(`[${accountState.name}] 📤 LIVE ${atExpiry ? 'EXPIRY' : 'FULL EXIT'}: ${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} | ${reason} | PnL $${cumulativeNet.toFixed(2)} (cumulative)`);
+      notifyTrade({ title: atExpiry ? '📤 EXPIRY EXIT' : '📤 FULL EXIT', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} · ${reason}`, pnl: cumulativeNet });
       return; // closed
     }
 
@@ -1255,6 +1261,7 @@ async function startSingleAccountEngine(account) {
       pos.entryFee = Math.max(0, (pos.entryFee || 0) - entryFee);
       pos.sellLeg = { ...pos.sellLeg, lotSize: 0, exitOrderId: null };
       pos.sellQty = 0;
+      pos.accumulatedSellPnl = (pos.accumulatedSellPnl || 0) + net;
       const baseLot = pos.buyLeg.lotSize || 0;
       const S = longContracts(pos.buyLeg);
       const levels = fixedLadderLevels(longBid);
@@ -1276,6 +1283,7 @@ async function startSingleAccountEngine(account) {
         await supabase.from('active_positions').update({
           buy_leg: JSON.stringify(pos.buyLeg), sell_leg: JSON.stringify(pos.sellLeg),
           sell_qty: 0, entry_fee: pos.entryFee, margin: pos.margin,
+          accumulated_sell_pnl: pos.accumulatedSellPnl,
         }).eq('id', pos.id);
       } catch (e) { logError(`[${accountState.name}] Resting short-exit persist failed for ${pos.id}:`, e); }
       log(`[${accountState.name}] ✂️ RESTING SHORT EXIT: ${pos.type.toUpperCase()} ${pos.buyLeg.strike} @ $${exitPx} | ladder ${alloc.join('/')} contracts @ [${levels.join(',')}] | PnL $${net.toFixed(2)}`);
@@ -1313,6 +1321,7 @@ async function startSingleAccountEngine(account) {
         lo.filled = true;
         pos.entryFee = Math.max(0, (pos.entryFee || 0) - entryFee);
         pos.buyLeg.lotSize = Number((pos.buyLeg.lotSize - lo.lot).toFixed(4));
+        pos.accumulatedSellPnl = (pos.accumulatedSellPnl || 0) + net;
       }
       try {
         await supabase.from('trade_history').upsert(rows, { onConflict: 'trade_id', ignoreDuplicates: true });
@@ -1323,17 +1332,18 @@ async function startSingleAccountEngine(account) {
         try { await supabase.from('active_positions').delete().eq('id', pos.id); }
         catch (e) { logError(`[${accountState.name}] Resting ladder final delete failed for ${pos.id}:`, e); }
         log(`[${accountState.name}] 🪜 LONG FULLY EXITED (resting ladder): ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | ${newlyFilled.length} slice(s) this cycle`);
-        notifyTrade({ title: '🪜 LONG FULLY EXITED', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike} · ${newlyFilled.length} slice(s) this cycle · position closed`, pnl: cycleNet });
+        notifyTrade({ title: '🪜 LONG FULLY EXITED', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike} · ${newlyFilled.length} slice(s) this cycle · position closed`, pnl: pos.accumulatedSellPnl });
         return;
       }
       pos.margin = longOnlyMargin(pos);
       try {
         await supabase.from('active_positions').update({
           buy_leg: JSON.stringify(pos.buyLeg), entry_fee: pos.entryFee, margin: pos.margin,
+          accumulated_sell_pnl: pos.accumulatedSellPnl,
         }).eq('id', pos.id);
       } catch (e) { logError(`[${accountState.name}] Resting ladder persist failed for ${pos.id}:`, e); }
       log(`[${accountState.name}] 🪜 LONG SLICE EXIT (resting): ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | ${newlyFilled.length} slice(s) | remaining lot ${pos.buyLeg.lotSize}`);
-      notifyTrade({ title: '🪜 LONG SLICE EXIT', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike} · ${newlyFilled.length} slice(s) · remaining lot ${pos.buyLeg.lotSize}`, pnl: cycleNet });
+      notifyTrade({ title: '🪜 LONG SLICE EXIT', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike} · ${newlyFilled.length} slice(s) · remaining lot ${pos.buyLeg.lotSize}`, pnl: pos.accumulatedSellPnl });
     }
     remaining.push(pos);
   }
@@ -2538,7 +2548,7 @@ async function startSingleAccountEngine(account) {
             if (Number.isFinite(maxShortByNotional) && maxShortByNotional >= 1 && shortC > maxShortByNotional) {
               shortC = maxShortByNotional;
             }
-            adjustedLotSize = Number((originalLotSize * longC).toFixed(4));
+            adjustedLotSize = Number((longCV * longC).toFixed(4));
             adjustedSellQty = shortC;
             liveMargin = calcMargin(entryBuyPrice, longCV * longC, spotPrice, adjustedSellQty, shortCV);
             log(`[${accountState.name}] 💰 LIVE size ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: unit margin $${baseMargin.toFixed(2)} | part $${partMargin.toFixed(2)} → scale ${scale.toFixed(2)}× | long ${longC} short ${shortC} (base 1:${ratioToUse}) | est margin $${liveMargin.toFixed(2)} | cv ${longCV}/${shortCV}`);
@@ -2561,7 +2571,7 @@ async function startSingleAccountEngine(account) {
             entryBuyAtmPrice: buyIntrinsic,
             entrySellAtmPrice: sellIntrinsic,
             maxAtmRatio: entryAtmRatio,
-            originalLotSize: spread.buyLeg.lotSize || 1,
+            originalLotSize: liveArmed ? longCV : (spread.buyLeg.lotSize || 1),
             originalSellQty: ratioToUse,
             initialScaledLotSize: adjustedLotSize,
             // LIVE margin basis (real per-contract underlying amount). Present only for
@@ -2569,10 +2579,15 @@ async function startSingleAccountEngine(account) {
             // longOnlyMargin() so a short-exit recompute matches the entry margin basis.
             contractValue: liveLongCV
           };
-          const sellLegWithIv = { ...spread.sellLeg, entryIv: entrySellIv };
+          const sellLegWithIv = {
+            ...spread.sellLeg,
+            entryIv: entrySellIv,
+            lotSize: liveArmed ? shortCV : (spread.sellLeg.lotSize || originalLotSize),
+            contractValue: liveArmed ? shortCV : null
+          };
 
-          const entryBuyFee = calculateFee(entryBuyPrice, spotPrice, adjustedLotSize, spread.buyLeg.lotSize || 1);
-          const entrySellFee = calculateFee(entrySellPrice, spotPrice, adjustedSellQty, spread.sellLeg.lotSize);
+          const entryBuyFee = calculateFee(entryBuyPrice, spotPrice, adjustedLotSize, buyLegWithIv.originalLotSize || 1);
+          const entrySellFee = calculateFee(entrySellPrice, spotPrice, adjustedSellQty, sellLegWithIv.lotSize);
           const entryFee = entryBuyFee + entrySellFee;
           // Live: store the real contract_value-based margin (matches Delta + feeds the
           // remaining-budget sizing correctly). Paper: unchanged notional/200 estimate.
