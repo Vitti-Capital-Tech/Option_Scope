@@ -67,6 +67,7 @@ else { /* stable logic — live accounts run this */ }
 **v2-gated features so far:**
 - **Per-window Days to Expiry** (migration `019`): see filter [#9](#entry-filters) and [Time-Based Filter Schedules](#time-based-filter-schedules).
 - **Trading Days (day-of-week entry filter)** (migration `021`): see [Trading Days](#trading-days-day-of-week-entry-filter).
+- **Hedge Overlay (long-only overlay per window)** (migration `022`): see [Hedge Overlay](#hedge-overlay-long-only).
 
 ---
 
@@ -824,6 +825,7 @@ The following parameters are scheduled per window:
 10. **Exit Type** (`exitType`) — `ATM`/`ITM`/`OTM`; **active-window-governs** open positions (migration `012`)
 11. **Exit Points** (`exitPoints`) — offset for ITM/OTM exit (migration `012`)
 12. **Days to Expiry** (`daysToExpiry`) — **v2 (experimental paper) accounts only** (migration `019`). The window's value guards its own entries; account-global expiry selection uses the **peak** across active windows. On v1 (live) this stays an account-level Control Panel field and is **not** shown per window. See [Strategy Versioning](#strategy-versioning-paper-vs-live).
+13. **Hedge Overlay** (`hedgeStrikeType` + `hedgeCallPrice`/`hedgeCallPct`/`hedgePutPrice`/`hedgePutPct`) — **v2 (experimental paper) accounts only** (migration `022`). Opens an extra long-only overlay per type. See [Hedge Overlay](#hedge-overlay-long-only).
 
 All other filter settings (like `minIvDiff`, `minSellPremium`, etc.) default back to the base account config.
 
@@ -866,6 +868,27 @@ An **account-level** day-of-week filter that chooses which weekdays the account 
 > **The trading-day boundary is 17:30 IST** — the same boundary the schedule timeline uses (17:30 IST = the Delta daily rollover). A trading day named for weekday **W** runs from **(W-1) 17:30 IST → W 17:30 IST**. So the engine computes the *active* trading-day weekday as: **if IST time ≥ 17:30 → tomorrow's weekday, else today's weekday** (`isTradingDayEnabled`, `1050` min = 17:30).
 >
 > Examples: **Friday enabled** ⇒ tradeable **Thu 17:30 → Fri 17:30 IST**. **Sunday disabled** ⇒ no new entries **Sat 17:30 → Sun 17:30 IST**.
+
+### Hedge Overlay (Long-Only)
+
+**File**: [paperTradingEngine.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js) (hedge entry + drain), [SchedulePanel.jsx](file:///c:/Users/ASUS/Documents/Option_Scope/src/components/PaperTrading/SchedulePanel.jsx) · **Columns**: `paper_trading_schedules.hedge_strike_type`, `hedge_call_price/pct`, `hedge_put_price/pct` · **Migration**: `022`
+
+A per-window filter that opens an extra **long-only "hedge overlay"** position — separate from the ratio spreads — sized as a share of the account's short exposure. Experimental — **`strategy_version >= 2` (paper) only**; v1 (live) ignores it and the UI is hidden. See [Strategy Versioning](#strategy-versioning-paper-vs-live).
+
+**Config (per window):**
+- **Hedge Strike Type** (`hedgeStrikeType`) — `none` / `call` / `put` / `both`. `both` shows inputs for each side (4 total).
+- **Price** (`hedgeCallPrice` / `hedgePutPrice`) — a **target premium ($)**. The engine buys the **OTM** strike of that type (call strike > spot, put strike < spot) whose **ask is nearest** this price.
+- **Percentage** (`hedgeCallPct` / `hedgePutPct`) — buy qty = **(sum of active short qty of that type, this underlying) × pct/100**.
+
+**Entry** (once, while the window is active and short exposure of the type exists): buys the nearest-priced OTM long, marks it `buy_leg.isHedge = true`, and records **N = that type's open long positions at entry**. The overlay is **exempt** from the normal portfolio caps, buy-strike-conflict, and exit rules (short buy-back / ladder / ATM-ITM-OTM / expiry) — it has its own exit below.
+
+**Exit — proportional drain**: each cycle, `targetLot = buyQty × (open same-type main longs now / N)`. The engine sells the excess (at the long **bid**) and books it. So **each time a same-type main position fully exits, one `1/N` slice of the overlay is sold**; when all such positions have exited the overlay is fully closed. This is exactly "the overlay exits by the percentage that depends on how many longs there are, as each position exits."
+
+> [!NOTE]
+> **Sizing vs draining use different counts, deliberately.** Buy qty is sized on **short exposure** (`sellQty` sum of that type — positions with an active short leg). The drain fraction uses **N = open long positions** of that type (every main position holds a long, including those that have gone long-only after a short buy-back). So the overlay is *funded* by shorts but *unwound* in lockstep with the main longs closing.
+
+> [!NOTE]
+> Telegram (armed-real): `🛡️ HEDGE ENTRY`, `🛡️ HEDGE DRAIN`, `🛡️ HEDGE CLOSED`. The overlay is v2-gated, so in practice it runs on paper accounts (bookkeeping only); the live buy/sell path is best-effort for a hypothetical v2 live account.
 
 ---
 

@@ -778,3 +778,16 @@ ALTER TABLE public.paper_trading_schedules
 -- (trade every day) so existing accounts are unchanged. Additive.
 ALTER TABLE public.paper_trading_config
   ADD COLUMN IF NOT EXISTS trade_days JSONB NOT NULL DEFAULT '[0,1,2,3,4,5,6]'::jsonb;
+
+
+-- ─── 022_hedge_overlay.sql ───
+-- Per-window long-only Hedge Overlay (paper strategy_version >= 2). A window can buy an
+-- OTM long of a type sized as (sum of active short qty of type) × pct, at the strike whose
+-- ask is nearest a target premium; it drains proportionally as the main book exits.
+-- Marked buy_leg.isHedge; exempt from normal caps/exit. Defaults leave windows unchanged.
+ALTER TABLE public.paper_trading_schedules
+  ADD COLUMN IF NOT EXISTS hedge_strike_type TEXT NOT NULL DEFAULT 'none',
+  ADD COLUMN IF NOT EXISTS hedge_call_price NUMERIC NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS hedge_call_pct NUMERIC NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS hedge_put_price NUMERIC NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS hedge_put_pct NUMERIC NOT NULL DEFAULT 0;

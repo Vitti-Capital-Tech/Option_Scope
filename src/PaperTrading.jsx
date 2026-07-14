@@ -105,6 +105,11 @@ const makeFirstWindow = (cfg = {}) => ({
   exitType: cfg.exitType ?? 'ATM',
   exitPoints: cfg.exitPoints ?? 0,
   daysToExpiry: cfg.daysToExpiry ?? 0,
+  hedgeStrikeType: 'none',
+  hedgeCallPrice: 0,
+  hedgeCallPct: 0,
+  hedgePutPrice: 0,
+  hedgePutPct: 0,
   isActive: true,
   sort_order: 0,
 });
@@ -1375,6 +1380,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           exitType: s.exit_type ?? 'ATM',
           exitPoints: s.exit_points ?? 0,
           daysToExpiry: s.days_to_expiry ?? 0,
+          hedgeStrikeType: s.hedge_strike_type ?? 'none',
+          hedgeCallPrice: s.hedge_call_price ?? 0,
+          hedgeCallPct: s.hedge_call_pct ?? 0,
+          hedgePutPrice: s.hedge_put_price ?? 0,
+          hedgePutPct: s.hedge_put_pct ?? 0,
           isActive: s.is_active ?? true,
           sort_order: s.sort_order ?? 0,
         }));
@@ -1400,6 +1410,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           exitType: s.exitType,
           exitPoints: s.exitPoints,
           daysToExpiry: s.daysToExpiry,
+          hedgeStrikeType: s.hedgeStrikeType,
+          hedgeCallPrice: s.hedgeCallPrice,
+          hedgeCallPct: s.hedgeCallPct,
+          hedgePutPrice: s.hedgePutPrice,
+          hedgePutPct: s.hedgePutPct,
           isActive: s.isActive
         })));
       }
@@ -1432,6 +1447,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         exit_type: s.exitType ?? 'ATM',
         exit_points: s.exitPoints ?? 0,
         days_to_expiry: s.daysToExpiry ?? 0,
+        hedge_strike_type: s.hedgeStrikeType ?? 'none',
+        hedge_call_price: s.hedgeCallPrice ?? 0,
+        hedge_call_pct: s.hedgeCallPct ?? 0,
+        hedge_put_price: s.hedgePutPrice ?? 0,
+        hedge_put_pct: s.hedgePutPct ?? 0,
         is_active: s.isActive ?? true,
         sort_order: i,
         updated_at: new Date().toISOString(),
@@ -1469,6 +1489,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         exitType: s.exitType,
         exitPoints: s.exitPoints,
         daysToExpiry: s.daysToExpiry,
+        hedgeStrikeType: s.hedgeStrikeType,
+        hedgeCallPrice: s.hedgeCallPrice,
+        hedgeCallPct: s.hedgeCallPct,
+        hedgePutPrice: s.hedgePutPrice,
+        hedgePutPct: s.hedgePutPct,
         isActive: s.isActive
       })));
       lastSavedSchedulesRef.current = savedJson;
@@ -1496,6 +1521,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       exitType: s.exitType,
       exitPoints: s.exitPoints,
       daysToExpiry: s.daysToExpiry,
+      hedgeStrikeType: s.hedgeStrikeType,
+      hedgeCallPrice: s.hedgeCallPrice,
+      hedgeCallPct: s.hedgeCallPct,
+      hedgePutPrice: s.hedgePutPrice,
+      hedgePutPct: s.hedgePutPct,
       isActive: s.isActive
     })));
     return lastSavedSchedulesRef.current !== currentJson;

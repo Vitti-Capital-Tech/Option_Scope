@@ -378,6 +378,12 @@ async function startSingleAccountEngine(account) {
           // Per-window min-days-to-expiry (strategy_version >= 2 only). Falls back to
           // the account-level config value for rows that predate migration 019.
           daysToExpiry: s.days_to_expiry ?? config.daysToExpiry ?? 0,
+          // Per-window hedge overlay (strategy_version >= 2 only, migration 022).
+          hedgeStrikeType: s.hedge_strike_type ?? 'none',
+          hedgeCallPrice: s.hedge_call_price ?? 0,
+          hedgeCallPct: s.hedge_call_pct ?? 0,
+          hedgePutPrice: s.hedge_put_price ?? 0,
+          hedgePutPct: s.hedge_put_pct ?? 0,
           isActive: s.is_active ?? true,
         }));
       }
@@ -1408,7 +1414,15 @@ async function startSingleAccountEngine(account) {
           // Per-window min-days-to-expiry only for strategy_version >= 2 (migration 019);
           // v1 keeps the account-level value spread from config above.
           ...(config.strategyVersion >= 2
-            ? { daysToExpiry: activeSchedule.daysToExpiry ?? config.daysToExpiry }
+            ? {
+              daysToExpiry: activeSchedule.daysToExpiry ?? config.daysToExpiry,
+              // Hedge overlay (migration 022) — active window's settings, v2 only.
+              hedgeStrikeType: activeSchedule.hedgeStrikeType ?? 'none',
+              hedgeCallPrice: activeSchedule.hedgeCallPrice ?? 0,
+              hedgeCallPct: activeSchedule.hedgeCallPct ?? 0,
+              hedgePutPrice: activeSchedule.hedgePutPrice ?? 0,
+              hedgePutPct: activeSchedule.hedgePutPct ?? 0,
+            }
             : {}),
         }
         : { ...config };
@@ -1942,6 +1956,11 @@ async function startSingleAccountEngine(account) {
           continue;
         }
 
+        // Hedge overlays (long-only) have their OWN exit — they drain proportionally as
+        // the main book exits (processHedgeOverlays below), so the normal short-buyback /
+        // ladder / ATM-ITM-OTM / expiry rules don't apply. Keep them in `remaining` here.
+        if (pos.buyLeg?.isHedge) { remaining.push(pos); continue; }
+
         // Armed REAL live → resting-order exit model (isolated from the active model).
         if (liveResting) {
           if (liveFillIds == null) { remaining.push(pos); continue; } // fills fetch failed → hold
@@ -2300,6 +2319,69 @@ async function startSingleAccountEngine(account) {
         }
       }
 
+      // ── 1b. Hedge overlay drain ─────────────────────────────────────────
+      // Long-only hedge overlays exit proportionally as the main book of that type
+      // exits: with N = same-type open long positions at overlay entry, target lot =
+      // buyQty × (open same-type main longs now / N). Each full exit of a main position
+      // therefore sells one 1/N slice; when all have exited the overlay is fully closed.
+      // Runs every cycle (incl. onlyExits). Sells at the long bid; books like a partial.
+      for (const pos of remaining.filter(p => p.underlying === underlying && p.buyLeg?.isHedge)) {
+        const N = Math.max(1, pos.buyLeg.hedgeN || 1);
+        const buyQty = pos.buyLeg.hedgeBuyQty || pos.buyLeg.lotSize || 0;
+        const openLongs = remaining.filter(p => p.underlying === underlying && p.type === pos.type && !p.buyLeg?.isHedge).length;
+        const targetQty = Math.max(0, Math.min(buyQty, buyQty * (openLongs / N)));
+        const currentQty = pos.buyLeg.lotSize || 0;
+        const sellQty = Number((currentQty - targetQty).toFixed(4));
+        if (sellQty <= 0.0001) continue; // no drain needed this cycle
+
+        const tHedge = tickerData[pos.buyLeg.symbol];
+        const exitPx = tHedge?.bid ?? tHedge?.lastPrice ?? tHedge?.markPrice;
+        if (exitPx == null) continue; // no quote — hold
+
+        const base = pos.buyLeg.originalLotSize || 1;
+        const gross = (exitPx - pos.entryBuyPrice) * sellQty;
+        const entryFeePortion = Math.min(pos.entryFee || 0, calculateFee(pos.entryBuyPrice, pos.entrySpotPrice, sellQty, base));
+        const exitFee = calculateFee(exitPx, spotPrice, sellQty, base);
+        const net = gross - (entryFeePortion + exitFee);
+        const newLot = Number((currentQty - sellQty).toFixed(4));
+        const fullyClosed = newLot <= 0.0001;
+        lastDbWrite = Date.now();
+
+        // LIVE (armed): reduce-only sell the drained contracts (no-op for paper/unarmed).
+        if (accountState.mode === 'live' && accountState.live_enabled) {
+          await live.closeLeg({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: longContracts(pos.buyLeg, sellQty), price: exitPx, tag: `${pos.id}-HDX` });
+        }
+        try {
+          await supabase.from('trade_history').upsert([{
+            trade_id: fullyClosed ? pos.id : `${pos.id}-HD-${Date.now().toString(36).toUpperCase()}`,
+            underlying: pos.underlying, expiry: pos.expiry, type: pos.type,
+            buy_leg: JSON.stringify({ ...pos.buyLeg, lotSize: sellQty }),
+            sell_leg: JSON.stringify({ lotSize: 0 }),
+            sell_qty: 0, strike_diff: 0,
+            entry_time: pos.entryTime.toISOString(),
+            entry_buy_price: pos.entryBuyPrice, entry_sell_price: 0, entry_spot_price: pos.entrySpotPrice,
+            margin: pos.margin, exit_time: new Date().toISOString(),
+            exit_buy_price: exitPx, exit_sell_price: null, exit_spot_price: spotPrice,
+            realized_gross_pnl: gross, realized_net_pnl: net, exit_fee: exitFee, total_fees: entryFeePortion + exitFee,
+            exit_reason: `Hedge Drain (${openLongs}/${N} longs open)`, is_partial: !fullyClosed, account_id: accountState.id,
+          }], { onConflict: 'trade_id', ignoreDuplicates: true });
+          if (fullyClosed) {
+            await supabase.from('active_positions').delete().eq('id', pos.id);
+            const idx = remaining.indexOf(pos);
+            if (idx >= 0) remaining.splice(idx, 1);
+          } else {
+            pos.buyLeg = { ...pos.buyLeg, lotSize: newLot };
+            pos.entryFee = Math.max(0, (pos.entryFee || 0) - entryFeePortion);
+            pos.margin = longOnlyMargin(pos);
+            await supabase.from('active_positions').update({
+              buy_leg: JSON.stringify(pos.buyLeg), entry_fee: pos.entryFee, margin: pos.margin,
+            }).eq('id', pos.id);
+          }
+        } catch (e) { logError(`[${accountState.name}] Hedge drain booking failed for ${pos.id}:`, e); }
+        log(`[${accountState.name}] 🛡️ HEDGE ${fullyClosed ? 'CLOSED' : 'DRAIN'}: ${pos.type.toUpperCase()} ${pos.buyLeg.strike} · sold ${sellQty} · ${openLongs}/${N} longs open · remaining ${newLot} · PnL $${net.toFixed(2)}`);
+        notifyTrade({ title: fullyClosed ? '🛡️ HEDGE CLOSED' : '🛡️ HEDGE DRAIN', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike} · sold ${sellQty} · ${openLongs}/${N} longs open · remaining ${newLot}`, pnl: net });
+      }
+
       // ── 2. Open new positions (entries) ─────────────────────────────────
       const newEntries = [];
 
@@ -2433,11 +2515,11 @@ async function startSingleAccountEngine(account) {
             continue;
           }
 
-          // Buy strike conflict check
+          // Buy strike conflict check (hedge overlays excluded — they don't block spreads)
           const buyConflictPos = remaining.find(
-            p => p.underlying === underlying && p.type === spreadType && Number(p.buyLeg.strike) === bStrike
+            p => p.underlying === underlying && p.type === spreadType && !p.buyLeg?.isHedge && Number(p.buyLeg.strike) === bStrike
           ) || newEntries.find(
-            p => p.underlying === underlying && p.type === spreadType && Number(p.buyLeg.strike) === bStrike
+            p => p.underlying === underlying && p.type === spreadType && !p.buyLeg?.isHedge && Number(p.buyLeg.strike) === bStrike
           );
 
           // Sell strike conflict check (ignore long-only held positions — their short leg is gone)
@@ -2608,6 +2690,79 @@ async function startSingleAccountEngine(account) {
             margin: candidateMargin,
           };
           newEntries.push(newPos);
+        }
+
+        // ── Hedge overlay entry (long-only, strategy_version >= 2) ────────────
+        // Buy one OTM long per enabled type whose ask is nearest the target premium,
+        // sized as (sum of active short qty of that type) × pct. Entered ONCE while the
+        // window is active and short exposure exists; then drained proportionally (1b).
+        const hedgeType = effectiveConfig.hedgeStrikeType;
+        if (config.strategyVersion >= 2 && hedgeType && hedgeType !== 'none') {
+          const expiryMins = (new Date(config.expiry).getTime() - Date.now()) / 60000;
+          const hTypes = hedgeType === 'both' ? ['call', 'put'] : [hedgeType];
+          for (const hT of hTypes) {
+            if (expiryMins < 5) continue; // too close to expiry
+            const targetPrice = hT === 'call' ? effectiveConfig.hedgeCallPrice : effectiveConfig.hedgePutPrice;
+            const pct = hT === 'call' ? effectiveConfig.hedgeCallPct : effectiveConfig.hedgePutPct;
+            if (!(targetPrice > 0) || !(pct > 0)) continue;
+            // One hedge overlay per type at a time.
+            if ([...remaining, ...newEntries].some(p => p.underlying === underlying && p.type === hT && p.buyLeg?.isHedge)) continue;
+            // Sum of active short qty of this type (this underlying), main positions only.
+            const mainOfType = [...remaining, ...newEntries].filter(p => p.underlying === underlying && p.type === hT && !p.buyLeg?.isHedge);
+            const shortSum = mainOfType.reduce((s, p) => s + (p.sellQty > 0 ? p.sellQty : 0), 0);
+            if (shortSum <= 0) continue; // no shorts of this type → nothing to hedge
+            const buyQty = Number((shortSum * (pct / 100)).toFixed(4));
+            if (!(buyQty > 0)) continue;
+            const N = Math.max(1, mainOfType.length); // that type's open long positions at entry
+            // Nearest-premium OTM strike: call strike > spot, put strike < spot; min |ask − target|.
+            let best = null, bestDist = Infinity;
+            for (const t of allTickers) {
+              if (t.type !== hT || t.expiry !== config.expiry) continue;
+              const isOtm = hT === 'call' ? t.strike > spotPrice : t.strike < spotPrice;
+              if (!isOtm) continue;
+              const ask = t.ask ?? t.lastPrice ?? t.markPrice;
+              if (ask == null || !(ask > 0)) continue;
+              const d = Math.abs(ask - targetPrice);
+              if (d < bestDist) { bestDist = d; best = { ...t, _ask: ask }; }
+            }
+            if (!best) { logWarn(`[${accountState.name}] Hedge ${hT} skipped: no OTM strike with a quote near $${targetPrice}`); continue; }
+            const entryBuyPrice = best._ask;
+            const id = `H${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+            const buyLeg = {
+              symbol: best.symbol, strike: best.strike, type: hT, expiry: config.expiry,
+              lotSize: buyQty, originalLotSize: 1,
+              isHedge: true, hedgeN: N, hedgeBuyQty: buyQty,
+              entryIv: best.askIv ?? best.iv ?? null, contractValue: null,
+            };
+            const entryFee = calculateFee(entryBuyPrice, spotPrice, buyQty, 1);
+            const margin = calcMargin(entryBuyPrice, buyQty, spotPrice, 0, 1);
+            const hedgePos = {
+              id, underlying, expiry: config.expiry, type: hT,
+              buyLeg, sellLeg: { lotSize: 0 }, sellQty: 0,
+              strikeDiff: 0, entryTime: new Date(),
+              entryBuyPrice, entrySellPrice: 0, entrySpotPrice: spotPrice, entryFee, margin,
+            };
+            // LIVE (armed): buy the long-only overlay (no bracket — engine-drained). No-op for paper/unarmed.
+            if (accountState.mode === 'live' && accountState.live_enabled) {
+              const res = await live.openSpread(hedgePos, { long: longContracts(buyLeg), short: 0, buyPrice: entryBuyPrice });
+              if (res && res.ok === false && !res.skipped) { logError(`[${accountState.name}] Hedge ${hT} live buy failed: ${res.error}`); continue; }
+            }
+            try {
+              const { error: hErr } = await supabase.from('active_positions').insert([{
+                id, underlying, expiry: config.expiry, type: hT,
+                buy_leg: JSON.stringify(buyLeg), sell_leg: JSON.stringify({ lotSize: 0 }),
+                sell_qty: 0, strike_diff: 0, entry_time: hedgePos.entryTime.toISOString(),
+                entry_buy_price: entryBuyPrice, entry_sell_price: 0, entry_spot_price: spotPrice,
+                margin, entry_fee: entryFee, accumulated_sell_pnl: 0,
+                buy_strike: best.strike, sell_strike: best.strike,
+                account_id: accountState.id,
+              }]);
+              if (hErr) { logError(`[${accountState.name}] Hedge insert error:`, hErr.message); continue; }
+            } catch (e) { logError(`[${accountState.name}] Hedge entry persistence error:`, e); continue; }
+            remaining.push(hedgePos);
+            log(`[${accountState.name}] 🛡️ HEDGE ENTRY: ${hT.toUpperCase()} ${best.strike} @ $${entryBuyPrice} (~target $${targetPrice}) · qty ${buyQty} (${pct}% of ${shortSum} shorts) · N=${N}`);
+            notifyTrade({ title: '🛡️ HEDGE ENTRY', detail: `${hT.toUpperCase()} ${best.strike} @ $${entryBuyPrice} · qty ${buyQty} (${pct}% of ${shortSum} shorts) · N=${N}` });
+          }
         }
       }
 

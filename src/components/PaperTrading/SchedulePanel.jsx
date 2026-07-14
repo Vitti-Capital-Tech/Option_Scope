@@ -18,6 +18,11 @@ const DEFAULT_WINDOW = {
   exitType: 'ATM',
   exitPoints: 0,
   daysToExpiry: 0,
+  hedgeStrikeType: 'none',
+  hedgeCallPrice: 0,
+  hedgeCallPct: 0,
+  hedgePutPrice: 0,
+  hedgePutPct: 0,
   isActive: true,
 };
 
@@ -532,6 +537,50 @@ export default function SchedulePanel({
                     <span className="schedule-item-label">Min Days to Expiry</span>
                     <CustomInput type="number" min="0" step="1" value={s.daysToExpiry ?? 0} onChange={e => handleChange(s.id, 'daysToExpiry', Number(e.target.value))} />
                   </div>
+                )}
+
+                {/* Hedge overlay (experimental / strategy_version >= 2). Buys a long-only
+                    OTM leg of the chosen type(s), at the strike whose ask is nearest the
+                    target Price, sized as (sum of active shorts of type) × Pct. */}
+                {strategyVersion >= 2 && (
+                  <div className="schedule-item-block schedule-item-num-block">
+                    <span className="schedule-item-label">Hedge Strike Type</span>
+                    <CustomSelect
+                      value={s.hedgeStrikeType ?? 'none'}
+                      onChange={val => handleChange(s.id, 'hedgeStrikeType', val)}
+                      options={[
+                        { label: 'None', value: 'none' },
+                        { label: 'Call only', value: 'call' },
+                        { label: 'Put only', value: 'put' },
+                        { label: 'Call & Put', value: 'both' },
+                      ]}
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+                )}
+                {strategyVersion >= 2 && (s.hedgeStrikeType === 'call' || s.hedgeStrikeType === 'both') && (
+                  <>
+                    <div className="schedule-item-block schedule-item-num-block">
+                      <span className="schedule-item-label">Hedge Call Price</span>
+                      <CustomInput type="number" min="0" step="1" prefix="$" value={s.hedgeCallPrice ?? 0} onChange={e => handleChange(s.id, 'hedgeCallPrice', Number(e.target.value))} />
+                    </div>
+                    <div className="schedule-item-block schedule-item-num-block">
+                      <span className="schedule-item-label">Hedge Call %</span>
+                      <CustomInput type="number" min="0" max="100" step="1" suffix="%" value={s.hedgeCallPct ?? 0} onChange={e => handleChange(s.id, 'hedgeCallPct', Number(e.target.value))} />
+                    </div>
+                  </>
+                )}
+                {strategyVersion >= 2 && (s.hedgeStrikeType === 'put' || s.hedgeStrikeType === 'both') && (
+                  <>
+                    <div className="schedule-item-block schedule-item-num-block">
+                      <span className="schedule-item-label">Hedge Put Price</span>
+                      <CustomInput type="number" min="0" step="1" prefix="$" value={s.hedgePutPrice ?? 0} onChange={e => handleChange(s.id, 'hedgePutPrice', Number(e.target.value))} />
+                    </div>
+                    <div className="schedule-item-block schedule-item-num-block">
+                      <span className="schedule-item-label">Hedge Put %</span>
+                      <CustomInput type="number" min="0" max="100" step="1" suffix="%" value={s.hedgePutPct ?? 0} onChange={e => handleChange(s.id, 'hedgePutPct', Number(e.target.value))} />
+                    </div>
+                  </>
                 )}
 
                 <div className="schedule-item-block schedule-item-num-block">
