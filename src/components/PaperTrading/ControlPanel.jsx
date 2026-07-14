@@ -7,7 +7,6 @@ import SchedulePanel from './SchedulePanel';
 
 export default function ControlPanel({
   underlying,
-  updateConfig,
   selExpiry,
   filteredExpiries,
   activeAccountId,
@@ -64,8 +63,8 @@ export default function ControlPanel({
                 <button
                   key={u}
                   type="button"
-                  className={`pt-seg-btn ${underlying === u ? 'on' : ''}`}
-                  onClick={() => updateConfig('underlying', u)}
+                  className={`pt-seg-btn ${(draftConfig?.underlying ?? underlying) === u ? 'on' : ''}`}
+                  onClick={() => updateDraftConfig('underlying', u)}
                 >
                   {u}
                 </button>
@@ -75,10 +74,10 @@ export default function ControlPanel({
           <div className="form-group" style={{ marginBottom: 0, display: 'flex', flexDirection: 'column', gap: 5, alignItems: 'flex-start' }}>
             <label className="pt-field-label" style={{ marginBottom: 0 }}>Expiry</label>
             <CustomSelect
-              value={selExpiry}
-              onChange={val => updateConfig('expiry', val)}
+              value={draftConfig?.expiry ?? selExpiry}
+              onChange={val => updateDraftConfig('expiry', val)}
               disabled={!filteredExpiries.length}
-              options={!filteredExpiries.length ? [{ label: 'Loading...', value: selExpiry }] : filteredExpiries.map(e => ({ label: fmtExpiry(e), value: e }))}
+              options={!filteredExpiries.length ? [{ label: 'Loading...', value: draftConfig?.expiry ?? selExpiry }] : filteredExpiries.map(e => ({ label: fmtExpiry(e), value: e }))}
               style={{ width: '160px' }}
             />
           </div>

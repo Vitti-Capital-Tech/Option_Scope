@@ -1120,6 +1120,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   // They are set at account creation (base config = the 24/7 backup) and
   // overridden per time window in the Schedule Panel.
   const FILTER_KEYS = [
+    'underlying',
+    'expiry',
     'minIvDiff',
     'maxRatioDeviation',
     'minSellPremium',
