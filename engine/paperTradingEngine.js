@@ -2803,18 +2803,22 @@ async function startSingleAccountEngine(account) {
             const buyQty = Number((shortSum * (pct / 100)).toFixed(4));
             if (!(buyQty > 0)) continue;
             const N = Math.max(1, mainOfType.length); // that type's open long positions at entry
-            // Nearest-premium OTM strike: call strike > spot, put strike < spot; min |ask − target|.
-            let best = null, bestDist = Infinity;
+            // Budget-capped OTM strike: call strike > spot, put strike < spot. `targetPrice`
+            // is a PREMIUM BUDGET — pick the strike whose ask is nearest the target WITHOUT
+            // exceeding it (i.e. the highest ask ≤ target = the most protective leg still in
+            // budget). If nothing quotes at/below the target, SKIP — never overpay by falling
+            // back to a far-above-target strike (deep-OTM legs near the target are often
+            // unquoted, which previously left an expensive strike as the only candidate).
+            let best = null, bestAsk = -Infinity;
             for (const t of allTickers) {
               if (t.type !== hT || t.expiry !== config.expiry) continue;
               const isOtm = hT === 'call' ? t.strike > spotPrice : t.strike < spotPrice;
               if (!isOtm) continue;
               const ask = t.ask ?? t.lastPrice ?? t.markPrice;
-              if (ask == null || !(ask > 0)) continue;
-              const d = Math.abs(ask - targetPrice);
-              if (d < bestDist) { bestDist = d; best = { ...t, _ask: ask }; }
+              if (ask == null || !(ask > 0) || ask > targetPrice) continue; // within budget only
+              if (ask > bestAsk) { bestAsk = ask; best = { ...t, _ask: ask }; }
             }
-            if (!best) { logWarn(`[${accountState.name}] Hedge ${hT} skipped: no OTM strike with a quote near $${targetPrice}`); continue; }
+            if (!best) { logWarn(`[${accountState.name}] Hedge ${hT} skipped: no OTM strike with ask ≤ target $${targetPrice}`); continue; }
             const entryBuyPrice = best._ask;
             const id = `H${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
             const buyLeg = {
