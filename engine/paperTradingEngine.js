@@ -1771,8 +1771,10 @@ async function startSingleAccountEngine(account) {
             const floorLimit = Number((initialScaledLotSize * 0.5).toFixed(2));
             let currentLotSize = pos.buyLeg.lotSize;
             let hypotheticalLotSize = Number((currentLotSize - deltaBuyQty).toFixed(2));
+            const shortCV = pos.sellLeg?.contractValue ?? pos.buyLeg?.contractValue ?? null;
+            const shortExposure = shortCV != null ? (pos.sellQty * shortCV) : pos.sellQty;
             let recalculatedRatio = hypotheticalLotSize > 0
-              ? Number((pos.sellQty / hypotheticalLotSize).toFixed(2))
+              ? Number((shortExposure / hypotheticalLotSize).toFixed(2))
               : Infinity;
             let entryFee = pos.entryFee || 0;
             let hasScaled = false;
@@ -1922,7 +1924,7 @@ async function startSingleAccountEngine(account) {
 
               hypotheticalLotSize = Number((currentLotSize - deltaBuyQty).toFixed(2));
               recalculatedRatio = hypotheticalLotSize > 0
-                ? Number((pos.sellQty / hypotheticalLotSize).toFixed(2))
+                ? Number((shortExposure / hypotheticalLotSize).toFixed(2))
                 : Infinity;
             }
 
