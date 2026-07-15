@@ -479,26 +479,24 @@ For PUTS:  if spotPrice ≤ buyStrike → EXIT
 ```
 Exits when the spot price crosses your buy leg's strike.
 
-> **Note — reversed ITM/OTM convention.** The `ITM` / `OTM` labels are used with the
-> **opposite** offset direction from the textbook definition (per the account's exit
-> convention): `ITM` subtracts points for calls / adds for puts; `OTM` adds points for
-> calls / subtracts for puts. So under this convention **ITM triggers earlier** (before
-> the strike) and **OTM triggers later** (past the strike). The formulas below reflect the
-> actual code.
+> **Note — ITM/OTM offset direction.** `ITM` adds points for calls / subtracts for puts;
+> `OTM` subtracts points for calls / adds for puts. So **ITM triggers later** (past the
+> strike, deeper in-the-money) and **OTM triggers earlier** (before the strike). The
+> formulas below reflect the actual code.
 
 ##### ITM
-```
-For CALLS: if spotPrice ≥ buyStrike - exitPoints → EXIT
-For PUTS:  if spotPrice ≤ buyStrike + exitPoints → EXIT
-```
-An **early exit** — closes the spread while the long leg is still `exitPoints` short of its strike (spot ≥ `buyStrike - exitPoints` for calls, spot ≤ `buyStrike + exitPoints` for puts).
-
-##### OTM
 ```
 For CALLS: if spotPrice ≥ buyStrike + exitPoints → EXIT
 For PUTS:  if spotPrice ≤ buyStrike - exitPoints → EXIT
 ```
 A **delayed exit** — lets the long run `exitPoints` past its strike before closing (spot ≥ `buyStrike + exitPoints` for calls, spot ≤ `buyStrike - exitPoints` for puts).
+
+##### OTM
+```
+For CALLS: if spotPrice ≥ buyStrike - exitPoints → EXIT
+For PUTS:  if spotPrice ≤ buyStrike + exitPoints → EXIT
+```
+An **early exit** — closes the spread while the long leg is still `exitPoints` short of its strike (spot ≥ `buyStrike - exitPoints` for calls, spot ≤ `buyStrike + exitPoints` for puts).
 
 ## Partial Exit / Scaling Logic
 

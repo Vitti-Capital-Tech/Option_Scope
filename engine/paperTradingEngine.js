@@ -119,11 +119,12 @@ function computeIndexTriggerLevel(type, buyStrike, cfg) {
   const exitType = cfg.exitType || 'ATM';
   const pts = Math.abs(cfg.exitPoints || 0);
   const isCall = type === 'call';
-  // NOTE: ITM/OTM direction is intentionally reversed from the textbook definition,
-  // per the account's exit convention: ITM = buyStrike − pts (call) / + pts (put),
-  // OTM = buyStrike + pts (call) / − pts (put).
-  if (exitType === 'ITM') return isCall ? buyStrike - pts : buyStrike + pts;
-  if (exitType === 'OTM') return isCall ? buyStrike + pts : buyStrike - pts;
+  // Exit convention: ITM = buyStrike + pts (call) / − pts (put);
+  // OTM = buyStrike − pts (call) / + pts (put). A call exits when spot ≥ level,
+  // a put when spot ≤ level (see isIndexTriggerMet), so e.g. an ITM call exits at
+  // spot ≥ buyStrike + pts and an OTM call at spot ≥ buyStrike − pts.
+  if (exitType === 'ITM') return isCall ? buyStrike + pts : buyStrike - pts;
+  if (exitType === 'OTM') return isCall ? buyStrike - pts : buyStrike + pts;
   return buyStrike; // ATM
 }
 
@@ -2320,14 +2321,14 @@ async function startSingleAccountEngine(account) {
           let isExitMet = false;
           let reasonSuffix = '';
 
-          // ITM/OTM direction reversed per the account's exit convention:
-          // ITM = buyStrike − pts (call) / + pts (put); OTM = buyStrike + pts (call) / − pts (put).
+          // Exit convention: ITM = buyStrike + pts (call) / − pts (put);
+          // OTM = buyStrike − pts (call) / + pts (put).
           if (exitType === 'ITM') {
-            isExitMet = isCall ? (spotPrice >= buyStrike - exitPoints) : (spotPrice <= buyStrike + exitPoints);
-            reasonSuffix = ` @ ITM (${isCall ? '-' : '+'}${exitPoints}pts)`;
-          } else if (exitType === 'OTM') {
             isExitMet = isCall ? (spotPrice >= buyStrike + exitPoints) : (spotPrice <= buyStrike - exitPoints);
-            reasonSuffix = ` @ OTM (${isCall ? '+' : '-'}${exitPoints}pts)`;
+            reasonSuffix = ` @ ITM (${isCall ? '+' : '-'}${exitPoints}pts)`;
+          } else if (exitType === 'OTM') {
+            isExitMet = isCall ? (spotPrice >= buyStrike - exitPoints) : (spotPrice <= buyStrike + exitPoints);
+            reasonSuffix = ` @ OTM (${isCall ? '-' : '+'}${exitPoints}pts)`;
           } else { // ATM
             isExitMet = isCall ? (spotPrice >= buyStrike) : (spotPrice <= buyStrike);
             reasonSuffix = ' @ ATM';
