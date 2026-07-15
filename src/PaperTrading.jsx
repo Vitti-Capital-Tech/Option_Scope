@@ -268,11 +268,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
 
   // Effective min-days-to-expiry driving expiry selection. For an experimental paper
   // account (strategy_version >= 2) days-to-expiry lives per schedule window, so mirror
-  // the engine and use the PEAK across active windows; v1 uses the account-level value.
+  // the engine and use the SMALLEST (min) across active windows — the global expiry rolls
+  // to the nearest expiry the nearest-eligible window allows; v1 uses the account value.
   const effectiveMinDte = React.useMemo(() => {
     const activeWins = (schedules || []).filter(s => s.isActive);
     return (config?.strategyVersion >= 2 && activeWins.length > 0)
-      ? Math.max(0, ...activeWins.map(s => s.daysToExpiry ?? 0))
+      ? Math.max(0, Math.min(...activeWins.map(s => s.daysToExpiry ?? 0)))
       : (config?.daysToExpiry || 0);
   }, [config?.strategyVersion, config?.daysToExpiry, schedules]);
 

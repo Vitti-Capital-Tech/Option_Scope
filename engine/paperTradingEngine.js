@@ -426,14 +426,17 @@ async function startSingleAccountEngine(account) {
 
   // Min days-to-expiry that drives account-global expiry auto-selection. For
   // strategy_version >= 2 (per-window DTE, migration 019) the engine still trades ONE
-  // expiry, so it must satisfy the STRICTEST (largest) days_to_expiry across active
-  // windows — then each window guards its own entries with its own value. v1 (live)
+  // expiry, so it rolls to the NEAREST expiry that satisfies the SMALLEST (min)
+  // days_to_expiry across active windows — so the global expiry advances as soon as the
+  // nearest-eligible window allows (e.g. windows 1:DTE 1, 2:DTE 2 → expiry follows DTE 1,
+  // NOT the farther DTE 2). Each window then guards its OWN entries with its own value
+  // (a window whose DTE the current expiry doesn't meet simply doesn't enter). v1 (live)
   // uses the single account-level config value, unchanged.
   function expirySelectionMinDte() {
     if (config.strategyVersion >= 2) {
       const active = schedules.filter(s => s.isActive);
       if (active.length > 0) {
-        return Math.max(0, ...active.map(s => s.daysToExpiry ?? 0));
+        return Math.max(0, Math.min(...active.map(s => s.daysToExpiry ?? 0)));
       }
     }
     return config.daysToExpiry || 0;
