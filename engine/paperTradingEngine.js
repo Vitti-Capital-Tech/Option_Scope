@@ -425,20 +425,35 @@ async function startSingleAccountEngine(account) {
 
   // ── Product + expiry management ───────────────────────────────────────
 
-  // Min days-to-expiry that drives account-global expiry auto-selection. For
-  // strategy_version >= 2 (per-window DTE, migration 019) the engine still trades ONE
-  // expiry, so it rolls to the NEAREST expiry that satisfies the SMALLEST (min)
-  // days_to_expiry across active windows — so the global expiry advances as soon as the
-  // nearest-eligible window allows (e.g. windows 1:DTE 1, 2:DTE 2 → expiry follows DTE 1,
-  // NOT the farther DTE 2). Each window then guards its OWN entries with its own value
-  // (a window whose DTE the current expiry doesn't meet simply doesn't enter). v1 (live)
-  // uses the single account-level config value, unchanged.
+  // Days-to-expiry that drives account-global expiry auto-selection.
+  //  • Paper (strategy_version >= 2, per-window DTE, migration 019): the traded expiry
+  //    FOLLOWS the schedule window that is live RIGHT NOW, as (current date + that window's
+  //    daysToExpiry). So a window with DTE 0 trades the current-day expiry, DTE 1 the next
+  //    day's, etc., and the expiry rolls as the active window changes through the day and as
+  //    the calendar advances. If several windows overlap `now`, the SMALLEST DTE wins
+  //    (nearest expiry). In an uncovered gap the most-recently-ended window carries forward
+  //    (mirrors getActiveSchedule). No active windows → base config value.
+  //  • Live (v1): unchanged — the single account-level daysToExpiry (feature is paper-only).
   function expirySelectionMinDte() {
     if (config.strategyVersion >= 2) {
-      const active = schedules.filter(s => s.isActive);
-      if (active.length > 0) {
-        return Math.max(0, Math.min(...active.map(s => s.daysToExpiry ?? 0)));
+      const now = new Date();
+      const istMin = (now.getUTCHours() * 60 + now.getUTCMinutes() + 330) % 1440;
+      const inWindow = [];
+      let mostRecent = null, minSinceEnd = Infinity;
+      for (const s of schedules) {
+        if (!s.isActive) continue;
+        const [sh, sm] = s.startTime.split(':').map(Number);
+        const [eh, em] = s.endTime.split(':').map(Number);
+        const startMin = sh * 60 + sm, endMin = eh * 60 + em;
+        const inWin = startMin > endMin
+          ? (istMin >= startMin || istMin < endMin)
+          : (istMin >= startMin && istMin < endMin);
+        if (inWin) { inWindow.push(s.daysToExpiry ?? 0); continue; }
+        const sinceEnd = (istMin - endMin + 1440) % 1440;
+        if (sinceEnd < minSinceEnd) { minSinceEnd = sinceEnd; mostRecent = s; }
       }
+      if (inWindow.length > 0) return Math.max(0, Math.min(...inWindow));
+      if (mostRecent) return Math.max(0, mostRecent.daysToExpiry ?? 0);
     }
     return config.daysToExpiry || 0;
   }
@@ -450,24 +465,32 @@ async function startSingleAccountEngine(account) {
       expiries = getExpiries(prods);
 
       const minDte = expirySelectionMinDte();
-      const currentDaysRemaining = config.expiry ? (new Date(config.expiry).getTime() - Date.now()) / (24 * 60 * 60 * 1000) : 0;
-      const isExpiryStale = config.expiry && currentDaysRemaining < minDte;
-
-      if (expiries.length && (!config.expiry || !expiries.includes(config.expiry) || isExpiryStale)) {
-        let selectedExpiry = null;
+      if (expiries.length) {
+        // Target = nearest available expiry at least `minDte` days out (≈ current date +
+        // minDte for daily expiries); nearest overall if none qualifies.
+        let target = null;
         for (const exp of expiries) {
           const daysRemaining = (new Date(exp).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
-          if (daysRemaining >= minDte) {
-            selectedExpiry = exp;
-            break;
-          }
+          if (daysRemaining >= minDte) { target = exp; break; }
         }
-        if (!selectedExpiry) {
-          selectedExpiry = expiries[0];
+        if (!target) target = expiries[0];
+
+        // Paper (v2): the expiry FOLLOWS the active window, so re-select whenever the target
+        // differs — it must roll BOTH forward (to a farther window's DTE) AND back (to a
+        // nearer one) as the active window changes. Live (v1): only auto-roll when the
+        // current expiry is missing / expired / stale (unchanged — never rolls backward).
+        let shouldSwitch;
+        if (config.strategyVersion >= 2) {
+          shouldSwitch = !config.expiry || !expiries.includes(config.expiry) || config.expiry !== target;
+        } else {
+          const currentDaysRemaining = config.expiry ? (new Date(config.expiry).getTime() - Date.now()) / (24 * 60 * 60 * 1000) : 0;
+          const isExpiryStale = config.expiry && currentDaysRemaining < minDte;
+          shouldSwitch = !config.expiry || !expiries.includes(config.expiry) || isExpiryStale;
         }
-        if (selectedExpiry !== config.expiry) {
-          config.expiry = selectedExpiry;
-          log(`[${accountState.name}] Expiry auto-selected: ${config.expiry}`);
+
+        if (shouldSwitch && target !== config.expiry) {
+          config.expiry = target;
+          log(`[${accountState.name}] Expiry auto-selected: ${config.expiry} (min dte ${minDte})`);
           // Persist the auto-selected expiry back to Supabase
           if (configDbId) {
             await supabase.from('paper_trading_config').upsert({
@@ -479,6 +502,23 @@ async function startSingleAccountEngine(account) {
         }
       }
     } catch (e) { logError('Product refresh error', e); }
+  }
+
+  // Re-select the account-global expiry (per active window / DTE) and re-subscribe the WS
+  // if the option chain changed. Shared by the periodic product refresh AND the per-cycle
+  // active-window check, so a DTE edit or a window boundary rolls the expiry in ~realtime
+  // instead of waiting for the 5-min product timer. `expirySyncing` guards against
+  // overlapping runs (the check fires fire-and-forget from the 1s eval loop).
+  let expirySyncing = false;
+  async function syncExpirySubscription() {
+    await refreshProducts();
+    const newMeta = buildSymbolMeta(products, config.expiry, config.underlying, positions);
+    const newSymbols = Object.keys(newMeta).sort().join(',');
+    const oldSymbols = Object.keys(symbolMeta).sort().join(',');
+    if (newSymbols !== oldSymbols) {
+      symbolMeta = newMeta;
+      startWebSocket();
+    }
   }
 
   // ── Spot price polling ────────────────────────────────────────────────
@@ -3385,6 +3425,28 @@ async function startSingleAccountEngine(account) {
   // Main evaluation loop — every 1 second (exits run every second, entries run at minute boundaries)
   const evalTimer = setInterval(async () => {
     try {
+      // Per-window expiry (paper only): the traded expiry follows the ACTIVE window as
+      // (current date + its DTE). Roll + re-subscribe the moment that target changes — a
+      // DTE edit or a window boundary crossed — so it takes effect in ~1s instead of on the
+      // 5-min product timer. Cheap check on the cached expiry list; the actual refresh +
+      // WS re-subscribe (syncExpirySubscription) fires ONLY when the target genuinely
+      // differs, and `expirySyncing` prevents overlapping runs. Live (v1) is untouched.
+      if (config.strategyVersion >= 2 && expiries.length && !expirySyncing) {
+        const dte = expirySelectionMinDte();
+        let target = null;
+        for (const exp of expiries) {
+          if ((new Date(exp).getTime() - Date.now()) / (24 * 60 * 60 * 1000) >= dte) { target = exp; break; }
+        }
+        if (!target) target = expiries[0];
+        if (target !== config.expiry) {
+          expirySyncing = true;
+          log(`[${accountState.name}] Active-window expiry target → ${target} (min dte ${dte}); re-syncing.`);
+          syncExpirySubscription()
+            .catch(e => logError(`[${accountState.name}] expiry re-sync failed:`, e))
+            .finally(() => { expirySyncing = false; });
+        }
+      }
+
       if (!spotPrice || !config.expiry) return;
 
       const now = Date.now();
@@ -3413,15 +3475,7 @@ async function startSingleAccountEngine(account) {
   // Product refresh — every 5 minutes
   const productTimer = setInterval(async () => {
     try {
-      await refreshProducts();
-      // Rebuild symbol meta and restart WS if needed
-      const newMeta = buildSymbolMeta(products, config.expiry, config.underlying, positions);
-      const newSymbols = Object.keys(newMeta).sort().join(',');
-      const oldSymbols = Object.keys(symbolMeta).sort().join(',');
-      if (newSymbols !== oldSymbols) {
-        symbolMeta = newMeta;
-        startWebSocket();
-      }
+      await syncExpirySubscription();
     } catch (e) {
       logError(`[${accountState.name}] Error in productTimer:`, e);
     }
