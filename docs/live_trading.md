@@ -279,9 +279,21 @@ Two mechanisms run together — **resting profit exits** (engine-detected) and
     (the fractional bookkeeping still advances every cycle, like paper) and one contract is
     sold only when the rounded count actually drops; no order is sent on cycles that don't
     cross a whole contract. This keeps the exchange position exactly `= round(lotSize/base)`,
-    which is what every long-close path (`longContracts`) also uses, so they reconcile.
-    A position too small for a 10% step to ever reach half a contract (≈ ≤4 contracts for a
-    50% floor) simply doesn't scale — it is never over-closed.
+    which is what every **full** long-close path (`longContracts`) also uses, so they
+    reconcile. A position too small for a 10% step to ever reach half a contract (≈ ≤4
+    contracts for a 50% floor) simply doesn't scale — it is never over-closed.
+  - **Same sizing on the other INCREMENTAL exits.** The long laddered exit (`${id}-LEX-…`,
+    the active-model bid-cross ladder) and the hedge-overlay drain (`${id}-HDX-…`) sell the
+    long in fractional slices too, so they use the **same** rounded-count delta —
+    `round(lotBefore/base) − round(lotAfter/base)`, sent only when `≥ 1`. They previously
+    sized the order with `longContracts(sliceLot)`, whose `Math.max(1, …)` floor sold a whole
+    contract for **every** sub-contract slice (e.g. a 10-slice ladder on a 5-contract
+    position = 0.5 contract/slice → 1 contract each → 10 sold vs 5 held), over-closing and
+    drifting the book out of sync with the exchange (later surfacing as
+    `no_position_for_reduce_only`). The deltas telescope to exactly the contracts entry
+    bought. Note `longContracts`' `Math.max(1, …)` floor is still correct for **one-shot
+    full** closes (manual exit, spot-cross catch-all, short buy-back), where the rounded full
+    lot is the right size — the floor only mis-sized **incremental** slices.
 - **Risk exit:** the brackets close the whole spread at the exit level exchange-side.
   The engine ALSO runs a redundant spot-cross / expiry catch-all (cancel resting +
   market-close + book `${id}`) for when it is up — reduce-only prevents double-close.
@@ -643,7 +655,7 @@ bookkeeping.
 - **Exit Reason (live Order History).** Delta has no native exit-reason field, so it's derived
   per order from the **bracket stop type** (`stop_order_type` → Take Profit / Stop Loss) and
   the engine's **`client_order_id` tag**: `SEX` → Short Leg Exit, `PEX` → Partial Exit,
-  `LE/LEX` → Long Leg Exit, `MX*` → Manual Exit, `MLC` → Manual Leg Close, `CX` → Manual Close.
+  `LE/LEX` → Long Leg Exit, `HDX` → Hedge Drain, `MX*` → Manual Exit, `MLC` → Manual Leg Close, `CX` → Manual Close.
   The strategy exit tag now carries the reason code — `${id}-XB|XS-<ATM|ITM|OTM|EXP>` from
   `t.exitReason` — and Close All uses a distinct `${id}-CAXB|CAXS` tag, so those render
   precisely (`Exit @ ATM/ITM/OTM`, `Close All`); opening legs show "—". (The engine tag change

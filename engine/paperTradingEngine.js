@@ -2220,12 +2220,27 @@ async function startSingleAccountEngine(account) {
             if (longExitSlices.length > 0) {
               pos.buyLeg.longExitStage = stage;
 
-              // LIVE: sell the closed long lot (reduce_only) at the bid.
-              await live.closeLeg({
-                symbol: pos.buyLeg.symbol, side: 'sell',
-                contracts: longContracts(pos.buyLeg, cycleExitLot),
-                price: exitPrice, tag: `${pos.id}-LEX-${stage}`,
-              });
+              // LIVE: sell the closed long lot (reduce_only) at the bid. Delta trades WHOLE
+              // contracts, so size by the change in the ROUNDED contract count this cycle —
+              // round(lotBefore/base) − round(lotAfter/base) — NOT by rounding this cycle's
+              // fractional slice(s) independently. `longContracts(cycleExitLot)` has a
+              // Math.max(1,…) floor that sold a whole contract for every sub-contract slice
+              // (e.g. a 10-slice ladder on a 5-contract position = 0.5 contract/slice → 1
+              // contract each → 10 sold vs 5 held → over-close + `no_position_for_reduce_only`
+              // on the drift). Same rounded-count basis the partial scale-down uses; the
+              // fractional book advances every cycle and a contract is sent only when the
+              // rounded count actually drops (no order when it doesn't). No-op for paper.
+              const exitBase = pos.buyLeg.originalLotSize || pos.buyLeg.lotSize || 1;
+              const lotBefore = Number((pos.buyLeg.lotSize + cycleExitLot).toFixed(4));
+              const contractsToSell = Math.max(0,
+                Math.round(lotBefore / exitBase) - Math.round(pos.buyLeg.lotSize / exitBase));
+              if (contractsToSell >= 1) {
+                await live.closeLeg({
+                  symbol: pos.buyLeg.symbol, side: 'sell',
+                  contracts: contractsToSell,
+                  price: exitPrice, tag: `${pos.id}-LEX-${stage}`,
+                });
+              }
 
               try {
                 await supabase.from('trade_history').upsert(longExitSlices, { onConflict: 'trade_id', ignoreDuplicates: true });
@@ -2405,8 +2420,19 @@ async function startSingleAccountEngine(account) {
         lastDbWrite = Date.now();
 
         // LIVE (armed): reduce-only sell the drained contracts (no-op for paper/unarmed).
+        // Size by the change in the ROUNDED contract count — round(before/base) −
+        // round(after/base) — like the partial scale-down and long ladder. Entry bought
+        // round(buyQty) whole contracts, but each drain slice is a fractional buyQty/N, so
+        // `longContracts(sellQty)` (Math.max(1,…)) sold a whole contract for every
+        // sub-contract slice → over-drained the overlay and drifted vs the exchange. The
+        // rounded-count delta keeps Delta == round(lot/base) and telescopes to exactly what
+        // entry bought; no order is sent on a cycle where the rounded count doesn't drop.
         if (accountState.mode === 'live' && accountState.live_enabled) {
-          await live.closeLeg({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: longContracts(pos.buyLeg, sellQty), price: exitPx, tag: `${pos.id}-HDX` });
+          const contractsToSell = Math.max(0,
+            Math.round(currentQty / base) - Math.round(newLot / base));
+          if (contractsToSell >= 1) {
+            await live.closeLeg({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: contractsToSell, price: exitPx, tag: `${pos.id}-HDX` });
+          }
         }
         try {
           await supabase.from('trade_history').upsert([{
