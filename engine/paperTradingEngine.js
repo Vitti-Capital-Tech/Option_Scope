@@ -3107,9 +3107,10 @@ async function startSingleAccountEngine(account) {
     // per symbol, so we can cancel the existing bracket before re-posting. Only stop/bracket
     // orders are collected — the resting short buy-back (-SEX) and ladder (-LE) are plain
     // limit orders and must NOT be cancelled here.
-    let pidBySymbol = {}, bracketOrdersBySymbol = {};
+    let pidBySymbol = {}, bracketOrdersBySymbol = {}, livePosOk = false;
     if (accountState.live_enabled && !live.dryRun) {
       const [livePos, liveOrders] = await Promise.all([live.positions(), live.orders()]);
+      livePosOk = livePos != null; // fetch succeeded → the snapshot can be trusted for "is this leg open?"
       if (livePos != null) for (const p of livePos) pidBySymbol[p.product_symbol] = p.product_id;
       if (Array.isArray(liveOrders)) {
         for (const o of liveOrders) {
@@ -3123,14 +3124,44 @@ async function startSingleAccountEngine(account) {
     }
 
     // Cancel the leg's existing bracket order(s), then POST a fresh bracket at newLevel.
+    // Two failure modes are handled so a risk exit is NEVER silently left unprotected:
+    //   1. Leg not open on Delta → nothing to protect; skip quietly (reconcile cleans up).
+    //   2. Bracket would fire immediately (level already breached) → close the leg NOW
+    //      with a reduce-only market order — the real protective exit.
     const moveBracket = async (pos, symbol, side, newLevel) => {
+      const isTp = side === 'tp';
+      const tag = `${pos.id}-${isTp ? 'TP' : 'SL'}-resync`;
+
+      // (1) Leg already closed on the exchange — only trust this when the positions
+      // fetch actually succeeded, else an API blip would wrongly skip a real sync.
+      if (livePosOk && pidBySymbol[symbol] == null) {
+        log(`[${accountState.name}] ⏭️ Bracket skip ${isTp ? 'TP' : 'SL'} ${symbol} [${tag}]: leg not open on Delta (already closed) — reconcile will clean up.`);
+        return { ok: false, notOpen: true };
+      }
+
       for (const bo of (bracketOrdersBySymbol[symbol] || [])) {
         if (bo.id != null) await live.cancelStop(bo);
       }
-      return live.changePositionBracket({
-        productId: pidBySymbol[symbol], symbol, side, stopPrice: newLevel,
-        tag: `${pos.id}-${side === 'tp' ? 'TP' : 'SL'}-resync`,
+      const r = await live.changePositionBracket({
+        productId: pidBySymbol[symbol], symbol, side, stopPrice: newLevel, tag,
       });
+
+      // (2) Level already breached → Delta won't rest a bracket that triggers instantly.
+      // The exit is due NOW: market-close the leg (reduce-only) so it isn't left exposed.
+      if (!r.ok && r.code === 'immediate_execution') {
+        const closeSide = isTp ? 'sell' : 'buy'; // sell to close the long, buy to close the short
+        const contracts = isTp ? longContracts(pos.buyLeg) : shortContracts(pos.sellQty);
+        logWarn(`[${accountState.name}] ⚡ Bracket ${isTp ? 'TP' : 'SL'} ${symbol} would fire immediately (level ${newLevel} already breached) → protective MARKET close ${closeSide} ${contracts}x [${tag}]`);
+        const c = await live.closeSymbol({ symbol, side: closeSide, contracts, tag: `${pos.id}-${isTp ? 'TP' : 'SL'}-immed` });
+        const label = `${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''}`;
+        if (c.ok || c.dryRun || c.skipped) {
+          notifyTrade({ title: isTp ? '🎯 TAKE PROFIT (immediate)' : '🚨 STOP LOSS (immediate)', detail: `${label} · ${symbol} level already breached → market-closed` });
+        } else {
+          notifyLiveFailure({ account: accountState.name, context: `Protective market close FAILED (${closeSide} ${symbol}) after bracket immediate-execution — leg may still be OPEN and UNPROTECTED`, error: { message: c.error }, extra: `[${tag}]` });
+        }
+        return { ok: false, immediateClosed: !!(c.ok || c.dryRun || c.skipped) };
+      }
+      return r;
     };
 
     for (const { pos, newLevel, needLong, needShort } of drift) {

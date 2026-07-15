@@ -412,9 +412,23 @@ export function createLiveExecutor(getCtx) {
         log(`[${accountName}] ✅ LIVE bracket set: ${summary}`);
         return { ok: true, res };
       } catch (e) {
+        const msg = String(e.message || '');
+        // Two Delta rejections are EXPECTED here and are handled by the caller
+        // (syncExitBrackets), so they must NOT raise the generic "unprotected" alarm:
+        //   • no_open_position    → the leg is already closed on Delta; nothing to protect.
+        //                           reconcileOrphans books + removes it within ~90s.
+        //   • *immediate_execution → the trigger level is already breached; a resting
+        //                           bracket can't be placed, so the caller market-closes
+        //                           the leg instead (the real protective exit).
+        // Any OTHER error is genuinely unexpected → keep alarming (exit truly unprotected).
+        const code = /no_open_position/i.test(msg) ? 'no_open_position'
+          : /immediate_execution/i.test(msg) ? 'immediate_execution'
+          : 'other';
         logError(`[${accountName}] ✖ LIVE bracket set FAILED: ${summary}: ${e.message}`);
-        notifyLiveFailure({ account: accountName, context: `Exit bracket (${String(side).toUpperCase()}) set FAILED on ${symbol} — risk exit may be unprotected`, error: e, extra: `[${tag}]` });
-        return { ok: false, error: e.message };
+        if (code === 'other') {
+          notifyLiveFailure({ account: accountName, context: `Exit bracket (${String(side).toUpperCase()}) set FAILED on ${symbol} — risk exit may be unprotected`, error: e, extra: `[${tag}]` });
+        }
+        return { ok: false, error: e.message, code };
       }
     },
 

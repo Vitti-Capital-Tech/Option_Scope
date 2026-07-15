@@ -192,7 +192,12 @@ add it to a group), then read the chat id from
 - Order **send** rejected (entry or exit leg) — `submit`
 - Reduce-only **close** failed (unwind / orphan close) — leg may still be open
 - Reduce-only **stop** placement failed — exit stop not resting
-- Exit **bracket** (TP/SL) set failed — risk exit may be unprotected
+- Exit **bracket** (TP/SL) set failed — risk exit may be unprotected. Fires **only for
+  unexpected errors**: the two expected resync rejections (`no_open_position`,
+  `bracket_order_immediate_execution`) are handled and no longer alarm (see
+  [Resync failure fallbacks](#resync-failure-fallbacks))
+- **Protective market close failed** after a bracket would have fired immediately — the
+  leg may still be open and unprotected
 - **Entry aborted** after the chase — position unwound, account left flat
 - **Orphan reconcile** failed — engine/exchange state may be out of sync
 - Armed live but **no Delta credentials** — orders cannot be placed
@@ -336,6 +341,28 @@ points), so the spread is protected even if the engine is down:
 > price** (`shortExitPrice` → `editOrder`) on a base-config change. On **startup**,
 > `syncExitBrackets` runs too (idempotent) — legs already at the right level are skipped, so
 > it only corrects exit-level drift that happened while the engine was down.
+
+##### Resync failure fallbacks
+
+`POST /v2/orders/bracket` can reject a resync in two ways that are **not** true "unprotected
+exit" failures — each is handled so a risk exit is never silently left open, and neither
+raises the generic bracket alarm:
+
+- **`no_open_position`** — the leg is **already closed** on Delta (its bracket fired, or it
+  was closed manually/externally) while the engine still books it. There is nothing to
+  protect. Before posting, `syncExitBrackets` checks the live-positions snapshot (**only when
+  that fetch succeeded**, so an API blip can't wrongly skip a real sync) and, if the leg isn't
+  open, **skips the bracket quietly**. `reconcileOrphans` books the exit and removes the
+  position within ~90s. `changePositionBracket` also suppresses the alarm on this code for the
+  fetch-failed path.
+- **`bracket_order_immediate_execution`** — the position **is** open, but the exit level is
+  **already breached** at the current spot, so Delta refuses to rest a bracket that would fire
+  instantly. The exit is effectively **due now**, so the engine **market-closes the leg
+  immediately** (`live.closeSymbol` → reduce-only IOC market; `sell` to close a long TP, `buy`
+  to close a short SL; contracts from `longContracts`/`shortContracts`) and notifies it as an
+  **immediate TP/SL**. Only if that protective close itself fails is an alarm raised — that is
+  the genuinely unprotected case. `brkLevel` is **not** latched, so the closing leg reconciles
+  cleanly.
 
 - **Long buy** → `bracket_take_profit_price = exitLevel`
 - **Short sell** → `bracket_stop_loss_price = exitLevel`
