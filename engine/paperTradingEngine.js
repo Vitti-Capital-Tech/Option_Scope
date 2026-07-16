@@ -883,6 +883,98 @@ async function startSingleAccountEngine(account) {
   // Delta auto-cancels a bracket when its position closes, so they need no manual
   // cancellation here — closing a leg (resting fill or market close) clears it.
 
+  // Symbols currently mid-arm in armMissingBrackets, so overlapping reconcile sweeps
+  // (positionsTimer / balanceTimer / fast-reconcile all call reconcileOrphans) don't
+  // double-place a bracket on the same leg before Delta's order list reflects the first.
+  const armingSymbols = new Set();
+
+  // Safety net (armed real): a leg that is OPEN on Delta but has NO resting protective
+  // bracket/stop is UNPROTECTED — e.g. a position pushed by an older bug before its
+  // TP/SL was attached, or a bracket that got cancelled/lost. Re-arm it from the current
+  // effective exit level, choosing by side: long leg → TP, short leg → SL. Detection is
+  // against Delta's ACTUAL resting orders (not the in-memory brkLevel), so it catches the
+  // "pushed without TP/SL" case the brkLevel-based syncExitBrackets misses, and is
+  // naturally idempotent (the next sweep sees the freshly-placed bracket and skips).
+  //   • Hedge overlays are EXCLUDED — they are long-only and engine-drained by design
+  //     (no bracket; see the hedge entry path), so they must never be auto-bracketed.
+  //   • Positions younger than 60s are skipped so this never races the entry flow /
+  //     Delta order-list propagation for a leg whose bracket is still settling.
+  //   • If the trigger level is already breached, Delta won't rest a bracket
+  //     (immediate_execution) → protective reduce-only MARKET close instead.
+  async function armMissingBrackets(livePos, liveOrders, sizeBySymbol) {
+    const activeSchedule = getActiveSchedule();
+    const effExit = {
+      exitType: activeSchedule?.exitType ?? config.exitType,
+      exitPoints: activeSchedule?.exitPoints ?? config.exitPoints,
+    };
+    const pidBySymbol = {};
+    for (const p of livePos) pidBySymbol[p.product_symbol] = p.product_id;
+    // Symbols that already carry a resting protective bracket/stop on Delta (same
+    // detection as syncExitBrackets — excludes plain -SEX / -LE limit orders).
+    const bracketBySymbol = {};
+    if (Array.isArray(liveOrders)) {
+      for (const o of liveOrders) {
+        const isBracket = !!(o.bracket_order || o.stop_order_type
+          || o.bracket_stop_loss_price != null || o.bracket_take_profit_price != null);
+        if (isBracket && o.product_symbol) bracketBySymbol[o.product_symbol] = true;
+      }
+    }
+
+    const armLeg = async (pos, symbol, side, level) => {
+      if (armingSymbols.has(symbol)) return; // another sweep is already arming this leg
+      armingSymbols.add(symbol);
+      const isTp = side === 'tp';
+      const label = `${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''}`;
+      const tag = `${pos.id}-${isTp ? 'TP' : 'SL'}-armfix`;
+      try {
+        logWarn(`[${accountState.name}] 🛡️ Unprotected ${isTp ? 'long TP' : 'short SL'} on Delta: ${symbol} (${label}) has no resting bracket → arming @ index ${level}.`);
+        const r = await live.changePositionBracket({ productId: pidBySymbol[symbol], symbol, side, stopPrice: level, tag });
+        if (r.ok && !r.skipped && !r.dryRun) {
+          if (isTp) pos.buyLeg = { ...pos.buyLeg, brkLevel: level };
+          else pos.sellLeg = { ...pos.sellLeg, brkLevel: level };
+          await supabase.from('active_positions').update({
+            buy_leg: JSON.stringify(pos.buyLeg), sell_leg: JSON.stringify(pos.sellLeg),
+          }).eq('id', pos.id);
+          notifyTrade({ title: isTp ? '🛡️ Long TP re-armed' : '🛡️ Short SL re-armed', detail: `${label} · ${symbol} was UNPROTECTED on Delta → bracket placed @ index ${level}` });
+        } else if (!r.ok && r.code === 'immediate_execution') {
+          // Level already breached → the exit is due now; market-close reduce-only.
+          const closeSide = isTp ? 'sell' : 'buy';
+          const contracts = isTp ? longContracts(pos.buyLeg) : shortContracts(pos.sellQty);
+          logWarn(`[${accountState.name}] ⚡ Unprotected ${isTp ? 'TP' : 'SL'} ${symbol} level ${level} already breached → protective MARKET close ${closeSide} ${contracts}x [${tag}]`);
+          const c = await live.closeSymbol({ symbol, side: closeSide, contracts, tag: `${pos.id}-${isTp ? 'TP' : 'SL'}-armimmed` });
+          if (c.ok || c.dryRun || c.skipped || c.alreadyClosed) {
+            notifyTrade({ title: isTp ? '🎯 TAKE PROFIT (immediate)' : '🚨 STOP LOSS (immediate)', detail: `${label} · ${symbol} unprotected & level breached → market-closed` });
+          } else {
+            notifyLiveFailure({ account: accountState.name, context: `Protective market close FAILED (${closeSide} ${symbol}) for unprotected leg — may still be OPEN and UNPROTECTED`, error: { message: c.error }, extra: `[${tag}]` });
+          }
+        }
+        // 'no_open_position' / 'other' → changePositionBracket already logs/alarms.
+      } catch (e) {
+        logError(`[${accountState.name}] armMissingBrackets failed for ${pos.id} (${symbol}):`, e);
+      } finally {
+        armingSymbols.delete(symbol);
+      }
+    };
+
+    const now = Date.now();
+    for (const pos of [...positions]) {
+      if (pos.underlying !== config.underlying) continue;
+      if (pos.buyLeg?.isHedge) continue; // engine-drained; never auto-bracket a hedge
+      if (now - new Date(pos.entryTime).getTime() < 60000) continue; // let entry settle
+      const level = computeIndexTriggerLevel(pos.type, pos.buyLeg.strike, effExit);
+      const longSize = Math.abs(sizeBySymbol[pos.buyLeg?.symbol] ?? 0);
+      const shortSize = Math.abs(sizeBySymbol[pos.sellLeg?.symbol] ?? 0);
+      // Long leg open on Delta but no resting bracket → arm its TP.
+      if ((pos.buyLeg?.lotSize || 0) > 0 && longSize > 0 && pos.buyLeg?.symbol && !bracketBySymbol[pos.buyLeg.symbol]) {
+        await armLeg(pos, pos.buyLeg.symbol, 'tp', level);
+      }
+      // Short leg open on Delta but no resting bracket → arm its SL.
+      if (pos.sellQty > 0 && shortSize > 0 && pos.sellLeg?.symbol && !bracketBySymbol[pos.sellLeg.symbol]) {
+        await armLeg(pos, pos.sellLeg.symbol, 'sl', level);
+      }
+    }
+  }
+
   // Orphan reconcile (armed real): a position the engine still holds but Delta no
   // longer reports as open was closed exchange-side — a TP/SL bracket fired, or a
   // manual/external close. Book a full exit at current mark + delete so the books,
@@ -919,6 +1011,10 @@ async function startSingleAccountEngine(account) {
         return;
       }
     }
+
+    // Before booking absent legs, re-arm any leg that is still OPEN on Delta but has lost
+    // (or never got) its protective bracket — reuses this pass's snapshot, no extra fetch.
+    await armMissingBrackets(livePos, liveOrders, sizeBySymbol);
 
     const now = Date.now();
     for (const pos of [...positions]) {
