@@ -34,7 +34,7 @@ export default function LoginCard({ authEmail, setAuthEmail, authError, isAuthen
             <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)', letterSpacing: '0.04em' }}>EMAIL ADDRESS</label>
             <CustomInput
               id="auth-email"
-              type="email"
+              type="text"
               value={authEmail}
               onChange={e => setAuthEmail(e.target.value)}
               placeholder="you@example.com"

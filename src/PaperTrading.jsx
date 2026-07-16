@@ -436,12 +436,20 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     setAuthError('');
     setIsAuthenticating(true);
 
-    const email = authEmail.trim().toLowerCase();
-    if (!email) {
+    const rawInput = authEmail.trim().toLowerCase();
+    if (!rawInput) {
       setAuthError('Please enter a valid email address.');
       setIsAuthenticating(false);
       return;
     }
+
+    // Admin shortcut: typing the word "trade" (instead of an email) logs in as the
+    // designated admin account. That account's profiles row must have role='admin',
+    // and it must have been created through THIS flow (so its password matches the
+    // derived one below). Applies to both Paper and Live (same component).
+    const ADMIN_SHORTCUT = 'trade';
+    const ADMIN_SHORTCUT_EMAIL = 'admin@vitticapital.ai';
+    const email = rawInput === ADMIN_SHORTCUT ? ADMIN_SHORTCUT_EMAIL : rawInput;
 
     // Deterministically derive a secure password based on the email
     const cleanEmail = email.replace(/[^a-z0-9]/g, '');
