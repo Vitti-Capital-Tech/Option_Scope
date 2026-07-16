@@ -382,7 +382,12 @@ GRANT EXECUTE ON FUNCTION public.get_trade_stats(uuid, text) TO anon, authentica
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 7. ENGINE HEARTBEAT TABLE
 -- ─────────────────────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS public.engine_heartbeat (
+-- UNLOGGED: ephemeral liveness state re-upserted every ~30s per engine. Making it
+-- unlogged removes its WAL + autovacuum disk IO (migration 024); a crash just loses the
+-- row until the engine rewrites it. fillfactor 70 keeps repeated updates HOT (in-page).
+-- Read by the UI via polling (.select()), NOT Realtime — so it is not (and cannot be, as
+-- an unlogged table) part of the supabase_realtime publication.
+CREATE UNLOGGED TABLE IF NOT EXISTS public.engine_heartbeat (
     id TEXT PRIMARY KEY, -- e.g. 'paper_trading_<account_id>'
     last_heartbeat TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     status TEXT NOT NULL DEFAULT 'starting',
@@ -392,7 +397,7 @@ CREATE TABLE IF NOT EXISTS public.engine_heartbeat (
     ws_status TEXT,
     spot_price NUMERIC,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
+) WITH (fillfactor = 70);
 
 -- Enable RLS
 ALTER TABLE public.engine_heartbeat ENABLE ROW LEVEL SECURITY;

@@ -804,3 +804,24 @@ ALTER TABLE public.active_positions
   ADD COLUMN IF NOT EXISTS hedge_leg JSONB DEFAULT NULL;
 ALTER TABLE public.trade_history
   ADD COLUMN IF NOT EXISTS hedge_leg JSONB DEFAULT NULL;
+
+
+-- ─── 024_heartbeat_unlogged.sql ───
+-- engine_heartbeat is a tiny table re-upserted every ~30s per engine (liveness). Its
+-- last_heartbeat always changes, so it churns dead tuples and autovacuums ~every 1.5min
+-- all day — the dominant WAL/autovacuum disk-IO consumer. The data is ephemeral (engine
+-- rewrites within 30s of restart; UI marks offline after 120s), so make it UNLOGGED to
+-- drop its WAL + vacuum IO. Read by the UI via polling, not Realtime — drop from the
+-- publication first (unlogged tables can't be logically replicated). fillfactor 70 keeps
+-- repeated updates HOT. Reversible via ALTER TABLE ... SET LOGGED.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_publication_tables
+    WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'engine_heartbeat'
+  ) THEN
+    EXECUTE 'ALTER PUBLICATION supabase_realtime DROP TABLE public.engine_heartbeat';
+  END IF;
+END $$;
+ALTER TABLE public.engine_heartbeat SET UNLOGGED;
+ALTER TABLE public.engine_heartbeat SET (fillfactor = 70);
