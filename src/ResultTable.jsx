@@ -215,8 +215,20 @@ export default function ResultTable({
                   };
                 });
 
+                // ATM Edge (P&L) floors — only active alongside Dynamic ATM Scaling (the
+                // inputs live in that section). Drop spreads whose at-ATM P&L or ROI falls
+                // below the configured minimums. Rows without ATM data (P&L/ROI unknowable)
+                // are left in and shown as "—" rather than hidden on transient missing quotes.
+                const minAtmPnl = Number(config?.minAtmPnl) || 0;
+                const minAtmRoi = Number(config?.minAtmRoi) || 0;
+                const filteredResults = config?.atmRatioScaling
+                  ? processedResults.filter(r =>
+                    !r.hasAtmData || (r.atAtmPnl >= minAtmPnl && r.roi >= minAtmRoi)
+                  )
+                  : processedResults;
+
                 // Group results by buy strike
-                const groups = processedResults.reduce((acc, r) => {
+                const groups = filteredResults.reduce((acc, r) => {
                   const s = r.buyLeg.strike;
                   if (!acc[s]) acc[s] = [];
                   acc[s].push(r);

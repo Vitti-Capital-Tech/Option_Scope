@@ -15,6 +15,7 @@ This document explains **every** logic, condition, and mathematical formula in t
    - [ATM Ratio Scaling](#atm-ratio-scaling)
    - [$195K Short Value Portfolio Cap](#195k-short-value-portfolio-cap)
    - [At ATM P&L & Margin (ROI %)](#at-atm-pl--margin-roi-)
+   - [ATM Edge Floors (Min ATM P&L / Min ATM ROI)](#atm-edge-floors-min-atm-pl--min-atm-roi)
 6. [Quote Freshness & REST Backfill](#quote-freshness--rest-backfill)
 7. [Grouped Strikes & ROI Sorting](#grouped-strikes--roi-sorting)
 8. [Data Flow Diagram](#data-flow-diagram)
@@ -128,6 +129,7 @@ When the **ATM Ratio Entry** checkbox (`atmRatioScaling`) is enabled in the conf
 * **Golden Highlighting**: If the scaled ratio deviates from the natural ratio, the ratio indicator in the table dynamically shifts and is highlighted in **golden text** (`var(--accent)`, `#f0b90b`) to visually emphasize that ATM ratio scaling is active for that candidate.
 * **Portfolio Cap Interactivity**: The adjusted ratio continues to interact with the **$195K Short Value Portfolio Cap**, meaning if the scaled short value exceeds $195,000, both the buy leg lot size and final sell quantity are scaled down proportionally.
 * **Legacy "Base/Extra" Toggle Deprecation**: The legacy, manual dollar-based "Base/Extra" toggle has been completely removed from both the scanner layout and computation logic. The automated ATM Ratio Scaling provides a much cleaner, streamlined approach to simulating ratio shifts.
+* **Reveals the ATM Edge Floors**: Enabling the checkbox also surfaces two extra threshold inputs — **Min ATM P&L** (`minAtmPnl`) and **Min ATM ROI** (`minAtmRoi`) — right below the Call/Put Scaling fields. These are display-time floors on the projected at-ATM edge; see [ATM Edge Floors](#atm-edge-floors-min-atm-pl--min-atm-roi). They apply only while ATM Scaling is enabled.
 
 ### $195K Short Value Portfolio Cap
 
@@ -171,6 +173,21 @@ To prevent empty cells (`—` or `$0.00`) when option chains are sparse (often t
   * **ETH**: Searches within a maximum tolerance of **$\pm 50$ points** from the target strike.
 * **Omission**: If no strike falls within these absolute point boundaries, the fallback returns `null`, and the corresponding spread's ATM P&L, Margin, and ROI% calculations are omitted (rendered as `—` in the UI).
 
+### ATM Edge Floors (Min ATM P&L / Min ATM ROI)
+
+Two threshold filters let you hide spreads whose **projected at-ATM edge** is too small. They act on the exact values shown in the **ATM Edge (P&L)** column — the `ATM PnL` and `ROI %` computed above.
+
+* **Gated behind Dynamic ATM Scaling**: The inputs live in the `atmRatioScaling` section (just below Call/Put Scaling), and the floors apply **only while that checkbox is enabled**. With ATM Scaling off, both floors are ignored entirely and every spread shows as before.
+* **Applied at display time, in `ResultTable` — not in `scanTickers`**: Unlike the [Spread Pair Validation](#spread-pair-validation) entry filters (which run inside the scanner), `ATM PnL` and `ROI` are derived from live ATM ticker data and are only computed in `ResultTable`. The floors therefore filter the processed rows right before they are grouped by buy strike, and re-evaluate live as ATM quotes move.
+
+| Filter | Config Key | Default | Criteria |
+|--------|-----------|---------|----------|
+| **Min ATM P&L** | `minAtmPnl` | `0` | Keep the row when $\text{ATM PnL} \ge \text{minAtmPnl}$ (USD) |
+| **Min ATM ROI** | `minAtmRoi` | `0` | Keep the row when $\text{ROI} \ge \text{minAtmRoi}$ (%) |
+
+* **Both must pass**: A spread is kept only when it clears **both** floors.
+* **Missing-ATM-data rows are kept**: If a row has no ATM data (P&L/ROI unknowable — shown as `—`), it is left visible rather than hidden, so a transient missing ATM quote does not flicker rows in and out.
+
 ---
 
 ## Quote Freshness & REST Backfill
@@ -208,7 +225,8 @@ flowchart TD
     G --> H["Apply Entry Filters (Strike Diff, IV Diff, Quote Freshness)"]
     H --> I["Calculate Delta-Neutral Ratio → ATM Scaling → Max Debit Filter"]
     I --> J["Apply 195k Short Value Cap (Scale Lot & Qty)"]
-    J --> K["Group by Buy Strike"]
+    J --> JF["Apply ATM Edge Floors — Min ATM P&L / ROI (only if ATM Scaling on)"]
+    JF --> K["Group by Buy Strike"]
     K --> L["Sort groups by Distance-to-ATM & sub-rows by ROI%"]
     L --> M["Update Results UI & Sync BroadcastChannel"]
 ```

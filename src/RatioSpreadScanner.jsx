@@ -52,6 +52,10 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
       maxNetPremium: 20,
       minLongDist: 500,
       maxSellQty: 10,
+      // ATM Edge (P&L) column floors — keep only spreads whose at-ATM P&L and ROI clear
+      // these minimums. Applied live in ResultTable against the ATM-priced P&L/ROI.
+      minAtmPnl: 0,
+      minAtmRoi: 0,
       atmRatioScaling: false,
       atmRatioPctCall: 50,
       atmRatioPctPut: 50
@@ -721,6 +725,18 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
                 step="0.25" prefix="1:" showStepper width={110}
                 value={config.maxSellQty}
                 onChange={e => updateConfig('maxSellQty', Number(e.target.value))}
+              />
+            </div>
+            <div key="minAtmPnl" className="form-group row-inline">
+              <label>Min ATM P&amp;L</label>
+              <CustomInput type="number" prefix="$" step="10" showStepper width={110} value={config.minAtmPnl ?? 0}
+                onChange={e => updateConfig('minAtmPnl', Number(e.target.value))}
+              />
+            </div>
+            <div key="minAtmRoi" className="form-group row-inline">
+              <label>Min ATM ROI</label>
+              <CustomInput type="number" suffix="%" step="1" showStepper width={110} value={config.minAtmRoi ?? 0}
+                onChange={e => updateConfig('minAtmRoi', Number(e.target.value))}
               />
             </div>
             <div key="atmRatioScaling" className="form-group row-inline" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
