@@ -936,16 +936,33 @@ async function startSingleAccountEngine(account) {
       if (pos.underlying !== config.underlying) continue;
       const shortSize = Math.abs(sizeBySymbol[pos.sellLeg?.symbol] ?? 0);
       const longSize = Math.abs(sizeBySymbol[pos.buyLeg?.symbol] ?? 0);
-      if (shortSize > 0 || longSize > 0) { pos._everOpenOnDelta = true; continue; } // still open
-      
+      const ageMs = now - new Date(pos.entryTime).getTime();
+      if (shortSize > 0 || longSize > 0) {
+        pos._everOpenOnDelta = true;
+        // Fix A — dangling short: the short leg is still open on Delta but its partner
+        // long is GONE. Not a valid strategy state (the long always protects the short),
+        // and it sits with an already-breached SL that keeps re-triggering the entry/
+        // resync failure loop (bracket_order_position_exists / immediate_execution).
+        // Flatten the lone short with a reduce-only MARKET close so the next cycle sees it
+        // flat and books it via the normal orphan path below. Latched + reduce-only → at
+        // most one closing order, and it can never over-sell. Age-guarded so a mid-fill
+        // entry (long fills before short) or a transient fetch blip isn't acted on.
+        const danglingShort = pos.sellQty > 0 && shortSize > 0 && longSize === 0;
+        if (danglingShort && ageMs > 90000 && !pos._danglingShortClosed) {
+          pos._danglingShortClosed = true;
+          logWarn(`[${accountState.name}] ⚠ Dangling short ${pos.sellLeg.symbol} (partner long ${pos.buyLeg.symbol} gone) → reduce-only market close to break the stuck loop.`);
+          await live.closeSymbol({ symbol: pos.sellLeg.symbol, side: 'buy', contracts: shortContracts(pos.sellQty), tag: `${pos.id}-DANGX` }).catch(() => {});
+        }
+        continue; // still open (or flatten just sent) — book on a later cycle once flat
+      }
+
       const hasLongOrder = hasOrderForSymbol[pos.buyLeg?.symbol] || false;
       const hasShortOrder = hasOrderForSymbol[pos.sellLeg?.symbol] || false;
-      
+
       // If the orders are not resting and the position is not open, it was cancelled/closed.
       // If it was cancelled before ever opening, we can clean it up immediately (isDeadEntry).
       const isDeadEntry = !pos._everOpenOnDelta && !hasLongOrder && (!pos.sellQty || !hasShortOrder);
 
-      const ageMs = now - new Date(pos.entryTime).getTime();
       if (!isDeadEntry) {
         // If never confirmed open on Delta (e.g. engine restarted after exits), clean up after 5 min
         if (!pos._everOpenOnDelta && ageMs < 300000) continue;
@@ -2618,6 +2635,30 @@ async function startSingleAccountEngine(account) {
       }
 
       if (!onlyExits && !paused && dayAllowsEntry) {
+        // Fix B — pre-entry symbol guard (live armed). Delta treats each option contract as
+        // ONE product, so if a position already exists on a candidate leg's symbol (e.g.
+        // another spread's long at the strike we want to short, or a stuck half-open leg),
+        // sending a bracketed order on it is rejected with bracket_order_position_exists —
+        // the entry aborts and churns the resting SL. Collect every symbol that currently
+        // holds a position and skip any candidate touching one, BEFORE placing the order.
+        // Source = actual Delta positions (authoritative) ∪ the engine's tracked book; on a
+        // positions-fetch failure fall back to the tracked book only so a transient blip
+        // doesn't block all entries (the tracked book still catches the common cases).
+        let heldSymbols = null;
+        if (liveArmed) {
+          heldSymbols = new Set();
+          const livePosNow = await live.positions();
+          if (livePosNow != null) {
+            for (const p of livePosNow) if (Number(p.size) !== 0) heldSymbols.add(p.product_symbol);
+          } else {
+            logWarn(`[${accountState.name}] Pre-entry guard: Delta positions fetch failed — using tracked book only this cycle.`);
+          }
+          for (const p of remaining) {
+            if (p.underlying !== underlying) continue;
+            if (p.buyLeg?.symbol && (p.buyLeg.lotSize || 0) > 0) heldSymbols.add(p.buyLeg.symbol);
+            if (p.sellLeg?.symbol && p.sellQty > 0) heldSymbols.add(p.sellLeg.symbol);
+          }
+        }
         for (const spread of uniqueTopSpreads) {
           // Live accounts need a valid per-position margin part to size safely.
           if (liveArmed && partMargin == null) continue;
@@ -2662,6 +2703,17 @@ async function startSingleAccountEngine(account) {
           }
           if (sellConflictPos) {
             logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Sell strike conflict with active/new position ${sellConflictPos.id} (${sellConflictPos.buyLeg.strike}/${sellConflictPos.sellLeg.strike})`);
+            continue;
+          }
+
+          // Fix B — symbol collision with an existing Delta/tracked position on EITHER leg
+          // (see heldSymbols above). Catches the cross-side case the strike checks miss —
+          // e.g. shorting a strike that another spread already holds LONG (same Delta
+          // product) → bracket_order_position_exists. Skip; the reconcile timer (Fix A)
+          // clears any stuck leg so the symbol frees up on its own.
+          if (heldSymbols && (heldSymbols.has(spread.buyLeg.symbol) || heldSymbols.has(spread.sellLeg.symbol))) {
+            const clash = heldSymbols.has(spread.sellLeg.symbol) ? spread.sellLeg.symbol : spread.buyLeg.symbol;
+            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: position already exists on ${clash} — would collide with an existing bracket/position on Delta (reconcile will clear any stuck leg).`);
             continue;
           }
 
@@ -2819,6 +2871,9 @@ async function startSingleAccountEngine(account) {
             margin: candidateMargin,
           };
           newEntries.push(newPos);
+          // Reserve this entry's symbols so a later candidate in the SAME cycle can't be
+          // sized onto a leg we just opened (Fix B — same-product collision).
+          if (heldSymbols) { heldSymbols.add(newPos.buyLeg.symbol); heldSymbols.add(newPos.sellLeg.symbol); }
         }
 
         // ── Hedge overlay entry (long-only, strategy_version >= 2) ────────────
@@ -3027,8 +3082,14 @@ async function startSingleAccountEngine(account) {
               },
             });
             if (!liveEntry.ok) {
+              // Distinguish a submit-time rejection (Delta refused the order — e.g. bracket
+              // conflict) from a genuine chase timeout (accepted but never fully filled), so
+              // the alert names the real cause instead of always saying "chase exhausted".
+              const failMode = liveEntry.rejected
+                ? `rejected by Delta at submit (${liveEntry.error})`
+                : 'could not fill (chase exhausted)';
               logError(`[${accountState.name}] LIVE entry aborted (${liveEntry.legFailed} leg: ${liveEntry.error}) — not persisting ${t.buyLeg.strike}/${t.sellLeg.strike}`);
-              notifyLiveFailure({ account: accountState.name, context: `Entry ABORTED — ${liveEntry.legFailed} leg could not fill (chase exhausted); position unwound, account left flat`, error: liveEntry.error, extra: `${t.type?.toUpperCase?.() || ''} ${t.buyLeg.strike}/${t.sellLeg.strike}` });
+              notifyLiveFailure({ account: accountState.name, context: `Entry ABORTED — ${liveEntry.legFailed} leg ${failMode}; position unwound, account left flat`, error: liveEntry.error, extra: `${t.type?.toUpperCase?.() || ''} ${t.buyLeg.strike}/${t.sellLeg.strike}` });
               continue;
             }
             // Remember the exchange bracket level on each leg so a later
@@ -3230,7 +3291,11 @@ async function startSingleAccountEngine(account) {
         logWarn(`[${accountState.name}] ⚡ Bracket ${isTp ? 'TP' : 'SL'} ${symbol} would fire immediately (level ${newLevel} already breached) → protective MARKET close ${closeSide} ${contracts}x [${tag}]`);
         const c = await live.closeSymbol({ symbol, side: closeSide, contracts, tag: `${pos.id}-${isTp ? 'TP' : 'SL'}-immed` });
         const label = `${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''}`;
-        if (c.ok || c.dryRun || c.skipped) {
+        if (c.alreadyClosed) {
+          // The leg was already closed on Delta (its bracket fired first) — the exit has
+          // effectively happened. Don't alarm; reconcileOrphans books it. (Fix D)
+          log(`[${accountState.name}] ℹ️ ${label} · ${symbol} already closed on Delta (bracket fired first) — reconcile will book it. [${pos.id}-${isTp ? 'TP' : 'SL'}-immed]`);
+        } else if (c.ok || c.dryRun || c.skipped) {
           notifyTrade({ title: isTp ? '🎯 TAKE PROFIT (immediate)' : '🚨 STOP LOSS (immediate)', detail: `${label} · ${symbol} level already breached → market-closed` });
         } else {
           notifyLiveFailure({ account: accountState.name, context: `Protective market close FAILED (${closeSide} ${symbol}) after bracket immediate-execution — leg may still be OPEN and UNPROTECTED`, error: { message: c.error }, extra: `[${tag}]` });
