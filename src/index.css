@@ -370,16 +370,6 @@ select:disabled {
   background: var(--bg);
 }
 
-.chart-header {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 8px 14px;
-  background: var(--bg2);
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
 .toggle-btn {
   background: var(--bg3);
   border: 1px solid var(--border);
@@ -416,12 +406,6 @@ select:disabled {
   font-family: 'Inter', sans-serif;
   font-size: 11px;
   color: var(--text-dim);
-}
-
-.chart-wrap {
-  flex: 1;
-  position: relative;
-  overflow: hidden;
 }
 
 .overlay {
@@ -2834,11 +2818,6 @@ body.light-theme .pt-live-badge {
     /* Ensure enough room for watchlist + chart on mobile */
     flex-shrink: 0;
     overflow: visible !important;
-  }
-
-  .chart-panel-container {
-    min-height: 400px !important;
-    height: 450px !important;
   }
 
   .watchlist-container {

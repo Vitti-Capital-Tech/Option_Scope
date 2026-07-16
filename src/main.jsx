@@ -1,15 +1,14 @@
 import { createRoot } from 'react-dom/client'
 import { useState, useEffect } from 'react'
 import './index.css'
-import App from './App.jsx'
 import RatioSpreadScanner from './RatioSpreadScanner.jsx'
 import PaperTrading from './PaperTrading.jsx'
 import { useTabSync } from './useTabSync.js'
 
 function Root() {
   const [page, setPage] = useState(() => {
-    const path = window.location.pathname.replace(/^\//, '') || 'charts';
-    return ['charts', 'scanner', 'trading', 'live'].includes(path) ? path : 'charts';
+    const path = window.location.pathname.replace(/^\//, '') || 'scanner';
+    return ['scanner', 'trading', 'live'].includes(path) ? path : 'scanner';
   });
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
 
@@ -27,12 +26,12 @@ function Root() {
   // Handle browser back/forward buttons
   useEffect(() => {
     const handlePopState = () => {
-      const path = window.location.pathname.replace(/^\//, '') || 'charts';
-      const validPages = ['charts', 'scanner', 'trading', 'live'];
+      const path = window.location.pathname.replace(/^\//, '') || 'scanner';
+      const validPages = ['scanner', 'trading', 'live'];
       if (validPages.includes(path)) {
         setPage(path);
       } else {
-        setPage('charts');
+        setPage('scanner');
       }
     };
     window.addEventListener('popstate', handlePopState);
@@ -52,9 +51,6 @@ function Root() {
 
   return (
     <>
-      <div style={{ display: page === 'charts' ? 'block' : 'none', height: '100%', width: '100%' }}>
-        <App onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} broadcast={broadcast} />
-      </div>
       <div style={{ display: page === 'scanner' ? 'block' : 'none', height: '100%', width: '100%' }}>
         <RatioSpreadScanner onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} broadcast={broadcast} />
       </div>

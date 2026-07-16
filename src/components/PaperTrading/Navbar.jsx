@@ -1,5 +1,5 @@
 import React from 'react';
-import { TrendingUp, BarChart3, Target, Columns, Radio, Sun, Moon } from 'lucide-react';
+import { TrendingUp, Target, Columns, Radio, Sun, Moon } from 'lucide-react';
 
 export default function Navbar({
   activeTab,
@@ -20,14 +20,6 @@ export default function Navbar({
         </div>
 
         <div className="nav-tabs-container">
-          <button
-            className={`nav-tab ${activeTab === 'charts' ? 'active' : ''}`}
-            onClick={() => onNavigate('charts')}
-          >
-            <span className="nav-tab-icon" aria-hidden="true">
-              <BarChart3 size={14} />
-            </span> <span className="nav-tab-text">Charts</span>
-          </button>
           <button
             className={`nav-tab ${activeTab === 'scanner' ? 'active' : ''}`}
             onClick={() => onNavigate('scanner')}
@@ -71,15 +63,6 @@ export default function Navbar({
       </nav>
 
       <div className="mobile-bottom-nav">
-        <button
-          className={`mobile-bottom-tab ${activeTab === 'charts' ? 'active' : ''}`}
-          onClick={() => onNavigate('charts')}
-        >
-          <span className="mobile-bottom-icon">
-            <BarChart3 size={18} />
-          </span>
-          <span className="mobile-bottom-text">Charts</span>
-        </button>
         <button
           className={`mobile-bottom-tab ${activeTab === 'scanner' ? 'active' : ''}`}
           onClick={() => onNavigate('scanner')}
