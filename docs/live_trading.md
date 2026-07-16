@@ -42,10 +42,14 @@ the testbed. Full mechanism:
 [paper_trading_explained.md → Strategy Versioning](./paper_trading_explained.md#strategy-versioning-paper-vs-live).
 
 > [!NOTE]
-> A filter that a v2 (paper) account has moved **per schedule window** — e.g. **Days to
-> Expiry** (migration `019`) — stays an **account-level Control Panel field** on a v1 (live)
-> account, and the per-window control is not shown there. Live keeps the account-level
-> value; only the experimental paper testbed sees the per-window version.
+> **Min Days to Expiry** (migration `019`) has been folded into the shared path: it is now
+> a **per schedule window** control for **all** accounts, paper AND live. The traded expiry
+> follows the window that is live right now (current date + that window's DTE) and rolls in
+> ~1s as the active window changes, so a live account's expiry can advance *and* roll back
+> to a nearer one. The old account-level Control Panel field is gone; migration `023`
+> backfills each live account's windows from its previous account-level value so existing
+> behaviour is preserved. Other per-window v2 experiments (hedge overlay migration `022`,
+> day-of-week entry gate) remain paper-only until similarly promoted.
 
 ## Credential storage & security model
 
@@ -190,15 +194,21 @@ add it to a group), then read the chat id from
 **What triggers an alert** (armed-real only — one shared chat):
 
 - Order **send** rejected (entry or exit leg) — `submit`
-- Reduce-only **close** failed (unwind / orphan close) — leg may still be open
+- Reduce-only **close** failed (unwind / orphan close) — leg may still be open.
+  **Suppressed** when Delta returns `no_position_for_reduce_only` (the leg is already closed — a
+  benign double-close race; see
+  [collision guard & stuck-leg recovery](#same-product-collision-guard--stuck-leg-recovery))
 - Reduce-only **stop** placement failed — exit stop not resting
 - Exit **bracket** (TP/SL) set failed — risk exit may be unprotected. Fires **only for
   unexpected errors**: the two expected resync rejections (`no_open_position`,
   `bracket_order_immediate_execution`) are handled and no longer alarm (see
   [Resync failure fallbacks](#resync-failure-fallbacks))
 - **Protective market close failed** after a bracket would have fired immediately — the
-  leg may still be open and unprotected
-- **Entry aborted** after the chase — position unwound, account left flat
+  leg may still be open and unprotected. Also **suppressed** on `no_position_for_reduce_only`
+  (already closed exchange-side — benign)
+- **Entry aborted** — position unwound, account left flat. The message names the cause:
+  *rejected by Delta at submit* (order refused, e.g. bracket conflict) vs *could not fill
+  (chase exhausted)* (accepted but unfilled) — see [Entry chase-fill](#entry-chase-fill)
 - **Orphan reconcile** failed — engine/exchange state may be out of sync
 - Armed live but **no Delta credentials** — orders cannot be placed
 
@@ -372,9 +382,11 @@ raises the generic bracket alarm:
   instantly. The exit is effectively **due now**, so the engine **market-closes the leg
   immediately** (`live.closeSymbol` → reduce-only IOC market; `sell` to close a long TP, `buy`
   to close a short SL; contracts from `longContracts`/`shortContracts`) and notifies it as an
-  **immediate TP/SL**. Only if that protective close itself fails is an alarm raised — that is
-  the genuinely unprotected case. `brkLevel` is **not** latched, so the closing leg reconciles
-  cleanly.
+  **immediate TP/SL**. Only if that protective close itself fails **for a real reason** is an
+  alarm raised — a `no_position_for_reduce_only` rejection means the leg was already closed
+  (benign) and is **not** alarmed (see
+  [collision guard & stuck-leg recovery](#same-product-collision-guard--stuck-leg-recovery)).
+  `brkLevel` is **not** latched, so the closing leg reconciles cleanly.
 
 - **Long buy** → `bracket_take_profit_price = exitLevel`
 - **Short sell** → `bracket_stop_loss_price = exitLevel`
@@ -587,6 +599,14 @@ the account is left flat (no manual reconciliation):
   then abort. `openSpread` returns `{ ok: false, legFailed }` and the engine skips the
   `active_positions` insert.
 
+> [!NOTE]
+> **Abort cause is named (submit rejection vs chase timeout).** The abort return carries a
+> `rejected` flag: `true` when Delta **refused the order outright** at submit (e.g.
+> `bracket_order_position_exists`, `bad_schema`), `false` when the order was **accepted but
+> never fully filled** after the chase. The Telegram alert reports the real cause —
+> *"… rejected by Delta at submit (<error>)"* vs *"… could not fill (chase exhausted)"* —
+> instead of always blaming the chase, so a rejection isn't mistaken for a slow/wide market.
+
 **Tuning** (env, armed-real only; defaults are conservative):
 
 | Var | Default | Meaning |
@@ -597,6 +617,51 @@ the account is left flat (no manual reconciliation):
 
 **Dry-run / paper / disarmed:** chase is skipped entirely — a single submit is
 assumed filled, so behaviour on every non-armed-real path is byte-for-byte unchanged.
+
+### Same-product collision guard & stuck-leg recovery
+
+Delta treats **each option contract as one product**: an account holds a single net position
+per symbol, and a bracket is a **position-level** construct. So two engine-logical legs on the
+same strike — e.g. one spread's **long** at 63000 and another spread's intended **short** at
+63000 — map to the **same** Delta product, and the engine's strike-based entry conflict checks
+(which compare like-side strikes) miss that cross-side overlap. When the engine sent the second
+leg as a **bracketed** order, Delta rejected it with **`bracket_order_position_exists`**, the
+all-or-nothing entry unwound the just-filled partner, and the churn disrupted the resting SL on
+the pre-existing leg. Because an aborted entry isn't persisted, the next cycle re-tried the same
+doomed entry — a **repeating failure loop** every few minutes. Three coordinated guards break it:
+
+- **Pre-entry symbol guard (Fix B).** Before considering entries (armed live), the engine builds
+  the set of symbols that **already hold a position** — from the **actual Delta positions**
+  (`live.positions()`, authoritative) **∪** the tracked book; on a positions-fetch failure it
+  falls back to the tracked book only, so a transient blip can't block all entries. Any candidate
+  whose **buy or sell** leg symbol is in that set is **skipped before an order is sent** (logged
+  `Entry candidate … skipped: position already exists on <symbol> …`), so a doomed bracketed order
+  is never placed. Symbols opened earlier in the **same** cycle are reserved too. Paper/disarmed
+  accounts are unaffected (gated on armed-live).
+
+- **Dangling-short recovery (Fix A).** `reconcileOrphans` used to treat a position as "still open"
+  if **either** leg had size on Delta, so a **half-open** spread — short still open, its partner
+  long already gone — was retained forever. That lone short is not a valid strategy state (the long
+  protects the short) and sits with an **already-breached SL** that keeps feeding the loop.
+  Reconcile now detects it (`sellQty > 0`, short size > 0, long size 0, confirmed-open, age > 90s)
+  and **flattens the short with a reduce-only market close** (`${id}-DANGX`), latched so it fires at
+  most once and reduce-only so it can never over-sell. The next cycle sees the position flat and
+  books it via the normal orphan path. This runs on the existing 30s/60s reconcile timers, so it
+  self-heals without a config change.
+
+- **Benign `no_position_for_reduce_only` (Fix D).** A reduce-only (closing) order that Delta rejects
+  with **`no_position_for_reduce_only`** means the leg is **already closed exchange-side** — a benign
+  double-close race (typically its bracket fired first). The leg is flat, so nothing is left
+  unprotected. Both `submit` (reduce-only path) and `marketClose` now return
+  `{ ok: true, alreadyClosed: true }` and **log instead of alarming**; the immediate-execution
+  protective-close in `syncExitBrackets` treats `alreadyClosed` as handled (reconcile books the
+  exit). This removes the false-alarm class that previously fired on every such race.
+
+> [!NOTE]
+> These three land together: **B** stops the doomed re-entry at its source, **A** clears the stuck
+> half-open short that seeds the loop (and self-heals on the reconcile timer), and **D** silences
+> the benign double-close alarms so a *real* failure still stands out. All are **armed-live only**;
+> paper/dry-run behaviour is unchanged.
 
 ### Live exchange data pipeline (dashboard tabs)
 

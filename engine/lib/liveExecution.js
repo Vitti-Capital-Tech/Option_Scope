@@ -162,6 +162,15 @@ export function createLiveExecutor(getCtx) {
       log(`[${accountName}] ✅ LIVE order sent: ${summary} → id ${order?.id ?? '?'} state ${order?.state ?? '?'}`);
       return { ok: true, order };
     } catch (e) {
+      const msg = String(e.message || '');
+      // A reduce-only (closing) order that finds nothing to close means the position was
+      // already closed exchange-side (e.g. its bracket fired first — a benign double-close
+      // race). The leg is flat, so nothing is left unprotected: treat as success and don't
+      // alarm. reconcileOrphans books the exit once it sees the flat position.
+      if (reduceOnly && /no_position_for_reduce_only/i.test(msg)) {
+        log(`[${accountName}] ℹ️ Reduce-only order no-op (${side} ${symbol}) — already closed on Delta [${tag}].`);
+        return { ok: true, alreadyClosed: true };
+      }
       logError(`[${accountName}] ✖ LIVE order FAILED: ${summary}:`, e.message);
       notifyLiveFailure({ account: accountName, context: `Order send FAILED (${side} ${symbol})`, error: e, extra: `[${tag}]` });
       return { ok: false, error: e.message };
@@ -186,6 +195,14 @@ export function createLiveExecutor(getCtx) {
       log(`[${accountName}] ✅ LIVE close-symbol: ${summary} → id ${order?.id ?? '?'}`);
       return { ok: true, order };
     } catch (e) {
+      const msg = String(e.message || '');
+      // Same benign case as submit(): a reduce-only close found nothing to close → the leg
+      // is already flat on Delta (double-close race, e.g. bracket fired first). Not a
+      // failure and nothing left unprotected; don't alarm.
+      if (/no_position_for_reduce_only/i.test(msg)) {
+        log(`[${accountName}] ℹ️ Reduce-only close no-op (${side} ${symbol}) — already closed on Delta [${tag}].`);
+        return { ok: true, alreadyClosed: true };
+      }
       logError(`[${accountName}] ✖ LIVE close-symbol FAILED: ${summary}:`, e.message);
       notifyLiveFailure({ account: accountName, context: `Reduce-only CLOSE FAILED (${side} ${symbol}) — leg may still be OPEN on Delta`, error: e, extra: `[${tag}]` });
       return { ok: false, error: e.message };
@@ -196,14 +213,19 @@ export function createLiveExecutor(getCtx) {
    * Place a marketable limit and CHASE it to a full fill: if it doesn't fill
    * immediately, re-price it in place (edit — keeps the order id AND any attached
    * bracket) toward the market a few times. Returns
-   *   { ok, order, id, productId, filled, unfilled }
-   * where `ok` is true only when fully filled. In dry-run, when disarmed, or when no
+   *   { ok, order, id, productId, filled, unfilled, rejected }
+   * where `ok` is true only when fully filled. `rejected` is true only when the initial
+   * submit was refused by Delta (submit-time rejection) vs a chase timeout (accepted but
+   * unfilled) — so callers can report the real cause. In dry-run, when disarmed, or when no
    * `chase` config is supplied it degrades to a single submit (assumed filled), so
    * the pre-chase behaviour is preserved on every non-armed-real path.
    */
   async function submitChase({ symbol, side, contracts, price, reduceOnly = false, tag, bracket = null, chase = null }) {
     const first = await submit({ symbol, side, contracts, price, reduceOnly, tag, bracket });
-    if (!first.ok) return { ok: false, error: first.error, filled: 0 };
+    // Submit-time rejection (Delta refused the order outright — e.g. bracket conflict, bad
+    // schema) is distinct from a chase timeout (order accepted but never fully filled).
+    // Flag it so callers can report the real cause instead of a misleading "chase exhausted".
+    if (!first.ok) return { ok: false, error: first.error, filled: 0, rejected: true };
     if (first.dryRun || first.skipped || !chase) return { ok: true, order: first.order, filled: contracts };
 
     const { accountName, creds } = getCtx();
@@ -286,7 +308,7 @@ export function createLiveExecutor(getCtx) {
         } else if (buy.id) {
           await cancelOrder(creds, { id: buy.id, product_id: buy.productId }).catch(() => {});
         }
-        return { ok: false, legFailed: 'buy', error: buy.error || 'buy leg unfilled after chase' };
+        return { ok: false, legFailed: 'buy', error: buy.error || 'buy leg unfilled after chase', rejected: !!buy.rejected };
       }
 
       if (short > 0) {
@@ -308,7 +330,7 @@ export function createLiveExecutor(getCtx) {
           } else if (sell.id) {
             await cancelOrder(creds, { id: sell.id, product_id: sell.productId }).catch(() => {});
           }
-          return { ok: false, legFailed: 'sell', error: sell.error || 'sell leg unfilled after chase', buyOrder: buy.order };
+          return { ok: false, legFailed: 'sell', error: sell.error || 'sell leg unfilled after chase', rejected: !!sell.rejected, buyOrder: buy.order };
         }
         return { ok: true, buyOrder: buy.order, sellOrder: sell.order };
       }
