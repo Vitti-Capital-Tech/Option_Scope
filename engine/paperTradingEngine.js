@@ -376,8 +376,8 @@ async function startSingleAccountEngine(account) {
           maxNetPremium: s.max_net_premium ?? config.maxNetPremium ?? 20,
           exitType: s.exit_type ?? config.exitType ?? 'ATM',
           exitPoints: s.exit_points ?? config.exitPoints ?? 0,
-          // Per-window min-days-to-expiry (strategy_version >= 2 only). Falls back to
-          // the account-level config value for rows that predate migration 019.
+          // Per-window min-days-to-expiry (migration 019) — all accounts, paper AND live.
+          // Falls back to the account-level config value for rows that predate it.
           daysToExpiry: s.days_to_expiry ?? config.daysToExpiry ?? 0,
           // Per-window hedge overlay (strategy_version >= 2 only, migration 022).
           hedgeStrikeType: s.hedge_strike_type ?? 'none',
@@ -425,36 +425,33 @@ async function startSingleAccountEngine(account) {
 
   // ── Product + expiry management ───────────────────────────────────────
 
-  // Days-to-expiry that drives account-global expiry auto-selection.
-  //  • Paper (strategy_version >= 2, per-window DTE, migration 019): the traded expiry
-  //    FOLLOWS the schedule window that is live RIGHT NOW, as (current date + that window's
-  //    daysToExpiry). So a window with DTE 0 trades the current-day expiry, DTE 1 the next
-  //    day's, etc., and the expiry rolls as the active window changes through the day and as
-  //    the calendar advances. If several windows overlap `now`, the SMALLEST DTE wins
-  //    (nearest expiry). In an uncovered gap the most-recently-ended window carries forward
-  //    (mirrors getActiveSchedule). No active windows → base config value.
-  //  • Live (v1): unchanged — the single account-level daysToExpiry (feature is paper-only).
+  // Days-to-expiry that drives account-global expiry auto-selection. Per-window DTE
+  // (migration 019) now applies to ALL accounts — paper AND live. The traded expiry
+  // FOLLOWS the schedule window that is live RIGHT NOW, as (current date + that window's
+  // daysToExpiry). So a window with DTE 0 trades the current-day expiry, DTE 1 the next
+  // day's, etc., and the expiry rolls as the active window changes through the day and as
+  // the calendar advances. If several windows overlap `now`, the SMALLEST DTE wins
+  // (nearest expiry). In an uncovered gap the most-recently-ended window carries forward
+  // (mirrors getActiveSchedule). No active windows → base account-level config value.
   function expirySelectionMinDte() {
-    if (config.strategyVersion >= 2) {
-      const now = new Date();
-      const istMin = (now.getUTCHours() * 60 + now.getUTCMinutes() + 330) % 1440;
-      const inWindow = [];
-      let mostRecent = null, minSinceEnd = Infinity;
-      for (const s of schedules) {
-        if (!s.isActive) continue;
-        const [sh, sm] = s.startTime.split(':').map(Number);
-        const [eh, em] = s.endTime.split(':').map(Number);
-        const startMin = sh * 60 + sm, endMin = eh * 60 + em;
-        const inWin = startMin > endMin
-          ? (istMin >= startMin || istMin < endMin)
-          : (istMin >= startMin && istMin < endMin);
-        if (inWin) { inWindow.push(s.daysToExpiry ?? 0); continue; }
-        const sinceEnd = (istMin - endMin + 1440) % 1440;
-        if (sinceEnd < minSinceEnd) { minSinceEnd = sinceEnd; mostRecent = s; }
-      }
-      if (inWindow.length > 0) return Math.max(0, Math.min(...inWindow));
-      if (mostRecent) return Math.max(0, mostRecent.daysToExpiry ?? 0);
+    const now = new Date();
+    const istMin = (now.getUTCHours() * 60 + now.getUTCMinutes() + 330) % 1440;
+    const inWindow = [];
+    let mostRecent = null, minSinceEnd = Infinity;
+    for (const s of schedules) {
+      if (!s.isActive) continue;
+      const [sh, sm] = s.startTime.split(':').map(Number);
+      const [eh, em] = s.endTime.split(':').map(Number);
+      const startMin = sh * 60 + sm, endMin = eh * 60 + em;
+      const inWin = startMin > endMin
+        ? (istMin >= startMin || istMin < endMin)
+        : (istMin >= startMin && istMin < endMin);
+      if (inWin) { inWindow.push(s.daysToExpiry ?? 0); continue; }
+      const sinceEnd = (istMin - endMin + 1440) % 1440;
+      if (sinceEnd < minSinceEnd) { minSinceEnd = sinceEnd; mostRecent = s; }
     }
+    if (inWindow.length > 0) return Math.max(0, Math.min(...inWindow));
+    if (mostRecent) return Math.max(0, mostRecent.daysToExpiry ?? 0);
     return config.daysToExpiry || 0;
   }
 
@@ -475,18 +472,10 @@ async function startSingleAccountEngine(account) {
         }
         if (!target) target = expiries[0];
 
-        // Paper (v2): the expiry FOLLOWS the active window, so re-select whenever the target
-        // differs — it must roll BOTH forward (to a farther window's DTE) AND back (to a
-        // nearer one) as the active window changes. Live (v1): only auto-roll when the
-        // current expiry is missing / expired / stale (unchanged — never rolls backward).
-        let shouldSwitch;
-        if (config.strategyVersion >= 2) {
-          shouldSwitch = !config.expiry || !expiries.includes(config.expiry) || config.expiry !== target;
-        } else {
-          const currentDaysRemaining = config.expiry ? (new Date(config.expiry).getTime() - Date.now()) / (24 * 60 * 60 * 1000) : 0;
-          const isExpiryStale = config.expiry && currentDaysRemaining < minDte;
-          shouldSwitch = !config.expiry || !expiries.includes(config.expiry) || isExpiryStale;
-        }
+        // The expiry FOLLOWS the active window (all accounts, paper AND live), so re-select
+        // whenever the target differs — it must roll BOTH forward (to a farther window's DTE)
+        // AND back (to a nearer one) as the active window changes.
+        const shouldSwitch = !config.expiry || !expiries.includes(config.expiry) || config.expiry !== target;
 
         if (shouldSwitch && target !== config.expiry) {
           config.expiry = target;
@@ -1517,12 +1506,12 @@ async function startSingleAccountEngine(account) {
           maxNetPremium: activeSchedule.maxNetPremium ?? config.maxNetPremium,
           exitType: activeSchedule.exitType ?? config.exitType,
           exitPoints: activeSchedule.exitPoints ?? config.exitPoints,
-          // Per-window min-days-to-expiry only for strategy_version >= 2 (migration 019);
-          // v1 keeps the account-level value spread from config above.
+          // Per-window min-days-to-expiry (migration 019) — all accounts, paper AND live.
+          // Falls back to the account-level value for rows that predate the migration.
+          daysToExpiry: activeSchedule.daysToExpiry ?? config.daysToExpiry,
+          // Hedge overlay (migration 022) stays experimental — strategy_version >= 2 only.
           ...(config.strategyVersion >= 2
             ? {
-              daysToExpiry: activeSchedule.daysToExpiry ?? config.daysToExpiry,
-              // Hedge overlay (migration 022) — active window's settings, v2 only.
               hedgeStrikeType: activeSchedule.hedgeStrikeType ?? 'none',
               hedgeCallPrice: activeSchedule.hedgeCallPrice ?? 0,
               hedgeCallPct: activeSchedule.hedgeCallPct ?? 0,
@@ -2674,9 +2663,9 @@ async function startSingleAccountEngine(account) {
             continue;
           }
 
-          // Days to expiry guard. Uses effectiveConfig so a strategy_version >= 2
-          // account applies the ACTIVE WINDOW's min-days-to-expiry; v1 falls back to
-          // the account-level config value (effectiveConfig.daysToExpiry === config).
+          // Days to expiry guard. Uses effectiveConfig so every account (paper AND live)
+          // applies the ACTIVE WINDOW's min-days-to-expiry, falling back to the
+          // account-level config value when a window predates migration 019.
           const daysRemaining = (new Date(config.expiry).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
           if (daysRemaining < (effectiveConfig.daysToExpiry || 0)) {
             logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: days to expiry (${daysRemaining.toFixed(2)}) is less than min required (${effectiveConfig.daysToExpiry})`);
@@ -3490,13 +3479,13 @@ async function startSingleAccountEngine(account) {
   // Main evaluation loop — every 1 second (exits run every second, entries run at minute boundaries)
   const evalTimer = setInterval(async () => {
     try {
-      // Per-window expiry (paper only): the traded expiry follows the ACTIVE window as
+      // Per-window expiry (all accounts): the traded expiry follows the ACTIVE window as
       // (current date + its DTE). Roll + re-subscribe the moment that target changes — a
       // DTE edit or a window boundary crossed — so it takes effect in ~1s instead of on the
       // 5-min product timer. Cheap check on the cached expiry list; the actual refresh +
       // WS re-subscribe (syncExpirySubscription) fires ONLY when the target genuinely
-      // differs, and `expirySyncing` prevents overlapping runs. Live (v1) is untouched.
-      if (config.strategyVersion >= 2 && expiries.length && !expirySyncing) {
+      // differs, and `expirySyncing` prevents overlapping runs. Applies to all accounts.
+      if (expiries.length && !expirySyncing) {
         const dte = expirySelectionMinDte();
         let target = null;
         for (const exp of expiries) {

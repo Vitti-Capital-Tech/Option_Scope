@@ -530,14 +530,12 @@ export default function SchedulePanel({
                   </div>
                 )}
 
-                {/* Per-window Min Days to Expiry — experimental (strategy_version >= 2)
-                    paper accounts only. Live/v1 accounts keep this in the Control Panel. */}
-                {strategyVersion >= 2 && (
-                  <div className="schedule-item-block schedule-item-num-block">
-                    <span className="schedule-item-label">Min Days to Expiry</span>
-                    <CustomInput type="number" min="0" step="1" value={s.daysToExpiry ?? 0} onChange={e => handleChange(s.id, 'daysToExpiry', Number(e.target.value))} />
-                  </div>
-                )}
+                {/* Per-window Min Days to Expiry (migration 019) — all accounts, paper AND
+                    live. The traded expiry follows the active window's DTE. */}
+                <div className="schedule-item-block schedule-item-num-block">
+                  <span className="schedule-item-label">Min Days to Expiry</span>
+                  <CustomInput type="number" min="0" step="1" value={s.daysToExpiry ?? 0} onChange={e => handleChange(s.id, 'daysToExpiry', Number(e.target.value))} />
+                </div>
 
                 {/* Hedge overlay (experimental / strategy_version >= 2). Buys a long-only
                     OTM leg of the chosen type(s), at the strike whose ask is nearest the

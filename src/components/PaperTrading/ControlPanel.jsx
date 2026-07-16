@@ -141,9 +141,8 @@ export default function ControlPanel({
                 { label: 'Max Delta Deviation', key: 'maxRatioDeviation', width: 110, step: '0.01' },
                 { label: 'Min Short Premium', key: 'minSellPremium', width: 110, prefix: '$' },
                 { label: 'Max Short Ratio', key: 'maxSellQty', width: 110, step: '0.25', prefix: '1:' },
-                // Min Days to Expiry lives here only for v1 (live) accounts. For
-                // strategy_version >= 2 (experimental paper) it moves to each schedule window.
-                ...(strategyVersion >= 2 ? [] : [{ label: 'Min Days to Expiry', key: 'daysToExpiry', width: 100 }])
+                // Min Days to Expiry now lives per schedule window for ALL accounts (paper
+                // AND live) — migration 019 — so it no longer appears in the Control Panel.
               ].map(({ label, key, width, step, prefix, suffix }) => (
                 <div key={key} className="form-group">
                   <label className="pt-field-label" style={{ marginBottom: 0 }}>{label}</label>

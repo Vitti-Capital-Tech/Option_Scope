@@ -42,10 +42,14 @@ the testbed. Full mechanism:
 [paper_trading_explained.md → Strategy Versioning](./paper_trading_explained.md#strategy-versioning-paper-vs-live).
 
 > [!NOTE]
-> A filter that a v2 (paper) account has moved **per schedule window** — e.g. **Days to
-> Expiry** (migration `019`) — stays an **account-level Control Panel field** on a v1 (live)
-> account, and the per-window control is not shown there. Live keeps the account-level
-> value; only the experimental paper testbed sees the per-window version.
+> **Min Days to Expiry** (migration `019`) has been folded into the shared path: it is now
+> a **per schedule window** control for **all** accounts, paper AND live. The traded expiry
+> follows the window that is live right now (current date + that window's DTE) and rolls in
+> ~1s as the active window changes, so a live account's expiry can advance *and* roll back
+> to a nearer one. The old account-level Control Panel field is gone; migration `023`
+> backfills each live account's windows from its previous account-level value so existing
+> behaviour is preserved. Other per-window v2 experiments (hedge overlay migration `022`,
+> day-of-week entry gate) remain paper-only until similarly promoted.
 
 ## Credential storage & security model
 
