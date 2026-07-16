@@ -337,6 +337,23 @@ export function createLiveExecutor(getCtx) {
       return { ok: true, buyOrder: buy.order };
     },
 
+    /**
+     * Open the triplet's 3rd leg — a stand-alone LONG-ONLY hedge — after the main
+     * spread is open. Kept separate from openSpread so its client tag (`-HB`) never
+     * collides with the main long's `-EB`, and so a fill failure is NON-fatal: unlike
+     * entry, the caller drops the hedge leg and keeps the 2-leg position rather than
+     * unwinding. No bracket — the hedge is engine-managed and exits with the triplet
+     * (reduce-only `-HX` close). No-op for paper / unarmed.
+     */
+    async openHedge(pos, { contracts, price, chase = null }) {
+      if (!armed()) return { ok: true, skipped: true };
+      return submitChase({
+        symbol: pos.hedgeLeg.symbol, side: 'buy', contracts,
+        price: price ?? pos.hedgeLeg.entryPrice, reduceOnly: false, tag: `${pos.id}-HB`,
+        bracket: null, chase,
+      });
+    },
+
     /** Close (or reduce) a single leg. `side` is the closing side. */
     async closeLeg({ symbol, side, contracts, price, tag }) {
       if (!armed()) return { ok: true, skipped: true };

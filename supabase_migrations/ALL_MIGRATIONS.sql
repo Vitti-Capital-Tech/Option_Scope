@@ -791,3 +791,16 @@ ALTER TABLE public.paper_trading_schedules
   ADD COLUMN IF NOT EXISTS hedge_call_pct NUMERIC NOT NULL DEFAULT 0,
   ADD COLUMN IF NOT EXISTS hedge_put_price NUMERIC NOT NULL DEFAULT 0,
   ADD COLUMN IF NOT EXISTS hedge_put_pct NUMERIC NOT NULL DEFAULT 0;
+
+
+-- ─── 023_per_spread_hedge_leg.sql ───
+-- Per-spread Hedge Leg (paper strategy_version >= 2): replaces the standalone hedge
+-- overlay (022) with a 3rd LONG-ONLY leg baked into each ratio spread (long/short/long
+-- triplet). The 5 config fields from 022 are reused; the leg is stored in a new nullable
+-- hedge_leg JSONB column on both tables. Sized as (this spread's own short qty) × pct,
+-- gated into entry by the combined 3-leg net debit, and exited on the main long's
+-- ATM/ITM/OTM cross or expiry. NULL hedge_leg = plain 2-leg spread. Additive.
+ALTER TABLE public.active_positions
+  ADD COLUMN IF NOT EXISTS hedge_leg JSONB DEFAULT NULL;
+ALTER TABLE public.trade_history
+  ADD COLUMN IF NOT EXISTS hedge_leg JSONB DEFAULT NULL;

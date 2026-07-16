@@ -1618,10 +1618,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   const mapDbPosition = useCallback((p, existing) => {
     const buyLeg = safeParseLeg(p.buy_leg);
     const sellLeg = safeParseLeg(p.sell_leg);
+    const hedgeLeg = safeParseLeg(p.hedge_leg); // 3rd long-only leg (triplet); null = plain 2-leg
     if (!buyLeg || !sellLeg) return null;
     return {
       id: p.id, underlying: p.underlying, expiry: p.expiry, type: p.type,
-      buyLeg, sellLeg,
+      buyLeg, sellLeg, hedgeLeg,
       sellQty: p.sell_qty, strikeDiff: p.strike_diff,
       entryTime: new Date(p.entry_time),
       entryBuyPrice: p.entry_buy_price, entrySellPrice: p.entry_sell_price,
@@ -1743,6 +1744,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           id: t.trade_id || t.id,
           underlying: t.underlying, expiry: t.expiry, type: t.type,
           buyLeg: safeParseLeg(t.buy_leg), sellLeg: safeParseLeg(t.sell_leg),
+          hedgeLeg: safeParseLeg(t.hedge_leg),
           sellQty: t.sell_qty, strikeDiff: t.strike_diff,
           entryTime: new Date(t.entry_time), exitTime: new Date(t.exit_time),
           entryBuyPrice: t.entry_buy_price, entrySellPrice: t.entry_sell_price,
@@ -2382,26 +2384,42 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           const latestBuy = tickerBuy?.bid ?? tickerBuy?.lastPrice ?? tickerBuy?.markPrice ?? pos.currentBuyPrice;
           const latestSell = tickerSell?.ask ?? tickerSell?.lastPrice ?? tickerSell?.markPrice ?? pos.currentSellPrice;
 
-          // If we don't have any price at all for both legs, skip this position's updates
-          if (latestBuy == null && latestSell == null) return pos;
+          // Attached hedge leg (3rd long) — its own live bid feeds the position's P&L.
+          const hasHedge = pos.hedgeLeg && (pos.hedgeLeg.lotSize || 0) > 0;
+          const tickerHedge = hasHedge ? live[pos.hedgeLeg.symbol] : null;
+          const latestHedge = tickerHedge?.bid ?? tickerHedge?.lastPrice ?? tickerHedge?.markPrice ?? null;
+
+          // If we don't have any price at all, skip this position's updates
+          if (latestBuy == null && latestSell == null && latestHedge == null) return pos;
 
           // Long-only held positions (short leg already exited) only need the long price.
           const isLongOnly = (pos.sellQty || 0) === 0;
-          const canCompute = isLongOnly ? (latestBuy != null) : (latestBuy != null && latestSell != null);
+          // Hedge-only survivor: main long fully exited, only the hedge remains.
+          const isHedgeOnly = isLongOnly && (pos.buyLeg.lotSize || 0) <= 0 && hasHedge;
+          const canCompute = isHedgeOnly
+            ? (latestHedge != null)
+            : (isLongOnly ? (latestBuy != null) : (latestBuy != null && latestSell != null));
           const buyPnl = canCompute ? ((latestBuy - pos.entryBuyPrice) || 0) : 0; // Sell - Buy
           const sellPnl = (canCompute && !isLongOnly) ? (((pos.entrySellPrice - latestSell) * pos.sellQty) || 0) : 0;
+          const hedgePnl = (canCompute && hasHedge && latestHedge != null)
+            ? (((latestHedge - (pos.hedgeLeg.entryPrice || 0)) * pos.hedgeLeg.lotSize) || 0) : 0;
           const grossPnl = canCompute
-            ? (buyPnl * pos.buyLeg.lotSize) + (sellPnl * (pos.sellLeg.lotSize || 0)) + (pos.accumulatedSellPnl || 0)
+            ? (buyPnl * pos.buyLeg.lotSize) + (sellPnl * (pos.sellLeg.lotSize || 0)) + hedgePnl + (pos.accumulatedSellPnl || 0)
             : pos.unrealizedGrossPnl;
+          const hedgeExitFee = (canCompute && hasHedge && latestHedge != null)
+            ? calculateFee(latestHedge, spotPrice, pos.hedgeLeg.lotSize, pos.hedgeLeg.originalLotSize || 1) : 0;
           const exitFee = canCompute
-            ? calculateFee(latestBuy, spotPrice, pos.buyLeg.lotSize, pos.buyLeg.originalLotSize || 1) + calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize)
+            ? calculateFee(latestBuy, spotPrice, pos.buyLeg.lotSize, pos.buyLeg.originalLotSize || 1) + calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize) + hedgeExitFee
             : pos.currentExitFee;
-          const totalFees = canCompute ? ((pos.entryFee || 0) + exitFee) : pos.currentTotalFees;
+          // Position entry fee (main legs) + the hedge's own entry fee, tracked in hedgeLeg.
+          const combinedEntryFee = (pos.entryFee || 0) + (hasHedge ? (pos.hedgeLeg.entryFee || 0) : 0);
+          const totalFees = canCompute ? (combinedEntryFee + exitFee) : pos.currentTotalFees;
 
           return {
             ...pos,
             currentBuyPrice: latestBuy,
             currentSellPrice: latestSell,
+            currentHedgePrice: latestHedge ?? pos.currentHedgePrice ?? null,
             currentBuyIv: tickerBuy?.bidIv ?? tickerBuy?.iv ?? pos.currentBuyIv ?? null,
             currentSellIv: tickerSell?.askIv ?? tickerSell?.iv ?? pos.currentSellIv ?? null,
             unrealizedGrossPnl: grossPnl,
@@ -2597,7 +2615,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     const longMargin = buyPrice * buyLot;
     const shortValue = Math.min(195000, spot * sellQty * sellLot);
     const leverage = 200;
-    return longMargin + (shortValue / leverage);
+    // Triplet 3rd leg (long-only): premium paid = its margin.
+    const hedgeMargin = (p.hedgeLeg && (p.hedgeLeg.lotSize || 0) > 0)
+      ? (p.currentHedgePrice != null ? p.currentHedgePrice : (p.hedgeLeg.entryPrice || 0)) * p.hedgeLeg.lotSize
+      : 0;
+    return longMargin + (shortValue / leverage) + hedgeMargin;
   }, [spotPrice]);
 
   const totalMargin = React.useMemo(() => {

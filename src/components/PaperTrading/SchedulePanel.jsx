@@ -537,12 +537,14 @@ export default function SchedulePanel({
                   <CustomInput type="number" min="0" step="1" value={s.daysToExpiry ?? 0} onChange={e => handleChange(s.id, 'daysToExpiry', Number(e.target.value))} />
                 </div>
 
-                {/* Hedge overlay (experimental / strategy_version >= 2). Buys a long-only
-                    OTM leg of the chosen type(s), at the strike whose ask is nearest the
-                    target Price, sized as (sum of active shorts of type) × Pct. */}
+                {/* Hedge leg — per-spread 3rd long (experimental / strategy_version >= 2).
+                    Each entered spread of the chosen type(s) becomes a long/short/long
+                    triplet: a 3rd long-only leg bought at the OTM strike whose ask is the
+                    highest ≤ Price (budget), sized as (that spread's own short qty) × Pct.
+                    It rides the triplet and exits with it (main-strike ATM/ITM/OTM or expiry). */}
                 {strategyVersion >= 2 && (
                   <div className="schedule-item-block schedule-item-num-block">
-                    <span className="schedule-item-label">Hedge Strike Type</span>
+                    <span className="schedule-item-label">Hedge Leg Type</span>
                     <CustomSelect
                       value={s.hedgeStrikeType ?? 'none'}
                       onChange={val => handleChange(s.id, 'hedgeStrikeType', val)}

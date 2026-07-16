@@ -41,19 +41,23 @@ export default function ActivePositionsTable({
   // Trader-friendly instrument label, e.g. "BTC-CALL 64,000/100,000" (or single
   // strike for a long-only leg). Full strike numbers, not k-notation.
   const kStrike = (s) => Number(s).toLocaleString();
+  const hasHedgeLeg = (p) => !!(p.hedgeLeg && (p.hedgeLeg.lotSize || 0) > 0);
   const instrumentName = (p) => {
     const base = `${p.underlying}-${p.type.toUpperCase()}`;
+    const hedge = hasHedgeLeg(p) ? `/${kStrike(p.hedgeLeg.strike)}` : '';
     return (p.sellQty || 0) === 0
-      ? `${base} ${kStrike(p.buyLeg.strike)}`
-      : `${base} ${kStrike(p.buyLeg.strike)}/${kStrike(p.sellLeg.strike)}`;
+      ? `${base} ${kStrike(p.buyLeg.strike)}${hedge}`
+      : `${base} ${kStrike(p.buyLeg.strike)}/${kStrike(p.sellLeg.strike)}${hedge}`;
   };
 
-  // A long/short value pair, stacked vertically (long on top green, short below
-  // red) to keep columns narrow. Dimmed variant for secondary values like IV.
-  const legStack = (l, s, { longOnly = false, dim = false } = {}) => (
+  // A long/short(/hedge) value stack, vertical (long on top green, short below
+  // red, and — for a triplet — the 3rd hedge long below in green). Dimmed variant
+  // for secondary values like IV. `h` is the hedge-leg value (omit for 2-leg rows).
+  const legStack = (l, s, { longOnly = false, dim = false, h = null } = {}) => (
     <div className={`pt-legstack${dim ? ' dim' : ''}`}>
       <span className="pt-ls-l">{l ?? '—'}</span>
       <span className="pt-ls-s">{longOnly ? '—' : (s ?? '—')}</span>
+      {h != null && <span className="pt-ls-l" style={{ opacity: 0.8 }} title="Hedge leg (3rd long)">{h}</span>}
     </div>
   );
 
@@ -210,6 +214,8 @@ export default function ActivePositionsTable({
                 const displayBuyQty = p.buyLeg.lotSize;
                 const displaySellQty = p.sellQty;
                 const isLongOnly = (p.sellQty || 0) === 0;
+                const hasHedge = hasHedgeLeg(p);
+                const isHedgeOnly = isLongOnly && (p.buyLeg.lotSize || 0) <= 0 && hasHedge;
 
                 // ── Original & initial-scaled ratios ──
                 const origLot = p.buyLeg?.originalLotSize || p.buyLeg?.lotSize || 1;
@@ -247,8 +253,11 @@ export default function ActivePositionsTable({
                         <div className="pt-pos-id">
                           <span className="pt-instrument">{instrumentName(p)}</span>
                           <span className="pt-pos-meta">
-                            <span className={`pt-type-badge ${isLongOnly ? 'long' : p.type}`}>{isLongOnly ? 'LONG ONLY' : p.type.toUpperCase()}</span>
-                            <span className="pt-pos-note">{isLongOnly ? '· short exited' : 'spread'} · {fmtExpiry(p.expiry)}</span>
+                            <span className={`pt-type-badge ${isLongOnly ? 'long' : p.type}`}>{isHedgeOnly ? 'HEDGE ONLY' : isLongOnly ? 'LONG ONLY' : p.type.toUpperCase()}</span>
+                            {hasHedge && !isHedgeOnly && (
+                              <span className="pt-type-badge long" style={{ marginLeft: 4 }} title="Triplet: long / short / long (hedge)">+H</span>
+                            )}
+                            <span className="pt-pos-note">{isHedgeOnly ? '· hedge only' : isLongOnly ? '· short exited' : hasHedge ? 'triplet' : 'spread'} · {fmtExpiry(p.expiry)}</span>
                           </span>
                           <span className="pt-cell-sub">
                             ratio <b>{displayBuyQty.toFixed(2)}:{displaySellQty.toFixed(2)}</b> · orig 1:{displayOrigSellQty.toFixed(2)} · init {initBuyQty.toFixed(2)}L/{initSellQty.toFixed(2)}S
@@ -258,17 +267,17 @@ export default function ActivePositionsTable({
                     </td>
                     {/* Strikes (stacked) + entry spot */}
                     <td>
-                      {legStack(p.buyLeg.strike.toLocaleString(), isLongOnly ? null : p.sellLeg.strike.toLocaleString(), { longOnly: isLongOnly })}
+                      {legStack(p.buyLeg.strike.toLocaleString(), isLongOnly ? null : p.sellLeg.strike.toLocaleString(), { longOnly: isLongOnly, h: hasHedge ? p.hedgeLeg.strike.toLocaleString() : null })}
                       <span className="pt-cell-sub">spot {p.entrySpotPrice ? p.entrySpotPrice.toLocaleString() : '—'}</span>
                     </td>
                     {/* Entry premium (stacked) + entry IV */}
                     <td>
-                      {legStack(p.entryBuyPrice != null ? p.entryBuyPrice.toFixed(2) : null, p.entrySellPrice != null ? p.entrySellPrice.toFixed(2) : null, { longOnly: isLongOnly })}
+                      {legStack(p.entryBuyPrice != null ? p.entryBuyPrice.toFixed(2) : null, p.entrySellPrice != null ? p.entrySellPrice.toFixed(2) : null, { longOnly: isLongOnly, h: hasHedge && p.hedgeLeg.entryPrice != null ? Number(p.hedgeLeg.entryPrice).toFixed(2) : null })}
                       <span className="pt-cell-sub">iv {ivText(p.entryBuyIv, p.entrySellIv)}</span>
                     </td>
                     {/* Mark premium (stacked) + mark IV */}
                     <td>
-                      {legStack(p.currentBuyPrice != null ? p.currentBuyPrice.toFixed(2) : null, p.currentSellPrice != null ? p.currentSellPrice.toFixed(2) : null, { longOnly: isLongOnly })}
+                      {legStack(p.currentBuyPrice != null ? p.currentBuyPrice.toFixed(2) : null, p.currentSellPrice != null ? p.currentSellPrice.toFixed(2) : null, { longOnly: isLongOnly, h: hasHedge && p.currentHedgePrice != null ? Number(p.currentHedgePrice).toFixed(2) : null })}
                       <span className="pt-cell-sub">iv {ivText(p.currentBuyIv, p.currentSellIv)}</span>
                     </td>
                     <td>

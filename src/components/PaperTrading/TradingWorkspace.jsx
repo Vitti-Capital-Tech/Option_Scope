@@ -467,6 +467,8 @@ function LiveOrderHistoryTab({ orderHistory }) {
     if (/-SEX(\b|-)/.test(coid)) return 'Short Leg Exit';
     if (/-PEX(\b|-)/.test(coid)) return 'Partial Exit';
     if (/-LEX?(\b|-)/.test(coid)) return 'Long Leg Exit';
+    if (/-HX\b/.test(coid)) return 'Hedge Exit';              // triplet 3rd leg close
+    if (/-MXH\b/.test(coid)) return 'Manual Exit';           // manual close of hedge leg
     if (/-MX[BS]\b/.test(coid)) return 'Manual Exit';
     if (/-MLC(\b|-)/.test(coid)) return 'Manual Leg Close';
     if (/-CX\b/.test(coid)) return 'Manual Close';

@@ -212,6 +212,7 @@ CREATE TABLE IF NOT EXISTS public.active_positions (
     type TEXT NOT NULL CHECK (type IN ('call', 'put')),
     buy_leg JSONB NOT NULL,
     sell_leg JSONB NOT NULL,
+    hedge_leg JSONB DEFAULT NULL, -- migration 023: optional 3rd long-only leg (long/short/long triplet); NULL = plain 2-leg spread
     sell_qty NUMERIC NOT NULL,
     strike_diff INTEGER NOT NULL,
     entry_time TIMESTAMP WITH TIME ZONE NOT NULL,
@@ -292,6 +293,7 @@ CREATE TABLE IF NOT EXISTS public.trade_history (
     type TEXT NOT NULL CHECK (type IN ('call', 'put')),
     buy_leg JSONB NOT NULL,
     sell_leg JSONB NOT NULL,
+    hedge_leg JSONB DEFAULT NULL, -- migration 023: 3rd long-only leg snapshot when this row books a triplet's hedge exit
     sell_qty NUMERIC NOT NULL,
     strike_diff INTEGER NOT NULL,
     entry_time TIMESTAMP WITH TIME ZONE NOT NULL,
