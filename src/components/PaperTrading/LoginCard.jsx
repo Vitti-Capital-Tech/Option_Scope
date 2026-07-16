@@ -22,9 +22,9 @@ export default function LoginCard({ authEmail, setAuthEmail, authError, isAuthen
           <TrendingUp size={48} color="#00d9a3" style={{ flexShrink: 0 }} />
           <div style={{ textAlign: 'center' }}>
             <div style={{ fontWeight: 800, fontSize: 20, letterSpacing: '0.04em', color: 'var(--text)' }}>
-              VITTI OPTION<span style={{ color: 'var(--accent)' }}>SCOPE</span>
+              VITTI RATIO <span style={{ color: 'var(--accent)' }}>SPREAD</span>
             </div>
-            <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 4, letterSpacing: '0.08em', textTransform: 'uppercase' }}>Paper Trading Workstation</div>
+            <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 4, letterSpacing: '0.08em', textTransform: 'uppercase' }}>Paper/Live Trading Stimulation</div>
           </div>
         </div>
 

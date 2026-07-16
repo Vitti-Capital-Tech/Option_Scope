@@ -16,7 +16,7 @@ export default function Navbar({
       <nav className="navbar">
         <div className="logo" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <TrendingUp size={26} color="#00d9a3" style={{ flexShrink: 0 }} />
-          <span className="logo-text">VITTI OPTION<span>SCOPE</span></span>
+          <span className="logo-text">VITTI RATIO <span style={{ color: 'var(--accent)' }}>SPREAD</span></span>
         </div>
 
         <div className="nav-tabs-container">

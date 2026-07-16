@@ -1962,7 +1962,7 @@ export default function App({ onNavigate, theme, toggleTheme }) {
             }}>
               {phase === 'loading' && <div className="spinner" />}
               <div style={{ fontFamily: 'JetBrains Mono', fontSize: 14, fontWeight: 700, letterSpacing: 2 }}>
-                {phase === 'loading' ? 'LOADING CANDLES' : 'OPTIONSCOPE'}
+                {phase === 'loading' ? 'LOADING CANDLES' : 'RATIO SPREAD CHART'}
               </div>
               <div style={{ fontSize: 12, color: '#7d8590', textAlign: "center" }}>
                 {phase === 'loading' ? 'Loading chart data...' : 'Add a strategy to your watchlist and select it to view the chart.'}
