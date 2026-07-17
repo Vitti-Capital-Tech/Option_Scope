@@ -82,10 +82,10 @@ export default function ControlPanel({
             />
           </div>
 
-          {/* Trading Days — day-of-week ENTRY gate (experimental paper / strategy_version >= 2
-              only). A disabled day blocks NEW entries for that trading day (17:30 IST
-              boundary); open positions are still managed. Immediate-apply like Underlying. */}
-          {strategyVersion >= 2 && (
+          {/* Trading Days — day-of-week ENTRY gate (promoted: paper AND live, all versions).
+              A disabled day blocks NEW entries for that trading day (17:30 IST boundary);
+              open positions are still managed. Default [0..6] = all days. Immediate-apply. */}
+          {(
             <div className="form-group" style={{ marginBottom: 0, display: 'flex', flexDirection: 'column', gap: 5, alignItems: 'flex-start' }}>
               <label className="pt-field-label" style={{ marginBottom: 0 }}>
                 Trading Days <span style={{ color: 'var(--text-dim)', fontWeight: 400 }}>(entries only)</span>

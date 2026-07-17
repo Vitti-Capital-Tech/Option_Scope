@@ -579,14 +579,15 @@ async function startSingleAccountEngine(account) {
 
   // ── Core strategy evaluation (Phase 2) ────────────────────────────────
 
-  // Day-of-week ENTRY gate (strategy_version >= 2 / paper only). A "trading day" is
-  // aligned to the schedule timeline's 17:30 IST boundary: the day named for weekday W
-  // runs (W-1) 17:30 → W 17:30 IST, so at/after 17:30 IST the active trading day is
-  // TOMORROW's weekday. Returns true (entries allowed) for v1 accounts, or when the
-  // current trading-day weekday (0=Sun..6=Sat) is enabled in config.tradeDays. This
-  // only blocks NEW entries — exits and position management are never gated (like `paused`).
+  // Day-of-week ENTRY gate — promoted to the shared path (paper AND live, all strategy
+  // versions). A "trading day" is aligned to the schedule timeline's 17:30 IST boundary:
+  // the day named for weekday W runs (W-1) 17:30 → W 17:30 IST, so at/after 17:30 IST the
+  // active trading day is TOMORROW's weekday. Returns true (entries allowed) when the
+  // current trading-day weekday (0=Sun..6=Sat) is enabled in config.tradeDays. Safe to
+  // promote: trade_days defaults to [0..6] (all days) for every account, so an account
+  // that never restricted days is unaffected. This only blocks NEW entries — exits and
+  // position management are never gated (like `paused`).
   function isTradingDayEnabled() {
-    if (config.strategyVersion < 2) return true;
     const days = Array.isArray(config.tradeDays) ? config.tradeDays : null;
     if (!days) return true; // missing/misconfigured → don't block
     const ist = new Date(Date.now() + 330 * 60000); // shift UTC → IST wall clock
@@ -3204,8 +3205,8 @@ async function startSingleAccountEngine(account) {
         log(`[${accountState.name}] ⏸ Paused — skipping new entries (open positions still managed).`);
       }
 
-      // Day-of-week entry gate (v2/paper). Blocks NEW entries on a disabled weekday
-      // (17:30 IST trading-day boundary); open positions still managed. v1 → always true.
+      // Day-of-week entry gate (paper AND live). Blocks NEW entries on a disabled weekday
+      // (17:30 IST trading-day boundary); open positions still managed. Default [0..6] = all.
       const dayAllowsEntry = isTradingDayEnabled();
       if (!dayAllowsEntry && !onlyExits && !paused) {
         log(`[${accountState.name}] 📅 Trading day disabled — skipping new entries (open positions still managed).`);

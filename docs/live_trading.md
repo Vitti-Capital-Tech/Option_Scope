@@ -48,8 +48,13 @@ the testbed. Full mechanism:
 > ~1s as the active window changes, so a live account's expiry can advance *and* roll back
 > to a nearer one. The old account-level Control Panel field is gone; migration `023`
 > backfills each live account's windows from its previous account-level value so existing
-> behaviour is preserved. Other per-window v2 experiments (hedge overlay migration `022`,
-> day-of-week entry gate) remain paper-only until similarly promoted.
+> behaviour is preserved. The **day-of-week entry gate** (Trading Days, migration `021`) has
+> **also been promoted to the shared path** — it now applies to paper AND live: a disabled
+> weekday blocks NEW entries for that trading day (17:30 IST boundary; open positions are still
+> managed), and it's editable for live accounts in the Control Panel. Safe by default —
+> `trade_days` defaults to `[0,1,2,3,4,5,6]` (all days), so a live account that never restricts
+> days is unaffected. The hedge overlay (migration `022`) remains a paper-only v2 experiment
+> until similarly promoted.
 
 ## Credential storage & security model
 
