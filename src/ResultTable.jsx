@@ -221,11 +221,9 @@ export default function ResultTable({
                 // are left in and shown as "—" rather than hidden on transient missing quotes.
                 const minAtmPnl = Number(config?.minAtmPnl) || 0;
                 const minAtmRoi = Number(config?.minAtmRoi) || 0;
-                const filteredResults = config?.atmRatioScaling
-                  ? processedResults.filter(r =>
-                    !r.hasAtmData || (r.atAtmPnl >= minAtmPnl && r.roi >= minAtmRoi)
-                  )
-                  : processedResults;
+                const filteredResults = processedResults.filter(r =>
+                  !r.hasAtmData || (r.atAtmPnl >= minAtmPnl && r.roi >= minAtmRoi)
+                );
 
                 // Group results by buy strike
                 const groups = filteredResults.reduce((acc, r) => {
