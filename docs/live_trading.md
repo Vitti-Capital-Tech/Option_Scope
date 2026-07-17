@@ -663,6 +663,55 @@ doomed entry — a **repeating failure loop** every few minutes. Three coordinat
 > the benign double-close alarms so a *real* failure still stands out. All are **armed-live only**;
 > paper/dry-run behaviour is unchanged.
 
+### Entry persistence & orphan prevention (atomic entry)
+
+A live entry is **non-atomic by nature**: the engine places the real Delta orders **first**
+(`openSpread` → both legs + brackets, then the resting short-exit buy-back), and **only then**
+inserts the position into `active_positions`. The insert is the last step because it records the
+exchange order ids. That ordering opens a failure window — if the insert does not commit, the
+**orders are already live on Delta** with no `active_positions` row behind them. Such a position is
+an **orphan**: the engine can't manage its strategy exits (dynamic ATM-ratio scaling, the resting
+ladder, ATM/ITM/OTM exit), only the entry-time exchange brackets protect it, and
+`reconcileOrphans` — which iterates the **book** — never sees it, so it is **not self-healing**.
+
+**Observed incident.** During a period of Supabase disk-IO-budget exhaustion, a `CALL 65500/67000`
+entry placed both legs + the `$1.2` resting short-exit on Delta, then the insert was **rejected by
+the unique-strike index (`23505`)** — a duplicate of an already-open position. The old code merely
+logged `DB Guard: Duplicate strike entry blocked` and moved on, leaving the freshly-placed spread
+orphaned on the exchange. Two root causes: the **pre-order uniqueness reads fail-OPEN** (a flaky
+DB read let the duplicate through to real order placement), and the **insert-failure path did not
+unwind** the orders it had already sent.
+
+Four fixes close the window (all in the entry loop of `paperTradingEngine.js`):
+
+- **Fail-CLOSED pre-order guards.** The count-cap, buy-strike and sell-strike uniqueness reads now
+  capture their query `error`; on **any** read error the entry is **skipped** (logged `… skipped —
+  … check failed (…); failing safe`) instead of proceeding. A duplicate can no longer slip past a
+  flaky read to real order placement. A missed entry is far cheaper than orders we can't persist.
+
+- **Unwind on insert failure.** If the `active_positions` insert returns an error (the `23505`
+  duplicate case **or** any other insert error), the engine now **unwinds everything it just
+  placed** — cancels the resting short-exit (`cancelStop`), then flattens the short, long and any
+  hedge leg with **reduce-only market** closes (`${id}-ORPHX`) — leaving the account flat, and
+  fires a `notifyLiveFailure` alert. This is safe because the position `id` is effectively unique
+  (`T<timestamp36><random>`), so a `23505` is always a **strike** collision, never an id collision:
+  THIS position's row does not exist and its legs are genuinely orphaned. Closing exactly the
+  contracts placed (reduce-only) removes only our contribution; Delta nets by symbol, so any
+  pre-existing position on a shared symbol is left intact.
+
+- **Book excludes non-persisted entries.** The in-memory book is rebuilt from **only** the entries
+  **confirmed written** to `active_positions` (`persistedEntryIds`). Any entry skipped by a guard or
+  dropped after a failed/unwound insert is kept out, so the book never diverges from the DB/exchange
+  with a **phantom** (tracked in memory, absent from DB) or **orphan** position.
+
+> [!NOTE]
+> These are **armed-live only** for the actual order effects (`cancelStop`/`closeSymbol` no-op for
+> paper/dry-run), but the fail-closed guards and book-exclusion apply to every mode. **Still open
+> (recommended follow-up):** a **reverse-reconcile** pass that scans real Delta legs for any that
+> have **no** `active_positions` row and adopts or closes them — this is the only thing that
+> auto-cleans an orphan that already exists (e.g. the `65500/67000` one, which needs a **manual**
+> cancel-resting-order + close-both-legs on Delta until then).
+
 ### Live exchange data pipeline (dashboard tabs)
 
 For armed live accounts the engine publishes a **read-only snapshot** of the real

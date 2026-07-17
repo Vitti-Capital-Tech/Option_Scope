@@ -2639,6 +2639,11 @@ async function startSingleAccountEngine(account) {
 
       // ── 2. Open new positions (entries) ─────────────────────────────────
       const newEntries = [];
+      // Only entries CONFIRMED written to active_positions enter the in-memory book.
+      // Any entry skipped by a guard or dropped after a failed or unwound insert is left
+      // out, so the book never diverges from the DB/exchange (no phantom or orphan
+      // positions). Populated in the entry-persist success branch below.
+      const persistedEntryIds = new Set();
 
       // LIVE sizing context: divide the allocated wallet balance into equal parts
       // (1 part of margin per position). Only for armed live accounts; paper skips this.
@@ -3124,28 +3129,48 @@ async function startSingleAccountEngine(account) {
               .eq('underlying', underlying).eq('type', t.type)
               .gt('sell_qty', 0);
             const typeCap = t.type === 'call' ? effectiveConfig.numberOfCalls : effectiveConfig.numberOfPuts;
-            if (!countError && (activeOfType?.length ?? 0) >= typeCap) {
+            // FAIL-CLOSED: if the count query errored (DB throttled/unreachable) we cannot
+            // trust the cap — skip rather than risk an over-cap entry we'd then have to
+            // unwind. A missed entry is far cheaper than placing real orders we can't
+            // safely persist.
+            if (countError) {
+              logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} skipped — count query failed (${countError.message}); failing safe.`);
+              continue;
+            }
+            if ((activeOfType?.length ?? 0) >= typeCap) {
               logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} blocked. Active count on DB: ${activeOfType?.length ?? 0}`);
               continue;
             }
 
             // DB-level diversification guard check removed
 
-            // Buy strike uniqueness per account
-            const { data: buyConflict } = await supabase.from('active_positions').select('id')
+            // Buy strike uniqueness per account. FAIL-CLOSED: a failed uniqueness read
+            // must NOT let a duplicate through to real order placement — the unique index
+            // would then reject the insert AFTER the Delta orders are live, orphaning
+            // them (exactly the 65500/67000 incident). Skip the entry on a query error.
+            const { data: buyConflict, error: buyConflictError } = await supabase.from('active_positions').select('id')
               .eq('account_id', accountState.id)
               .eq('underlying', underlying).eq('type', t.type)
               .eq('buy_strike', t.buyLeg.strike).limit(1);
+            if (buyConflictError) {
+              logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} skipped — buy-strike uniqueness check failed (${buyConflictError.message}); failing safe.`);
+              continue;
+            }
             if (buyConflict && buyConflict.length > 0) {
               logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} blocked. Buy strike conflict on DB.`);
               continue;
             }
 
-            // Sell strike uniqueness per account (ignore long-only held positions)
-            const { data: sellConflict } = await supabase.from('active_positions').select('id')
+            // Sell strike uniqueness per account (ignore long-only held positions).
+            // FAIL-CLOSED for the same reason as the buy-strike check above.
+            const { data: sellConflict, error: sellConflictError } = await supabase.from('active_positions').select('id')
               .eq('account_id', accountState.id)
               .eq('underlying', underlying).eq('type', t.type)
               .eq('sell_strike', t.sellLeg.strike).gt('sell_qty', 0).limit(1);
+            if (sellConflictError) {
+              logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} skipped — sell-strike uniqueness check failed (${sellConflictError.message}); failing safe.`);
+              continue;
+            }
             if (sellConflict && sellConflict.length > 0) {
               logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} blocked. Sell strike conflict on DB.`);
               continue;
@@ -3252,12 +3277,58 @@ async function startSingleAccountEngine(account) {
             }]);
 
             if (insertError) {
-              if (insertError.code === '23505') {
-                logWarn(`[${accountState.name}] DB Guard: Duplicate strike entry blocked for ${t.buyLeg.strike}/${t.sellLeg.strike}`);
+              // The LIVE orders (both legs + brackets + the resting short-exit) were
+              // ALREADY placed above. If we cannot persist the row, leaving them creates
+              // an ORPHAN — a live spread on Delta with no active_positions row, which the
+              // engine cannot manage and the (book-based) reconcile never cleans. So UNWIND
+              // everything we just placed and leave the account flat.
+              //
+              // Safe: `id` is effectively unique (timestamp+random), so a 23505 here is a
+              // buy/sell-STRIKE collision (a different, already-tracked position) — never
+              // an id collision — meaning THIS position's row does not exist and its legs
+              // are genuinely orphaned. Closing exactly the contracts we placed
+              // (reduce-only) removes only our contribution; Delta nets by symbol, so any
+              // pre-existing position on a shared symbol is left intact.
+              const why = insertError.code === '23505'
+                ? `duplicate strike (already-open position at ${t.buyLeg.strike}/${t.sellLeg.strike})`
+                : `insert failed (${insertError.message})`;
+              // Real orders exist ONLY for armed-real entries (openSpread + the resting
+              // short-exit no-op for paper/dry-run/disarmed). So the unwind + live-failure
+              // alert are gated on armed-live; other modes just log quietly (nothing was
+              // placed, so nothing to undo and no cause for an alert).
+              if (liveArmed && !live.dryRun) {
+                logError(`[${accountState.name}] ⛔ Entry NOT persisted — ${why}. Unwinding just-placed Delta orders for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} to avoid an orphan.`);
+                try {
+                  // 1. Cancel the resting short-exit buy-back, if it was placed.
+                  if (t.sellLeg?.exitOrderId != null) {
+                    await live.cancelStop({ id: t.sellLeg.exitOrderId, productId: t.sellLeg.exitProductId }).catch(() => {});
+                  }
+                  // 2. Flatten the short leg (buy to close), reduce-only market.
+                  if (t.sellQty > 0 && t.sellLeg?.symbol) {
+                    await live.closeSymbol({ symbol: t.sellLeg.symbol, side: 'buy', contracts: shortContracts(t.sellQty), tag: `${t.id}-ORPHX` }).catch(() => {});
+                  }
+                  // 3. Flatten the long leg (sell to close), reduce-only market.
+                  if ((t.buyLeg?.lotSize || 0) > 0 && t.buyLeg?.symbol) {
+                    await live.closeSymbol({ symbol: t.buyLeg.symbol, side: 'sell', contracts: longContracts(t.buyLeg), tag: `${t.id}-ORPHX` }).catch(() => {});
+                  }
+                  // 4. Flatten the hedge leg if one was opened.
+                  if (t.hedgeLeg?.symbol && (t.hedgeLeg.lotSize || 0) > 0) {
+                    await live.closeSymbol({ symbol: t.hedgeLeg.symbol, side: 'sell', contracts: longContracts(t.hedgeLeg), tag: `${t.id}-ORPHX` }).catch(() => {});
+                  }
+                } catch (unwindErr) {
+                  logError(`[${accountState.name}] ✖ Orphan unwind FAILED for ${t.id} — MANUAL cleanup may be needed on Delta:`, unwindErr?.message || unwindErr);
+                }
+                notifyLiveFailure({
+                  account: accountState.name,
+                  context: `Entry not persisted (${why}) — just-placed legs unwound to keep the account flat`,
+                  extra: `${t.type?.toUpperCase?.() || ''} ${t.buyLeg.strike}/${t.sellLeg.strike}`,
+                });
               } else {
-                logError(`[${accountState.name}] Insert error:`, insertError.message);
+                logWarn(`[${accountState.name}] Entry not persisted — ${why} for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike}. (No live orders placed; nothing to unwind.)`);
               }
             } else {
+              // Persisted OK — this entry may now enter the in-memory book.
+              persistedEntryIds.add(t.id);
               const originalLotSize = t.sellLeg.lotSize || 1;
               const ratioLong = t.buyLeg.lotSize / originalLotSize;
               log(`[${accountState.name}] 📥 ENTRY: ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} | Qty: ${ratioLong.toFixed(2)}:${t.sellQty} | Net: $${(t.sellQty * t.entrySellPrice - t.entryBuyPrice * ratioLong).toFixed(2)}`);
@@ -3267,8 +3338,11 @@ async function startSingleAccountEngine(account) {
         }
       }
 
-      // Update in-memory positions
-      positions = [...remaining, ...newEntries];
+      // Update in-memory positions. Include ONLY entries confirmed written to
+      // active_positions — any entry skipped by a guard or dropped after a failed/unwound
+      // insert stays out, so the in-memory book never diverges from the DB/exchange (no
+      // phantom or orphan positions).
+      positions = [...remaining, ...newEntries.filter(n => persistedEntryIds.has(n.id))];
 
       // Update heartbeat
       heartbeat.update({
