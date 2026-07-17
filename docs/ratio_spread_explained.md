@@ -164,14 +164,20 @@ $$\text{ROI} = \left(\frac{\text{ATM PnL}}{\text{Margin Requirement}}\right) \ti
 > [!NOTE]
 > When `atmRatioScaling` is enabled, the Net Premium is computed in the scanner from the scaled short quantity — `(Entry Sell Price * scaledSellQty) - Entry Buy Price` — and is the same value used by the Max Debit filter. The `ResultTable` displays this scanner-provided value directly rather than recomputing it.
 
-#### Nearest-Strike ATM Fallback Logic
+#### Bracket-and-Average ATM Fallback Logic
 
-To prevent empty cells (`—` or `$0.00`) when option chains are sparse (often the case on high-volatility or newly created expiries), the system implements a **nearest-strike fallback** during ATM intrinsic price checks:
-* **Lookup Sequence**: The scanner first searches for an exact match of the target strike. If the exact strike ticker does not exist, it identifies the closest available strike of the same option type (Call or Put) under the same expiry.
-* **Tight Point Tolerances**:
-  * **BTC**: Searches within a maximum tolerance of **$\pm 500$ points** from the target strike.
-  * **ETH**: Searches within a maximum tolerance of **$\pm 50$ points** from the target strike.
-* **Omission**: If no strike falls within these absolute point boundaries, the fallback returns `null`, and the corresponding spread's ATM P&L, Margin, and ROI% calculations are omitted (rendered as `—` in the UI).
+To prevent empty cells (`—` or `$0.00`) when option chains are sparse (often the case on high-volatility or newly created expiries), the scanner estimates the price at a **missing** target strike during ATM intrinsic price checks (`getTickerPrice` in [RatioSpreadScanner.jsx](file:///c:/Users/ASUS/Documents/Option_Scope/src/RatioSpreadScanner.jsx)):
+* **Lookup Sequence**: The scanner first searches for an **exact** match of the target strike. If it exists, that price is used directly.
+* **Bracket-and-average when the exact strike is missing**: The `sellIntrinsic` is priced at `ATM ± strikeDiff`, and a "weird" strike difference can land **between** two listed grid strikes — e.g. an `ATM ± 1100` target when only the `1000`- and `1200`-diff strikes are listed. Rather than **snapping to a single neighbour** (the old behaviour, which biased toward whichever side — usually the `1200` strike — and skewed the ATM ratio), the scanner now takes the **nearest listed strike below** and the **nearest listed strike above** the target and returns the **average of their prices** as a midpoint estimate. For the common symmetric case (`1100` exactly between `1000`/`1200`) this equals a linear interpolation.
+  * If only **one** side exists within tolerance, it falls back to that single strike (the old nearest behaviour).
+* **Tight Point Tolerances** (each side must be within):
+  * **BTC**: a maximum tolerance of **$\pm 500$ points** from the target strike.
+  * **ETH**: a maximum tolerance of **$\pm 50$ points** from the target strike.
+* **Omission**: If **no** strike falls within these absolute point boundaries on either side, the fallback returns `null`, and the corresponding spread's ATM P&L, Margin, and ROI% calculations are omitted (rendered as `—` in the UI).
+* **Primary effect — the ATM ratio**: Because only `sellIntrinsic` is priced at the (possibly missing) target strike — `buyIntrinsic` is always read at the listed ATM strike — this bracket-average mainly moves the **ATM ratio**, and hence the scaled short quantity and ATM P&L that flow from it.
+
+> [!NOTE]
+> This bracket-and-average is applied in the **scanner** (display/selection) only. The live **engine** (`getTickerPrice` in `paperTradingEngine.js`) still uses the single **nearest-strike snap** for entry sizing, live ATM-ratio scaling, and ATM-exit pricing. For a weird-diff spread the scanner's shown ATM ratio can therefore differ slightly from what the engine actually trades — port the same logic into the engine's sizing/scaling paths if that divergence needs to be closed.
 
 ### ATM Edge Floors (Min ATM P&L / Min ATM ROI)
 

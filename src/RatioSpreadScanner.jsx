@@ -514,19 +514,30 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
         return (val != null && val > 0) ? val : null;
       }
 
+      // The requested strike isn't listed — e.g. an ATM ± "weird" 1100 diff that falls
+      // between the 1000- and 1200-diff grid strikes. Instead of snapping to a single
+      // neighbour (which biased the ATM ratio toward whichever side we picked — usually the
+      // 1200 one), BRACKET it: take the nearest listed strike BELOW and the nearest ABOVE
+      // (within tolerance) and AVERAGE their prices as a midpoint estimate for the missing
+      // strike. If only one side exists, fall back to it (the old nearest behaviour). This
+      // mainly moves the ATM ratio, since sellIntrinsic is priced at this target strike.
       const maxTolerance = underlying === 'ETH' ? 50 : 500;
-      let nearest = null;
-      let minDist = Infinity;
+      const priceOf = (t) => {
+        if (!t) return null;
+        const v = t[priceField] ?? t.lastPrice ?? t.markPrice;
+        return (v != null && v > 0) ? v : null;
+      };
+      let below = null, belowDist = Infinity;
+      let above = null, aboveDist = Infinity;
       for (const t of ofType) {
-        const dist = Math.abs(t.strike - strike);
-        if (dist < minDist && dist <= maxTolerance) {
-          minDist = dist;
-          nearest = t;
-        }
+        const d = t.strike - strike;
+        if (d < 0 && -d <= maxTolerance && -d < belowDist) { belowDist = -d; below = t; }
+        if (d > 0 && d <= maxTolerance && d < aboveDist) { aboveDist = d; above = t; }
       }
-      if (!nearest) return null;
-      const val = nearest[priceField] ?? nearest.lastPrice ?? nearest.markPrice;
-      return (val != null && val > 0) ? val : null;
+      const pBelow = priceOf(below);
+      const pAbove = priceOf(above);
+      if (pBelow != null && pAbove != null) return (pBelow + pAbove) / 2;
+      return pBelow ?? pAbove;
     };
 
     const nextCalls = scanTickers(callTickers, atmStrike, getTickerPrice);
