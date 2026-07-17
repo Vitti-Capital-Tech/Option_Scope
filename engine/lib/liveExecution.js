@@ -452,20 +452,33 @@ export function createLiveExecutor(getCtx) {
         return { ok: true, res };
       } catch (e) {
         const msg = String(e.message || '');
-        // Two Delta rejections are EXPECTED here and are handled by the caller
-        // (syncExitBrackets), so they must NOT raise the generic "unprotected" alarm:
+        // Three Delta rejections are EXPECTED here and must NOT raise the generic
+        // "unprotected" alarm:
         //   • no_open_position    → the leg is already closed on Delta; nothing to protect.
         //                           reconcileOrphans books + removes it within ~90s.
         //   • *immediate_execution → the trigger level is already breached; a resting
         //                           bracket can't be placed, so the caller market-closes
         //                           the leg instead (the real protective exit).
+        //   • bracket_order_exists → the position ALREADY has a bracket, so the leg is in
+        //                           fact PROTECTED — the create just collided (e.g. the
+        //                           armMissingBrackets safety net acted on a stale orders
+        //                           snapshot that missed the existing bracket). Alarming
+        //                           "unprotected" here is a FALSE alarm; skip it. (Moving a
+        //                           bracket to a new level is syncExitBrackets' job, which
+        //                           cancels-then-recreates — this create-only path never
+        //                           needs to displace an existing bracket.)
         // Any OTHER error is genuinely unexpected → keep alarming (exit truly unprotected).
         const code = /no_open_position/i.test(msg) ? 'no_open_position'
           : /immediate_execution/i.test(msg) ? 'immediate_execution'
+          : /bracket_order_exists/i.test(msg) ? 'bracket_order_exists'
           : 'other';
-        logError(`[${accountName}] ✖ LIVE bracket set FAILED: ${summary}: ${e.message}`);
         if (code === 'other') {
+          logError(`[${accountName}] ✖ LIVE bracket set FAILED: ${summary}: ${e.message}`);
           notifyLiveFailure({ account: accountName, context: `Exit bracket (${String(side).toUpperCase()}) set FAILED on ${symbol} — risk exit may be unprotected`, error: e, extra: `[${tag}]` });
+        } else {
+          // Expected/benign (leg already protected, already closed, or level breached) —
+          // log calmly, no "FAILED" and no alarm.
+          log(`[${accountName}] ℹ️ LIVE bracket not set (${code}): ${summary} — expected/benign, no action needed.`);
         }
         return { ok: false, error: e.message, code };
       }

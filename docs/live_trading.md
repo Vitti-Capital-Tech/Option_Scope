@@ -205,8 +205,11 @@ add it to a group), then read the chat id from
   [collision guard & stuck-leg recovery](#same-product-collision-guard--stuck-leg-recovery))
 - Reduce-only **stop** placement failed — exit stop not resting
 - Exit **bracket** (TP/SL) set failed — risk exit may be unprotected. Fires **only for
-  unexpected errors**: the two expected resync rejections (`no_open_position`,
-  `bracket_order_immediate_execution`) are handled and no longer alarm (see
+  unexpected errors**: three expected rejections (`no_open_position`,
+  `bracket_order_immediate_execution`, and **`bracket_order_exists`** — the leg already has a
+  bracket, i.e. it is in fact PROTECTED, so alarming would be a false positive; this happens
+  when the `armMissingBrackets` safety net acts on a stale orders snapshot that missed the
+  existing bracket) are handled and no longer alarm (see
   [Resync failure fallbacks](#resync-failure-fallbacks))
 - **Protective market close failed** after a bracket would have fired immediately — the
   leg may still be open and unprotected. Also **suppressed** on `no_position_for_reduce_only`
