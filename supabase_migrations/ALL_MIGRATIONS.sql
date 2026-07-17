@@ -844,13 +844,22 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_active_positions_sell_strike_unique
 
 
 -- ─── 026_sell_strike_unique_partial.sql ───
--- A short bought back leaves a long-only remnant (sell_qty = 0) whose sell_strike stays
--- populated. Under the non-partial sell-strike index it kept reserving that strike, blocking
--- a legitimate re-entry that shorts the same strike/expiry with a different buy strike — and,
--- since the pre-order guard filters sell_qty > 0 but the index did not, it opened the
--- fail-open → orphan window. Scope the index to sell_qty > 0 so only ACTIVE shorts reserve a
--- sell strike; the guard now matches the index exactly. Genuine duplicates (two active shorts)
--- both carry sell_qty > 0 and stay blocked. The buy-strike index stays non-partial.
+-- Root cause of the 65500/67000 incident that 025 did NOT fix: the DB still carried the
+-- original no-expiry unique CONSTRAINTS unique_buy_strike_per_type / unique_sell_strike_per_type.
+-- 025 only DROP INDEX'd the new idx_* names and never dropped these constraints (a
+-- constraint-backed index can't be dropped with DROP INDEX — needs ALTER TABLE DROP
+-- CONSTRAINT), so the stricter no-expiry sell constraint kept rejecting cross-expiry same
+-- strikes. Drop both legacy constraints, then (re)create the expiry-aware indexes: buy-strike
+-- non-partial, sell-strike PARTIAL on sell_qty > 0 so long-only remnants don't reserve a
+-- strike and the index matches the pre-order guard (closing the orphan window). Two active
+-- shorts at the same strike/expiry still both carry sell_qty > 0 and stay blocked.
+ALTER TABLE public.active_positions DROP CONSTRAINT IF EXISTS unique_buy_strike_per_type;
+ALTER TABLE public.active_positions DROP CONSTRAINT IF EXISTS unique_sell_strike_per_type;
+DROP INDEX IF EXISTS public.unique_buy_strike_per_type;
+DROP INDEX IF EXISTS public.unique_sell_strike_per_type;
+DROP INDEX IF EXISTS public.idx_active_positions_buy_strike_unique;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_active_positions_buy_strike_unique
+    ON public.active_positions(account_id, underlying, type, expiry, buy_strike);
 DROP INDEX IF EXISTS public.idx_active_positions_sell_strike_unique;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_active_positions_sell_strike_unique
     ON public.active_positions(account_id, underlying, type, expiry, sell_strike)
