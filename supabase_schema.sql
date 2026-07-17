@@ -257,11 +257,15 @@ CREATE POLICY "Service role full access on active positions"
 CREATE INDEX IF NOT EXISTS idx_active_positions_account ON public.active_positions(account_id);
 CREATE INDEX IF NOT EXISTS idx_active_positions_type ON public.active_positions(account_id, type);
 
--- Unique constraints to prevent duplicate buy/sell strikes per account/underlying/type
-CREATE UNIQUE INDEX IF NOT EXISTS idx_active_positions_buy_strike_unique 
-    ON public.active_positions(account_id, underlying, type, buy_strike);
+-- Unique constraints to prevent duplicate buy/sell strikes per account/underlying/type/expiry.
+-- expiry MUST be part of the key: the same strike on two different expiries (e.g. 67000 on the
+-- 16th vs 67000 on the 17th during an expiry roll) are genuinely DIFFERENT positions. Keying
+-- without expiry made the second insert collide with 23505 — the "DB Guard: Duplicate strike
+-- entry blocked" false positive. (See migration 025.)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_active_positions_buy_strike_unique
+    ON public.active_positions(account_id, underlying, type, expiry, buy_strike);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_active_positions_sell_strike_unique
-    ON public.active_positions(account_id, underlying, type, sell_strike);
+    ON public.active_positions(account_id, underlying, type, expiry, sell_strike);
 
 -- Account-scoped Realtime subscriptions (filter: account_id=eq.X) must also receive
 -- DELETE events. Under default replica identity the old row carries only the primary

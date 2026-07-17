@@ -2799,16 +2799,20 @@ async function startSingleAccountEngine(account) {
             continue;
           }
 
-          // Buy strike conflict check (hedge overlays excluded — they don't block spreads)
+          // Buy strike conflict check (hedge overlays excluded — they don't block spreads).
+          // Scoped to the CURRENT expiry: the same strike on a different expiry (e.g. a
+          // leftover position from the expiry we just rolled off) is a different position and
+          // must NOT block this one. newEntries are all this cycle's config.expiry already.
           const buyConflictPos = remaining.find(
-            p => p.underlying === underlying && p.type === spreadType && !p.buyLeg?.isHedge && Number(p.buyLeg.strike) === bStrike
+            p => p.expiry === config.expiry && p.underlying === underlying && p.type === spreadType && !p.buyLeg?.isHedge && Number(p.buyLeg.strike) === bStrike
           ) || newEntries.find(
             p => p.underlying === underlying && p.type === spreadType && !p.buyLeg?.isHedge && Number(p.buyLeg.strike) === bStrike
           );
 
-          // Sell strike conflict check (ignore long-only held positions — their short leg is gone)
+          // Sell strike conflict check (ignore long-only held positions — their short leg is
+          // gone). Expiry-scoped for the same reason as the buy-strike check above.
           const sellConflictPos = remaining.find(
-            p => p.underlying === underlying && p.type === spreadType && p.sellQty > 0 && Number(p.sellLeg.strike) === sStrike
+            p => p.expiry === config.expiry && p.underlying === underlying && p.type === spreadType && p.sellQty > 0 && Number(p.sellLeg.strike) === sStrike
           ) || newEntries.find(
             p => p.underlying === underlying && p.type === spreadType && Number(p.sellLeg.strike) === sStrike
           );
@@ -3151,6 +3155,7 @@ async function startSingleAccountEngine(account) {
             const { data: buyConflict, error: buyConflictError } = await supabase.from('active_positions').select('id')
               .eq('account_id', accountState.id)
               .eq('underlying', underlying).eq('type', t.type)
+              .eq('expiry', config.expiry)
               .eq('buy_strike', t.buyLeg.strike).limit(1);
             if (buyConflictError) {
               logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} skipped — buy-strike uniqueness check failed (${buyConflictError.message}); failing safe.`);
@@ -3166,6 +3171,7 @@ async function startSingleAccountEngine(account) {
             const { data: sellConflict, error: sellConflictError } = await supabase.from('active_positions').select('id')
               .eq('account_id', accountState.id)
               .eq('underlying', underlying).eq('type', t.type)
+              .eq('expiry', config.expiry)
               .eq('sell_strike', t.sellLeg.strike).gt('sell_qty', 0).limit(1);
             if (sellConflictError) {
               logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} skipped — sell-strike uniqueness check failed (${sellConflictError.message}); failing safe.`);
