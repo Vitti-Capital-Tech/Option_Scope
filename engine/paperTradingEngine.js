@@ -3166,7 +3166,16 @@ async function startSingleAccountEngine(account) {
               continue;
             }
 
-            // Sell strike uniqueness per account (ignore long-only held positions).
+            // Sell strike uniqueness per account, scoped to positions with an ACTIVE short
+            // (sell_qty > 0). This MUST match the DB unique index, which is partial
+            // (WHERE sell_qty > 0, migration 026): a long-only remnant keeps its sell_strike
+            // populated after the short is bought back, but it holds no active short there,
+            // so that strike is free to short again (possibly paired with a different buy
+            // strike). Because the partial index also ignores remnants, this read seeing
+            // exactly what the index enforces means no long-only remnant can trigger a
+            // post-order 23505 — closing the orphan window while still allowing re-entry.
+            // A genuine duplicate (two active shorts at the same strike/expiry) both carry
+            // sell_qty > 0, so it is still caught here and by the index.
             // FAIL-CLOSED for the same reason as the buy-strike check above.
             const { data: sellConflict, error: sellConflictError } = await supabase.from('active_positions').select('id')
               .eq('account_id', accountState.id)

@@ -264,8 +264,17 @@ CREATE INDEX IF NOT EXISTS idx_active_positions_type ON public.active_positions(
 -- entry blocked" false positive. (See migration 025.)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_active_positions_buy_strike_unique
     ON public.active_positions(account_id, underlying, type, expiry, buy_strike);
+-- The sell-strike index is PARTIAL (WHERE sell_qty > 0, migration 026): only positions with
+-- an ACTIVE short reserve a sell strike. A long-only remnant (short bought back, sell_qty = 0)
+-- keeps its sell_strike populated but holds no active short, so it must NOT block a new spread
+-- that shorts the same strike/expiry with a different buy strike. Scoping to sell_qty > 0 also
+-- keeps the index in lockstep with the pre-order guard (which filters sell_qty > 0), so a
+-- remnant can never trigger a post-order 23505 orphan. Genuine duplicates (two active shorts)
+-- both carry sell_qty > 0 and remain blocked. The buy-strike index stays non-partial: a
+-- remnant still holds a real long at its buy strike.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_active_positions_sell_strike_unique
-    ON public.active_positions(account_id, underlying, type, expiry, sell_strike);
+    ON public.active_positions(account_id, underlying, type, expiry, sell_strike)
+    WHERE sell_qty > 0;
 
 -- Account-scoped Realtime subscriptions (filter: account_id=eq.X) must also receive
 -- DELETE events. Under default replica identity the old row carries only the primary

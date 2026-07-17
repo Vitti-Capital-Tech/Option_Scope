@@ -841,3 +841,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_active_positions_buy_strike_unique
     ON public.active_positions(account_id, underlying, type, expiry, buy_strike);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_active_positions_sell_strike_unique
     ON public.active_positions(account_id, underlying, type, expiry, sell_strike);
+
+
+-- ─── 026_sell_strike_unique_partial.sql ───
+-- A short bought back leaves a long-only remnant (sell_qty = 0) whose sell_strike stays
+-- populated. Under the non-partial sell-strike index it kept reserving that strike, blocking
+-- a legitimate re-entry that shorts the same strike/expiry with a different buy strike — and,
+-- since the pre-order guard filters sell_qty > 0 but the index did not, it opened the
+-- fail-open → orphan window. Scope the index to sell_qty > 0 so only ACTIVE shorts reserve a
+-- sell strike; the guard now matches the index exactly. Genuine duplicates (two active shorts)
+-- both carry sell_qty > 0 and stay blocked. The buy-strike index stays non-partial.
+DROP INDEX IF EXISTS public.idx_active_positions_sell_strike_unique;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_active_positions_sell_strike_unique
+    ON public.active_positions(account_id, underlying, type, expiry, sell_strike)
+    WHERE sell_qty > 0;
