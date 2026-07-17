@@ -889,6 +889,30 @@ async function startSingleAccountEngine(account) {
   // double-place a bracket on the same leg before Delta's order list reflects the first.
   const armingSymbols = new Set();
 
+  // symbol → Date.now() of the last time the ENGINE placed/moved that leg's bracket
+  // (syncExitBrackets / armMissingBrackets). `adoptManualBrackets` uses this to skip a
+  // leg whose Delta order list may still show the OLD bracket price right after an
+  // engine-initiated move — so a propagation lag isn't misread as a manual change.
+  const engineBracketAt = new Map();
+  const recentEngineBracket = (sym, now) => {
+    const t = engineBracketAt.get(sym);
+    return t != null && (now - t) < 25000;
+  };
+
+  // Reverse-reconcile (exchange = truth, DB = fallback): symbols the engine finds OPEN on
+  // Delta with NO tracked position (orphans). `orphanSeenAt` gives each a grace window so
+  // the entry race (orders placed before the DB row inserts) and startup book-load aren't
+  // mistaken for orphans; `orphanHandled` latches a symbol once it's been protected/flagged
+  // so a still-open orphan isn't re-actioned every sweep. Both are pruned when the symbol
+  // stops being an orphan (tracked now, or gone flat), so the grace restarts if it reappears.
+  const orphanSeenAt = new Map();
+  const orphanHandled = new Set();
+
+  // Partial-reduction detection: symbol → { contracts, at } of the reduced size last seen,
+  // so a reduction is only booked once it has been STABLE across the grace window (a
+  // transient mid-fill of the engine's own reduce order is not a manual reduction).
+  const reduceSeen = new Map();
+
   // Safety net (armed real): a leg that is OPEN on Delta but has NO resting protective
   // bracket/stop is UNPROTECTED — e.g. a position pushed by an older bug before its
   // TP/SL was attached, or a bracket that got cancelled/lost. Re-arm it from the current
@@ -931,8 +955,9 @@ async function startSingleAccountEngine(account) {
         logWarn(`[${accountState.name}] 🛡️ Unprotected ${isTp ? 'long TP' : 'short SL'} on Delta: ${symbol} (${label}) has no resting bracket → arming @ index ${level}.`);
         const r = await live.changePositionBracket({ productId: pidBySymbol[symbol], symbol, side, stopPrice: level, tag });
         if (r.ok && !r.skipped && !r.dryRun) {
-          if (isTp) pos.buyLeg = { ...pos.buyLeg, brkLevel: level };
-          else pos.sellLeg = { ...pos.sellLeg, brkLevel: level };
+          engineBracketAt.set(symbol, Date.now()); // engine just set this bracket — shield from manual-adopt lag
+          if (isTp) pos.buyLeg = { ...pos.buyLeg, brkLevel: level, brkComputed: level };
+          else pos.sellLeg = { ...pos.sellLeg, brkLevel: level, brkComputed: level };
           await supabase.from('active_positions').update({
             buy_leg: JSON.stringify(pos.buyLeg), sell_leg: JSON.stringify(pos.sellLeg),
           }).eq('id', pos.id);
@@ -973,6 +998,476 @@ async function startSingleAccountEngine(account) {
       if (pos.sellQty > 0 && shortSize > 0 && pos.sellLeg?.symbol && !bracketBySymbol[pos.sellLeg.symbol]) {
         await armLeg(pos, pos.sellLeg.symbol, 'sl', level);
       }
+    }
+  }
+
+  // Reflect a TP/SL price the user changed DIRECTLY on Delta back into the engine.
+  // The engine treats its computed `brkLevel` as authoritative, so a manual bracket
+  // edit was previously invisible (and silently overwritten on the next config sync).
+  // Here we read the ACTUAL resting bracket/stop trigger level per leg symbol and, when
+  // it differs from the stored `brkLevel`, adopt the Delta value so the engine's state,
+  // the dashboard, and Delta agree. Guards mirror armMissingBrackets: entry must have
+  // settled (60s), and a leg the engine itself just (re)armed is skipped (25s) so a
+  // Delta order-list propagation lag isn't misread as a manual change.
+  // NOTE (policy): an explicit config/schedule change still WINS — syncExitBrackets
+  // recomputes the level and moves the bracket, overwriting the adopted manual value.
+  async function adoptManualBrackets(liveOrders) {
+    if (!Array.isArray(liveOrders) || liveOrders.length === 0) return;
+    const levelBySymbol = {};
+    for (const o of liveOrders) {
+      const isBracket = !!(o.bracket_order || o.stop_order_type
+        || o.bracket_stop_loss_price != null || o.bracket_take_profit_price != null);
+      if (!isBracket || !o.product_symbol) continue;
+      const lvl = Number(o.stop_price ?? o.bracket_stop_loss_price ?? o.bracket_take_profit_price);
+      if (Number.isFinite(lvl) && lvl > 0) levelBySymbol[o.product_symbol] = lvl;
+    }
+    const now = Date.now();
+    for (const pos of [...positions]) {
+      if (pos.underlying !== config.underlying) continue;
+      if (now - new Date(pos.entryTime).getTime() < 60000) continue; // let entry settle
+      const label = `${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''}`;
+      let persist = false;
+      // Long-leg TP: adopt only when the engine had a level to compare (bracket was
+      // engine-managed) — a null brkLevel means "never armed", which armMissingBrackets owns.
+      const lt = levelBySymbol[pos.buyLeg?.symbol];
+      if ((pos.buyLeg?.lotSize || 0) > 0 && pos.buyLeg?.symbol && lt != null
+        && pos.buyLeg.brkLevel != null && !armingSymbols.has(pos.buyLeg.symbol)
+        && !recentEngineBracket(pos.buyLeg.symbol, now) && Math.abs(lt - pos.buyLeg.brkLevel) > 0.5) {
+        logWarn(`[${accountState.name}] 🔄 Manual TP change on Delta: ${label} · ${pos.buyLeg.symbol} bracket @ index ${lt} (engine had ${pos.buyLeg.brkLevel}) → adopting Delta value.`);
+        pos.buyLeg = { ...pos.buyLeg, brkLevel: lt };
+        notifyTrade({ title: '🔄 TP adopted from Delta', detail: `${label} · long TP now index ${lt} (changed manually on Delta)` });
+        persist = true;
+      }
+      // Short-leg SL.
+      const ls = levelBySymbol[pos.sellLeg?.symbol];
+      if (pos.sellQty > 0 && pos.sellLeg?.symbol && ls != null
+        && pos.sellLeg.brkLevel != null && !armingSymbols.has(pos.sellLeg.symbol)
+        && !recentEngineBracket(pos.sellLeg.symbol, now) && Math.abs(ls - pos.sellLeg.brkLevel) > 0.5) {
+        logWarn(`[${accountState.name}] 🔄 Manual SL change on Delta: ${label} · ${pos.sellLeg.symbol} bracket @ index ${ls} (engine had ${pos.sellLeg.brkLevel}) → adopting Delta value.`);
+        pos.sellLeg = { ...pos.sellLeg, brkLevel: ls };
+        notifyTrade({ title: '🔄 SL adopted from Delta', detail: `${label} · short SL now index ${ls} (changed manually on Delta)` });
+        persist = true;
+      }
+      if (persist) {
+        try {
+          await supabase.from('active_positions').update({
+            buy_leg: JSON.stringify(pos.buyLeg), sell_leg: JSON.stringify(pos.sellLeg),
+          }).eq('id', pos.id);
+        } catch (e) { logError(`[${accountState.name}] adoptManualBrackets persist failed for ${pos.id}:`, e); }
+      }
+    }
+  }
+
+  // Dangling long (armed real): the SHORT leg went flat on Delta — a manual/external
+  // close of just the short — while its partner LONG is still open and the engine still
+  // thinks the short is on. Mirror the engine-driven resting short-exit: book the short
+  // close (idempotent -SE row, shared trade_id so it can't double-book), convert the row
+  // to long-only, and place the resting SELL ladder so the held long scales out in slices
+  // exactly as it would have had the engine bought the short back itself. The short exit
+  // price is unknown (the fill wasn't ours), so it's booked at the short's current mark —
+  // consistent with how reconcileOrphans books other externally-closed legs.
+  async function externalShortExitToLongLadder(pos) {
+    lastDbWrite = Date.now(); // hold fetchActivePositions off during the convert+persist
+    const tSell = tickerData[pos.sellLeg.symbol];
+    const tBuy = tickerData[pos.buyLeg.symbol];
+    const exitPx = tSell?.markPrice ?? tSell?.ask ?? tSell?.lastPrice ?? pos.entrySellPrice;
+    const longBid = tBuy?.bid ?? tBuy?.markPrice ?? tBuy?.lastPrice ?? pos.entryBuyPrice;
+    const shortLot = pos.sellLeg.lotSize || 1;
+    const gross = (pos.entrySellPrice - exitPx) * pos.sellQty * shortLot;
+    const entryFee = Math.min(pos.entryFee || 0, calculateFee(pos.entrySellPrice, pos.entrySpotPrice, pos.sellQty, shortLot));
+    const exitFee = calculateFee(exitPx, spotPrice, pos.sellQty, shortLot);
+    const net = gross - (entryFee + exitFee);
+    try {
+      await supabase.from('trade_history').upsert([{
+        trade_id: `${pos.id}-SE`, underlying: pos.underlying, expiry: pos.expiry, type: pos.type,
+        buy_leg: JSON.stringify({ ...pos.buyLeg, lotSize: 0 }),
+        sell_leg: JSON.stringify({ ...pos.sellLeg, exitIv: tSell?.askIv ?? tSell?.iv ?? null }),
+        sell_qty: pos.sellQty, strike_diff: pos.strikeDiff,
+        entry_time: pos.entryTime.toISOString(),
+        entry_buy_price: pos.entryBuyPrice, entry_sell_price: pos.entrySellPrice, entry_spot_price: pos.entrySpotPrice,
+        margin: pos.margin, exit_time: new Date().toISOString(),
+        exit_buy_price: longBid, exit_sell_price: exitPx, exit_spot_price: spotPrice,
+        realized_gross_pnl: gross, realized_net_pnl: net, exit_fee: exitFee, total_fees: entryFee + exitFee,
+        exit_reason: `Short Leg Exit (external/manual on Delta, holding long ${pos.buyLeg.strike})`,
+        is_partial: true, account_id: accountState.id,
+      }], { onConflict: 'trade_id', ignoreDuplicates: true });
+    } catch (e) { logError(`[${accountState.name}] External short-exit booking failed for ${pos.id}:`, e); }
+
+    // Convert to long-only and place the fixed resting SELL ladder (same shape as the
+    // engine-driven path in handleLiveRestingExit). The short's SL bracket already
+    // auto-cancelled on Delta when the short position closed.
+    pos.entryFee = Math.max(0, (pos.entryFee || 0) - entryFee);
+    pos.sellLeg = { ...pos.sellLeg, lotSize: 0, exitOrderId: null };
+    pos.sellQty = 0;
+    pos.accumulatedSellPnl = (pos.accumulatedSellPnl || 0) + net;
+    const baseLot = pos.buyLeg.lotSize || 0;
+    const S = longContracts(pos.buyLeg);
+    const levels = fixedLadderLevels(longBid);
+    const alloc = splitContracts(S, levels.length);
+    const ladderOrders = [];
+    for (let i = 0; i < alloc.length; i++) {
+      const res = await live.closeLeg({
+        symbol: pos.buyLeg.symbol, side: 'sell', contracts: alloc[i], price: levels[i], tag: `${pos.id}-LE-${i}`,
+      });
+      ladderOrders.push({
+        stage: i, level: levels[i], contracts: alloc[i],
+        lot: S > 0 ? Number((baseLot * alloc[i] / S).toFixed(4)) : baseLot,
+        orderId: res?.order?.id ?? null, productId: res?.order?.product_id ?? null, filled: false,
+      });
+    }
+    pos.buyLeg = { ...pos.buyLeg, longExitBaseLot: baseLot, ladderOrders };
+    pos.margin = longOnlyMargin(pos);
+    try {
+      await supabase.from('active_positions').update({
+        buy_leg: JSON.stringify(pos.buyLeg), sell_leg: JSON.stringify(pos.sellLeg),
+        sell_qty: 0, entry_fee: pos.entryFee, margin: pos.margin, accumulated_sell_pnl: pos.accumulatedSellPnl,
+      }).eq('id', pos.id);
+    } catch (e) { logError(`[${accountState.name}] External short-exit persist failed for ${pos.id}:`, e); }
+    log(`[${accountState.name}] ✂️ EXTERNAL SHORT EXIT (manual on Delta): ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | booked @ mark $${exitPx} | long ladder ${alloc.join('/')} contracts @ [${levels.join(',')}] | PnL $${net.toFixed(2)}`);
+    notifyTrade({ title: '✂️ SHORT EXIT (manual on Delta)', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike} · short closed on Delta → converted to long-only, ladder placed`, pnl: net });
+  }
+
+  // Reverse-reconcile (armed real) — exchange is the source of truth, DB is the fallback.
+  // reconcileOrphans handles the book→exchange direction (a tracked row gone from Delta).
+  // This handles the OTHER direction: a leg OPEN on Delta that the engine does NOT track
+  // (no active_positions row) — an orphan from a DB outage, a failed/rolled-back entry
+  // insert, or a wiped book. Per-orphan policy:
+  //   • LONG orphan (known symbol, buy strike free) → ADOPT as a long-only position and
+  //     manage it (real Delta entry_price → accurate PnL base; ladder + TP bracket placed).
+  //   • NAKED SHORT orphan → not a valid strategy state (a short must be long-protected) →
+  //     reduce-only market close + alert, same policy as dangling-short recovery.
+  //   • Can't adopt (unknown symbol, or buy strike already taken) → PROTECT + ALERT:
+  //     arm the exit bracket so it can't run an unbounded loss, and notify.
+  // Reuses this pass's positions()/orders() snapshot (no extra fetch); a 120s grace guards
+  // the entry race (orders hit Delta before the DB row is inserted) and startup book-load.
+  async function protectOrphanExchangePositions(livePos, liveOrders) {
+    const now = Date.now();
+    // Every symbol the engine currently tracks (any leg of any tracked position).
+    const tracked = new Set();
+    for (const p of positions) {
+      if (p.buyLeg?.symbol) tracked.add(p.buyLeg.symbol);
+      if (p.sellLeg?.symbol) tracked.add(p.sellLeg.symbol);
+      if (p.hedgeLeg?.symbol) tracked.add(p.hedgeLeg.symbol);
+    }
+    const pidBySymbol = {};
+    for (const p of livePos) pidBySymbol[p.product_symbol] = p.product_id;
+    const bracketBySymbol = {};
+    const orderSymbols = new Set(); // ANY working order (limit or stop) rests on the symbol
+    if (Array.isArray(liveOrders)) {
+      for (const o of liveOrders) {
+        if (o.product_symbol) orderSymbols.add(o.product_symbol);
+        const isBracket = !!(o.bracket_order || o.stop_order_type
+          || o.bracket_stop_loss_price != null || o.bracket_take_profit_price != null);
+        if (isBracket && o.product_symbol) bracketBySymbol[o.product_symbol] = true;
+      }
+    }
+    const activeSchedule = getActiveSchedule();
+    const effExit = {
+      exitType: activeSchedule?.exitType ?? config.exitType,
+      exitPoints: activeSchedule?.exitPoints ?? config.exitPoints,
+    };
+
+    const liveOrphanSymbols = new Set();
+    for (const p of livePos) {
+      const size = Number(p.size) || 0;
+      if (size === 0) continue;
+      const symbol = p.product_symbol;
+      if (!symbol || tracked.has(symbol) || armingSymbols.has(symbol)) continue;
+      liveOrphanSymbols.add(symbol);
+
+      // Grace: only act once the symbol has been orphan for the whole window (entry places
+      // orders before the DB row, and the book reloads periodically — neither is an orphan).
+      const seen = orphanSeenAt.get(symbol);
+      if (seen == null) { orphanSeenAt.set(symbol, now); continue; }
+      if (now - seen < 120000) continue;
+      if (orphanHandled.has(symbol)) continue; // already handled — don't re-action
+
+      const meta = symbolMeta[symbol];
+      const sideLong = size > 0;
+      const contracts = Math.abs(Math.round(size));
+
+      // NAKED SHORT → close reduce-only (invalid state; a short must be long-protected).
+      if (!sideLong) {
+        logWarn(`[${accountState.name}] 🛰️ Orphan NAKED SHORT ${symbol} (size ${size}) — no DB row & shorts must be long-protected → reduce-only market close.`);
+        const c = await live.closeSymbol({ symbol, side: 'buy', contracts, tag: `ORPHAN-SHORTX-${symbol}` });
+        const done = !!(c.ok || c.dryRun || c.skipped || c.alreadyClosed);
+        if (done) orphanHandled.add(symbol);
+        notifyLiveFailure({ account: accountState.name, context: `Orphan naked short ${symbol} (size ${size}) — no DB row → reduce-only close ${done ? 'sent' : 'FAILED, may still be OPEN'}.`, error: { message: c.error || 'orphan-naked-short' } });
+        continue;
+      }
+
+      // LONG orphan of a KNOWN symbol with a FREE buy strike → adopt & manage.
+      if (meta) {
+        const collision = positions.some(pp =>
+          pp.type === meta.type
+          && (pp.expiry ?? config.expiry) === (meta.expiry ?? config.expiry)
+          && Number(pp.buyLeg?.strike) === Number(meta.strike));
+        if (!collision) {
+          armingSymbols.add(symbol);
+          try {
+            const adopted = await adoptLongOrphan(p, meta, effExit, {
+              alreadyBracketed: !!bracketBySymbol[symbol],
+              hasRestingOrder: orderSymbols.has(symbol),
+            });
+            if (adopted) { orphanHandled.add(symbol); continue; }
+            // adoption failed (insert collision/other) → fall through to protect+alert
+          } finally {
+            armingSymbols.delete(symbol);
+          }
+        }
+      }
+
+      // Can't adopt (unknown symbol, strike collision, or adopt failed) → PROTECT + ALERT.
+      if (!meta) {
+        logWarn(`[${accountState.name}] 🛰️ UNPROTECTED orphan ${symbol} (size ${size}) not in symbolMeta → cannot compute a level; ALERT only.`);
+        notifyLiveFailure({ account: accountState.name, context: `UNPROTECTED untracked Delta position ${symbol} (size ${size}) — no DB row and symbol unknown to the engine. Close/protect manually NOW.`, error: { message: 'orphan-unprotected-unknown' } });
+        continue;
+      }
+      const level = computeIndexTriggerLevel(meta.type, meta.strike, effExit);
+      if (bracketBySymbol[symbol]) {
+        logWarn(`[${accountState.name}] 🛰️ Orphan long ${symbol} (size ${size}) — couldn't adopt (strike taken) but IS bracket-protected → alerting, not managing.`);
+        notifyLiveFailure({ account: accountState.name, context: `Untracked Delta long ${symbol} (size ${size}) — buy strike ${meta.strike} already tracked, so not adopted; it is bracket-protected but unmanaged. Review manually.`, error: { message: 'orphan-collision-protected' } });
+        orphanHandled.add(symbol);
+        continue;
+      }
+      const tag = `ORPHAN-TP-${symbol}`;
+      armingSymbols.add(symbol);
+      try {
+        logWarn(`[${accountState.name}] 🛰️ UNPROTECTED orphan long ${symbol} (size ${size}) → arming protective TP bracket @ index ${level}.`);
+        const r = await live.changePositionBracket({ productId: pidBySymbol[symbol], symbol, side: 'tp', stopPrice: level, tag });
+        if (r.ok && !r.skipped && !r.dryRun) {
+          orphanHandled.add(symbol);
+          notifyLiveFailure({ account: accountState.name, context: `UNPROTECTED orphan long ${symbol} (size ${size}) — no DB row. Engine armed a protective bracket @ index ${level}; it is NOT being managed. Review/close manually.`, error: { message: 'orphan-protected' } });
+        } else if (!r.ok && r.code === 'immediate_execution') {
+          const c = await live.closeSymbol({ symbol, side: 'sell', contracts, tag: `${tag}-immed` });
+          const done = !!(c.ok || c.dryRun || c.skipped || c.alreadyClosed);
+          if (done) orphanHandled.add(symbol);
+          notifyLiveFailure({ account: accountState.name, context: `UNPROTECTED orphan ${symbol} (size ${size}) level ${level} already breached → protective MARKET close sell ${contracts}x — ${done ? 'done' : 'FAILED, may still be OPEN'}.`, error: { message: c.error || 'orphan-immediate' } });
+        }
+      } catch (e) {
+        logError(`[${accountState.name}] protectOrphanExchangePositions failed for ${symbol}:`, e);
+      } finally {
+        armingSymbols.delete(symbol);
+      }
+    }
+
+    // Prune symbols that are no longer orphan so the grace window / latch reset cleanly.
+    for (const sym of [...orphanSeenAt.keys()]) if (!liveOrphanSymbols.has(sym)) orphanSeenAt.delete(sym);
+    for (const sym of [...orphanHandled]) if (!liveOrphanSymbols.has(sym)) orphanHandled.delete(sym);
+  }
+
+  // Adopt a LONG orphan (a long leg open on Delta with no engine row) as a managed long-only
+  // position. Real Delta `entry_price` gives an accurate PnL base; the index spot at entry
+  // isn't recoverable so the CURRENT spot is used as an approximation (affects fee/display
+  // only, not the (exit−entry) core PnL). The row is INSERTED FIRST — before any new order —
+  // so a failed insert can never create a fresh orphan. Returns true iff a row was created.
+  async function adoptLongOrphan(p, meta, effExit, { alreadyBracketed, hasRestingOrder }) {
+    const symbol = p.product_symbol;
+    const contracts = Math.abs(Math.round(Number(p.size) || 0));
+    const t = tickerData[symbol];
+    const longBid = t?.bid ?? t?.markPrice ?? t?.lastPrice ?? null;
+    const entryPx = Number(p.entry_price) || longBid || 0;
+    if (contracts < 1 || !(entryPx > 0)) {
+      logWarn(`[${accountState.name}] 🧬 Adopt skipped ${symbol}: contracts ${contracts} / entry ${entryPx} not usable.`);
+      return false;
+    }
+    const level = computeIndexTriggerLevel(meta.type, meta.strike, effExit);
+    // lotSize is modelled as 1 notional unit per contract (originalLotSize 1 → longContracts
+    // returns the real contract count); contractValue drives the live margin basis.
+    const pos = {
+      id: `ADOPT-${symbol}-${Date.now().toString(36)}`,
+      underlying: config.underlying, expiry: meta.expiry ?? config.expiry, type: meta.type,
+      buyLeg: {
+        symbol, strike: meta.strike, lotSize: contracts, originalLotSize: 1,
+        contractValue: meta.contractValue ?? null, longExitBaseLot: contracts,
+        ladderOrders: [], brkLevel: level, brkComputed: level,
+      },
+      sellLeg: { symbol: null, strike: null, lotSize: 0 },
+      sellQty: 0, strikeDiff: 0,
+      entryTime: new Date(), entryBuyPrice: entryPx, entrySellPrice: 0, entrySpotPrice: spotPrice,
+      margin: 0, entryFee: 0, accumulatedSellPnl: 0,
+      _everOpenOnDelta: true, _adopted: true,
+    };
+    pos.margin = longOnlyMargin(pos);
+    lastDbWrite = Date.now(); // hold fetchActivePositions off while we insert + wire the ladder
+    const { error } = await supabase.from('active_positions').insert([{
+      id: pos.id, underlying: pos.underlying, expiry: pos.expiry, type: pos.type,
+      buy_leg: JSON.stringify(pos.buyLeg), sell_leg: JSON.stringify(pos.sellLeg), hedge_leg: null,
+      sell_qty: 0, strike_diff: 0, entry_time: pos.entryTime.toISOString(),
+      entry_buy_price: pos.entryBuyPrice, entry_sell_price: 0, entry_spot_price: pos.entrySpotPrice,
+      margin: pos.margin, entry_fee: 0, accumulated_sell_pnl: 0,
+      buy_strike: meta.strike, sell_strike: null, account_id: accountState.id,
+    }]);
+    if (error) {
+      logWarn(`[${accountState.name}] 🧬 Adopt insert failed for ${symbol} (${error.message}) → will protect+alert instead.`);
+      return false;
+    }
+    positions.push(pos); // now in the book → managed by the normal long-only exit path
+    engineBracketAt.set(symbol, Date.now()); // shield the adopt-armed bracket from manual-adopt lag
+    try {
+      // Ensure a protective TP bracket, then place the resting SELL ladder so the long scales
+      // out like any long-only. Skip the ladder if orders already rest on the symbol (leave
+      // them as-is; reduce-only everywhere caps risk) so we never double the resting sells.
+      if (!alreadyBracketed) {
+        await live.changePositionBracket({ productId: p.product_id, symbol, side: 'tp', stopPrice: level, tag: `${pos.id}-TP-adopt` });
+      }
+      if (!hasRestingOrder) {
+        const S = longContracts(pos.buyLeg);
+        const levels = fixedLadderLevels(longBid ?? entryPx);
+        const alloc = splitContracts(S, levels.length);
+        const ladderOrders = [];
+        for (let i = 0; i < alloc.length; i++) {
+          const res = await live.closeLeg({ symbol, side: 'sell', contracts: alloc[i], price: levels[i], tag: `${pos.id}-LE-${i}` });
+          ladderOrders.push({
+            stage: i, level: levels[i], contracts: alloc[i],
+            lot: S > 0 ? Number((contracts * alloc[i] / S).toFixed(4)) : contracts,
+            orderId: res?.order?.id ?? null, productId: res?.order?.product_id ?? null, filled: false,
+          });
+        }
+        pos.buyLeg = { ...pos.buyLeg, ladderOrders };
+        await supabase.from('active_positions').update({ buy_leg: JSON.stringify(pos.buyLeg) }).eq('id', pos.id);
+      }
+    } catch (e) {
+      logError(`[${accountState.name}] 🧬 Adopt post-insert setup failed for ${pos.id} (${symbol}) — row exists, managed by catch-all/bracket:`, e);
+    }
+    log(`[${accountState.name}] 🧬 ADOPTED orphan long ${symbol} (${contracts} contract(s) @ entry ${entryPx}) as long-only [${pos.id}] — managing via ladder + TP bracket.`);
+    notifyTrade({ title: '🧬 ORPHAN ADOPTED', detail: `Long ${meta.strike} · ${symbol} · ${contracts} contract(s) @ entry ${entryPx} → now managed as long-only` });
+    return true;
+  }
+
+  // Partial-reduction reconcile (armed real): the user reduced a leg's SIZE directly on
+  // Delta (still open, just smaller). Bring the engine's tracked size DOWN to match and book
+  // the closed slice — no order is placed (the reduction already happened on Delta), so the
+  // only risk is mis-booking, guarded three ways:
+  //   • Skip a leg that carries a resting reduce-only LIMIT exit (-SEX / -LE): a fill there
+  //     reduces size too and is booked by its OWN path — acting here would double-book. A
+  //     BRACKET/stop is fine (it closes the WHOLE leg on trigger, never a partial), so a
+  //     normally-bracketed leg is still eligible.
+  //   • 90s position age + a STABLE-reduction grace: the same reduced size must persist across
+  //     the window, so a transient mid-fill of the engine's own reduce order isn't mistaken
+  //     for a manual reduction (the engine books + shrinks its book within ~1s, before grace).
+  //   • Deterministic trade_id keyed on the remaining contract count → idempotent upsert, so a
+  //     re-run can't double-book and step-wise reductions each book exactly once.
+  async function reconcilePartialReductions(sizeBySymbol, liveOrders) {
+    const now = Date.now();
+    // Symbols carrying a resting plain-LIMIT order (our -SEX buy-back / -LE ladder) — NOT
+    // brackets/stops. Only these can partially reduce size by filling, so only these block us.
+    const hasLimitExit = new Set();
+    if (Array.isArray(liveOrders)) {
+      for (const o of liveOrders) {
+        const isBracket = !!(o.bracket_order || o.bracket_stop_loss_price != null || o.bracket_take_profit_price != null);
+        const isStop = !!(o.stop_order_type || o.stop_price != null);
+        if (!isBracket && !isStop && o.product_symbol) hasLimitExit.add(o.product_symbol);
+      }
+    }
+    const seenNow = new Set();
+    for (const pos of [...positions]) {
+      if (pos.underlying !== config.underlying) continue;
+      if (now - new Date(pos.entryTime).getTime() < 90000) continue;
+
+      const legs = [];
+      if ((pos.buyLeg?.lotSize || 0) > 0 && pos.buyLeg?.symbol) {
+        legs.push({ tag: 'L', symbol: pos.buyLeg.symbol, expected: longContracts(pos.buyLeg) });
+      }
+      if (pos.sellQty > 0 && pos.sellLeg?.symbol) {
+        legs.push({ tag: 'S', symbol: pos.sellLeg.symbol, expected: shortContracts(pos.sellQty) });
+      }
+      for (const leg of legs) {
+        const key = `${leg.tag}:${leg.symbol}`;
+        const rawSize = sizeBySymbol[leg.symbol];
+        // Absent from Delta → full close (orphan path handles it), not a partial. Skip.
+        const actual = rawSize == null ? leg.expected : Math.abs(Math.round(Number(rawSize)));
+        const isPartial = !hasLimitExit.has(leg.symbol) && actual > 0 && actual < leg.expected;
+        if (!isPartial) { reduceSeen.delete(key); continue; }
+        seenNow.add(key);
+        const s = reduceSeen.get(key);
+        if (!s || s.contracts !== actual) { reduceSeen.set(key, { contracts: actual, at: now }); continue; }
+        if (now - s.at < 90000) continue; // wait for the reduction to prove stable
+        reduceSeen.delete(key);
+        if (leg.tag === 'L') await bookExternalReduction(pos, 'long', actual, leg.expected);
+        else await bookExternalReduction(pos, 'short', actual, leg.expected);
+      }
+    }
+    // Drop stale trackers for legs no longer mid-reduction.
+    for (const k of [...reduceSeen.keys()]) if (!seenNow.has(k)) reduceSeen.delete(k);
+  }
+
+  // Book one external partial reduction and shrink the tracked leg to `actual` contracts.
+  async function bookExternalReduction(pos, side, actual, expected) {
+    lastDbWrite = Date.now(); // hold fetchActivePositions off during the mutate+persist
+    const isLong = side === 'long';
+    const ratio = actual / expected;
+    if (isLong) {
+      const oldLot = pos.buyLeg.lotSize;
+      const newLot = Number((oldLot * ratio).toFixed(4));
+      const reducedLot = Number((oldLot - newLot).toFixed(4));
+      if (reducedLot <= 0) return;
+      const t = tickerData[pos.buyLeg.symbol];
+      const exitPx = t?.bid ?? t?.markPrice ?? t?.lastPrice ?? pos.entryBuyPrice;
+      const base = pos.buyLeg.originalLotSize || 1;
+      const entryFeePart = Math.min(pos.entryFee || 0, calculateFee(pos.entryBuyPrice, pos.entrySpotPrice, reducedLot, base));
+      const exitFee = calculateFee(exitPx, spotPrice, reducedLot, base);
+      const gross = (exitPx - pos.entryBuyPrice) * reducedLot;
+      const net = gross - (entryFeePart + exitFee);
+      try {
+        await supabase.from('trade_history').upsert([{
+          trade_id: `${pos.id}-XPR-L-${actual}`, underlying: pos.underlying, expiry: pos.expiry, type: pos.type,
+          buy_leg: JSON.stringify({ ...pos.buyLeg, lotSize: reducedLot, ladderOrders: undefined }),
+          sell_leg: JSON.stringify({ ...pos.sellLeg, lotSize: 0 }),
+          sell_qty: 0, strike_diff: pos.strikeDiff,
+          entry_time: pos.entryTime.toISOString(),
+          entry_buy_price: pos.entryBuyPrice, entry_sell_price: pos.entrySellPrice, entry_spot_price: pos.entrySpotPrice,
+          margin: pos.margin, exit_time: new Date().toISOString(),
+          exit_buy_price: exitPx, exit_sell_price: null, exit_spot_price: spotPrice,
+          realized_gross_pnl: gross, realized_net_pnl: net, exit_fee: exitFee, total_fees: entryFeePart + exitFee,
+          exit_reason: `External partial reduction on Delta (long ${pos.buyLeg.strike}: ${expected}→${actual} contracts)`,
+          is_partial: true, account_id: accountState.id,
+        }], { onConflict: 'trade_id', ignoreDuplicates: true });
+      } catch (e) { logError(`[${accountState.name}] External long-reduction booking failed for ${pos.id}:`, e); }
+      pos.entryFee = Math.max(0, (pos.entryFee || 0) - entryFeePart);
+      pos.buyLeg.lotSize = newLot;
+      pos.buyLeg.longExitBaseLot = newLot;
+      pos.margin = pos.sellQty > 0 ? contractBasisMargin(pos, symbolMeta[pos.buyLeg.symbol]?.contractValue ?? null) : longOnlyMargin(pos);
+      try {
+        await supabase.from('active_positions').update({ buy_leg: JSON.stringify(pos.buyLeg), entry_fee: pos.entryFee, margin: pos.margin }).eq('id', pos.id);
+      } catch (e) { logError(`[${accountState.name}] External long-reduction persist failed for ${pos.id}:`, e); }
+      log(`[${accountState.name}] ✂️ EXTERNAL PARTIAL (long, Delta): ${pos.type.toUpperCase()} ${pos.buyLeg.strike} ${expected}→${actual} contracts | booked ${reducedLot} lot @ ${exitPx} | PnL $${net.toFixed(2)}`);
+      notifyTrade({ title: '✂️ PARTIAL REDUCTION (Delta)', detail: `${pos.type.toUpperCase()} long ${pos.buyLeg.strike} reduced ${expected}→${actual} on Delta`, pnl: net });
+    } else {
+      const oldQty = pos.sellQty;
+      const newQty = Number((oldQty * ratio).toFixed(4));
+      const reducedQty = Number((oldQty - newQty).toFixed(4));
+      if (reducedQty <= 0) return;
+      const shortLot = pos.sellLeg.lotSize || 1;
+      const t = tickerData[pos.sellLeg.symbol];
+      const exitPx = t?.ask ?? t?.markPrice ?? t?.lastPrice ?? pos.entrySellPrice;
+      const entryFeePart = Math.min(pos.entryFee || 0, calculateFee(pos.entrySellPrice, pos.entrySpotPrice, reducedQty, shortLot));
+      const exitFee = calculateFee(exitPx, spotPrice, reducedQty, shortLot);
+      const gross = (pos.entrySellPrice - exitPx) * reducedQty * shortLot;
+      const net = gross - (entryFeePart + exitFee);
+      try {
+        await supabase.from('trade_history').upsert([{
+          trade_id: `${pos.id}-XPR-S-${actual}`, underlying: pos.underlying, expiry: pos.expiry, type: pos.type,
+          buy_leg: JSON.stringify({ ...pos.buyLeg, lotSize: 0 }),
+          sell_leg: JSON.stringify({ ...pos.sellLeg }),
+          sell_qty: reducedQty, strike_diff: pos.strikeDiff,
+          entry_time: pos.entryTime.toISOString(),
+          entry_buy_price: pos.entryBuyPrice, entry_sell_price: pos.entrySellPrice, entry_spot_price: pos.entrySpotPrice,
+          margin: pos.margin, exit_time: new Date().toISOString(),
+          exit_buy_price: null, exit_sell_price: exitPx, exit_spot_price: spotPrice,
+          realized_gross_pnl: gross, realized_net_pnl: net, exit_fee: exitFee, total_fees: entryFeePart + exitFee,
+          exit_reason: `External partial reduction on Delta (short ${pos.sellLeg.strike}: ${expected}→${actual} contracts)`,
+          is_partial: true, account_id: accountState.id,
+        }], { onConflict: 'trade_id', ignoreDuplicates: true });
+      } catch (e) { logError(`[${accountState.name}] External short-reduction booking failed for ${pos.id}:`, e); }
+      pos.entryFee = Math.max(0, (pos.entryFee || 0) - entryFeePart);
+      pos.sellQty = newQty;
+      pos.margin = contractBasisMargin(pos, symbolMeta[pos.buyLeg.symbol]?.contractValue ?? null);
+      try {
+        await supabase.from('active_positions').update({ sell_qty: pos.sellQty, entry_fee: pos.entryFee, margin: pos.margin }).eq('id', pos.id);
+      } catch (e) { logError(`[${accountState.name}] External short-reduction persist failed for ${pos.id}:`, e); }
+      log(`[${accountState.name}] ✂️ EXTERNAL PARTIAL (short, Delta): ${pos.type.toUpperCase()} ${pos.sellLeg.strike} ${expected}→${actual} contracts | PnL $${net.toFixed(2)}`);
+      notifyTrade({ title: '✂️ PARTIAL REDUCTION (Delta)', detail: `${pos.type.toUpperCase()} short ${pos.sellLeg.strike} reduced ${expected}→${actual} on Delta`, pnl: net });
     }
   }
 
@@ -1017,6 +1512,17 @@ async function startSingleAccountEngine(account) {
     // (or never got) its protective bracket — reuses this pass's snapshot, no extra fetch.
     await armMissingBrackets(livePos, liveOrders, sizeBySymbol);
 
+    // Reflect any TP/SL price the user changed directly on Delta back into engine state
+    // (runs after arming so a freshly-placed bracket isn't misread as a manual change).
+    await adoptManualBrackets(liveOrders);
+
+    // Reverse-reconcile: adopt/close/protect any leg OPEN on Delta that the engine does NOT
+    // track (orphan from a DB outage / failed insert / wiped book) — exchange = truth.
+    await protectOrphanExchangePositions(livePos, liveOrders);
+
+    // Sync any leg the user REDUCED directly on Delta (still open, just smaller) down to match.
+    await reconcilePartialReductions(sizeBySymbol, liveOrders);
+
     const now = Date.now();
     for (const pos of [...positions]) {
       if (pos.underlying !== config.underlying) continue;
@@ -1025,6 +1531,22 @@ async function startSingleAccountEngine(account) {
       const ageMs = now - new Date(pos.entryTime).getTime();
       if (shortSize > 0 || longSize > 0) {
         pos._everOpenOnDelta = true;
+        if (shortSize > 0) pos._shortEverOpen = true; // latch: the short was confirmed live this run
+        // Dangling long: the SHORT leg went flat on Delta (manual/external short close)
+        // while the partner LONG is still open and the engine still thinks the short is on.
+        // Treat it exactly like an engine-driven short exit — book the short close and start
+        // the long-slice ladder. Gated so a phantom short (never actually filled) can't be
+        // "closed": require either that we SAW the short open this run (`_shortEverOpen`) or
+        // that the row is old enough (>5 min) that a never-filled entry would already be gone.
+        // Age-guarded (>90s) against a mid-fill entry race (long fills before short) and
+        // latched so the conversion + ladder placement fires at most once.
+        const danglingLong = pos.sellQty > 0 && shortSize === 0 && longSize > 0;
+        if (danglingLong && ageMs > 90000 && (pos._shortEverOpen || ageMs > 300000) && !pos._danglingLongConverted) {
+          pos._danglingLongConverted = true;
+          logWarn(`[${accountState.name}] ⚠ Short ${pos.sellLeg.symbol} closed on Delta but long ${pos.buyLeg.symbol} still open → booking short exit + placing long ladder.`);
+          await externalShortExitToLongLadder(pos).catch(e => logError(`[${accountState.name}] externalShortExitToLongLadder failed for ${pos.id}:`, e));
+          continue;
+        }
         // Fix A — dangling short: the short leg is still open on Delta but its partner
         // long is GONE. Not a valid strategy state (the long always protects the short),
         // and it sits with an already-breached SL that keeps re-triggering the entry/
@@ -3261,8 +3783,10 @@ async function startSingleAccountEngine(account) {
             // Remember the exchange bracket level on each leg so a later
             // exitType/exitPoints change can detect the drift and move the bracket
             // (resyncRestingOrders) instead of leaving it stale at the entry level.
-            t.buyLeg = { ...t.buyLeg, brkLevel: bracketLevel };
-            if (t.sellQty > 0) t.sellLeg = { ...t.sellLeg, brkLevel: bracketLevel };
+            // `brkComputed` mirrors the engine-computed level and drives drift detection;
+            // `brkLevel` is the effective (possibly manually-adopted) level. They start equal.
+            t.buyLeg = { ...t.buyLeg, brkLevel: bracketLevel, brkComputed: bracketLevel };
+            if (t.sellQty > 0) t.sellLeg = { ...t.sellLeg, brkLevel: bracketLevel, brkComputed: bracketLevel };
             if (liveArmed && t.sellQty > 0) {
               log(`[${accountState.name}] 🎯 Brackets: long TP + short SL @ spot ${bracketLevel} (${effectiveConfig.exitType || 'ATM'})`);
             }
@@ -3437,12 +3961,15 @@ async function startSingleAccountEngine(account) {
   }
 
   // ── Move open positions' SL/TP brackets to the CURRENT effective exit level ─────
-  // Idempotent: for each open leg it compares the stored bracket level (`brkLevel`, set
-  // at entry / last sync) against the level the engine would exit at NOW — the active
+  // Idempotent: for each open leg it compares the last engine-COMPUTED level (`brkComputed`,
+  // set at entry / last sync) against the level the engine would exit at NOW — the active
   // schedule window's exit rule if one governs, else the base config — and only re-syncs
-  // brackets that actually drifted. Because it compares the real target (not old-vs-new
-  // config), it works no matter WHAT changed: the base filters, a schedule window, or a
-  // window becoming active. Long leg → TP, short leg (while open) → SL.
+  // brackets whose COMPUTED target actually drifted. Because it keys off brkComputed (not
+  // the effective `brkLevel`), a level the user changed manually on Delta — adopted into
+  // brkLevel by adoptManualBrackets — is left alone UNLESS the exit params themselves change
+  // (only then does config/schedule win and reassert the engine level). Because it compares
+  // the real target (not old-vs-new config), it works no matter WHAT changed: the base
+  // filters, a schedule window, or a window becoming active. Long leg → TP, short leg → SL.
   //
   // Delta has NO "edit position bracket" call: POST /v2/orders/bracket only CREATES (it
   // rejects `bracket_order_exists` when the entry bracket is already attached), and PUT
@@ -3464,8 +3991,11 @@ async function startSingleAccountEngine(account) {
     for (const pos of positions) {
       if (pos.underlying !== config.underlying) continue;
       const newLevel = computeIndexTriggerLevel(pos.type, pos.buyLeg.strike, effExit);
-      const needLong = (pos.buyLeg?.lotSize || 0) > 0 && pos.buyLeg?.brkLevel !== newLevel;
-      const needShort = pos.sellQty > 0 && pos.sellLeg?.brkLevel !== newLevel;
+      // Drift = the engine's COMPUTED target changed (brkComputed), not the effective
+      // brkLevel — so an adopted manual bracket isn't reverted on an unrelated config touch.
+      // Undefined brkComputed (pre-upgrade rows) reads as drift → self-heals on first sync.
+      const needLong = (pos.buyLeg?.lotSize || 0) > 0 && pos.buyLeg?.brkComputed !== newLevel;
+      const needShort = pos.sellQty > 0 && pos.sellLeg?.brkComputed !== newLevel;
       if (needLong || needShort) drift.push({ pos, newLevel, needLong, needShort });
     }
     if (drift.length === 0) return;
@@ -3546,11 +4076,11 @@ async function startSingleAccountEngine(account) {
           const r = await moveBracket(pos, pos.buyLeg.symbol, 'tp', newLevel);
           // Latch brkLevel only on a REAL success so dry-run doesn't mark it done (which
           // would suppress the real re-sync once the account is armed).
-          if (r.ok && !r.skipped && !r.dryRun) { pos.buyLeg = { ...pos.buyLeg, brkLevel: newLevel }; persist = true; }
+          if (r.ok && !r.skipped && !r.dryRun) { engineBracketAt.set(pos.buyLeg.symbol, Date.now()); pos.buyLeg = { ...pos.buyLeg, brkLevel: newLevel, brkComputed: newLevel }; persist = true; }
         }
         if (needShort) {
           const r = await moveBracket(pos, pos.sellLeg.symbol, 'sl', newLevel);
-          if (r.ok && !r.skipped && !r.dryRun) { pos.sellLeg = { ...pos.sellLeg, brkLevel: newLevel }; persist = true; }
+          if (r.ok && !r.skipped && !r.dryRun) { engineBracketAt.set(pos.sellLeg.symbol, Date.now()); pos.sellLeg = { ...pos.sellLeg, brkLevel: newLevel, brkComputed: newLevel }; persist = true; }
         }
         if (persist) {
           await supabase.from('active_positions').update({

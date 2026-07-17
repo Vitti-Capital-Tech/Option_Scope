@@ -337,19 +337,26 @@ points), so the spread is protected even if the engine is down:
 >
 > **Changing `exitType` / `exitPoints` now MOVES the brackets** on already-open positions —
 > whether you edit the **base filters** or a **schedule window**. `syncExitBrackets` is
-> **idempotent and effective-level-driven**: for each open leg it compares the stored
-> `brkLevel` against the level the engine would exit at NOW (active window's exit rule if
-> one governs, else base config) and re-syncs only the legs that actually drifted. It runs
-> from **both** Realtime paths (base-config change → `reloadConfigAndSync`; schedule change
-> → after `fetchSchedules`) and on **startup**. For each drifted leg — long leg → TP,
-> short leg (while still open) → SL — it moves the bracket by **cancel-then-recreate**:
-> cancel the leg's existing bracket (stop) order, then **`POST /v2/orders/bracket`**
-> (`live.changePositionBracket`) a fresh whole-position **market stop** at the new exit
-> level, triggered on `spot_price`, sending `product_id` (from `/v2/positions/margined`) +
-> `product_symbol`. Each leg stores its current bracket level (`buyLeg.brkLevel` /
-> `sellLeg.brkLevel`, set at entry) so resync skips legs already at the target and only
-> moves real drift. Idempotent; positions opened before this feature have no `brkLevel`
-> and resync on the first change.
+> **idempotent and computed-level-driven**: for each open leg it compares the last
+> engine-**computed** level (`brkComputed`) against the level the engine would exit at NOW
+> (active window's exit rule if one governs, else base config) and re-syncs only the legs
+> whose computed target actually drifted. It runs from **both** Realtime paths (base-config
+> change → `reloadConfigAndSync`; schedule change → after `fetchSchedules`) and on
+> **startup**. For each drifted leg — long leg → TP, short leg (while still open) → SL — it
+> moves the bracket by **cancel-then-recreate**: cancel the leg's existing bracket (stop)
+> order, then **`POST /v2/orders/bracket`** (`live.changePositionBracket`) a fresh
+> whole-position **market stop** at the new exit level, triggered on `spot_price`, sending
+> `product_id` (from `/v2/positions/margined`) + `product_symbol`.
+>
+> **Two levels per leg — `brkComputed` vs `brkLevel`.** Each leg stores both the engine's
+> last-computed level (`brkComputed`, drives drift detection) and the **effective** level
+> currently resting on Delta (`brkLevel`), set equal at entry / on every engine move. They
+> diverge only when the user changes a bracket **directly on Delta** — `adoptManualBrackets`
+> copies the manual value into `brkLevel` (see
+> [Changes made directly on Delta](#changes-made-directly-on-delta-external-reconciliation)).
+> Because drift keys off `brkComputed`, an adopted manual bracket is **left in place** and is
+> reasserted to the engine level **only** when the exit params themselves change. Idempotent;
+> positions opened before this feature have no `brkComputed` and resync on the first change.
 >
 > **Why cancel-then-recreate (important):** Delta has **no "edit position bracket" call**.
 > `POST /v2/orders/bracket` only **creates** — it rejects **`bracket_order_exists`** when
@@ -386,7 +393,7 @@ raises the generic bracket alarm:
   alarm raised — a `no_position_for_reduce_only` rejection means the leg was already closed
   (benign) and is **not** alarmed (see
   [collision guard & stuck-leg recovery](#same-product-collision-guard--stuck-leg-recovery)).
-  `brkLevel` is **not** latched, so the closing leg reconciles cleanly.
+  `brkLevel`/`brkComputed` are **not** latched, so the closing leg reconciles cleanly.
 
 - **Long buy** → `bracket_take_profit_price = exitLevel`
 - **Short sell** → `bracket_stop_loss_price = exitLevel`
@@ -563,6 +570,71 @@ the browser) executes them on Delta and cleans up:
 > already use), so admins can close/cancel/exit/Close-All and edit config/schedules on
 > any account they manage.
 
+### Changes made directly on Delta (external reconciliation)
+
+The table above is for actions started **from the dashboard**. This section is the mirror:
+what happens when the user (or a bracket firing) changes something **directly on the Delta
+platform**, outside OptionScope. All of it is **armed-live only** and runs on the existing
+`reconcileOrphans` sweep (30s / 60s / 5-min timers), so it self-heals without a config change.
+
+| Done directly on Delta | Detected? | Engine reaction |
+| --- | --- | --- |
+| **Full close** of a position (both legs, or a bracket fired) | Yes (~30–90s) | `reconcileOrphans` books a full exit at current mark + deletes the row (existing behaviour) |
+| **Close of ONLY the short leg** (long still open) | Yes (~90s) | `externalShortExitToLongLadder` — books the short exit + starts the long-slice ladder (**dangling-long recovery**, below) |
+| **TP / SL price change** on a bracket | Yes (~30s) | `adoptManualBrackets` — adopts the Delta value into `brkLevel` (below) |
+| **Cancel of a protective bracket/stop** (leg still open) | Yes | `armMissingBrackets` re-arms it at the engine level (your cancel is undone) |
+| **Partial size reduction** of a leg | Yes (~90s, stable) | `reconcilePartialReductions` — shrinks the tracked size to match + books the closed slice (below) |
+
+**Dangling-long recovery (`externalShortExitToLongLadder`).** The mirror of the
+[dangling-short](#same-product-collision-guard--stuck-leg-recovery) case: the **short** leg
+went flat on Delta (a manual/external short close) while its partner **long** is still open
+and the engine still thinks the short is on. `reconcileOrphans` detects it
+(`sellQty > 0`, short size 0, long size > 0, age > 90s, and the short was seen open this run
+`_shortEverOpen` — or the row is > 5 min old) and treats it **exactly like an engine-driven
+short exit**: it books the short close as an idempotent `${id}-SE` partial (the shared
+trade_id means it can't double-book with the normal path), converts the row to long-only
+(`sellQty = 0`), and places the **fixed resting SELL ladder** (`${id}-LE-*`) so the held long
+scales out in slices just as it would have had the engine bought the short back itself. The
+short's SL bracket has already auto-cancelled on Delta (Delta drops a bracket when its
+position closes). Latched (`_danglingLongConverted`) so the conversion fires at most once; the
+short exit price is unknown (the fill wasn't ours) so it's booked at the short's current mark,
+consistent with how the full-close orphan path books other externally-closed legs.
+
+**Manual TP/SL adoption (`adoptManualBrackets`).** The engine used to treat its computed
+level as the sole authority, so a bracket the user edited on Delta was invisible **and** got
+silently overwritten on the next config sync. Now each reconcile pass reads the **actual**
+resting bracket/stop trigger level per leg symbol (`stop_price` / `bracket_*_price`, which are
+spot-index levels — directly comparable to the engine's level) and, when it differs from the
+stored `brkLevel`, **adopts the Delta value** into `brkLevel` (logged `🔄 Manual TP/SL change
+on Delta …`, with a Telegram notify). Guards mirror `armMissingBrackets`: the entry must have
+settled (60s), and a leg the engine itself just (re)armed is skipped for 25s (`engineBracketAt`)
+so a Delta order-list propagation lag isn't misread as a manual change. Adoption touches only
+`brkLevel`, never `brkComputed`, so `syncExitBrackets` leaves the adopted value alone — the
+manual bracket **persists** until you change the exit params in the app, at which point config/
+schedule **wins** and the engine reasserts its computed level (see
+[Exit-level brackets](#exit-level-brackets-the-exchange-side-risk-exit)).
+
+**Partial size reduction (`reconcilePartialReductions`).** When a leg is still open but its Delta
+size is **smaller** than the engine's tracked contract count, the user reduced it directly on
+Delta. The engine shrinks its tracked size to match and books the closed slice — **no order is
+placed** (the reduction already happened), so the only risk is mis-booking, guarded three ways:
+(1) it **skips a leg that carries a resting reduce-only LIMIT exit** (`-SEX` / `-LE`) because a
+fill there reduces size too and is booked by its own path — but a plain **bracket/stop** does not
+block it (a bracket closes the *whole* leg on trigger, never a partial); (2) a **90s age + stable-
+reduction grace** — the same reduced size must persist across the window, so a transient mid-fill
+of the engine's own reduce order isn't mistaken for a manual one; (3) a **deterministic trade_id**
+keyed on the remaining contract count (`${id}-XPR-L|S-<remaining>`) → idempotent, so step-wise
+reductions each book exactly once. In practice this covers the **long leg of a full spread** (which
+carries only a bracket); a leg with a resting limit exit is left to its normal fill path. The
+closed slice is booked at the current mark (approximate — the manual fill wasn't ours).
+
+> [!NOTE]
+> **Practical guidance.** Full close, short-only close, TP/SL edit, **and partial size reduction**
+> are now all reflected. Booked prices for externally-closed slices are **approximate** (current
+> mark, not your actual fill), and there's a detection lag (~30–120s). For exact prices/PnL and
+> instant effect, do exits and TP/SL changes from the OptionScope dashboard; the direct-on-Delta
+> path is the safety net that keeps the DB converged when you (or a bracket) act on Delta directly.
+
 ### Live entry price offsets
 
 Live entry orders are placed as marketable limits with a premium-$ offset so they
@@ -706,11 +778,10 @@ Four fixes close the window (all in the entry loop of `paperTradingEngine.js`):
 
 > [!NOTE]
 > These are **armed-live only** for the actual order effects (`cancelStop`/`closeSymbol` no-op for
-> paper/dry-run), but the fail-closed guards and book-exclusion apply to every mode. **Still open
-> (recommended follow-up):** a **reverse-reconcile** pass that scans real Delta legs for any that
-> have **no** `active_positions` row and adopts or closes them — this is the only thing that
-> auto-cleans an orphan that already exists (e.g. the `65500/67000` one, which needs a **manual**
-> cancel-resting-order + close-both-legs on Delta until then).
+> paper/dry-run), but the fail-closed guards and book-exclusion apply to every mode. The
+> **reverse-reconcile** pass that scans real Delta legs for any with **no** `active_positions` row
+> (the only thing that auto-handles an orphan that *already* exists) is now implemented — see
+> [Reverse-reconcile of orphan exchange positions](#reverse-reconcile-of-orphan-exchange-positions) below.
 
 ### Exit residual sweep (orphan prevention on close)
 
@@ -748,6 +819,66 @@ it. **Observed:** a `63200` put where all slices filled yet **4 lots stayed open
 > under-fill — but an immediate sweep there would market **over** a limit that simply hasn't traded
 > yet, worsening the fill. That path already carries the exchange SL/TP bracket as backup; a
 > **delayed / next-cycle** residual sweep is the recommended follow-up rather than an inline one.
+
+### Reverse-reconcile of orphan exchange positions
+
+Design principle: **the exchange is the source of truth, the DB is the fallback.** `reconcileOrphans`
+already handles the **book → exchange** direction (a tracked row that vanished from Delta gets
+booked + removed). `protectOrphanExchangePositions` handles the **other** direction — a leg **OPEN
+on Delta that the engine does NOT track** (no `active_positions` row). Such an orphan comes from a
+DB outage, a failed/rolled-back entry insert whose unwind also failed, or a wiped/rebuilt book. It
+is the auto-handler for the "orphan that *already* exists" case the
+[atomic-entry note](#entry-persistence--orphan-prevention-atomic-entry) flagged.
+
+**Policy — adopt what we safely can, close the invalid, protect the rest.** The exchange knows the
+*contracts* and (crucially) the real average **`entry_price`**, but not the full strategy intent
+(the index-spot at entry, which two legs form a spread). So the engine adopts where that's enough to
+manage correctly and falls back to protect+alert where it isn't:
+
+- **LONG orphan, known symbol, buy strike free** → **ADOPT as a long-only position**
+  (`adoptLongOrphan`). It builds a row using Delta's real `entry_price` (accurate `(exit−entry)`
+  PnL; the index-spot at entry isn't recoverable so the **current spot** stands in — affects only
+  fee/display), inserts it **first** (so a failed insert can't create a fresh orphan), adds it to
+  the book, arms the TP bracket, and places the resting SELL **ladder** so it scales out like any
+  long-only. The ladder is skipped if orders already rest on the symbol (leave them; reduce-only
+  caps risk). Thereafter the normal long-only exit path manages it.
+- **NAKED SHORT orphan** → a short with no protective long is not a valid strategy state → **reduce-
+  only MARKET close** + alert (same policy as [dangling-short recovery](#same-product-collision-guard--stuck-leg-recovery)).
+- **Can't adopt** (unknown symbol / other expiry, or the buy strike is already tracked) → **PROTECT
+  + ALERT**: arm the spot-triggered TP bracket (`computeIndexTriggerLevel`) if unprotected — or, if
+  the level is already breached, `immediate_execution` → reduce-only MARKET close — and alert.
+  Unknown symbols we can't price are **alert-only**.
+
+**Guards.**
+- **Armed-real only**, and it runs inside the existing `reconcileOrphans` sweep (30s / 60s / 5-min),
+  **reusing that pass's `positions()` + `orders()` snapshot** — no extra API calls.
+- **120s grace** (`orphanSeenAt`): a symbol must read as orphan for the whole window before any
+  action. This covers the **entry race** (entry places Delta orders *before* the DB insert) and the
+  **startup book-load** window, so a position mid-entry or a not-yet-loaded book is never mistaken
+  for an orphan.
+- **Once-per-orphan latch** (`orphanHandled`): a symbol adopted/closed/flagged isn't re-actioned
+  every sweep; a still-**failed** action stays unlatched so it keeps retrying. Both maps are pruned
+  when the symbol stops being an orphan (adopted/tracked now, or gone flat), so the grace restarts
+  cleanly if it reappears.
+- **buy-strike collision** falls back to protect+alert rather than a failing insert — the unique
+  index (`account_id, underlying, type, expiry, buy_strike`) means an adopted long can't collide
+  with a tracked one.
+- The `reconcileOrphans` **systemic-mismatch guard** still applies: if Delta shows open legs but
+  none match any tracked symbol *while the book is non-empty* (suspected symbol-format problem), the
+  whole pass — this included — is skipped. An **empty** book (restart / wiped DB) does **not** trip
+  that guard, so orphans are handled exactly when you want them to be.
+
+> [!NOTE]
+> This realises the exchange-primary goal end-to-end: if the DB or a sync errors, open positions
+> keep their brackets on Delta, and any leg the engine loses track of is **adopted back into
+> management** (long), flattened (naked short), or protected + surfaced (can't-adopt) — capital is
+> never left exposed or silently unmanaged.
+>
+> **Adoption limits (by design):** a re-adopted long is managed **standalone** — the original
+> spread pairing, entry-time index spot, and entry fee aren't on the exchange, so PnL is booked on
+> the accurate `(exit − Delta entry_price)` core with an approximated spot/fee, and a full orphaned
+> *spread* is resolved as long-only-adopted + naked-short-closed rather than re-paired. Validate the
+> adopted row's sizing/PnL after the first real occurrence.
 
 ### Live exchange data pipeline (dashboard tabs)
 
