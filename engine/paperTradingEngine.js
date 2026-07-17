@@ -1548,6 +1548,34 @@ async function startSingleAccountEngine(account) {
 
       const allFilled = ladder.length > 0 && ladder.every(lo => lo.filled);
       if (allFilled || pos.buyLeg.lotSize <= 0.0001) {
+        // Before dropping the row, GUARANTEE the long leg is actually flat on Delta. The
+        // reduce-only ladder can leave a few contracts open: its integer contract split
+        // (S = longContracts) under-counts the real exchange size after ATM-ratio scale-ups,
+        // and any still-resting slice limit hasn't traded. Once the row is deleted,
+        // reconcileOrphans (which iterates the book) can't see the remainder → it orphans
+        // (the observed "sab slices fill hone ke baad bhi 4 lots bach gaye"). Cancel any
+        // unfilled slice limits, then sweep the true residual with a reduce-only MARKET
+        // close: it caps at the actual open size and no-ops if already flat, so it can never
+        // over-close. The buy symbol is unique to this active position (buy_strike unique
+        // index), so its net open size is ours to flatten. Best-effort + armed-real only:
+        // on a positions() hiccup we still delete (no worse than before) and warn.
+        if (accountState.mode === 'live' && accountState.live_enabled && !live.dryRun) {
+          try {
+            await cancelRestingOrders(pos);
+            const livePos = await live.positions();
+            if (livePos == null) {
+              logWarn(`[${accountState.name}] ⚠ Post-ladder sweep for ${pos.id}: positions() fetch failed — deleting anyway; reconcile bracket is the backstop.`);
+            } else {
+              const openSz = Math.abs(Number(livePos.find(p => p.product_symbol === pos.buyLeg.symbol)?.size) || 0);
+              if (openSz > 0) {
+                await live.closeSymbol({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: openSz, tag: `${pos.id}-LSWEEP` });
+                log(`[${accountState.name}] 🧹 LONG SWEEP: flattened ${openSz} residual contract(s) on ${pos.buyLeg.symbol} before close [${pos.id}]`);
+              }
+            }
+          } catch (e) {
+            logWarn(`[${accountState.name}] Post-ladder sweep failed for ${pos.id}: ${e.message}`);
+          }
+        }
         try { await supabase.from('active_positions').delete().eq('id', pos.id); }
         catch (e) { logError(`[${accountState.name}] Resting ladder final delete failed for ${pos.id}:`, e); }
         log(`[${accountState.name}] 🪜 LONG FULLY EXITED (resting ladder): ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | ${newlyFilled.length} slice(s) this cycle`);

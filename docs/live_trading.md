@@ -712,6 +712,43 @@ Four fixes close the window (all in the entry loop of `paperTradingEngine.js`):
 > auto-cleans an orphan that already exists (e.g. the `65500/67000` one, which needs a **manual**
 > cancel-resting-order + close-both-legs on Delta until then).
 
+### Exit residual sweep (orphan prevention on close)
+
+The mirror-image of the entry orphan: a **close** that leaves a few contracts open on Delta after
+the engine has already dropped the `active_positions` row. It bites the **resting-model laddered
+long exit** (`handleLiveRestingExit`).
+
+**How the residual forms.** When the short is bought back, the held long is laddered out via a fixed
+set of resting reduce-only SELL limits sized by `S = longContracts(buyLeg)` contracts, and
+`splitContracts(S, n)` sums **exactly** to `S`. But `S = round(lotSize / originalLotSize)` is derived
+from the engine's lot accounting, and **ATM-ratio scale-ups** grow the real Delta long size above `S`.
+So even when **every** ladder slice fills, `actualOpen − S` contracts never had an order behind them.
+The engine sees `allFilled` (or `lotSize ≈ 0`), **deletes the row**, and those contracts are left
+open — and because `reconcileOrphans` iterates the **book**, the now-rowless remainder is invisible to
+it. **Observed:** a `63200` put where all slices filled yet **4 lots stayed open**.
+
+**Fix — sweep the true residual before deleting the row** (armed-live only):
+
+- **Cancel** any still-resting slice limits (`cancelRestingOrders`) so nothing can fill after the row
+  is gone.
+- **Read exchange truth** via `live.positions()` and take the long symbol's **net open size** — not
+  the engine's `S`, which is the very number that under-counted. The buy symbol is **unique to this
+  active position** (the `buy_strike` unique index guarantees no other active position shares it), so
+  its net open size is ours to flatten.
+- **Reduce-only MARKET close** exactly that residual (`-LSWEEP` tag). Reduce-only **caps at the actual
+  open size** (never over-closes) and is a benign **no-op if already flat** — so the clean path
+  (nothing left over) costs one `positions()` read and nothing else.
+- **Best-effort:** on a `positions()` hiccup the engine **still deletes** (no worse than before) and
+  logs a warning; the entry-time exchange bracket remains the backstop. On a successful sweep it logs
+  `🧹 LONG SWEEP: flattened N residual contract(s)`.
+
+> [!NOTE]
+> This closes the **laddered** long exit only. The **spot-cross / expiry catch-all** full-exit
+> (`spotCross || atExpiry`) closes its legs with reduce-only **limit** orders that can likewise
+> under-fill — but an immediate sweep there would market **over** a limit that simply hasn't traded
+> yet, worsening the fill. That path already carries the exchange SL/TP bracket as backup; a
+> **delayed / next-cycle** residual sweep is the recommended follow-up rather than an inline one.
+
 ### Live exchange data pipeline (dashboard tabs)
 
 For armed live accounts the engine publishes a **read-only snapshot** of the real
