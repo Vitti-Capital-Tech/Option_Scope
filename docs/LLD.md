@@ -8,8 +8,7 @@ This document is the authoritative implementation reference for every module, en
 
 | File | Responsibility |
 |---|---|
-| `main.jsx` | Root bootstrap and routing shell. Mounts all 4 modules simultaneously using `display: none/block` to preserve state across navigation. Owns the shared `page` and `theme` state and the `BroadcastChannel` sync instance. |
-| `App.jsx` | Interactive charts, greeks tracking, alert manager, SMA overlay, and support/resistance drawing tools. |
+| `main.jsx` | Root bootstrap and routing shell. Mounts the app modules simultaneously using `display: none/block` to preserve state across navigation. Owns the shared `page` and `theme` state and the `BroadcastChannel` sync instance. |
 | `RatioSpreadScanner.jsx` | Standalone option-chain scanner. Computes premium-to-delta-notional ratio deviation pairs, publishes top-3 results via `BroadcastChannel` and `localStorage`. Configuration is managed locally in `localStorage` independent of Paper Trading accounts. |
 | `PaperTrading.jsx` | React UI Dashboard for Paper Trading. Reads `active_positions`, `trade_history`, and heartbeat from Supabase. Connects to multi-account creation/management modals and controls configuration updates via a local draft buffer (Apply/Reset buttons). |
 | `ConfirmExitModal.jsx` | Front-end confirmation modal for manual position liquidation. Displays live exit pricing, estimated exit fees, and net realized P&L. |
@@ -22,7 +21,17 @@ This document is the authoritative implementation reference for every module, en
 | `engine/lib/deltaApi.js` | Backend API adapter for Delta Exchange. Implements WebSockets with auto-reconnect, ticker stream parsing, REST endpoints, and unconfirmed (timestamp = 0) REST ticker backfills. |
 | `engine/lib/utils.js` | Shared backend algorithmic logic including candidate spread scanning (`scanTickers` with quote freshness validation), rotation target selection, and margin calculations. |
 | `engine/lib/heartbeat.js` | Helper module executing the continuous status update ticks for the backend engines to Supabase. |
-| `engine/lib/supabase.js` | Supabase client initialization wrapper for backend VPS engines. |
+| `engine/lib/supabase.js` | Supabase client initialization wrapper for backend VPS engines. Prefers `SUPABASE_SERVICE_ROLE_KEY` (needed to decrypt credentials and satisfy admin/live RLS). |
+| `engine/lib/deltaTradeApi.js` | Signed Delta Exchange REST client for live trading: `placeOrder`, `placeBracketOrder` (`POST /v2/orders/bracket`), `editOrder`, `editBracket`, `cancelOrder`, `getLivePositions`, `getLiveOrders`, `getFills`, `getOrderHistory`, `getBalance`. HMAC-SHA256 signing. |
+| `engine/lib/liveExecution.js` | Dry-run-gated live executor wrapping `deltaTradeApi`: `openSpread`, `closeLeg`, `editOrder`, `changePositionBracket`, `placeStop`, `cancelStop`, `positions`, `orders`, `fills`, `recentFillOrderIds`, `snapshot`, `walletBalance`, `reconcile`. Centralises price sanitisation (`cleanLimitPrice`) and integer contract mapping (`longContracts`/`shortContracts`). |
+| `engine/lib/telegram.js` | Fire-and-forget `notifyLiveFailure` Telegram alerts for armed-real failures (deduped). |
+| `engine/proxyServer.js` | Optional engine-hosted proxy forwarding `/v2/*` from a whitelisted IP (credential-verification Option B). |
+| `src/deltaAuth.js` | Browser-side `verifyDeltaCredentials` — Web Crypto HMAC-SHA256 test-signs `GET /v2/wallet/balances` (front-end verification path). |
+| `src/components/PaperTrading/ControlPanel.jsx` | Global-filter Control Panel (Apply/Reset over global filters + Trading Days toggle). |
+| `src/components/PaperTrading/SchedulePanel.jsx` | Per-window schedule editor (timeline, per-window overrides, upsert-prune auto-save). |
+| `src/components/PaperTrading/TradingWorkspace.jsx` | Exchange-style tabbed panel: Positions / Open Orders / Stop Orders / Fills / Order History / Risk & Margin. |
+| `src/components/PaperTrading/TradeHistoryTable.jsx` | Trade history table + Window Capacity row. |
+| `ecosystem.config.cjs` | PM2 config pinning the engine to a single process (`exec_mode: 'fork'`, `instances: 1`, long `kill_timeout`). |
 
 ---
 
@@ -135,6 +144,8 @@ The Scanner also writes the top-3 results to `localStorage` under the key `vitti
 | `atmRatioScaling` | `true` | Whether to scale quantity based on ATM ratio |
 | `atmRatioPctCall` | `50` | Scale percentage for Call option scaling |
 | `atmRatioPctPut` | `25` | Scale percentage for Put option scaling |
+| `minAtmPnl` | `0` | **ATM Edge Floor** — hide rows whose projected at-ATM P&L (USD) `< minAtmPnl` (only while `atmRatioScaling` is on; applied at display time in `ResultTable`) |
+| `minAtmRoi` | `0` | **ATM Edge Floor** — hide rows whose projected at-ATM ROI (%) `< minAtmRoi` (only while `atmRatioScaling` is on; applied at display time in `ResultTable`) |
 
 ### Market Ingestion Flow
 
@@ -157,9 +168,9 @@ The scanner runs an O(N²) pair search within each option type (calls and puts s
    - `spotDist >= minLongDist` (buy strike to spot)
    - `sellPrice >= minSellPremium`
    - `ratioDeviation <= maxRatioDeviation`
-   - `netPremium >= -maxNetPremium` (one-sided upper bound debit cap)
-   - `sellQty <= maxSellQty`
-6. **`sellQty` Calculation**: `rawQty = buyDN / sellDN`, rounded to nearest 0.25 with minimum of 1.
+   - `sellQty <= maxSellQty` — checked on the **base** (delta-neutral) `sellQty`, before ATM scaling.
+   - `netPremium >= -maxNetPremium` (**Max Debit** cap) — checked **last, on the scaled short quantity** (see step 6): `scaledSellQty × sellPrice - buyPrice >= -maxNetPremium`. Because scaling up the short raises the net credit, this ordering lets a candidate that would fail on its natural ratio survive once scaled.
+6. **`sellQty` Calculation & ATM scaling (inside `scanTickers`)**: base `rawQty = buyDN / sellDN`, rounded to nearest 0.25 with minimum of 1 (checked against `maxSellQty`). If `atmRatioScaling` is on, the scaling is computed **inside the scanner** (not in `ResultTable`): `atmRatio = atmBuyPrice / atmSellPrice`, `ratioDiff = max(0, atmRatio − sellQty)`, `scaledSellQty = round((sellQty + (pct/100)·ratioDiff)/0.25)·0.25` (`pct` = `atmRatioPctCall`/`atmRatioPctPut`). The base `sellQty` is preserved alongside `scaledSellQty`; the Max Debit filter then runs on the scaled value. `ResultTable` consumes `scaledSellQty` directly and no longer recomputes the scaling.
 7. **Sorting**: Closest buy strike to ATM first; ties broken by descending `netPremium` (highest credit/lowest debit first).
 
 ### `pickTopUniqueStrikes`
@@ -187,9 +198,21 @@ After every scan, `publishTopSpreads` packages the top-3 calls and puts into a p
 
 | Table | Engine | Key Fields | Notes |
 |---|---|---|---|
-| `paper_trading_config` | PaperTrading | `underlying`, `expiry`, all filter thresholds (including `exit_type`, `exit_points`) | Single `global` row, upserted on config change |
-| `active_positions` | PaperTrading | `id`, `buy_strike`, `sell_strike`, `buy_leg` (JSON), `sell_leg` (JSON), `accumulated_sell_pnl`, `margin` | Unique DB constraints `unique_buy_strike_per_type` and `unique_sell_strike_per_type` scoped by `(account_id, underlying, type, strike)` prevent duplicate inserts |
-| `trade_history` | PaperTrading | `id`, `trade_id`, `realized_net_pnl`, `exit_reason`, `is_partial`, `exit_time`, `lot_size`, `total_fees` | `trade_id` pre-checked before insert to prevent duplicates. `id` acts as the primary key UUID, and `lot_size` tracks the volume of the trade. |
+| `paper_trading_accounts` | Supervisor | `id`, `name`, `user_id`, `mode` (`paper`/`live`), `live_enabled`, `paused`, `close_all_requested`, `balance_allocation_pct` (90), `entry_buy_offset` (5), `entry_sell_offset` (2), `default_config` (JSONB) | One row per account. `mode`/`live_enabled`/`paused` gate live execution; switching back to paper forces `live_enabled=false`. `default_config` is the Reset target. |
+| `paper_trading_config` | PaperTrading | `underlying`, `expiry`, filter thresholds, `exit_type`, `exit_points`, `strategy_version` (1), `trade_days` (JSONB, all-7), `short_exit_price` (1.1), `long_exit_slices` (10), `spot_diff` | One row per account (id = account id), upserted on config change. `strategy_version` gates paper(2)/live(1) logic. |
+| `paper_trading_schedules` | PaperTrading | per-window overrides (see §12) incl. `max_net_premium`, `exit_type`, `exit_points`, `min_days_to_expiry`, `trade_days`, and hedge columns | Permanent, undeletable **Window 1** per account, seeded from base config. |
+| `active_positions` | PaperTrading | `id`, `buy_strike`, `sell_strike`, `buy_leg` (JSON), `sell_leg` (JSON), `hedge_leg` (JSON), `accumulated_sell_pnl`, `margin`, `exit_requested` | Account-scoped unique indexes `idx_active_positions_buy_strike_unique` / `..._sell_strike_unique` on `(account_id, underlying, type, expiry, buy_strike/sell_strike)` prevent duplicate inserts (**`expiry` added** so the same strike on different expiries no longer collides). |
+| `trade_history` | PaperTrading | `id`, `trade_id`, `realized_net_pnl`, `exit_reason`, `is_partial`, `exit_time`, `lot_size`, `total_fees`, `hedge_leg` (JSON) | `trade_id` has a **UNIQUE constraint**; all writes use `.upsert(rows, { onConflict: 'trade_id', ignoreDuplicates: true })` (= `INSERT … ON CONFLICT DO NOTHING`) so exits are **idempotent** (replaces the old non-atomic select-then-insert, which leaked duplicates because ids embedded `Date.now()`). `id` is a primary-key UUID; `lot_size` tracks trade volume. |
+| `delta_credentials` | Live | `account_id`, `api_key`, `api_secret_enc`, `key_last4`, `status`, `verified_at` | Encrypted secret (pgcrypto + Vault). See §6 Live Credential Security. |
+| `delta_close_requests` / `delta_cancel_requests` | Live | `account_id`, `product_symbol` / `order_id`, `product_id` | Manual per-leg close / order cancel queues (engine-executed). |
+| `delta_verify_requests` | Live | `account_id`, encrypted secret | Engine-mediated credential verification (migration `004`). |
+| `live_exchange_state` | Live | `account_id`, `positions`, `orders`, `stop_orders`, `fills`, `balances` (JSONB), `wallet`, `updated_at` | One row/account, change-guarded 20s snapshot for the dashboard (migration `009`). |
+| `engine_heartbeat` | Supervisor | `account_id`, `updated_at`, status metadata | Liveness/countdown source for the UI. |
+| `profiles` | Auth | `id`, `role` (`client`/`admin`) | RBAC; admin bypass via migration `016`. |
+
+**Deterministic `trade_id` formats** (never `Date.now()`): full exit `${pos.id}`; short-leg `${pos.id}-SE`; partial/scaling `${pos.id}-PE-${lotsRemaining}`; long ladder slice `${pos.id}-LE-${stage}`; hedge `${pos.id}-HX`. Position id format `T<timestamp36><random>` is effectively unique, so a `23505` is always a strike collision, never an id collision.
+
+**Migration index (selected):** `004` verify requests · `009` live_exchange_state · `012` per-window max-debit/exit-type · `016` admin RLS bypass · `018`–`020` strategy_version · `019`/`023` per-window min DTE · `021` trade_days · `022`/`023` hedge leg.
 
 
 ### Concurrency Safety Guards
@@ -198,7 +221,7 @@ After every scan, `publishTopSpreads` packages the top-3 calls and puts into a p
 
 **Trade History Realtime Optimization**: The `trade_history` INSERT subscription now uses `payload.new` directly instead of triggering a full `fetchSupabaseTradeHistory()` refetch on every trade close. The new trade row is mapped and prepended to local state immediately. This eliminates the largest source of Supabase egress (previously a full-table fetch with JSONB buy_leg/sell_leg on every exit). A full history fetch still occurs on initial load and tab focus restoration.
 
-**DB-Level Count Guard (pre-insert)**: Before inserting any new position, the engine queries `active_positions` for the current `(underlying, type)` pair. If the live count is `>= 3`, the insert is aborted. Uses plain `.select('id')` (not `{ head: true }`) to ensure non-null response data.
+**DB-Level Count Guard (pre-insert)**: Before inserting any new position, the engine queries `active_positions` for the current `(underlying, type)` pair, counting **full spreads only** (`.gt('sell_qty', 0)`, so held long-only rows from a short-leg exit don't consume a slot — total active rows can exceed the cap). If the live count is `>= config.numberOfCalls` (calls) or `config.numberOfPuts` (puts), the insert is aborted. These pre-order reads are **fail-closed** for live: any query error skips the entry (so a transient read failure can't let a duplicate reach real placement). Uses plain `.select('id')` (not `{ head: true }`) to ensure non-null response data.
 
 **DB-Level Strike Uniqueness (pre-insert)**: After the count check, the engine queries active positions for duplicate `buy_strike` (`buyConflict`) and `sell_strike` (`sellConflict`) values for the same `(underlying, type)` and `account_id`. If any conflict is found, the insert is aborted with a console warning.
 
@@ -217,12 +240,13 @@ DROP INDEX IF EXISTS unique_sell_strike_per_type;
 DROP INDEX IF EXISTS idx_active_positions_buy_strike_unique;
 DROP INDEX IF EXISTS idx_active_positions_sell_strike_unique;
 
--- Create new account-scoped unique index constraints
+-- Create new account-scoped unique index constraints (expiry included so the same
+-- strike on a different expiry is not treated as a duplicate)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_active_positions_buy_strike_unique 
-    ON public.active_positions(account_id, underlying, type, buy_strike);
+    ON public.active_positions(account_id, underlying, type, expiry, buy_strike);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_active_positions_sell_strike_unique 
-    ON public.active_positions(account_id, underlying, type, sell_strike);
+    ON public.active_positions(account_id, underlying, type, expiry, sell_strike);
 ```
 
 **Write Throttle (`lastDbWriteRef`)**: Tracks Unix timestamp of the last local database write. The Supabase Realtime subscription skips updates if a local write occurred within the last **3 seconds** to prevent a just-written position from being overwritten by a stale re-fetch before the DB has finished committing. (Previously 10 seconds — reduced to minimize the staleness window.)
@@ -259,6 +283,13 @@ The engine file (`paperTradingEngine.js`) executes a top-level **Supervisor Mana
    - **DELETE**: Clears the evaluation intervals for the deleted account, stopping its execution loops immediately.
    - **UPDATE**: Updates the balance and active metadata values in the running account engine context.
 4. **Scoped State & Constraints**: Every query, mutation (exits, entries), duplicate position guard, and margin cap check evaluates scoped strictly by `account_id` so that accounts remain completely isolated.
+5. **Single-engine-per-account guard**: `startAccountEngine` reserves the account **synchronously** in a `startingEngines` set *before* `await startSingleAccountEngine(...)`, so a concurrent trigger (initial fetch / fallback sync / Realtime event) can't spawn a second (zombie) evaluator that double-books exits. The set entry is cleared in `finally` so a failed start can retry. Process-level, `ecosystem.config.cjs` pins `exec_mode: 'fork'` + `instances: 1` so PM2 never cluster-spawns a second copy.
+6. **Live gating**: each account loop reads `mode`, `live_enabled`, and `paused`. All real-order effects are gated on `mode === 'live' && live_enabled`; a global `DELTA_LIVE_DRYRUN` (default ON) logs intended orders instead of sending. `paused` opens no new positions but keeps managing open ones.
+7. **Manager-level manual-action poll**: a single `pollAllRequests` timer (every 1.5s) runs ≤4 batched queries (one per request table, filtered to all running account ids) and dispatches to each engine's `processRequests(flags)` only for request types with pending rows. The two live-only tables (`delta_close_requests` / `delta_cancel_requests`) are queried only when ≥1 running account is armed-live, so a paper-only deployment issues just 2 queries/tick. This replaced per-engine 1.5s×4 polling (≈`4×N` — ~4.6M queries/day at ~19 accounts) with a flat ~230K/day.
+
+### Strategy Versioning (Paper v2 vs Live v1)
+
+`paper_trading_config.strategy_version` (default `1`, migrations `018`–`020`) gates experimental logic in the single shared codebase: `if (config.strategyVersion >= 2) { …experimental… } else { …stable… }`. **Live accounts run v1** (validated), **paper accounts run v2** (the experimental testbed). Both engine behaviour and which UI controls appear branch on this value. Fleet policy (migration `020`): all paper = v2, all live = v1; new accounts inherit from `mode`. The column is kept (rather than a raw `mode` check) so a single live account can be promoted to v2 for a staged rollout. v2-gated features to date: the hedge leg (022/023); Trading Days (021) and per-window Min DTE (019) were **promoted to the shared path** and now run on paper AND live.
 
 ### Evaluation Loop & Execution Decoupling
 
@@ -281,7 +312,7 @@ Steps: A → B → C → D → E → F (detailed in sections below).
 ### A. Candidate Pool Construction
 
 1. **Self-Contained Local Scan**: The headless engine runs its own `scanTickers` (same algorithm as `RatioSpreadScanner`) on calls and puts separately, filtered by option type and ATM direction. Unlike the browser-based version, the headless engine does **not** merge results from the `RatioSpreadScanner` `BroadcastChannel` — it is fully self-contained.
-2. **Unique Ranking List (`uniqueTopSpreads`)**: A deduplicated and filtered view of candidate spreads. Grouped by buy strike: we keep the highest-ROI candidate (essential for Leg Swaps) and, if it conflicts with active positions, also append the next best non-conflicting fallback candidate (to prevent entry lockouts). The lists of candidates are sorted by distance to ATM (closest first) and sliced to `Math.max(10, numberOfCalls/numberOfPuts)` dynamically. Used for ranking, rotation, and entry decisions.
+2. **Unique Ranking List (`uniqueTopSpreads`)**: A deduplicated and filtered view of candidate spreads. Grouped by buy strike: we keep the highest-ROI candidate and, if it conflicts with active positions, also append the next best non-conflicting fallback candidate (to prevent entry lockouts as slots free up after two-phase exits). The lists of candidates are sorted by distance to ATM (closest first) and sliced to `Math.max(10, numberOfCalls/numberOfPuts)` dynamically. Used for ranking and entry decisions.
 
 ### B. Sorted Position Processing (Worst-First)
 
@@ -339,46 +370,35 @@ Evaluated only if no expiry exit was triggered.
     - Exit Reason: `Full Exit @ OTM (-{exitPoints}pts)` for calls / `(+{exitPoints}pts)` for puts
 - Action: 100% exit.
 
-**Priority 4 — Rotation & Leg Swap:**
+**Priority 4 — Short-Leg-Only Exit ($1.1):**
 
-Evaluated only if no exit was triggered, the position's expiry matches `selExpiry`, and `uniqueTopSpreads` is non-empty.
+> The former Priority-4 **Rotation & Leg Swap** logic has been **removed** (see §E). A full spread is now unwound in two phases; this is phase one. In actual code order the short-leg exit and the long-ladder exit (§D) are checked **before** the expiry / ATM-ITM-OTM catch-alls above — those remain the catch-alls for the held long.
 
-1. **Leg Swap Check (Same Sell Strike, Better Buy Strike)**:
-   - Always checked first (even if the active position is still in the top protected unique candidate strikes).
-   - Looks for a candidate in `uniqueTopSpreads` with the exact same sell strike as the active position, but a better (closer to ATM) buy strike.
-   - Enforces the **0.5% Spot Step Movement Guard** on the spot price relative to the active position's entry spot base.
-   - Enforces the **Net Premium Swap Cost Check**: calculates `netPremiumSwap = (deltaQty * latestSell) - (s.buyPrice - latestBuy)`, where `deltaQty = getScaledSellQty(s) - pos.sellQty` (enforcing the $195,000 portfolio cap scaling at 200× leverage on the candidate's `s.sellQty` first) and `latestSell` is the ask price of the sell leg. If `netPremiumSwap < config.legSwapNetPremium`, the candidate is rejected.
-   - If a valid swap target is found, `shouldExit` is set to `true`, and `exitReason` is set to `Leg Swap: Buy [currentStrike] -> [targetStrike]`.
+- Config: `shortExitPrice` (default `1.1`). For full spreads (`sellQty > 0`), each cycle reads the short leg's **live ask**; if `liveAsk <= shortExitPrice` the engine buys back **only** the short at the ask (gap-safe — fires even if the ask jumped past the threshold) and **holds** the long.
+- Fires **once** per position — setting `sellQty → 0` blocks re-trigger.
+- Booked in `trade_history` as a partial (`is_partial = true`, `exit_reason = "Short Leg Exit @ Ask $…"`, `trade_id = ${pos.id}-SE`). The short's entry-fee share is apportioned (`calculateFee(entrySellPrice, entrySpotPrice, sellQty, sellLotSize)`, capped to the remaining entry fee).
+- Position becomes long-only: `sellQty = 0`, `sellLeg.lotSize = 0`, margin recomputed `calcMargin(entryBuyPrice, buyLot, spot, 0, 1)`; the long lot is snapshotted as `buyLeg.longExitBaseLot` (`longExitStage = 0`) and persisted in `buy_leg`. The row is **kept** (not deleted).
 
-2. **Fallback to Standard Rotation (Only if not in Top Protected Ranks)**:
-   - Evaluated only if no Leg Swap was triggered, and the position is not in the top protected unique strikes (`inTopProtected === false`, which dynamically slices `uniqueTopSpreads` up to `config.numberOfCalls` or `config.numberOfPuts`).
-   - Finds a `bestTarget` in `uniqueTopSpreads` that passes safety guards (strike conflicts, reservation, and 0.5% spot movement).
-   - If the fallback candidate happens to have the same sell strike, it checks the **Net Premium Swap Cost Check** as well; if the cost is too high (i.e. `netPremiumSwap < config.legSwapNetPremium`), it rejects that candidate.
-   - If the target is directionally closer to ATM, the exit is approved (`exitReason = 'Lost Protected Rank (Top [maxActiveAllowed]) and Rank 1 better target available ([targetStrike])'`).
+### D. Long-Only Laddered Exit
 
-**Threshold Guard (Rotation Only):**
+Once a position is long-only, the held long is scaled out as its own **bid** recovers. Config: `longExitSlices` (default `10`) + a "Variable Exit Slices" toggle.
 
-Rotations are gated by the portfolio depth requirement:
+- **Constant Mode (toggle OFF):** exactly 5 slices — if current bid `< 25` → levels `[10,20,30,40,50]`; if bid `>= 25` → `[25,50,75,100,125]`.
+- **Variable Mode (toggle ON):** `longExitSlices` equidistant levels from the current bid up to `pastHigh` = the max candle high over the last 4h (`getOptionHigh(symbol, 4)`, falling back to the entry buy price if candles are unavailable). First slice exits immediately at the current bid; `step = (upperBound − currentBid) / (longExitSlices − 1)`, level `i = currentBid + i·step`.
+- Each slice sells at the **bid** (the same bid is both trigger and exit price); multiple crossed levels exit in one cycle (while loop). Each slice books a partial (`is_partial = true`, `exit_reason = "Long Leg Exit @ level $X (Bid $Y)"`, `trade_id = ${pos.id}-LE-${stage}`). The final level clears the rounding remainder, then the position is **deleted**.
+- Progress is persisted in `buy_leg` JSON (`longExitStage`, `longExitBaseLot`, `longExitLevels[]`) so it survives restarts with no recompute. The expiry / ATM-ITM-OTM catch-all still applies to the remainder.
 
-- Calls can only rotate if `activeCallsCount >= config.numberOfCalls`.
-- Puts can only rotate if `activePutsCount >= config.numberOfPuts`.
-- Maximum total rotations per evaluation cycle is dynamically capped by `maxCallRotations = config.numberOfCalls` (for calls) and `maxPutRotations = config.numberOfPuts` (for puts).
+### E. Removed: Rotation, Leg Swap, Full Portfolio Rotation
 
-### D. Leg Swap Execution Details
+The former Priority-4 rotation logic — Leg Swap (same sell strike, better buy strike), the "Lost Protected Rank" standard rotation, Target Reservation / 1-for-1 displacement, and Full Portfolio Rotation — has been **removed** from the engine. `legSwapNetPremium` is retained in config only for back-compat (default `0`, unused). Position improvement is now achieved by letting the two-phase exit (§C-P4 + §D) close positions and opening fresh candidates on the next minute boundary.
 
-When a leg swap is executed, the engine performs a specialized partial exit:
+### E2. Hedge Leg — Per-Spread 3rd Long (paper v2)
 
-1. **Buy Leg Exit**: The old buy leg is exited and recorded in `trade_history`. PnL is calculated on the **buy leg only** (`(latestBuy - entryBuyPrice) × buyLotSize`). Exit fee is only charged on the buy leg.
-2. **Entry Fee Apportionment**: The original entry fee is split proportionally between buy and sell legs: `longEntryFee = entryFee × (buyLotSize / (buyLotSize + sellQty × sellLotSize))`.
-3. **Sell Quantity Adjustment**: If the new target has a different sell quantity (due to different delta notional ratios):
-   - **Increase** (`deltaQty > 0`): The sell entry price is **weighted-averaged**: `newEntryPrice = (oldQty × oldPrice + deltaQty × livePrice) / newQty`.
-   - **Decrease** (`deltaQty < 0`): The excess short quantity is bought back, and the realized PnL is added to `accumulatedSellPnl`.
-4. **In-Place Update**: The `active_positions` row is **updated** (not deleted+inserted) with the new buy leg, adjusted sell qty, recalculated margin, and new entry time/spot price.
-5. **$195K Cap Scaling**: The target spread's lot size and sell quantity are scaled down if the short notional value exceeds $195,000, same as regular entries.
+Migrations `022` (config columns on `paper_trading_schedules`: `hedge_strike_type`, `hedge_call_price/pct`, `hedge_put_price/pct`) + `023` (leg columns `active_positions.hedge_leg` / `trade_history.hedge_leg`). **`strategy_version >= 2` (paper) only**; v1 hides the UI and ignores it.
 
-### E. Full Portfolio Rotation
-
-When a standard rotation is executed, the engine performs a full exit (both legs) of the active position and deletes it from Supabase, allowing a new position to be opened during the subsequent entries scan on the minute boundary.
+- **Type** `none`/`call`/`put`/`both`; **Price** = a premium budget ($) — the engine buys the **OTM** strike (call > spot / put < spot) whose ask is the **highest ≤ budget** (if none qualifies, the hedge is skipped and a plain 2-leg spread is entered, with a warning); **Percentage** — 3rd-long qty = short qty × pct/100, forming a **long / short / long triplet**.
+- **Entry gate**: Max Net Debit applies to the combined 3-leg premium `combinedNet = shortQty×sellBid − longAsk − hedgeQty×hedgeAsk`; if it exceeds `maxNetPremium` the whole entry is skipped. Hedge cost is added to margin; the hedge fee is tracked in `hedgeLeg.entryFee` (kept out of `pos.entryFee`).
+- **Exit**: the hedge rides the triplet and is closed **only** by the main long's ATM/ITM/OTM spot-cross or expiry catch-all — never short-bought-back, laddered, or scaled. If the main long ladders out first, the row is held "hedge-only" (`lotSize = 0`) until the catch-all. Sold at live bid (fallback entry price), `trade_id = ${pos.id}-HX`, `exit_reason = "Hedge Exit @ <ATM|ITM|OTM|Expiry>"`, logs `🛡️ HEDGE EXIT`. Armed-real uses a `-HB` buy at entry (non-fatal on failure) + a `-HX` reduce-only close.
 
 ### F. ATM P&L & ROI Candidate Filtering
 
@@ -391,10 +411,16 @@ Spreads scanned from the options chain are evaluated for their potential At-The-
 
 ### G. Entry Logic
 
-New entries are opened from `uniqueTopSpreads` (the deduplicated, ROI-ranked candidate list) after the exit pass:
+New entries are opened from `uniqueTopSpreads` (the deduplicated, ROI-ranked candidate list) after the exit pass.
+
+**Whole-cycle pre-entry gate (`wantEntries`):** before any candidate work, `wantEntries = !onlyExits && !accountState.paused && isTradingDayEnabled()`. If false — an **exits-only** cycle, the account is **paused**, or the current **trading day is disabled** — the engine skips the *entire* candidate-evaluation pass (per-spread ATM P&L/ROI compute, grouping, and the `Evaluating…`/`Candidate…` logs); `processedSpreads` stays empty so all downstream selection is a no-op. Exits and position management always run. This applies to paper AND live.
+
+- **Trading Days** (`isTradingDayEnabled`, migration `021`): `config.tradeDays` is a JSONB array of JS `getDay()` weekdays (`0=Sun…6=Sat`, default all-7). The active trading-day weekday is computed on the **17:30 IST** boundary (`1050` min): `istMin >= 1050 ? (getUTCDay()+1)%7 : getUTCDay()` — i.e. at/after 17:30 IST the active day is *tomorrow's* weekday. A disabled weekday blocks new entries for that trading day only.
+
+Per-candidate guards (when `wantEntries` is true):
 
 1. **Expiry Buffer Guard**: Skip if `minutesToExpiry < 5`.
-2. **Days to Expiry Guard**: Skip if the expiry has fewer days remaining than the configured `daysToExpiry` threshold.
+2. **Min Days to Expiry Guard**: Now driven by the **active schedule window's** `daysToExpiry` (migration `019`, paper v2) rather than an account-level field; the traded expiry is chosen as `current date + window DTE` (see §7 Product Refresh & Expiry). Live (v1) uses the account-level threshold and rolls forward only.
 3. **Strike Uniqueness (Local)**: Block if buy or sell strike already active in `remaining` or `newEntries` (same type/underlying).
 4. **Portfolio Cap (Local)**: Block if `remaining + newEntries count >= config.numberOfCalls` (for calls) or `config.numberOfPuts` (for puts) for this type.
 4. **Execution**: `entryBuyPrice = spread.ask`, `entrySellPrice = spread.bid`. Entry IVs captured: `entryBuyIv = ticker.askIv`, `entrySellIv = ticker.bidIv`. Baseline ATM ratio (`entryAtmRatio`) and unscaled lot size (`originalLotSize`) are computed.
@@ -432,6 +458,10 @@ When the engine starts for a new account and no `paper_trading_config` row exist
 | `days_to_expiry` | 0 |
 | `exit_type` | `'ATM'` |
 | `exit_points` | `0` |
+| `strategy_version` | `1` for live accounts, `2` for paper (from `mode`) |
+| `trade_days` | `[0,1,2,3,4,5,6]` (all days) |
+| `short_exit_price` | `1.1` |
+| `long_exit_slices` | `10` |
 
 ### J. Config Hot-Reload via Supabase Realtime
 
@@ -451,8 +481,8 @@ Each account engine subscribes to `postgres_changes` events on the `paper_tradin
 The manual, dollar-based visual "Base/Extra" credit simulation has been completely removed from both the scanner and paper trading screens. 
 
 - **Ratio Spread Scanner Simulation**: Driven directly by the configuration-level ATM Ratio Entry settings (`atmRatioScaling` toggle and `atmRatioPctCall` / `atmRatioPctPut` offsets). When enabled:
-  - The visual scanner (`ResultTable.jsx`) recalculates candidate quantities, margins, net premiums, and projected ATM P&Ls in real-time under the 200X leverage limit ($195k portfolio cap).
-  - Ratios that differ from their default baseline values due to scaling are highlighted in golden text (`var(--accent)`).
+  - The **scaled short quantity (`scaledSellQty`) is computed inside `scanTickers`** (before the Max Debit filter); `ResultTable.jsx` **consumes** it and renders the derived margins, net premiums, and projected ATM P&Ls in real-time under the 200X leverage limit ($195k portfolio cap) — it no longer recomputes the scaling itself.
+  - Ratios that differ from their default baseline values due to scaling are highlighted in golden text (`var(--accent)`, `#f0b90b`).
 - **Paper Trading Interface**: Does not perform local client-side visual simulation; it renders active position metrics (`sellQty`, `lotSize`, `margin`, `PnL`) as-is from the database. The scaled quantity values are computed and locked directly in Supabase by the backend engine at entry-time.
 
 ### L. KPIs & History
@@ -499,18 +529,22 @@ To visualize potential outcomes, the Result Table projects the value of each sca
 ### 1. True ATM Strike Sourcing
 The true market ATM strike is calculated globally in the scanner component (by inspecting the entire unfiltered options chain) and passed as `trueAtmStrike` to `ResultTable.jsx`. This ensures that aggressive filtering in the scanner does not lead to a wrong ATM strike calculation.
 
-### 2. `getTickerPrice` — Expiry-Filtered Nearest-Strike Fallback
+### 2. `getTickerPrice` — Expiry-Filtered Bracket-and-Average Fallback
 
 All ATM price lookups go through `getTickerPrice(strike, optType, priceField, expiry)`:
 
 1. **Filter by type and expiry**: Collects all tickers from `tickerData` matching `optType` (case-insensitive) and the requested `expiry`. Returns `null` immediately if no tickers match.
 2. **Exact match**: If a ticker at the requested `strike` is found, its `priceField` (or `markPrice` as fallback) is returned — or `null` if the value is missing/zero.
-3. **Nearest-strike fallback**: If no exact match exists, scans same-type, same-expiry tickers and picks the one whose strike is closest to the target, subject to a tight asset-specific **tolerance**: **`500`** points for BTC and **`50`** points for ETH.
-4. **Returns `null`** (never `0`) when no ticker satisfies the tolerance, so callers can cleanly distinguish "no data" from "priced at zero".
+3. **Bracket-and-average fallback**: If no exact match exists (a "weird" `ATM ± strikeDiff` target can land *between* two listed grid strikes, e.g. `±1100` between listed `1000`/`1200`), the scanner takes the **nearest listed strike below** and the **nearest listed strike above** the target and returns the **average** of their prices as a midpoint estimate (equivalent to linear interpolation for the symmetric case). This replaces the old single-nearest **snap**, which biased toward one side and skewed the ATM ratio. If only **one** side exists within tolerance, it falls back to that single strike.
+4. **Tolerance** (each side must be within): **`500`** points for BTC and **`50`** points for ETH.
+5. **Returns `null`** (never `0`) when no strike falls within tolerance on either side, so callers can cleanly distinguish "no data" from "priced at zero".
+
+> [!NOTE]
+> The bracket-and-average is applied in the **scanner / `ResultTable`** (display & selection) only. The live **engine** (`getTickerPrice` in `paperTradingEngine.js`) still uses the single **nearest-strike snap** for entry sizing, live ATM-ratio scaling, and ATM-exit pricing — so for a weird-diff spread the scanner's shown ATM ratio can differ slightly from what the engine actually trades.
 
 ### 3. At ATM Ask/Bid Option Chain Shifting & Ratio
 - **Long Leg (ATM)**: Option valued at the current Bid price of the option at `atmStrike` (via `getTickerPrice(atmStrike, type, 'bid')`).
-- **Short Leg (OTM)**: Option valued at the current Ask price of the option at strike `atmStrike + strikeDiff` (for Calls) or `atmStrike - strikeDiff` (for Puts), with the same nearest-strike fallback.
+- **Short Leg (OTM)**: Option valued at the current Ask price of the option at strike `atmStrike + strikeDiff` (for Calls) or `atmStrike - strikeDiff` (for Puts), with the same bracket-and-average fallback. Because only `sellIntrinsic` is priced at the (possibly missing) target, this fallback mainly moves the **ATM ratio** — and hence the scaled short quantity and ATM P&L that flow from it.
 - **At ATM Ratio**: Displayed as `1 : X`, where `X = Math.round((ATM_Bid / OTM_Ask) / 0.25) * 0.25`. If either price is `null`, ratio displays as `—`.
 - **Rendering**: Each price cell shows `$XX.XX` when available, or `—` (muted colour) when the ticker returned `null`.
 
@@ -528,6 +562,14 @@ All ATM price lookups go through `getTickerPrice(strike, optType, priceField, ex
   `margin = (buyPrice × buyLotSize) + (shortValue / leverage)`
 - **Always rendered**: Because margin does not depend on ATM quote availability, it is never suppressed.
 - **Sorting**: The scanner table groups the spreads by buy strike, sorts the group strikes by their highest candidate ROI descending, and sorts all options/sub-rows within each group by ROI descending. This ensures the most margin-efficient opportunities are ranked at the top.
+
+### 6. ATM Edge Floors (Min ATM P&L / Min ATM ROI)
+
+Two display-time floors let the user hide spreads whose projected at-ATM edge is too small. Unlike the [scanner entry filters](#5-ratio-spread-scanner-ratiospreadscannerjsx) (which run in `scanTickers`), `ATM PnL`/`ROI` are derived from live ATM ticker data and computed only in `ResultTable`, so these floors filter the processed rows right before grouping and re-evaluate live as ATM quotes move.
+
+- **Gated behind `atmRatioScaling`**: the `minAtmPnl` / `minAtmRoi` inputs live in the ATM-scaling section and apply **only while that checkbox is enabled**; with it off, both floors are ignored.
+- **Both must pass**: a row is kept only when `ATM PnL >= minAtmPnl` (USD, default `0`) **and** `ROI >= minAtmRoi` (%, default `0`).
+- **Missing-ATM-data rows are kept**: a row with no ATM data (shown as `—`) stays visible rather than flickering in and out on a transient missing quote.
 
 ### Margin Backfill on Load
 
@@ -584,20 +626,24 @@ On first spot price arrival, `backfillMargins` queries all `active_positions` fr
 
 ## 11) Paper Trading Filter State Buffering (Apply & Reset)
 
-To prevent continuous writes to Supabase during filter updates, editing filter values in `PaperTrading.jsx` is buffered in a local React draft state.
+To prevent continuous writes to Supabase during filter updates, editing filter values in `ControlPanel.jsx` is buffered in a local React draft state.
+
+> **Control Panel vs Schedule Panel split.** The Control Panel now shows only **global filters** — Min IV Edge, Max Delta Deviation, Min Short Premium, Max Net Debit, Max Short Ratio, Min DTE, Exit Type/Points, Short Exit Price, Variable/Long Exit Slices, and the Trading Days toggle. The **8 sizing/scaling fields** (open calls/puts, spread width, spot distance, ATM scaling + call/put %, re-entry step) were **removed from it** — they are set at account creation and configured **per window** in the Schedule Panel (§12). Apply/Reset/dirty-tracking operate only on the global filters.
 
 ### 1. State Management
 - `draftConfig`: A copy of the configuration currently active in the UI inputs.
 - `updateDraftConfig(keyOrObj, value)`: Modifies the `draftConfig` object without changing `config`.
-- `FILTER_KEYS`: List of filter properties that are buffered (`minStrikeDiff`, `minIvDiff`, `maxRatioDeviation`, `minSellPremium`, `maxNetPremium`, `minLongDist`, `maxSellQty`, `atmRatioScaling`, `atmRatioPctCall`, `atmRatioPctPut`).
+- `FILTER_KEYS`: the **global-only** buffered set (Min IV Edge, Max Delta Deviation, Min Short Premium, Max Net Debit, Max Short Ratio, Min DTE, Exit Type, Exit Points, Short Exit Price, Long Exit Slices + variable-slices flag, Trading Days). The sizing/scaling fields are no longer buffered here.
 
 ### 2. Button Enablement & Actions
 - **Apply Button**:
   - Bound to `isFiltersDirty` selector which checks if any properties in `FILTER_KEYS` differ between `draftConfig` and `config`.
   - When clicked, calls `handleApplyFilters` which updates `config` state, writes the configuration to Supabase, and broadcasts `CONFIG_SYNC` to synchronize tabs.
 - **Reset Button**:
-  - Bound to `isDefaultConfig` selector which checks if all properties in `DEFAULT_FILTERS` match the active `config`.
-  - When clicked, calls `handleResetFilters` which restores filters in the state to system defaults, saves them to Supabase immediately, and broadcasts `CONFIG_SYNC` across tabs.
+  - When clicked, calls `handleResetFilters` which restores filters from the account's **`default_config` JSONB column** (falling back to factory defaults for legacy accounts), saves them to Supabase immediately, and broadcasts `CONFIG_SYNC` across tabs.
+
+### 3. Cross-Device Config Sync
+Beyond `BroadcastChannel` (per-origin, one machine), `PaperTrading.jsx` subscribes to `paper_trading_config` **Supabase Realtime** and refetches on a foreign change so a config edit on one device reflects on another. The refetch is skipped while the tab's own save is in flight and while `isFiltersDirty` (debounced), so it never clobbers an in-progress edit.
 
 ---
 
@@ -616,8 +662,15 @@ Table: `paper_trading_schedules`
 - `number_of_puts` (INTEGER, max concurrent puts override)
 - `min_long_dist` (INTEGER, override for minimum long strike distance)
 - `min_strike_diff` (INTEGER, override for minimum strike difference)
-- `is_active` (BOOLEAN, default `true`, permanently set to active/enabled via frontend UI)
+- `atm_ratio_scaling`, `atm_ratio_pct_call`, `atm_ratio_pct_put`, `spot_diff` (per-window sizing/scaling + re-entry step)
+- `max_net_premium` (Max Net Debit, migration `012`)
+- `exit_type` (`ATM`/`ITM`/`OTM`), `exit_points` (migration `012`, **active-window-governs** open positions)
+- `min_days_to_expiry` (migration `019`, **paper v2** — the traded expiry follows the active window)
+- `hedge_strike_type`, `hedge_call_price`, `hedge_call_pct`, `hedge_put_price`, `hedge_put_pct` (Hedge Leg, migration `022`)
+- `is_active` (BOOLEAN, default `true`, permanently active — the Enabled checkbox was removed)
 - `created_at` (TIMESTAMPTZ, default `now()`)
+
+> **Window 1** is permanent per account: auto-created and seeded from the base `paper_trading_config`, **cannot be deleted** (Windows 2, 3… are), and defaults to a full-day `17:30`→`17:29` IST range so the schedule normally has no gaps. The account base config remains the **gap fallback**.
 
 RLS Policies:
 - Enable select/view and insert operations for authenticated users (`auth.uid() = user_id`) to support client-side fallback insertion.
@@ -631,18 +684,120 @@ RLS Policies:
   - For each active schedule, start/end minutes are parsed from the `"HH:mm"` IST time values loaded from the database.
   - Overnight windows are supported in IST: if `startMin > endMin` (e.g., `22:29` to `06:30` IST), a match occurs if `istMin >= startMin || istMin < endMin`. Otherwise, a match occurs if `istMin >= startMin && istMin < endMin`.
   - The first matching active schedule window is returned.
+  - On overlap, the window with the **smallest DTE** wins; in an uncovered gap the last-ended window carries forward before dropping to the base config.
 - **`effectiveConfig` Generation**:
-  - If a schedule window matches, the engine creates an `effectiveConfig` by spreading the account's base configuration and overriding the scheduled properties: `numberOfCalls`, `numberOfPuts`, `minLongDist`, and `minStrikeDiff`.
+  - If a schedule window matches, the engine creates an `effectiveConfig` by spreading the account's base configuration and overriding the scheduled properties: `numberOfCalls`, `numberOfPuts`, `minLongDist`, `minStrikeDiff`, the ATM-ratio scaling fields, `spotDiff`, `maxNetPremium`, `exitType`, `exitPoints`, `minDaysToExpiry` (v2), and the hedge fields.
   - If no schedule window matches, `effectiveConfig` falls back to the base account config.
-  - All scanner candidate matching and position limit evaluations inside `evaluateStrategy()` utilize this `effectiveConfig`.
+  - All scanner candidate matching, position-limit evaluations, and the **exit-type check** (paper) / spot-cross catch-all (live) inside `evaluateStrategy()` utilize this `effectiveConfig` — so an open position's exit level follows the active window. (Live SL/TP brackets are placed at entry from the then-active window and are re-synced, not auto-moved, on a window flip — see §13.)
 
 ### 3. Frontend Schedule Configuration UI (`SchedulePanel.jsx`)
-- **Layout & Style**: Designed as a compact, horizontal, inline-editable list styled like the Charts Watchlist, rather than heavy collapsible cards.
-- **Visual Schedule Timeline**: A 24-hour visual bar is rendered at the top of the schedule panel, representing the daily trading cycle starting and ending at `05:30` IST (corresponding to `00:00` UTC Delta Exchange daily rollover/day boundary). The bar renders colored blocks indicating configured schedule windows and gaps (hashed fallback/base configuration). Empty slots naturally display at the end of the bar, and calculations wrap around the `05:30` IST boundary.
+- **Layout & Style**: Designed as a compact, horizontal, inline-editable list, rather than heavy collapsible cards.
+- **Visual Schedule Timeline**: A 24-hour visual bar is rendered at the top of the schedule panel, representing the daily trading cycle starting and ending at `17:30` IST (the Delta Exchange daily rollover/settlement boundary = `12:00` UTC). The bar renders colored blocks indicating configured schedule windows and gaps (hashed fallback/base configuration). Empty slots naturally display at the end of the bar, and calculations wrap around the `17:30` IST boundary.
 - **Timezone Serialization**: Frontend inputs and the timeline visualization operate in Indian Standard Time (IST) for user convenience. Times are loaded and saved directly as raw IST time strings without UTC offset translations. trailing seconds (`:00`) added by database `TIME` columns are cleaned using `.substring(0, 5)` on fetch.
 - **CRUD Operations**:
   - Users edit schedule labels, time inputs (in IST), and strategy override parameters (`numberOfCalls`, `numberOfPuts`, `minLongDist`, `minStrikeDiff`) directly in inline-editable fields.
   - The "Enabled" checkbox has been removed, making all schedule windows permanently active (`isActive = true`).
-  - **Add Window**: Appends a new default window (defaulting to `05:30` - `05:30` IST) to the state.
-  - **Delete Window**: Removes the window from the state.
+  - **Add Window**: Appends a new default window to the state.
+  - **Delete Window**: Removes the window from the state (Window 1 is not deletable).
   - **Live Auto-Sync**: Updates are automatically saved to Supabase after a 1.2-second debounce, provided there are no active time overlaps. The "Save Schedules" button acts as a live sync indicator showing `✓ Live Synced`, `Syncing...`, or `Overlap Detected`.
+  - **Upsert-then-prune (never DELETE-all)**: each window carries a stable UUID; the save **upserts** all windows (`onConflict:'id'`) and only **after success prunes** removed windows (`delete … where id not in (keptIds)`). This fixes the old failure mode where a failed post-DELETE insert left zero rows and reseeded a lone Window 1 from base config ("filters changed by themselves"). A `paper_trading_schedules` Realtime subscription re-syncs across devices, skipped while the local save is in flight / edits are dirty.
+
+---
+
+## 13) Live Trading Execution
+
+The live engine is the **same** `paperTradingEngine.js` with real-order effects layered in and gated on `mode === 'live' && live_enabled`; paper logic is unchanged. Full narrative: [live_trading.md](live_trading.md).
+
+### 13.1 Credential Security (Stage 1)
+
+- **Table `delta_credentials`** (one row/account): `api_key` (public, sent in header), `api_secret_enc` (encrypted with pgcrypto `pgp_sym_encrypt` under a Supabase **Vault** key), `key_last4`, `status` (`unverified`/`verified`/`invalid`), `verified_at`.
+- **RLS + RPCs**: `anon`/`authenticated` can never read the secret. Clients write only via `SECURITY DEFINER` RPC **`upsert_delta_credentials`** (checks ownership, encrypts server-side); owners read metadata via **`get_delta_credentials_meta`**; only **`service_role`** decrypts via **`get_delta_credentials_decrypted`**. One-time: `select vault.create_secret('…','delta_cred_encryption_key')` (else `upsert_delta_credentials` raises `Encryption key not configured`).
+- **Verification (IP-whitelisted)**: Delta keys are IP-whitelisted, so verification is engine-mediated — the browser calls RPC `request_delta_verification` (encrypts the secret with the Vault key) → engine polls `delta_verify_requests`, runs the balance check from the whitelisted IP, writes the result back (`get_delta_verification_status`); rows purged after 1 hour (migration `004`). Alternatively `engine/proxyServer.js` (`DELTA_PROXY_PORT`) forwards `/v2/*`.
+- **Delta auth reference**: base URL `https://api.india.delta.exchange`; headers `api-key`, `signature`, `timestamp`; `signature = HMAC_SHA256(secret, method + timestamp + path + query + body)` hex, `timestamp` in Unix seconds.
+
+### 13.2 Safety Layer (dry-run / kill-switch / arming)
+
+- **`DELTA_LIVE_DRYRUN`** (default **true**): intended orders logged `🧪 DRY-RUN…`, never sent. **`live_enabled`** per-account kill-switch (Start/Disarm). **`paused`** opens no new positions but keeps managing open ones. Missing `service_role` key or credentials ⇒ live disabled, paper unaffected.
+- **`mode`** on `paper_trading_accounts` (`paper`/`live`); switching back to paper forces `live_enabled = false`. All flags propagate via Realtime.
+
+### 13.3 Dual exit model
+
+- **Paper OR dry-run live** → the **active model** (the exact paper exit tree of §C/§D; each branch also sends a `reduce_only` close via `live.closeLeg()` when armed, logged in dry-run).
+- **Armed real live** (`DELTA_LIVE_DRYRUN=false`) → the **resting-order model** (`handleLiveRestingExit`): exits rest in the exchange book and fill on their own. Dry-run cannot exercise this (needs a real exchange). The old index-triggered SL/TP model (`handleLiveExit`/`computeIndexTriggerLevel` for exits) is retired.
+
+### 13.4 Resting-order model mechanics
+
+- At entry a reduce-only **limit BUY** rests on the short at `shortExitPrice` (default `$1.1`), tag `${id}-SEX`. When it **fully** fills — detected by `order_id` in `/v2/fills` (id persisted in `sell_leg`, restart-safe) **AND** short size = 0 — the engine books `${id}-SE`, converts to long-only, and places the **fixed long ladder** (5 levels: `[10,20,30,40,50]` if long bid < 25 else `[25,50,75,100,125]`; `S` contracts split evenly via `splitContracts`; `S≤5` → fewer levels). Each slice books `${id}-LE-<stage>`; slice PnL maps integer contracts back to fractional lots (`lot = baseLot × contracts / S`).
+- **ATM-ratio scale-down** while still a full spread uses the shared `applyAtmRatioScaling` helper and actively sells @ bid (`${id}-PEX-…`, book `${id}-PE-<lots>`). **Whole-contract sizing**: the real order size = `round(lotBefore/base) − round(lotAfter/base)` (not per-chunk rounding), so sub-contract steps accumulate and the exchange position stays exactly `round(lotSize/base)`.
+
+### 13.5 Exchange brackets (engine-down risk backstop)
+
+- `openSpread` attaches a **spot-triggered bracket** per leg at the exit-type level (`computeIndexTriggerLevel`; ATM = buy strike, ITM/OTM = ± points): long → `bracket_take_profit_price`, short → `bracket_stop_loss_price`, `bracket_stop_trigger_method: spot_price`. Delta auto-cancels it when the leg closes.
+- `syncExitBrackets` is idempotent and computed-level-driven, storing two levels per leg: `brkComputed` (drives drift detection) vs `brkLevel` (effective level on Delta). When `exitType`/`exitPoints` change (base or window), brackets are moved by **cancel-then-recreate** (`changePositionBracket`) because Delta has no "edit position bracket" call. `resyncRestingOrders` re-prices the short buy-back via `editOrder`.
+- Bracket-set rejections handled without false alarms: `no_open_position` (leg already closed — skip quietly), `bracket_order_immediate_execution` (level already breached — market-close immediately via reduce-only IOC), `bracket_order_exists` (already protected).
+
+### 13.6 Balance-allocation sizing
+
+- Live accounts size from the **live Delta USDT wallet balance** (not the paper `$195k`). `part = (balance × balance_allocation_pct) ÷ maxPositions`, `maxPositions = max(numberOfCalls + numberOfPuts)` across base + all windows. Unit margin via `calcMargin` using real per-contract `contractValue` + current spot; `scale = part ÷ unitMargin` (floored at 1); `longC = round(scale)`, `shortC = round(longC × ratioToUse)`. Then capped so short notional (`spot × shortC × contractValue`) ≤ **$195,000**. Missing `contractValue` for either leg ⇒ **skip the entry** (never guess). Logs `💰 LIVE size…` / `🧢 LIVE qty capped…`.
+- **Long-only margin** uses the contract-value basis (`longOnlyMargin`, `buyLeg.contractValue` persisted at entry). A per-cycle **margin self-heal** recomputes each open live position's margin on that basis (preferring `symbolMeta.contractValue`), persisting only on material change (contractValue fix or drift past `max($0.50, 2%)`).
+
+### 13.7 Entry robustness
+
+- **Price offsets**: buy @ ask + `entry_buy_offset` (5), sell @ bid − `entry_sell_offset` (2) — affect only the sent limit price; the stored entry price stays ask/bid.
+- **Chase-fill (all-or-nothing)**: `openSpread`/`submitChase` chase each leg to a full fill (`editOrder` re-price, up to `ENTRY_CHASE_ATTEMPTS`=3 every `ENTRY_CHASE_POLL_MS`=5000 with `ENTRY_CHASE_BUMP`=1); if still unfilled → **unwind + abort**, no insert.
+- **Same-product collision guard** (Fix B): skip any candidate whose leg symbol already holds a position (`live.positions()` ∪ tracked book). **Dangling-short recovery** (Fix A): `sellQty>0`, short open, long gone → reduce-only market close `${id}-DANGX`. **Benign `no_position_for_reduce_only`** (Fix D): treated as `{ok:true, alreadyClosed:true}`.
+- **Atomic-ish insert**: orders placed first, row written last; a failed insert unwinds via `${id}-ORPHX`; the in-memory book is rebuilt only from `persistedEntryIds`. **Long residual sweep** (`-LSWEEP`) reduce-only market-closes any long contracts left open after the laddered exit deletes the row.
+- **Price sanitization** (`cleanLimitPrice`): every limit/stop price rounded to 4 dp and stringified before send (raw float noise causes Delta `bad_schema`).
+
+### 13.8 Exchange reconciliation (exchange is source of truth)
+
+- `reconcileOrphans` handles **book→exchange** (tracked row gone from Delta → book + remove). `protectOrphanExchangePositions` handles **exchange→book**: a **long orphan** (known symbol, buy strike free) → `adoptLongOrphan` (build from Delta's real `entry_price`, insert first, arm TP + place SELL ladder); a **naked short orphan** → reduce-only market close + alert; can't adopt → protect + alert.
+- **Manual changes on Delta**: full close → book + delete; **short-only close** → `externalShortExitToLongLadder` (dangling-long recovery: `sellQty>0`, short 0, long>0, age>90s, `_shortEverOpen`; books `${id}-SE`, converts to long-only, places `${id}-LE-*`, latched); **TP/SL change** → `adoptManualBrackets` (into `brkLevel` only); **bracket cancel** → `armMissingBrackets`; **partial reduction** → `reconcilePartialReductions` (book `${id}-XPR-L|S-<remaining>`). Guards: armed-real only, reuses the sweep's snapshot, 120s grace (`orphanSeenAt`), once-per-orphan latch.
+
+> Known race (benign): the resting-fill handler and the dangling-long reconciler can both fire for one short-flat event across the two timers; the shared `${id}-SE` idempotent write and deterministic `${id}-LE-*` tags (Delta rejects the duplicate) prevent any double PnL or double ladder.
+
+### 13.9 `client_order_id` tag taxonomy
+
+`-SE` (short exit book) · `-SEX` (resting short buy-back) · `-LE-<stage>` (ladder slice) · `-LEX-…` (active-model bid-cross ladder) · `-PE-<lots>` (partial book) · `-PEX-…` (partial reduce-only sell) · `-HB`/`-HX`/`-HDX` (hedge buy / exit / drain) · `-DANGX` (dangling-short flatten) · `-ORPHX` (orphan unwind) · `-LSWEEP` (long residual sweep) · `-XPR-L|S-<remaining>` (external partial reconcile) · `-XB|XS-<ATM|ITM|OTM|EXP>` (strategy exit) · `-CAXB|CAXS` (Close All) · `MX*`/`MLC`/`CX` (manual exit / leg close / close).
+
+### 13.10 Live exchange data pipeline (dashboard)
+
+- `live.snapshot()` reads `/v2/positions/margined`, `/v2/orders` (split resting vs stop by `stop_order_type`), `/v2/fills`, `/v2/wallet/balances` via `Promise.allSettled` every **20s** (read-only; runs in dry-run too). **Change-guarded upsert** to `live_exchange_state` (migration `009`): writes only on structural-signature change, else ≤1/60s keepalive; immediate republish after a manual action.
+- `TradingWorkspace.jsx` renders real Delta tabs only when live + `engineDryRun === false` + a fresh snapshot; otherwise tabs are engine-derived. **Live-fresh unrealized PnL** recomputed from the WS mark feed (`livePnlOf() = size × contract_value × (mark − entry)`). **Exit Reason** derived from `stop_order_type` + `client_order_id` tag.
+
+### 13.11 Telegram failure alerts
+
+`engine/lib/telegram.js` (`notifyLiveFailure`), fire-and-forget, armed-real only. Env: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (both required, else disabled), `TELEGRAM_DEDUPE_MS` (60000). Triggers: order/close/stop/bracket failure (benign codes suppressed), protective close failure, entry aborted, orphan reconcile failure, armed-but-no-credentials. Each message: account, failure, Delta error, UTC timestamp; deduped.
+
+---
+
+## 14) Manual Actions & Diagnostics
+
+### 14.1 Manual actions (consolidated poll)
+
+UI writes a row/flag; the engine executes on Delta and books idempotently:
+- `active_positions.exit_requested = true` → cancel resting + market-close + book **Manual Exit** (`exit_reason='Manual Exit'`). `ConfirmExitModal.jsx` also does the paper path directly (INSERT `trade_history` + DELETE `active_positions`; the Realtime DELETE filters it from engine memory).
+- `delta_close_requests` (`account_id`, `product_symbol`) → reduce-only market-close that leg (incl. untracked orphans) + delete row.
+- `delta_cancel_requests` (`order_id`, `product_id`) → cancel + delete.
+- `paper_trading_accounts.close_all_requested = true` → native `close_all` flatten (per-position fallback); `processCloseAll` reads the flag straight from the DB every tick (the 30s fallback sync omits the column).
+
+All four are dispatched by the manager-level `pollAllRequests` (see §7); migration `016` grants admin RLS bypass on these tables.
+
+### 14.2 Diagnostic logging (0 candidates)
+
+`scanTickers()` returns `{ pairs, rejected }`, where `rejected` counts per-filter drops: `strikeDiff, noPrice, staleQuote, noIv, ivDiff, longDist, sellPremium, noDelta, ratioDev, maxSellQty, netPrem`. When a full run yields 0 candidates the engine logs the **top rejecting filter** — e.g. `0 candidates — top filter: minSellPremium rejected 171 pairs` or `stale WS quote (>120s) rejected 83 pairs`, plus pool diagnostics (`Ticker pool: N total, 0 match expiry — WS may not have started yet`). The same top filter across all accounts at once indicates a market condition (theta decay), not a bug.
+
+---
+
+## 15) Auth & RBAC
+
+- **Email-only login**: the dashboard derives the Supabase password deterministically (`OptionScope_${cleanEmail}_Secure123!`); first login auto-creates a `profiles` row with `role:'client'`.
+- **Roles**: `client` sees only its own `user_id` accounts; `admin` sees all accounts and can assign an owner at creation and write to any account.
+- **Migration `016`** (`016_admin_manage_accounts.sql`) adds an admin bypass (`OR EXISTS (SELECT 1 FROM profiles WHERE id=auth.uid() AND role='admin')`) to the RLS policies on `paper_trading_accounts`, `paper_trading_config`, `paper_trading_schedules`, `active_positions`, `trade_history`, `delta_close_requests`, and `delta_cancel_requests` — previously admin writes silently no-op'd (an RLS-filtered UPDATE affects 0 rows with no error).
+
+### UI details (heartbeat / capacity / date filter)
+
+- **Heartbeat thresholds** (`engine_heartbeat`, polled 30s, paused when tab hidden): Online `age<60s` (green `#0ecb81`), Stale `60–120s` (yellow `#f0b90b`), Offline `≥120s` (red `#f85149`).
+- **Window Capacity row** (`TradeHistoryTable.jsx`): a chip per schedule window showing name + `C:`/`P:` caps and a color dot matching the Schedule Panel timeline palette; hover shows the time range.
+- **Live Utilized %** (SchedulePanel): `(min(numberOfCalls,activeCalls)+min(numberOfPuts,activePuts))/(numberOfCalls+numberOfPuts)×100`, full spreads only, account-wide.
+- **Trade-History "today" filter** uses a **UTC+12h** offset (`d.setUTCHours(d.getUTCHours()+12)`) so the day flips at noon UTC = **17:30 IST**, matching Delta's settlement rollover.
