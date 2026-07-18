@@ -2292,9 +2292,20 @@ async function startSingleAccountEngine(account) {
         return { atmPnl, roi };
       }
 
-      // Compute ATM P&L and ROI for each spread in topSpreads, and filter by ATM P&L >= 50
+      // Compute ATM P&L and ROI for each spread in topSpreads, and filter by ATM P&L >= 50.
+      // Entry-candidate work only matters when this cycle can actually OPEN a position:
+      //  • onlyExits → exits-only cycle, no entries
+      //  • accountState.paused → account paused, entries blocked (exits still run)
+      //  • !dayAllowsEntry → day-of-week entry gate (see isTradingDayEnabled), disabled day
+      // In any of these cases placement is gated below, so skip the whole candidate-evaluation
+      // pass (compute + logs) — leaving processedSpreads empty makes all downstream selection a
+      // no-op. Exit/position management runs regardless. dayAllowsEntry is reused at the gate.
+      // (paused is re-read as `paused` below for the placement gates; reading it here too is
+      // fine — same field, and each gate uses the current value at its own point in the cycle.)
+      const dayAllowsEntry = isTradingDayEnabled();
+      const wantEntries = !onlyExits && !accountState.paused && dayAllowsEntry;
       const processedSpreads = [];
-      if (!onlyExits) {
+      if (wantEntries) {
         log(`[${accountState.name}] Evaluating ${topSpreads.length} candidate spreads for entry (Spot: ${spotPrice}, ATM Strike: ${atmStrike})`);
         if (topSpreads.length === 0) {
           // Log top rejection reason to diagnose why 0 candidates
@@ -2313,7 +2324,9 @@ async function startSingleAccountEngine(account) {
           }
         }
       }
-      for (const spread of topSpreads) {
+      // Skip the per-spread ATM P&L/ROI compute whenever this cycle can't open an entry
+      // (exits-only, paused, or a disabled trading day) — processedSpreads stays empty.
+      for (const spread of (wantEntries ? topSpreads : [])) {
         const { atmPnl, roi } = calculateAtmPnlAndRoi(spread);
 
         let minAtmPnl = 50;
@@ -2323,9 +2336,8 @@ async function startSingleAccountEngine(account) {
         }
 
         const passed = (atmPnl != null && atmPnl >= minAtmPnl);
-        if (!onlyExits) {
-          log(`[${accountState.name}] Candidate ${spread.buyLeg.type.toUpperCase()} ${spread.buyLeg.strike}/${spread.sellLeg.strike}: ATM P&L = $${atmPnl != null ? atmPnl.toFixed(2) : 'null'} (Min required: $${minAtmPnl.toFixed(2)}), ROI = ${roi != null ? roi.toFixed(2) : 0}%, Passed = ${passed}`);
-        }
+        // Loop only runs when wantEntries, so this always logs during an entry-eligible cycle.
+        log(`[${accountState.name}] Candidate ${spread.buyLeg.type.toUpperCase()} ${spread.buyLeg.strike}/${spread.sellLeg.strike}: ATM P&L = $${atmPnl != null ? atmPnl.toFixed(2) : 'null'} (Min required: $${minAtmPnl.toFixed(2)}), ROI = ${roi != null ? roi.toFixed(2) : 0}%, Passed = ${passed}`);
         if (passed) {
           processedSpreads.push({ ...spread, atmPnl, roi });
         }
@@ -3207,7 +3219,7 @@ async function startSingleAccountEngine(account) {
 
       // Day-of-week entry gate (paper AND live). Blocks NEW entries on a disabled weekday
       // (17:30 IST trading-day boundary); open positions still managed. Default [0..6] = all.
-      const dayAllowsEntry = isTradingDayEnabled();
+      // `dayAllowsEntry` is computed once above (candidate-evaluation gate) and reused here.
       if (!dayAllowsEntry && !onlyExits && !paused) {
         log(`[${accountState.name}] 📅 Trading day disabled — skipping new entries (open positions still managed).`);
       }

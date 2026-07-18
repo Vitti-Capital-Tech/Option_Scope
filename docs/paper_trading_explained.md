@@ -316,7 +316,9 @@ Only spreads that meet this adjusted minimum floor survive the filter.
 Once we have the filtered, ranked list of candidate spreads (`uniqueTopSpreads`), the engine tries to open new positions. Each candidate must pass these checks **in order**:
 
 > [!NOTE]
-> **Pre-entry gates (whole cycle, not per-candidate):** before the per-candidate guards below, the engine skips **all** new entries this cycle if the account is **paused**, or — on **v2 (paper)** accounts — if the current [trading day is disabled](#trading-days-day-of-week-entry-filter). Both leave open positions fully managed (exits continue); they only block opening new ones.
+> **Pre-entry gates (whole cycle, not per-candidate):** before the per-candidate guards below, the engine skips **all** new entries this cycle if the account is **paused**, or if the current [trading day is disabled](#trading-days-day-of-week-entry-filter) (both paper AND live — see that section). Both leave open positions fully managed (exits continue); they only block opening new ones.
+>
+> **Optimisation:** when a cycle can't open anything (**exits-only**, **paused**, or a **disabled trading day** → the `wantEntries` flag is false), the engine skips the **entire candidate-evaluation pass** — the per-spread ATM P&L/ROI compute, grouping, and the `Evaluating N candidate spreads…` / `Candidate …` logs. `processedSpreads` stays empty so all downstream selection is a no-op. This saves compute and avoids the misleading "Evaluating…" log on days/cycles where nothing can be opened.
 
 ### Guard 1: Expiry Buffer
 ```
@@ -856,11 +858,11 @@ All other filter settings (like `minIvDiff`, `minSellPremium`, etc.) default bac
 
 **File**: [paperTradingEngine.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js) (`isTradingDayEnabled`), [ControlPanel.jsx](file:///c:/Users/ASUS/Documents/Option_Scope/src/components/PaperTrading/ControlPanel.jsx) · **Column**: `paper_trading_config.trade_days` · **Migration**: `021`
 
-An **account-level** day-of-week filter that chooses which weekdays the account may **open new positions** on. It sits **on top of** the time-of-day schedule windows: entries need both an active window (time) **and** an enabled trading day. Experimental — **`strategy_version >= 2` (paper) only**; v1 (live) accounts ignore it and the control is hidden. See [Strategy Versioning](#strategy-versioning-paper-vs-live).
+An **account-level** day-of-week filter that chooses which weekdays the account may **open new positions** on. It sits **on top of** the time-of-day schedule windows: entries need both an active window (time) **and** an enabled trading day. **Promoted to the shared path — applies to paper AND live, all strategy versions** (it lives in `isTradingDayEnabled` with no version branch). Safe by default: `trade_days` defaults to all seven days, so any account that never restricted days is unaffected. See [Strategy Versioning](#strategy-versioning-paper-vs-live).
 
 - **Storage**: a JSONB array of weekday numbers matching JS `getDay()` — `0 = Sunday … 6 = Saturday`. Default is all seven, so existing accounts trade every day unchanged.
-- **UI**: a Mon–Sun toggle row in the Control Panel (shown only on v2 accounts), immediate-apply like the Underlying/Expiry selectors.
-- **Entry-only gate**: a disabled day blocks **new entries** but never exits or position management — exactly like `paused`. When it blocks, the engine logs `📅 Trading day disabled — skipping new entries`.
+- **UI**: a Mon–Sun toggle row in the Control Panel (shown for **all** accounts, paper and live), immediate-apply like the Underlying/Expiry selectors.
+- **Entry-only gate**: a disabled day blocks **new entries** but never exits or position management — exactly like `paused`. When it blocks, the engine logs `📅 Trading day disabled — skipping new entries`, and the whole candidate-evaluation pass is skipped for that cycle (see the [Pre-entry gates optimisation](#how-entries-are-placed)).
 
 > [!IMPORTANT]
 > **The trading-day boundary is 17:30 IST** — the same boundary the schedule timeline uses (17:30 IST = the Delta daily rollover). A trading day named for weekday **W** runs from **(W-1) 17:30 IST → W 17:30 IST**. So the engine computes the *active* trading-day weekday as: **if IST time ≥ 17:30 → tomorrow's weekday, else today's weekday** (`isTradingDayEnabled`, `1050` min = 17:30).
