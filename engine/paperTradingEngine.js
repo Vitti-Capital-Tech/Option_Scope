@@ -1488,6 +1488,29 @@ async function startSingleAccountEngine(account) {
     const sizeBySymbol = {};
     for (const p of livePos) sizeBySymbol[p.product_symbol] = Number(p.size) || 0;
 
+    // Stale `-PEX` cleanup / auto-reconcile. Older builds placed the ATM-ratio partial
+    // scale-down as a resting GTC limit (`-PEX`) at the bid, booked it optimistically, then
+    // left it unfilled once the price moved — so the engine's book shows the long reduced while
+    // the exchange still holds those contracts. New builds market-close the scale-down, so ANY
+    // resting `-PEX` limit is stale by definition (market/IOC orders never rest here). Cancel it
+    // and reduce-only market-close its remaining size to bring the exchange back in line with the
+    // already-booked reduction. Runs every armed-live sweep and self-heals to a no-op once clean.
+    if (Array.isArray(liveOrders)) {
+      const stalePex = liveOrders.filter(o => /-PEX(\b|-)/.test(String(o.client_order_id || '')));
+      for (const o of stalePex) {
+        const sym = o.product_symbol;
+        const remaining = Math.abs(Number(o.unfilled_size ?? o.size) || 0);
+        await live.cancelStop({ id: o.id, productId: o.product_id }).catch(() => {});
+        if (remaining >= 1) {
+          const c = await live.closeSymbol({ symbol: sym, side: 'sell', contracts: remaining, tag: `PEXCLEAN-${sym}` }).catch(() => ({ ok: false }));
+          const done = !!(c.ok || c.dryRun || c.skipped || c.alreadyClosed);
+          logWarn(`[${accountState.name}] 🧹 Stale -PEX cleanup: cancelled resting scale-down on ${sym} → reduce-only market-closed ${remaining} contract(s) [${done ? 'done' : 'FAILED'}]`);
+        } else {
+          log(`[${accountState.name}] 🧹 Stale -PEX cleanup: cancelled resting scale-down on ${sym} (nothing to market-close).`);
+        }
+      }
+    }
+
     const hasOrderForSymbol = {};
     if (Array.isArray(liveOrders)) {
       for (const o of liveOrders) {
@@ -1950,7 +1973,7 @@ async function startSingleAccountEngine(account) {
       // Dynamic ATM-ratio scale-down on the LONG leg — same engine-driven partial as
       // the active model, run every cycle while the spread is still full. The trigger
       // is dynamic (live ATM ratio + PnL threshold), so it can't rest on the exchange;
-      // it actively fires a reduce_only SELL at the bid and books the partial slice(s).
+      // it fires a reduce_only MARKET close (immediate fill) and books the partial slice(s).
       // Safe alongside the resting short buy-back: it only touches the long leg, which
       // has no resting orders yet (the long ladder is placed only AFTER the short exits),
       // and it leaves pos.sellQty untouched so the short-fill logic below is unaffected.
@@ -2670,7 +2693,11 @@ async function startSingleAccountEngine(account) {
               // contractValue — NOT symbolMeta — so paper accounts are byte-for-byte the same.
               pos.margin = contractBasisMargin(pos, pos.buyLeg.contractValue ?? null);
 
-              // LIVE: sell the reduced buy-leg lot (reduce_only) at the current bid.
+              // LIVE: sell the reduced buy-leg lot with a reduce_only MARKET close so the
+              // slice exits IMMEDIATELY (the scale-down trigger is dynamic and can't rest on
+              // the exchange — a resting limit at the bid would sit unfilled once the price
+              // moved, leaving the engine's book ahead of the real position). The filled
+              // `-PEX` order lands in Order History where the UI derives "Partial Exit".
               // Delta trades WHOLE contracts, so size the order by the change in the
               // ROUNDED contract count — round(lotBefore) − round(lotAfter) — NOT by
               // independently rounding this cycle's fractional 10% chunk. Independent
@@ -2688,10 +2715,10 @@ async function startSingleAccountEngine(account) {
               const contractsToSell = Math.max(0,
                 Math.round(lotBefore / exitBase) - Math.round(pos.buyLeg.lotSize / exitBase));
               if (contractsToSell >= 1) {
-                await live.closeLeg({
+                await live.closeSymbol({
                   symbol: pos.buyLeg.symbol, side: 'sell',
                   contracts: contractsToSell,
-                  price: liveExitBuy, tag: `${pos.id}-PEX-${pos.buyLeg.lotSize}`,
+                  tag: `${pos.id}-PEX-${pos.buyLeg.lotSize}`,
                 });
                 const batchNet = partialExitsToRecord.reduce((s, r) => s + (r.realized_net_pnl || 0), 0);
                 notifyTrade({ title: '🔻 PARTIAL SCALE-DOWN', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike} · sold ${contractsToSell} contract(s) · remaining lot ${pos.buyLeg.lotSize}`, pnl: batchNet });

@@ -148,7 +148,7 @@ logic is byte-for-byte unchanged when paper/disarmed:
 | Entry (resting short-exit, armed real) | Resting reduce-only **limit BUY** on the short @ `shortExitPrice` (`${id}-SEX`) — the short buy-back (profit), sitting in Open Orders |
 | Short-leg exit | Active model: buy-to-close @ ask. Resting model: the `-SEX` limit fills **fully** (order-id in fills **and** short position size 0) → book + place ladder (short SL bracket auto-cancels) |
 | Long laddered exit | Active model: sell reduce_only @ bid per level. Resting model: fixed-ladder resting **limit SELLs** fill on their own |
-| Partial ratio scale-down | Sell-to-close the reduced buy lot (`reduce_only`) @ bid. Runs in **both** models: the active model fires it inline, and the armed-real resting model runs the **same** `applyAtmRatioScaling` helper on the long leg each cycle while the spread is full (the trigger is dynamic, so it actively sells rather than resting) |
+| Partial ratio scale-down | Reduce-only **MARKET close** of the reduced buy lot (`live.closeSymbol`, IOC — immediate fill; `${id}-PEX-…`). Runs in **both** models: the active model fires it inline, and the armed-real resting model runs the **same** `applyAtmRatioScaling` helper on the long leg each cycle while the spread is full (the trigger is dynamic, so it market-closes rather than resting a limit) |
 | Risk exit (spot hits exit level) | **Brackets** close the whole spread exchange-side; engine's spot-cross catch-all (if up) also market-closes + books (reduce-only guards double-close) |
 | **Expiry / zombie exit** | **No leg order** — Delta cash-settles expired options; brackets auto-cancel, resting orders cancelled |
 
@@ -285,10 +285,14 @@ Two mechanisms run together — **resting profit exits** (engine-detected) and
   the **shared** `applyAtmRatioScaling` helper — the *same* code the active model uses.
   When the live ATM ratio has risen and gross PnL clears the checkpoint threshold, it
   reduces the long lot in fractional 10% steps, books each slice as an `${id}-PE-<lots>`
-  partial, and fires a **reduce-only SELL @ bid** (`${id}-PEX-…`). Unlike the short
-  buy-back and the long ladder, this trigger is **dynamic** (depends on the live ratio at
-  the moment), so it can't sit as a resting order — it actively sells, like the spot-cross
-  catch-all. It touches only the long leg (the short's resting buy-back and SL bracket are
+  partial, and fires a **reduce-only MARKET close** (`live.closeSymbol`, IOC — `${id}-PEX-…`).
+  Unlike the short buy-back and the long ladder, this trigger is **dynamic** (depends on the
+  live ratio at the moment), so it can't sit as a resting order — it market-closes for an
+  **immediate fill**. (An earlier build rested it as a GTC limit at the bid, which the engine
+  booked optimistically but which sat unfilled once the price moved, leaving the exchange long
+  above the book — the market close eliminates that divergence; any leftover resting `-PEX`
+  limit is auto-reconciled by the sweep, see [Changes made directly on Delta](#changes-made-directly-on-delta-external-reconciliation).) The filled `-PEX` order lands in
+  Order History where the UI derives "Partial Exit". It touches only the long leg (the short's resting buy-back and SL bracket are
   untouched) and leaves `sellQty` unchanged, so the short-fill sequence above is unaffected.
   Once the short exits and the position is long-only, scaling stops and the ladder takes over.
   - **Whole-contract sizing.** The engine's `lotSize` is a fractional notional lot but
@@ -595,6 +599,7 @@ platform**, outside OptionScope. All of it is **armed-live only** and runs on th
 | **TP / SL price change** on a bracket | Yes (~30s) | `adoptManualBrackets` — adopts the Delta value into `brkLevel` (below) |
 | **Cancel of a protective bracket/stop** (leg still open) | Yes | `armMissingBrackets` re-arms it at the engine level (your cancel is undone) |
 | **Partial size reduction** of a leg | Yes (~90s, stable) | `reconcilePartialReductions` — shrinks the tracked size to match + books the closed slice (below) |
+| **Stale `-PEX` resting limit** (leftover from the old limit-based scale-down) | Yes (each sweep) | Cancels the order (`cancelStop`) + reduce-only market-closes its remaining size (`PEXCLEAN-<symbol>`). The scale-down slice was already booked optimistically, so the exchange holds long the book thinks is gone; this reconciles it. Self-heals to a no-op once none remain. |
 
 **Dangling-long recovery (`externalShortExitToLongLadder`).** The mirror of the
 [dangling-short](#same-product-collision-guard--stuck-leg-recovery) case: the **short** leg
@@ -948,7 +953,7 @@ bookkeeping.
 - **Exit Reason (live Order History).** Delta has no native exit-reason field, so it's derived
   per order from the **bracket stop type** (`stop_order_type` → Take Profit / Stop Loss) and
   the engine's **`client_order_id` tag**: `SEX` → Short Leg Exit, `PEX` → Partial Exit,
-  `LE/LEX` → Long Leg Exit, `HDX` → Hedge Drain, `MX*` → Manual Exit, `MLC` → Manual Leg Close, `CX` → Manual Close.
+  `PEXCLEAN` → Partial Exit (reconcile), `LE/LEX` → Long Leg Exit, `HDX` → Hedge Drain, `MX*` → Manual Exit, `MLC` → Manual Leg Close, `CX` → Manual Close.
   The strategy exit tag now carries the reason code — `${id}-XB|XS-<ATM|ITM|OTM|EXP>` from
   `t.exitReason` — and Close All uses a distinct `${id}-CAXB|CAXS` tag, so those render
   precisely (`Exit @ ATM/ITM/OTM`, `Close All`); opening legs show "—". (The engine tag change
