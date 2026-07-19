@@ -1500,12 +1500,24 @@ async function startSingleAccountEngine(account) {
       for (const o of stalePex) {
         const sym = o.product_symbol;
         const remaining = Math.abs(Number(o.unfilled_size ?? o.size) || 0);
-        await live.cancelStop({ id: o.id, productId: o.product_id }).catch(() => {});
         if (remaining >= 1) {
+          // Market-close FIRST (reduce-only, capped at the open long), then cancel the now-
+          // redundant resting limit. Close-first is retry-safe: on a transient close failure
+          // the resting `-PEX` order is left in place so the next sweep tries again. The
+          // resting limit sits above market (at the stale bid), so it can't fill during this.
           const c = await live.closeSymbol({ symbol: sym, side: 'sell', contracts: remaining, tag: `PEXCLEAN-${sym}` }).catch(() => ({ ok: false }));
           const done = !!(c.ok || c.dryRun || c.skipped || c.alreadyClosed);
-          logWarn(`[${accountState.name}] 🧹 Stale -PEX cleanup: cancelled resting scale-down on ${sym} → reduce-only market-closed ${remaining} contract(s) [${done ? 'done' : 'FAILED'}]`);
+          if (done) {
+            await live.cancelStop({ id: o.id, productId: o.product_id }).catch(() => {});
+            logWarn(`[${accountState.name}] 🧹 Stale -PEX cleanup: market-closed ${remaining} contract(s) on ${sym} + cancelled the resting scale-down limit.`);
+            notifyTrade({ title: '🧹 PARTIAL EXIT (reconcile)', detail: `${sym} · stale resting scale-down cancelled → market-closed ${remaining} contract(s)` });
+          } else {
+            logWarn(`[${accountState.name}] 🧹 Stale -PEX cleanup: market-close FAILED on ${sym} (${remaining} contract(s)) — resting limit left in place, will retry next sweep.`);
+            notifyLiveFailure({ account: accountState.name, context: `Stale -PEX cleanup market-close FAILED on ${sym} — leg may still be OPEN`, error: { message: c.error || 'pexclean-failed' }, extra: `${remaining} contract(s) — will retry` });
+          }
         } else {
+          // Nothing to close (order already fully consumed) — just drop the empty resting limit.
+          await live.cancelStop({ id: o.id, productId: o.product_id }).catch(() => {});
           log(`[${accountState.name}] 🧹 Stale -PEX cleanup: cancelled resting scale-down on ${sym} (nothing to market-close).`);
         }
       }

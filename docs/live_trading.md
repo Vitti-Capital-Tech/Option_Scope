@@ -599,7 +599,7 @@ platform**, outside OptionScope. All of it is **armed-live only** and runs on th
 | **TP / SL price change** on a bracket | Yes (~30s) | `adoptManualBrackets` — adopts the Delta value into `brkLevel` (below) |
 | **Cancel of a protective bracket/stop** (leg still open) | Yes | `armMissingBrackets` re-arms it at the engine level (your cancel is undone) |
 | **Partial size reduction** of a leg | Yes (~90s, stable) | `reconcilePartialReductions` — shrinks the tracked size to match + books the closed slice (below) |
-| **Stale `-PEX` resting limit** (leftover from the old limit-based scale-down) | Yes (each sweep) | Cancels the order (`cancelStop`) + reduce-only market-closes its remaining size (`PEXCLEAN-<symbol>`). The scale-down slice was already booked optimistically, so the exchange holds long the book thinks is gone; this reconciles it. Self-heals to a no-op once none remain. |
+| **Stale `-PEX` resting limit** (leftover from the old limit-based scale-down) | Yes (each sweep) | Reduce-only **market-closes** its remaining size (`PEXCLEAN-<symbol>`) then cancels the redundant limit (close-first → retry-safe). The scale-down slice was already booked optimistically, so the exchange holds long the book thinks is gone; this reconciles it. Fires a **Telegram** alert (`🧹 PARTIAL EXIT (reconcile)`; failures → `notifyLiveFailure`). Self-heals to a no-op once none remain. |
 
 **Dangling-long recovery (`externalShortExitToLongLadder`).** The mirror of the
 [dangling-short](#same-product-collision-guard--stuck-leg-recovery) case: the **short** leg
