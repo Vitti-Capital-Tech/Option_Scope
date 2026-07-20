@@ -2789,6 +2789,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
               onResetSchedules={handleResetSchedules}
               positions={positions}
               tradeHistory={tradeHistory}
+              historyFilterDate={historyFilterDate}
+              now={now}
               strategyVersion={config.strategyVersion ?? 1}
             />
 

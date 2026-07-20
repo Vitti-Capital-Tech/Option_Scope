@@ -156,13 +156,21 @@ export default function SchedulePanel({
   isSaving,
   positions = [],
   tradeHistory = [],
+  historyFilterDate,
+  now,
   currentUnderlying = 'BTC',
   strategyVersion = 1,
 }) {
   const avgUtilMap = React.useMemo(() => {
-    if (!positions || !schedules || schedules.length === 0) return {};
+    if (!schedules || schedules.length === 0) return {};
 
     const result = {};
+
+    // Get active day YYYY-MM-DD
+    const activeDay = historyFilterDate || new Date(now + 12 * 3600 * 1000).toISOString().split('T')[0];
+    const base = new Date(`${activeDay}T00:00:00.000Z`).getTime();
+    const sessionStart = base - 12 * 3600 * 1000; // 17:30 IST of previous calendar day
+    const sessionEnd = base + 12 * 3600 * 1000;   // 17:30 IST of activeDay
 
     schedules.forEach(s => {
       if (!s.isActive) return;
@@ -172,28 +180,93 @@ export default function SchedulePanel({
         return;
       }
 
-      // Count currently active full spreads for this window
-      let activeCalls = 0;
-      let activePuts = 0;
+      // Convert schedule window startTime / endTime to relative minutes shifted from 17:30 IST (1050 minutes)
+      const startMin = toMin(s.startTime);
+      const endMin = toMin(s.endTime);
+      const startShifted = (startMin - 1050 + 1440) % 1440;
+      const endShifted = (endMin - 1050 + 1440) % 1440;
 
-      positions.forEach(pos => {
-        if (pos.underlying !== currentUnderlying) return;
-        if (pos.sellQty <= 0) return; // Only count full spreads, not long-only
+      // Define window interval(s) in milliseconds relative to sessionStart
+      const winIntervals = [];
+      if (startShifted <= endShifted) {
+        winIntervals.push({
+          start: startShifted * 60 * 1000,
+          end: endShifted * 60 * 1000
+        });
+      } else {
+        winIntervals.push({ start: startShifted * 60 * 1000, end: 1440 * 60 * 1000 });
+        winIntervals.push({ start: 0, end: endShifted * 60 * 1000 });
+      }
 
-        if (pos.type === 'call') activeCalls++;
-        else if (pos.type === 'put') activePuts++;
-      });
+      // Helper to compute max simultaneous active positions of a given type during this window
+      const getMaxSimultaneous = (type) => {
+        const events = [];
 
-      // Utilization is (activeCalls + activePuts) / cap, capped at 100%
-      const callsCount = Math.min(s.numberOfCalls, activeCalls);
-      const putsCount = Math.min(s.numberOfPuts, activePuts);
+        const addPositionInterval = (pos) => {
+          if (pos.underlying !== currentUnderlying) return;
+          if (pos.type !== type) return;
+          if ((pos.sellQty || 0) <= 0) return; // Only count full spreads
+
+          const entryMs = new Date(pos.entryTime).getTime();
+          const exitMs = pos.exitTime ? new Date(pos.exitTime).getTime() : now;
+
+          const posStart = Math.max(entryMs, sessionStart);
+          const posEnd = Math.min(exitMs, sessionEnd);
+
+          if (posStart >= posEnd) return;
+
+          const relStart = posStart - sessionStart;
+          const relEnd = posEnd - sessionStart;
+
+          // Intersect with each window interval
+          winIntervals.forEach(win => {
+            const intStart = Math.max(relStart, win.start);
+            const intEnd = Math.min(relEnd, win.end);
+            if (intStart < intEnd) {
+              events.push({ time: intStart, type: 1 });
+              events.push({ time: intEnd, type: -1 });
+            }
+          });
+        };
+
+        if (Array.isArray(positions)) {
+          positions.forEach(addPositionInterval);
+        }
+        if (Array.isArray(tradeHistory)) {
+          tradeHistory.forEach(addPositionInterval);
+        }
+
+        if (events.length === 0) return 0;
+
+        // Sort events: time ascending, exit (-1) before entry (+1)
+        events.sort((a, b) => {
+          if (a.time !== b.time) return a.time - b.time;
+          return a.type - b.type;
+        });
+
+        let current = 0;
+        let maxVal = 0;
+        events.forEach(ev => {
+          current += ev.type;
+          if (current > maxVal) maxVal = current;
+        });
+
+        return maxVal;
+      };
+
+      const maxActiveCalls = getMaxSimultaneous('call');
+      const maxActivePuts = getMaxSimultaneous('put');
+
+      // Utilization is based on peak counts during the window
+      const callsCount = Math.min(s.numberOfCalls, maxActiveCalls);
+      const putsCount = Math.min(s.numberOfPuts, maxActivePuts);
       const util = ((callsCount + putsCount) / cap) * 100;
 
       result[s.id] = Math.round(util * 100) / 100;
     });
 
     return result;
-  }, [positions, schedules, currentUnderlying]);
+  }, [positions, tradeHistory, schedules, currentUnderlying, historyFilterDate, now]);
 
   const [deletingId, setDeletingId] = useState(null); // id of schedule window pending deletion
 

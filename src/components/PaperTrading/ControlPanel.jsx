@@ -31,6 +31,8 @@ export default function ControlPanel({
   onResetSchedules,
   positions,
   tradeHistory,
+  historyFilterDate,
+  now,
   strategyVersion = 1,
 }) {
   const UNDERLYINGS = ['BTC', 'ETH'];
@@ -224,6 +226,8 @@ export default function ControlPanel({
           isSaving={isSavingSchedules}
           positions={positions}
           tradeHistory={tradeHistory}
+          historyFilterDate={historyFilterDate}
+          now={now}
           currentUnderlying={underlying}
           strategyVersion={strategyVersion}
         />
