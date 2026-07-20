@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import { RefreshCw, Target, ChevronRight } from 'lucide-react';
 
 export default function ResultTable({
@@ -27,7 +27,7 @@ export default function ResultTable({
    * within a tolerance of 10% of spot price (or 5000 absolute, whichever is larger).
    * Returns null when no suitable ticker exists at all.
    */
-  const getTickerPrice = (strike, optType, priceField) => {
+  const getTickerPrice = useCallback((strike, optType, priceField) => {
     const lowerType = optType.toLowerCase();
     const allTickers = Object.values(tickerData || {}).filter(t => t.type === lowerType);
     if (!allTickers.length) return null;
@@ -63,7 +63,95 @@ export default function ResultTable({
     const pAbove = priceOf(above);
     if (pBelow != null && pAbove != null) return (pBelow + pAbove) / 2;
     return pBelow ?? pAbove;
-  };
+  }, [tickerData]);
+
+  const filteredResults = useMemo(() => {
+    const processedResults = results.map(r => {
+      // Use nearest-available strike when exact ATM is missing
+      const buyIntrinsic = getTickerPrice(atmStrike, type, 'bid');          // null if unavailable
+      const targetSellStrike = type === 'CALL' ? atmStrike + r.strikeDiff : atmStrike - r.strikeDiff;
+      const sellIntrinsic = getTickerPrice(targetSellStrike, type, 'ask'); // null if unavailable
+      const lotSize = r.buyLeg.lotSize || 1;
+
+      // Only compute P&L when both legs have valid prices
+      const hasAtmData = buyIntrinsic != null && sellIntrinsic != null;
+
+      // Margin calculation matching paper trading leverage tiers
+      const sellLotSize = r.sellLeg.lotSize || lotSize;
+
+      const { atmRatioScaling } = config || {};
+
+      const atmRatio = (buyIntrinsic != null && sellIntrinsic != null && sellIntrinsic > 0)
+        ? (buyIntrinsic / sellIntrinsic)
+        : null;
+      const roundedAtmRatio = atmRatio != null
+        ? (Math.round(atmRatio / 0.25) * 0.25).toFixed(2)
+        : '—';
+
+      // Scaling now happens in the scanner (before the max-debit filter);
+      // consume the scaled qty directly instead of recomputing it here.
+      const totalSellQty = r.scaledSellQty ?? r.sellQty;
+
+      let shortValue = currentSpot * totalSellQty * sellLotSize;
+
+      let adjustedLotSize = lotSize;
+      let adjustedSellQty = totalSellQty;
+      let scale = 1;
+
+      if (shortValue >= 195000) {
+        scale = 195000 / shortValue;
+        adjustedLotSize = Number((lotSize * scale).toFixed(2));
+        adjustedSellQty = Number((totalSellQty * scale).toFixed(2));
+        shortValue = 195000;
+      }
+
+      const leverage = 200; // Fixed leverage as 200
+
+      // Compute P&L scaled to the adjusted lot size
+      const atAtmPnl = hasAtmData
+        ? ((buyIntrinsic - r.buyPrice) + (r.sellPrice - sellIntrinsic) * totalSellQty) * adjustedLotSize
+        : null;
+
+      const margin = (r.buyPrice * adjustedLotSize) + (shortValue / leverage);
+      const roi = (atAtmPnl != null && margin > 0) ? (atAtmPnl / margin) * 100 : null;
+
+      // Net premium is computed in the scanner from the scaled qty.
+      const rawNetPremium = r.netPremium;
+
+      const isRatioChanged = atmRatioScaling && totalSellQty !== r.sellQty;
+
+      return {
+        ...r,
+        buyLeg: {
+          ...r.buyLeg,
+          lotSize: adjustedLotSize
+        },
+        sellQty: adjustedSellQty,
+        originalSellQty: totalSellQty,
+        originalLotSize: lotSize,
+        naturalSellQty: r.sellQty,
+        isRatioChanged,
+        netPremium: Number(rawNetPremium).toFixed(2),
+        buyIntrinsic,
+        sellIntrinsic,
+        atAtmPnl,
+        margin,
+        roi,
+        roundedAtmRatio,
+        hasAtmData
+      };
+    });
+
+    // ATM Edge (P&L) floors — only active alongside Dynamic ATM Scaling (the
+    // inputs live in that section). Drop spreads whose at-ATM P&L or ROI falls
+    // below the configured minimums. Rows without ATM data (P&L/ROI unknowable)
+    // are left in and shown as "—" rather than hidden on transient missing quotes.
+    const minAtmPnl = Number(config?.minAtmPnl) || 0;
+    const minAtmRoi = Number(config?.minAtmRoi) || 0;
+    return processedResults.filter(r =>
+      !r.hasAtmData || (r.atAtmPnl >= minAtmPnl && r.roi >= minAtmRoi)
+    );
+  }, [results, getTickerPrice, atmStrike, type, config, currentSpot]);
 
   return (
     <div className="scanner-table-wrap" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -75,8 +163,8 @@ export default function ResultTable({
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {results.length > 0 && (
-            <span className="scanner-match-badge">{results.length} match{results.length !== 1 ? 'es' : ''}</span>
+          {filteredResults.length > 0 && (
+            <span className="scanner-match-badge">{filteredResults.length} match{filteredResults.length !== 1 ? 'es' : ''}</span>
           )}
           <div style={{ fontSize: 12 }}>
             Spot Price: {spotPrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -103,7 +191,7 @@ export default function ResultTable({
       </div>
 
       <div className="scanner-table-body" style={{ flex: 1, overflow: 'auto' }}>
-        {!scanning && results.length === 0 && (
+        {!scanning && filteredResults.length === 0 && (
           <div className="scanner-empty">
             <div className="scanner-empty-icon" aria-hidden="true">
               <Target size={28} strokeWidth={1.8} />
@@ -115,7 +203,7 @@ export default function ResultTable({
           </div>
         )}
 
-        {scanning && results.length === 0 && (
+        {scanning && filteredResults.length === 0 && (
           <div className="scanner-empty">
             {!hasLiveFeed && <div className="spinner" />}
             <div className="scanner-empty-title" style={{ marginTop: 12 }}>
@@ -129,7 +217,7 @@ export default function ResultTable({
           </div>
         )}
 
-        {results.length > 0 && (
+        {filteredResults.length > 0 && (
           <table className="scanner-table">
             <thead>
               <tr>
@@ -145,93 +233,6 @@ export default function ResultTable({
             </thead>
             <tbody>
               {(() => {
-                // Pre-calculate ATM metrics & margins for each result row
-                const processedResults = results.map(r => {
-                  // Use nearest-available strike when exact ATM is missing
-                  const buyIntrinsic = getTickerPrice(atmStrike, type, 'bid');          // null if unavailable
-                  const targetSellStrike = type === 'CALL' ? atmStrike + r.strikeDiff : atmStrike - r.strikeDiff;
-                  const sellIntrinsic = getTickerPrice(targetSellStrike, type, 'ask'); // null if unavailable
-                  const lotSize = r.buyLeg.lotSize || 1;
-
-                  // Only compute P&L when both legs have valid prices
-                  const hasAtmData = buyIntrinsic != null && sellIntrinsic != null;
-
-                  // Margin calculation matching paper trading leverage tiers
-                  const sellLotSize = r.sellLeg.lotSize || lotSize;
-
-                  const { atmRatioScaling } = config || {};
-
-                  const atmRatio = (buyIntrinsic != null && sellIntrinsic != null && sellIntrinsic > 0)
-                    ? (buyIntrinsic / sellIntrinsic)
-                    : null;
-                  const roundedAtmRatio = atmRatio != null
-                    ? (Math.round(atmRatio / 0.25) * 0.25).toFixed(2)
-                    : '—';
-
-                  // Scaling now happens in the scanner (before the max-debit filter);
-                  // consume the scaled qty directly instead of recomputing it here.
-                  const totalSellQty = r.scaledSellQty ?? r.sellQty;
-
-                  let shortValue = currentSpot * totalSellQty * sellLotSize;
-
-                  let adjustedLotSize = lotSize;
-                  let adjustedSellQty = totalSellQty;
-                  let scale = 1;
-
-                  if (shortValue >= 195000) {
-                    scale = 195000 / shortValue;
-                    adjustedLotSize = Number((lotSize * scale).toFixed(2));
-                    adjustedSellQty = Number((totalSellQty * scale).toFixed(2));
-                    shortValue = 195000;
-                  }
-
-                  const leverage = 200; // Fixed leverage as 200
-
-                  // Compute P&L scaled to the adjusted lot size
-                  const atAtmPnl = hasAtmData
-                    ? ((buyIntrinsic - r.buyPrice) + (r.sellPrice - sellIntrinsic) * totalSellQty) * adjustedLotSize
-                    : null;
-
-                  const margin = (r.buyPrice * adjustedLotSize) + (shortValue / leverage);
-                  const roi = (atAtmPnl != null && margin > 0) ? (atAtmPnl / margin) * 100 : null;
-
-                  // Net premium is computed in the scanner from the scaled qty.
-                  const rawNetPremium = r.netPremium;
-
-                  const isRatioChanged = atmRatioScaling && totalSellQty !== r.sellQty;
-
-                  return {
-                    ...r,
-                    buyLeg: {
-                      ...r.buyLeg,
-                      lotSize: adjustedLotSize
-                    },
-                    sellQty: adjustedSellQty,
-                    originalSellQty: totalSellQty,
-                    originalLotSize: lotSize,
-                    naturalSellQty: r.sellQty,
-                    isRatioChanged,
-                    netPremium: Number(rawNetPremium).toFixed(2),
-                    buyIntrinsic,
-                    sellIntrinsic,
-                    atAtmPnl,
-                    margin,
-                    roi,
-                    roundedAtmRatio,
-                    hasAtmData
-                  };
-                });
-
-                // ATM Edge (P&L) floors — only active alongside Dynamic ATM Scaling (the
-                // inputs live in that section). Drop spreads whose at-ATM P&L or ROI falls
-                // below the configured minimums. Rows without ATM data (P&L/ROI unknowable)
-                // are left in and shown as "—" rather than hidden on transient missing quotes.
-                const minAtmPnl = Number(config?.minAtmPnl) || 0;
-                const minAtmRoi = Number(config?.minAtmRoi) || 0;
-                const filteredResults = processedResults.filter(r =>
-                  !r.hasAtmData || (r.atAtmPnl >= minAtmPnl && r.roi >= minAtmRoi)
-                );
-
                 // Group results by buy strike
                 const groups = filteredResults.reduce((acc, r) => {
                   const s = r.buyLeg.strike;
@@ -279,7 +280,7 @@ export default function ResultTable({
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center' }}>
                             {hasOthers && (
                               <span className={`scanner-group-toggle ${isExpanded ? 'expanded' : ''}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                <ChevronRight size={12} strokeWidth={3} style={{ transition: 'transform 0.2s', transform: isExpanded ? 'rotate(90deg)' : 'none' }} />
+                                <ChevronRight size={12} strokeWidth={3} />
                               </span>
                             )}
                             <div>
