@@ -865,9 +865,11 @@ manage correctly and falls back to protect+alert where it isn't:
   (`adoptLongOrphan`). It builds a row using Delta's real `entry_price` (accurate `(exit−entry)`
   PnL; the index-spot at entry isn't recoverable so the **current spot** stands in — affects only
   fee/display), inserts it **first** (so a failed insert can't create a fresh orphan), adds it to
-  the book, arms the TP bracket, and places the resting SELL **ladder** so it scales out like any
-  long-only. The ladder is skipped if orders already rest on the symbol (leave them; reduce-only
-  caps risk). Thereafter the normal long-only exit path manages it.
+  the book, and arms a **TP bracket only — NO scale-out ladder**. A manually-added / standalone
+  long has no short leg to fund or justify a laddered scale-out, so it is managed purely by its
+  TP bracket + the ATM/ITM/OTM spot-cross and expiry catch-alls; `ladderOrders` stays `[]` and the
+  long-only path never re-creates one. (The laddered exit is reserved for the **pair short-exit**
+  flow — a spread whose short is bought back becomes long-only *with* a ladder.)
 - **NAKED SHORT orphan** → a short with no protective long is not a valid strategy state → **reduce-
   only MARKET close** + alert (same policy as [dangling-short recovery](#same-product-collision-guard--stuck-leg-recovery)).
 - **Can't adopt** (unknown symbol / other expiry, or the buy strike is already tracked) → **PROTECT

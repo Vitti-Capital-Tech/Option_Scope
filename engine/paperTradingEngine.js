@@ -1134,7 +1134,8 @@ async function startSingleAccountEngine(account) {
   // (no active_positions row) — an orphan from a DB outage, a failed/rolled-back entry
   // insert, or a wiped book. Per-orphan policy:
   //   • LONG orphan (known symbol, buy strike free) → ADOPT as a long-only position and
-  //     manage it (real Delta entry_price → accurate PnL base; ladder + TP bracket placed).
+  //     manage it (real Delta entry_price → accurate PnL base; TP bracket + spot-cross/expiry
+  //     catch-all only — NO scale-out ladder; the ladder is for the pair short-exit flow).
   //   • NAKED SHORT orphan → not a valid strategy state (a short must be long-protected) →
   //     reduce-only market close + alert, same policy as dangling-short recovery.
   //   • Can't adopt (unknown symbol, or buy strike already taken) → PROTECT + ALERT:
@@ -1310,33 +1311,20 @@ async function startSingleAccountEngine(account) {
     positions.push(pos); // now in the book → managed by the normal long-only exit path
     engineBracketAt.set(symbol, Date.now()); // shield the adopt-armed bracket from manual-adopt lag
     try {
-      // Ensure a protective TP bracket, then place the resting SELL ladder so the long scales
-      // out like any long-only. Skip the ladder if orders already rest on the symbol (leave
-      // them as-is; reduce-only everywhere caps risk) so we never double the resting sells.
+      // Arm a protective TP bracket ONLY — no scale-out ladder for an adopted (manually-added)
+      // long. The laddered exit is reserved for the strategy's own long-only leg, which is
+      // created when the SHORT is bought back in a pair (handleLiveRestingExit /
+      // externalShortExitToLongLadder). A standalone/manual long has no short to fund/justify a
+      // scale-out, so it is managed purely by its TP bracket + the ATM/ITM/OTM spot-cross and
+      // expiry catch-alls; `ladderOrders` stays [] and the long-only path never re-creates one.
       if (!alreadyBracketed) {
         await live.changePositionBracket({ productId: p.product_id, symbol, side: 'tp', stopPrice: level, tag: `${pos.id}-TP-adopt` });
-      }
-      if (!hasRestingOrder) {
-        const S = longContracts(pos.buyLeg);
-        const levels = fixedLadderLevels(longBid ?? entryPx);
-        const alloc = splitContracts(S, levels.length);
-        const ladderOrders = [];
-        for (let i = 0; i < alloc.length; i++) {
-          const res = await live.closeLeg({ symbol, side: 'sell', contracts: alloc[i], price: levels[i], tag: `${pos.id}-LE-${i}` });
-          ladderOrders.push({
-            stage: i, level: levels[i], contracts: alloc[i],
-            lot: S > 0 ? Number((contracts * alloc[i] / S).toFixed(4)) : contracts,
-            orderId: res?.order?.id ?? null, productId: res?.order?.product_id ?? null, filled: false,
-          });
-        }
-        pos.buyLeg = { ...pos.buyLeg, ladderOrders };
-        await supabase.from('active_positions').update({ buy_leg: JSON.stringify(pos.buyLeg) }).eq('id', pos.id);
       }
     } catch (e) {
       logError(`[${accountState.name}] 🧬 Adopt post-insert setup failed for ${pos.id} (${symbol}) — row exists, managed by catch-all/bracket:`, e);
     }
-    log(`[${accountState.name}] 🧬 ADOPTED orphan long ${symbol} (${contracts} contract(s) @ entry ${entryPx}) as long-only [${pos.id}] — managing via ladder + TP bracket.`);
-    notifyTrade({ title: '🧬 ORPHAN ADOPTED', detail: `Long ${meta.strike} · ${symbol} · ${contracts} contract(s) @ entry ${entryPx} → now managed as long-only` });
+    log(`[${accountState.name}] 🧬 ADOPTED orphan long ${symbol} (${contracts} contract(s) @ entry ${entryPx}) as long-only [${pos.id}] — managing via TP bracket + spot-cross/expiry catch-all (no scale-out ladder).`);
+    notifyTrade({ title: '🧬 ORPHAN ADOPTED', detail: `Long ${meta.strike} · ${symbol} · ${contracts} contract(s) @ entry ${entryPx} → managed as long-only (TP bracket + catch-all, no ladder)` });
     return true;
   }
 
