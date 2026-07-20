@@ -2277,20 +2277,29 @@ async function startSingleAccountEngine(account) {
           return (val != null && val > 0) ? val : null;
         }
 
-        // Nearest strike fallback - tight tolerance
-        const maxTolerance = config.underlying === 'ETH' ? 50 : 500;
-        let nearest = null;
-        let minDist = Infinity;
+        // The requested strike isn't listed (e.g. an ATM ± "weird" diff that lands between two
+        // grid strikes). BRACKET it: take the nearest listed strike BELOW and the nearest ABOVE
+        // (within tolerance) and AVERAGE their prices as a midpoint estimate — same as the scanner
+        // (RatioSpreadScanner.jsx / ResultTable.jsx), so the engine's entry sizing, live ATM-ratio
+        // scaling, and ATM-exit pricing match what the scanner shows (no snap bias toward one side).
+        // If only one side exists within tolerance, fall back to it (the old nearest behaviour).
+        const maxTolerance = config.underlying === 'ETH' ? 50 : 1000;
+        const priceOf = (t) => {
+          if (!t) return null;
+          const v = t[priceField] ?? t.lastPrice ?? t.markPrice;
+          return (v != null && v > 0) ? v : null;
+        };
+        let below = null, belowDist = Infinity;
+        let above = null, aboveDist = Infinity;
         for (const t of allTickersOfType) {
-          const dist = Math.abs(t.strike - strike);
-          if (dist < minDist && dist <= maxTolerance) {
-            minDist = dist;
-            nearest = t;
-          }
+          const d = t.strike - strike;
+          if (d < 0 && -d <= maxTolerance && -d < belowDist) { belowDist = -d; below = t; }
+          if (d > 0 && d <= maxTolerance && d < aboveDist) { aboveDist = d; above = t; }
         }
-        if (!nearest) return null;
-        const val = nearest[priceField] ?? nearest.lastPrice ?? nearest.markPrice;
-        return (val != null && val > 0) ? val : null;
+        const pBelow = priceOf(below);
+        const pAbove = priceOf(above);
+        if (pBelow != null && pAbove != null) return (pBelow + pAbove) / 2;
+        return pBelow ?? pAbove;
       }
 
       function calculateAtmPnlAndRoi(spread) {

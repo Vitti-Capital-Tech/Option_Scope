@@ -39,23 +39,30 @@ export default function ResultTable({
       return (val != null && val > 0) ? val : null;
     }
 
-    // Nearest strike fallback - tight tolerance
+    // The requested strike isn't listed (a "weird" ATM ± diff can land between two grid
+    // strikes). BRACKET it: take the nearest listed strike BELOW and the nearest ABOVE
+    // (within tolerance) and AVERAGE their prices as a midpoint estimate — matches the
+    // scanner's scanTickers getTickerPrice and the engine, so the shown ATM P&L/ratio
+    // aligns. If only one side exists within tolerance, fall back to it.
     const sampleSymbol = allTickers[0]?.symbol || '';
     const isEth = sampleSymbol.includes('ETH');
-    const maxTolerance = isEth ? 50 : 500;
-
-    let nearest = null;
-    let minDist = Infinity;
+    const maxTolerance = isEth ? 50 : 1000;
+    const priceOf = (t) => {
+      if (!t) return null;
+      const v = t[priceField] ?? t.lastPrice ?? t.markPrice;
+      return (v != null && v > 0) ? v : null;
+    };
+    let below = null, belowDist = Infinity;
+    let above = null, aboveDist = Infinity;
     for (const t of allTickers) {
-      const dist = Math.abs(t.strike - strike);
-      if (dist < minDist && dist <= maxTolerance) {
-        minDist = dist;
-        nearest = t;
-      }
+      const d = t.strike - strike;
+      if (d < 0 && -d <= maxTolerance && -d < belowDist) { belowDist = -d; below = t; }
+      if (d > 0 && d <= maxTolerance && d < aboveDist) { aboveDist = d; above = t; }
     }
-    if (!nearest) return null;
-    const val = nearest[priceField] ?? nearest.lastPrice ?? nearest.markPrice;
-    return (val != null && val > 0) ? val : null;
+    const pBelow = priceOf(below);
+    const pAbove = priceOf(above);
+    if (pBelow != null && pAbove != null) return (pBelow + pAbove) / 2;
+    return pBelow ?? pAbove;
   };
 
   return (

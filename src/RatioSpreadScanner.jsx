@@ -521,7 +521,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
       // (within tolerance) and AVERAGE their prices as a midpoint estimate for the missing
       // strike. If only one side exists, fall back to it (the old nearest behaviour). This
       // mainly moves the ATM ratio, since sellIntrinsic is priced at this target strike.
-      const maxTolerance = underlying === 'ETH' ? 50 : 500;
+      const maxTolerance = underlying === 'ETH' ? 50 : 1000;
       const priceOf = (t) => {
         if (!t) return null;
         const v = t[priceField] ?? t.lastPrice ?? t.markPrice;

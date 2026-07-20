@@ -171,13 +171,13 @@ To prevent empty cells (`—` or `$0.00`) when option chains are sparse (often t
 * **Bracket-and-average when the exact strike is missing**: The `sellIntrinsic` is priced at `ATM ± strikeDiff`, and a "weird" strike difference can land **between** two listed grid strikes — e.g. an `ATM ± 1100` target when only the `1000`- and `1200`-diff strikes are listed. Rather than **snapping to a single neighbour** (the old behaviour, which biased toward whichever side — usually the `1200` strike — and skewed the ATM ratio), the scanner now takes the **nearest listed strike below** and the **nearest listed strike above** the target and returns the **average of their prices** as a midpoint estimate. For the common symmetric case (`1100` exactly between `1000`/`1200`) this equals a linear interpolation.
   * If only **one** side exists within tolerance, it falls back to that single strike (the old nearest behaviour).
 * **Tight Point Tolerances** (each side must be within):
-  * **BTC**: a maximum tolerance of **$\pm 500$ points** from the target strike.
+  * **BTC**: a maximum tolerance of **$\pm 1000$ points** from the target strike.
   * **ETH**: a maximum tolerance of **$\pm 50$ points** from the target strike.
 * **Omission**: If **no** strike falls within these absolute point boundaries on either side, the fallback returns `null`, and the corresponding spread's ATM P&L, Margin, and ROI% calculations are omitted (rendered as `—` in the UI).
 * **Primary effect — the ATM ratio**: Because only `sellIntrinsic` is priced at the (possibly missing) target strike — `buyIntrinsic` is always read at the listed ATM strike — this bracket-average mainly moves the **ATM ratio**, and hence the scaled short quantity and ATM P&L that flow from it.
 
 > [!NOTE]
-> This bracket-and-average is applied in the **scanner** (display/selection) only. The live **engine** (`getTickerPrice` in `paperTradingEngine.js`) still uses the single **nearest-strike snap** for entry sizing, live ATM-ratio scaling, and ATM-exit pricing. For a weird-diff spread the scanner's shown ATM ratio can therefore differ slightly from what the engine actually trades — port the same logic into the engine's sizing/scaling paths if that divergence needs to be closed.
+> This bracket-and-average is applied identically in the **scanner** (`scanTickers` + `ResultTable`, display/selection) **and the live/paper engine** (`getTickerPrice` in `paperTradingEngine.js`) — same tolerance (BTC ±1000 / ETH ±50) and midpoint averaging. So the engine's entry sizing, live ATM-ratio scaling, and ATM-exit pricing use the same estimate the scanner shows — no snap-vs-bracket divergence for weird-diff spreads.
 
 ### ATM Edge Floors (Min ATM P&L / Min ATM ROI)
 

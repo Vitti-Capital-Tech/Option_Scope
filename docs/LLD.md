@@ -536,11 +536,11 @@ All ATM price lookups go through `getTickerPrice(strike, optType, priceField, ex
 1. **Filter by type and expiry**: Collects all tickers from `tickerData` matching `optType` (case-insensitive) and the requested `expiry`. Returns `null` immediately if no tickers match.
 2. **Exact match**: If a ticker at the requested `strike` is found, its `priceField` (or `markPrice` as fallback) is returned — or `null` if the value is missing/zero.
 3. **Bracket-and-average fallback**: If no exact match exists (a "weird" `ATM ± strikeDiff` target can land *between* two listed grid strikes, e.g. `±1100` between listed `1000`/`1200`), the scanner takes the **nearest listed strike below** and the **nearest listed strike above** the target and returns the **average** of their prices as a midpoint estimate (equivalent to linear interpolation for the symmetric case). This replaces the old single-nearest **snap**, which biased toward one side and skewed the ATM ratio. If only **one** side exists within tolerance, it falls back to that single strike.
-4. **Tolerance** (each side must be within): **`500`** points for BTC and **`50`** points for ETH.
+4. **Tolerance** (each side must be within): **`1000`** points for BTC and **`50`** points for ETH.
 5. **Returns `null`** (never `0`) when no strike falls within tolerance on either side, so callers can cleanly distinguish "no data" from "priced at zero".
 
 > [!NOTE]
-> The bracket-and-average is applied in the **scanner / `ResultTable`** (display & selection) only. The live **engine** (`getTickerPrice` in `paperTradingEngine.js`) still uses the single **nearest-strike snap** for entry sizing, live ATM-ratio scaling, and ATM-exit pricing — so for a weird-diff spread the scanner's shown ATM ratio can differ slightly from what the engine actually trades.
+> The bracket-and-average is applied identically in the **scanner** (`scanTickers` getTickerPrice), the **display** (`ResultTable`), **and the live/paper engine** (`getTickerPrice` in `paperTradingEngine.js`) — same tolerance (BTC `1000` / ETH `50`) and midpoint logic — so entry sizing, live ATM-ratio scaling, and ATM-exit pricing match the scanner's shown ATM ratio (no snap-vs-bracket divergence).
 
 ### 3. At ATM Ask/Bid Option Chain Shifting & Ratio
 - **Long Leg (ATM)**: Option valued at the current Bid price of the option at `atmStrike` (via `getTickerPrice(atmStrike, type, 'bid')`).
