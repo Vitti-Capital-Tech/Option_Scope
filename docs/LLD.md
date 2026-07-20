@@ -748,6 +748,7 @@ The live engine is the **same** `paperTradingEngine.js` with real-order effects 
 - **Same-product collision guard** (Fix B): skip any candidate whose leg symbol already holds a position (`live.positions()` ∪ tracked book). **Dangling-short recovery** (Fix A): `sellQty>0`, short open, long gone → reduce-only market close `${id}-DANGX`. **Benign `no_position_for_reduce_only`** (Fix D): treated as `{ok:true, alreadyClosed:true}`.
 - **Atomic-ish insert**: orders placed first, row written last; a failed insert unwinds via `${id}-ORPHX`; the in-memory book is rebuilt only from `persistedEntryIds`. **Long residual sweep** (`-LSWEEP`) reduce-only market-closes any long contracts left open after the laddered exit deletes the row.
 - **Price sanitization** (`cleanLimitPrice`): every limit/stop price rounded to 4 dp and stringified before send (raw float noise causes Delta `bad_schema`).
+- **`client_order_id` length clamp** (`clampClientOrderId`, applied in `submit`/`marketClose`/`placeStop`): Delta caps `client_order_id` length — an over-long tag also triggers `bad_schema`. The clamp keeps the **tail** (so `…-SE`/`-LE-0`/`-PEX`/`-XB-ATM` markers survive for reason-derivation) up to `MAX_COID` (36). Root cause was the **adopted-orphan id**, which embedded the full symbol (`ADOPT-P-BTC-62400-200726-…-LE-0`, 38 chars) → now a short `A<ts36><rand>` id (mirrors the normal `T…` entry id; the `_adopted` flag, not the id string, marks adopted rows).
 
 ### 13.8 Exchange reconciliation (exchange is source of truth)
 

@@ -1276,7 +1276,11 @@ async function startSingleAccountEngine(account) {
     // lotSize is modelled as 1 notional unit per contract (originalLotSize 1 → longContracts
     // returns the real contract count); contractValue drives the live margin basis.
     const pos = {
-      id: `ADOPT-${symbol}-${Date.now().toString(36)}`,
+      // Short unique id (mirrors the normal `T…` entry id) — do NOT embed the full symbol:
+      // it made the client_order_id (e.g. `ADOPT-P-BTC-62400-200726-…-LE-0`) exceed Delta's
+      // length cap → bad_schema on the ladder. `A` prefix marks it adopted; `_adopted` flag
+      // (below) is the source of truth, not the id string.
+      id: `A${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
       underlying: config.underlying, expiry: meta.expiry ?? config.expiry, type: meta.type,
       buyLeg: {
         symbol, strike: meta.strike, lotSize: contracts, originalLotSize: 1,

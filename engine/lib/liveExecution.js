@@ -52,6 +52,19 @@ export function cleanLimitPrice(price) {
   return String(Number(Number(price).toFixed(4)));
 }
 
+/**
+ * Delta caps `client_order_id` length; an over-long tag makes it reject the order with
+ * `bad_schema` (hit by adopted-orphan tags like `ADOPT-P-BTC-62400-200726-…-LE-0`, which
+ * embed the full symbol). Keep the TAIL so the order-type marker the UI/reason-derivation
+ * reads (`…-SE`, `-PEX`, `-LE-0`, `-XB-ATM`, …) always survives, plus enough of the id for
+ * uniqueness. Normal tags (~20 chars) pass through untouched.
+ */
+const MAX_COID = 36;
+export function clampClientOrderId(tag) {
+  const s = String(tag ?? '');
+  return s.length <= MAX_COID ? s : s.slice(s.length - MAX_COID);
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -156,7 +169,7 @@ export function createLiveExecutor(getCtx) {
         limit_price: priceStr,
         time_in_force: 'gtc',
         reduce_only: !!reduceOnly,
-        client_order_id: tag,
+        client_order_id: clampClientOrderId(tag),
         ...(bracket || {}), // bracket_take_profit_price / bracket_stop_loss_price / bracket_stop_trigger_method
       });
       log(`[${accountName}] ✅ LIVE order sent: ${summary} → id ${order?.id ?? '?'} state ${order?.state ?? '?'}`);
@@ -190,7 +203,7 @@ export function createLiveExecutor(getCtx) {
       const order = await placeOrder(creds, {
         product_symbol: symbol, size, side,
         order_type: 'market_order', reduce_only: true, time_in_force: 'ioc',
-        client_order_id: tag,
+        client_order_id: clampClientOrderId(tag),
       });
       log(`[${accountName}] ✅ LIVE close-symbol: ${summary} → id ${order?.id ?? '?'}`);
       return { ok: true, order };
@@ -518,7 +531,7 @@ export function createLiveExecutor(getCtx) {
           stop_price: stopStr,
           stop_trigger_method: triggerMethod, // 'spot_price' (index) or 'mark_price' (option price)
           reduce_only: true,
-          client_order_id: tag,
+          client_order_id: clampClientOrderId(tag),
         });
         log(`[${accountName}] ✅ LIVE stop placed: ${summary} → id ${order?.id ?? '?'} state ${order?.state ?? '?'}`);
         return { ok: true, order };

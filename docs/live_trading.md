@@ -164,6 +164,16 @@ All orders use limit orders at the engine's computed price and carry a
 > entry (see [Entry chase-fill](#entry-chase-fill)) now unwinds the filled BUY and
 > aborts, so a rejection costs a needless entry + unwind rather than a naked leg —
 > sanitization still matters to avoid that wasted round-trip.
+>
+> **`client_order_id` length clamp (`clampClientOrderId`).** Delta also caps the
+> `client_order_id` length — an over-long tag triggers the same **`bad_schema`**. This bit
+> the **adopted-orphan** ladder: the adopt id embedded the full symbol
+> (`ADOPT-P-BTC-62400-200726-…-LE-0`, 38 chars), so the SELL was rejected. Fixed two ways:
+> (1) the adopt id is now a short `A<ts36><rand>` (like the normal `T…` entry id — the
+> `_adopted` flag marks it, not the id string); (2) `submit`/`marketClose`/`placeStop`
+> clamp the tag to ≤36 chars, keeping the **tail** so the order-type marker (`-SE`/`-LE-0`/
+> `-PEX`/`-XB-ATM`) that drives Order-History reason-derivation always survives — this also
+> reconciles any already-adopted position still carrying the long id.
 > Inputs are already tick-aligned (exchange bid/ask/mark ± integer offsets), so rounding
 > only strips the noise (`0.7000000000000002 → "0.7"`, `0.05 → "0.05"`). Applied
 > centrally in `liveExecution.js` to entry buy/sell, the resting short buy-back
