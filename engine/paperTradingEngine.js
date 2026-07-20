@@ -163,8 +163,8 @@ async function startSingleAccountEngine(account) {
     shortExitPrice: 1.1,
     longExitSlices: 10,
     balanceAllocationPct: 90,
-    entryBuyOffset: 5,
-    entrySellOffset: 2,
+    entryBuyOffset: 10,
+    entrySellOffset: 3,
     // Which strategy logic to run. 1 = stable (live accounts); an experimental
     // paper account is set to 2+ to test new logic. Branch on it wherever the
     // behaviour diverges — see the STRATEGY VERSIONING note below.
@@ -293,8 +293,8 @@ async function startSingleAccountEngine(account) {
           long_exit_slices: 10,
           variable_exit_slices: false,
           balance_allocation_pct: 90,
-          entry_buy_offset: 5,
-          entry_sell_offset: 2,
+          entry_buy_offset: 10,
+          entry_sell_offset: 3,
           // Paper = experimental testbed (v2), live = stable (v1).
           strategy_version: accountState.mode === 'live' ? 1 : 2,
           trade_days: [0, 1, 2, 3, 4, 5, 6],
@@ -336,8 +336,8 @@ async function startSingleAccountEngine(account) {
           longExitSlices: data.long_exit_slices ?? 10,
           variableExitSlices: data.variable_exit_slices ?? false,
           balanceAllocationPct: data.balance_allocation_pct ?? 90,
-          entryBuyOffset: data.entry_buy_offset ?? 5,
-          entrySellOffset: data.entry_sell_offset ?? 2,
+          entryBuyOffset: data.entry_buy_offset ?? 10,
+          entrySellOffset: data.entry_sell_offset ?? 3,
           strategyVersion: data.strategy_version ?? 1,
           tradeDays: Array.isArray(data.trade_days) ? data.trade_days : [0, 1, 2, 3, 4, 5, 6]
         };
@@ -3807,8 +3807,8 @@ async function startSingleAccountEngine(account) {
             // Live entry limit prices carry a premium-$ offset to fill marketable:
             // buy at ask + entryBuyOffset, sell at bid - entrySellOffset. The stored
             // entryBuyPrice/entrySellPrice (used for bookkeeping) are left as-is.
-            const buyOff = config.entryBuyOffset ?? 5;
-            const sellOff = config.entrySellOffset ?? 2;
+            const buyOff = config.entryBuyOffset ?? 10;
+            const sellOff = config.entrySellOffset ?? 3;
             // Exchange-native brackets at the exit-type SPOT level (ATM/ITM/OTM):
             // long leg → take-profit, short leg → stop-loss. These fire even if the
             // engine is down, and are the account's hard risk exit.

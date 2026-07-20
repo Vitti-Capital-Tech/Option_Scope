@@ -198,7 +198,7 @@ After every scan, `publishTopSpreads` packages the top-3 calls and puts into a p
 
 | Table | Engine | Key Fields | Notes |
 |---|---|---|---|
-| `paper_trading_accounts` | Supervisor | `id`, `name`, `user_id`, `mode` (`paper`/`live`), `live_enabled`, `paused`, `close_all_requested`, `balance_allocation_pct` (90), `entry_buy_offset` (5), `entry_sell_offset` (2), `default_config` (JSONB) | One row per account. `mode`/`live_enabled`/`paused` gate live execution; switching back to paper forces `live_enabled=false`. `default_config` is the Reset target. |
+| `paper_trading_accounts` | Supervisor | `id`, `name`, `user_id`, `mode` (`paper`/`live`), `live_enabled`, `paused`, `close_all_requested`, `balance_allocation_pct` (90), `entry_buy_offset` (10), `entry_sell_offset` (3), `default_config` (JSONB) | One row per account. `mode`/`live_enabled`/`paused` gate live execution; switching back to paper forces `live_enabled=false`. `default_config` is the Reset target. |
 | `paper_trading_config` | PaperTrading | `underlying`, `expiry`, filter thresholds, `exit_type`, `exit_points`, `strategy_version` (1), `trade_days` (JSONB, all-7), `short_exit_price` (1.1), `long_exit_slices` (10), `spot_diff` | One row per account (id = account id), upserted on config change. `strategy_version` gates paper(2)/live(1) logic. |
 | `paper_trading_schedules` | PaperTrading | per-window overrides (see §12) incl. `max_net_premium`, `exit_type`, `exit_points`, `min_days_to_expiry`, `trade_days`, and hedge columns | Permanent, undeletable **Window 1** per account, seeded from base config. |
 | `active_positions` | PaperTrading | `id`, `buy_strike`, `sell_strike`, `buy_leg` (JSON), `sell_leg` (JSON), `hedge_leg` (JSON), `accumulated_sell_pnl`, `margin`, `exit_requested` | Account-scoped unique indexes `idx_active_positions_buy_strike_unique` / `..._sell_strike_unique` on `(account_id, underlying, type, expiry, buy_strike/sell_strike)` prevent duplicate inserts (**`expiry` added** so the same strike on different expiries no longer collides). |
@@ -743,7 +743,7 @@ The live engine is the **same** `paperTradingEngine.js` with real-order effects 
 
 ### 13.7 Entry robustness
 
-- **Price offsets**: buy @ ask + `entry_buy_offset` (5), sell @ bid − `entry_sell_offset` (2) — affect only the sent limit price; the stored entry price stays ask/bid.
+- **Price offsets**: buy @ ask + `entry_buy_offset` (10), sell @ bid − `entry_sell_offset` (3) — affect only the sent limit price; the stored entry price stays ask/bid.
 - **Chase-fill (all-or-nothing)**: `openSpread`/`submitChase` chase each leg to a full fill (`editOrder` re-price, up to `ENTRY_CHASE_ATTEMPTS`=3 every `ENTRY_CHASE_POLL_MS`=5000 with `ENTRY_CHASE_BUMP`=1); if still unfilled → **unwind + abort**, no insert.
 - **Same-product collision guard** (Fix B): skip any candidate whose leg symbol already holds a position (`live.positions()` ∪ tracked book). **Dangling-short recovery** (Fix A): `sellQty>0`, short open, long gone → reduce-only market close `${id}-DANGX`. **Benign `no_position_for_reduce_only`** (Fix D): treated as `{ok:true, alreadyClosed:true}`.
 - **Atomic-ish insert**: orders placed first, row written last; a failed insert unwinds via `${id}-ORPHX`; the in-memory book is rebuilt only from `persistedEntryIds`. **Long residual sweep** (`-LSWEEP`) reduce-only market-closes any long contracts left open after the laddered exit deletes the row.

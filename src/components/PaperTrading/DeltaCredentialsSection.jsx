@@ -233,7 +233,7 @@ export default function DeltaCredentialsSection({ register, watch, setValue, exi
               <CustomInput
                 type="number" step="0.5"
                 {...register('entryBuyOffset', { valueAsNumber: true })}
-                placeholder="5"
+                placeholder="10"
                 style={fieldStyle}
               />
             </div>
@@ -242,7 +242,7 @@ export default function DeltaCredentialsSection({ register, watch, setValue, exi
               <CustomInput
                 type="number" step="0.5"
                 {...register('entrySellOffset', { valueAsNumber: true })}
-                placeholder="2"
+                placeholder="3"
                 style={fieldStyle}
               />
             </div>

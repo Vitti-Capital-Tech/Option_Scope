@@ -654,8 +654,8 @@ closed slice is booked at the current mark (approximate — the manual fill wasn
 ### Live entry price offsets
 
 Live entry orders are placed as marketable limits with a premium-$ offset so they
-fill: **buy at ask + `entry_buy_offset`** (default 5), **sell at bid −
-`entry_sell_offset`** (default 2), editable per account in the live section of the
+fill: **buy at ask + `entry_buy_offset`** (default 10), **sell at bid −
+`entry_sell_offset`** (default 3), editable per account in the live section of the
 Create/Edit modal. The offsets affect only the order limit price sent to Delta — the
 stored entry price (used for PnL/margin) remains the ask/bid. Paper ignores them.
 

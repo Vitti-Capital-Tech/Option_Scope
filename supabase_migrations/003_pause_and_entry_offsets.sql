@@ -16,7 +16,7 @@ ALTER TABLE public.paper_trading_accounts
   ADD COLUMN IF NOT EXISTS paused boolean NOT NULL DEFAULT false;
 
 ALTER TABLE public.paper_trading_config
-  ADD COLUMN IF NOT EXISTS entry_buy_offset numeric NOT NULL DEFAULT 5;
+  ADD COLUMN IF NOT EXISTS entry_buy_offset numeric NOT NULL DEFAULT 10;
 
 ALTER TABLE public.paper_trading_config
-  ADD COLUMN IF NOT EXISTS entry_sell_offset numeric NOT NULL DEFAULT 2;
+  ADD COLUMN IF NOT EXISTS entry_sell_offset numeric NOT NULL DEFAULT 3;

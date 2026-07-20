@@ -45,8 +45,8 @@ const ACCOUNT_CONFIG_DEFAULTS = {
   longExitSlices: 10,
   variableExitSlices: false,
   balanceAllocationPct: 90,
-  entryBuyOffset: 5,
-  entrySellOffset: 2
+  entryBuyOffset: 10,
+  entrySellOffset: 3
 };
 
 const normalizeAccountDefaultConfig = (config = {}) => {
@@ -206,8 +206,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       longExitSlices: 10,
       variableExitSlices: false,
       balanceAllocationPct: 90,
-      entryBuyOffset: 5,
-      entrySellOffset: 2
+      entryBuyOffset: 10,
+      entrySellOffset: 3
     }
   });
 
@@ -778,8 +778,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           long_exit_slices: data.longExitSlices ?? 10,
           variable_exit_slices: data.variableExitSlices ?? false,
           balance_allocation_pct: data.balanceAllocationPct ?? 90,
-          entry_buy_offset: data.entryBuyOffset ?? 5,
-          entry_sell_offset: data.entrySellOffset ?? 2,
+          entry_buy_offset: data.entryBuyOffset ?? 10,
+          entry_sell_offset: data.entrySellOffset ?? 3,
           // Paper accounts are the experimental testbed → v2; live starts on stable v1.
           strategy_version: accountMode === 'live' ? 1 : 2,
           trade_days: [0, 1, 2, 3, 4, 5, 6]
@@ -855,8 +855,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       apiSecret: '',
       credVerified: false,
       balanceAllocationPct: activeAccount.default_config?.balanceAllocationPct ?? 90,
-      entryBuyOffset: activeAccount.default_config?.entryBuyOffset ?? 5,
-      entrySellOffset: activeAccount.default_config?.entrySellOffset ?? 2
+      entryBuyOffset: activeAccount.default_config?.entryBuyOffset ?? 10,
+      entrySellOffset: activeAccount.default_config?.entrySellOffset ?? 3
     });
     setEditCredentialsMeta(null);
     setIsEditModalOpen(true);
@@ -885,8 +885,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
 
       // Persist live sizing/entry params into default_config.
       const allocPct = Number.isFinite(data.balanceAllocationPct) ? data.balanceAllocationPct : 90;
-      const buyOff = Number.isFinite(data.entryBuyOffset) ? data.entryBuyOffset : 5;
-      const sellOff = Number.isFinite(data.entrySellOffset) ? data.entrySellOffset : 2;
+      const buyOff = Number.isFinite(data.entryBuyOffset) ? data.entryBuyOffset : 10;
+      const sellOff = Number.isFinite(data.entrySellOffset) ? data.entrySellOffset : 3;
       const activeAccount = accounts.find(a => a.id === activeAccountId);
       if (activeAccount?.default_config) {
         updatePayload.default_config = {
