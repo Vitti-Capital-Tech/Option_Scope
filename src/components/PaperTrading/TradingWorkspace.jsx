@@ -736,6 +736,17 @@ function LiveRiskMargin({ positions, wallet, liveMarks }) {
 // Action), rendering the live exchange snapshot per leg. Close (×) maps the leg
 // back to its engine position so it exits the whole spread.
 function DeltaPositionsTable({ positions, enginePositions, onExitPosition, onCloseOrphan, spotPrice, stopOrders, liveMarks }) {
+  // Sort / filter controls — applied at the spread-GROUP level so a buy/sell pair
+  // always stays together. Default: newest entry first.
+  const [sortKey, setSortKey] = useState('entry');    // 'entry' | 'pnl' | 'trigger'
+  const [sortDir, setSortDir] = useState('desc');     // 'asc' | 'desc'
+  const [pnlFilter, setPnlFilter] = useState('all');  // 'all' | 'win' | 'loss'
+  const [typeFilter, setTypeFilter] = useState('all');// 'all' | 'call' | 'put'
+  const applySort = (k) => {
+    if (k === sortKey) setSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
+    // sensible default direction per key: newest / biggest winner / nearest trigger first
+    else { setSortKey(k); setSortDir(k === 'trigger' ? 'asc' : 'desc'); }
+  };
   const open = (positions || []).filter(p => Number(p.size) !== 0);
   if (open.length === 0) {
     return <EmptyPanel icon="positions" title="No Open Positions"
@@ -762,16 +773,114 @@ function DeltaPositionsTable({ positions, enginePositions, onExitPosition, onClo
   }
   const idx = num(spotPrice);
 
+  // Group each open leg under its owning engine position so the BUY (long) and SELL
+  // (short) legs of the SAME spread render adjacently — easy to track a trade's journey.
+  // Legs with no engine row (orphans) form their own single-leg group. Within a group the
+  // order is buy → sell → hedge; groups are ordered calls-then-puts by buy strike (orphans last).
+  const groupMap = new Map();
+  for (const p of open) {
+    const ep = posBySymbol[p.product_symbol] || null;
+    const key = ep ? `pos:${ep.id}` : `orphan:${p.product_symbol}`;
+    if (!groupMap.has(key)) groupMap.set(key, { ep, legs: [] });
+    groupMap.get(key).legs.push(p);
+  }
+  const legRank = (ep, sym) => {
+    if (!ep) return 0;
+    if (sym === ep.buyLeg?.symbol) return 0;
+    if (sym === ep.sellLeg?.symbol) return 1;
+    if (sym === ep.hedgeLeg?.symbol) return 2;
+    return 3;
+  };
+  const allGroups = [...groupMap.values()];
+  for (const g of allGroups) {
+    g.legs.sort((a, b) => legRank(g.ep, a.product_symbol) - legRank(g.ep, b.product_symbol));
+    // Per-group metrics that drive the toolbar sort/filter.
+    g.pnl = g.legs.reduce((s, p) => s + (livePnlOf(p, liveMarks).pnl || 0), 0);
+    g.entryMs = g.ep?.entryTime ? new Date(g.ep.entryTime).getTime() : null;
+    g.gtype = g.ep?.type || ((g.legs[0]?.product_symbol || '').startsWith('C-') ? 'call' : 'put');
+    // Distance from spot (index) to the NEAREST exit trigger (TP/SL) across the group's legs.
+    let best = Infinity;
+    if (idx != null) {
+      for (const p of g.legs) {
+        const st = stopBySymbol[p.product_symbol];
+        if (!st) continue;
+        for (const lvl of [st.tp, st.sl]) if (lvl != null) best = Math.min(best, Math.abs(idx - lvl));
+      }
+    }
+    g.triggerDist = best;
+  }
+  // Filter (type + P&L), then sort by the chosen key/direction. Groups with no entry
+  // time / no trigger sort to the far end.
+  const dir = sortDir === 'asc' ? 1 : -1;
+  const orderedGroups = allGroups
+    .filter(g => (typeFilter === 'all' || g.gtype === typeFilter)
+      && (pnlFilter === 'all' || (pnlFilter === 'win' ? g.pnl > 0 : g.pnl < 0)))
+    .sort((a, b) => {
+      if (sortKey === 'pnl') return (a.pnl - b.pnl) * dir;
+      if (sortKey === 'trigger') return (a.triggerDist - b.triggerDist) * dir;
+      return ((a.entryMs ?? -Infinity) - (b.entryMs ?? -Infinity)) * dir;
+    });
+
+  const pill = (active) => ({ cursor: 'pointer', border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 6, padding: '3px 9px', fontSize: 11, fontWeight: 600, background: active ? 'var(--accent)' : 'var(--bg3)', color: active ? '#111' : 'var(--text-dim)' });
+  const lbl = { fontSize: 10, color: 'var(--text-dim)', fontWeight: 700, letterSpacing: '0.3px' };
   return (
-    <div className="pt-table-scroll">
-      <table className="pt-table pt-delta-table">
+    <div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'center', padding: '8px 10px' }}>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <span style={lbl}>SORT</span>
+          {[['entry', 'Entry Time'], ['pnl', 'Net P&L'], ['trigger', 'Near TP/SL']].map(([k, label]) => (
+            <button key={k} type="button" onClick={() => applySort(k)} style={pill(sortKey === k)}>{label}{sortKey === k ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}</button>
+          ))}
+        </div>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <span style={lbl}>{'P&L'}</span>
+          {[['all', 'All'], ['win', 'Winning'], ['loss', 'Losing']].map(([k, label]) => (
+            <button key={k} type="button" onClick={() => setPnlFilter(k)} style={pill(pnlFilter === k)}>{label}</button>
+          ))}
+        </div>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <span style={lbl}>TYPE</span>
+          {[['all', 'All'], ['call', 'Calls'], ['put', 'Puts']].map(([k, label]) => (
+            <button key={k} type="button" onClick={() => setTypeFilter(k)} style={pill(typeFilter === k)}>{label}</button>
+          ))}
+        </div>
+      </div>
+      {orderedGroups.length === 0 ? (
+        <div style={{ padding: '18px 10px', textAlign: 'center', color: 'var(--text-dim)', fontSize: 12 }}>No positions match the current filter.</div>
+      ) : (
+      <div className="pt-table-scroll">
+        <table className="pt-table pt-delta-table">
         <thead><tr>
           <th>Symbol</th><th className="r">Size</th><th className="r">Notional</th>
           <th className="r">Entry</th><th>TP / SL</th><th className="r">Index</th>
           <th className="r">Mark</th><th className="r">Margin</th><th className="r">UPNL</th><th className="r">Cashflow</th><th className="r">Action</th>
         </tr></thead>
         <tbody>
-          {open.map((p, i) => {
+          {orderedGroups.map((g, gi) => {
+            const ep = g.ep;
+            const groupLabel = ep
+              ? `${(ep.type || '').toUpperCase()} · Buy ${Number(ep.buyLeg?.strike).toLocaleString()}${(ep.sellQty > 0 && ep.sellLeg?.strike) ? ` / Sell ${Number(ep.sellLeg.strike).toLocaleString()}` : ' · long-only'}${ep.expiry ? ` · ${ep.expiry}` : ''}`
+              : 'Unlinked leg (no engine position)';
+            // Combined live P&L of both legs (precomputed above; livePnlOf signs by size,
+            // so the short contributes its decay profit correctly).
+            const groupPnl = g.pnl;
+            return (
+              <React.Fragment key={ep?.id ?? g.legs[0]?.product_symbol ?? gi}>
+                <tr className="pt-group-header">
+                  <td colSpan={11} style={{ background: 'var(--bg3)', padding: '6px 10px', borderTop: '2px solid var(--border)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <span style={{ fontWeight: 700, fontSize: 11, color: 'var(--text-dim)', letterSpacing: '0.3px' }}>{groupLabel}</span>
+                        {ep?.entryTime && <span style={{ fontSize: 10, fontWeight: 500, color: 'var(--text-dim)', opacity: 0.85 }}>⏱ {fmtTs(ep.entryTime)}</span>}
+                      </span>
+                      <span style={{ fontWeight: 700, fontSize: 11 }}>
+                        <span style={{ color: 'var(--text-dim)', letterSpacing: '0.3px' }}>NET P&amp;L </span>
+                        <span className={`pt-pnl ${groupPnl > 0 ? 'positive' : groupPnl < 0 ? 'negative' : 'zero'}`}>{groupPnl > 0 ? '+' : ''}{fmtNum(groupPnl)}</span>
+                      </span>
+                    </div>
+                  </td>
+                </tr>
+                {g.legs.map((p, i) => {
             const size = num(p.size) || 0;                          // contracts (lots), signed
             const cv = num(p.product?.contract_value) ?? 0.001;     // BTC per contract
             const unit = p.product?.underlying_asset?.symbol || 'BTC';
@@ -822,9 +931,14 @@ function DeltaPositionsTable({ positions, enginePositions, onExitPosition, onClo
                 </td>
               </tr>
             );
+                })}
+              </React.Fragment>
+            );
           })}
         </tbody>
       </table>
+      </div>
+      )}
     </div>
   );
 }

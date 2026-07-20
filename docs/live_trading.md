@@ -941,6 +941,15 @@ bookkeeping.
   the truth. For live, **Order History mirrors Delta's own `order_history` feed** (every
   filled/cancelled order, per leg) with a derived **Exit Reason** column (see below);
   paper/dry-run keep the engine's `trade_history` ledger.
+- **Positions tab — spread grouping & tracking toolbar.** Each Delta leg is grouped under its
+  owning engine position (matched by leg symbol), so the **buy (long) and sell (short) legs of
+  the same spread render adjacently** under a group header — `<TYPE> · Buy <strike> / Sell
+  <strike> · <expiry>`, the spread's **entry time** (⏱), and its **combined Net P&L** (both legs
+  summed via `livePnlOf`, so the short's decay profit signs correctly). Legs with no engine row
+  form their own "Unlinked leg" group. A toolbar sorts/filters at the **group level** (pairs stay
+  together): **Sort** by Entry Time (newest↔oldest), Net P&L (winners↔losers), or Near TP/SL
+  (spot's proximity to the nearest exit trigger across the group's legs); **Filter** by P&L
+  (All / Winning / Losing) and Type (All / Calls / Puts). Defaults to entry-time, newest first.
 - **Live-fresh unrealized P&L (egress-safe).** The change-guarded upsert above deliberately
   freezes `mark_price`/`unrealized_pnl` between structural changes (stale up to the 60s
   keepalive). So the UI does **not** trust those snapshot fields for the money figures — the
