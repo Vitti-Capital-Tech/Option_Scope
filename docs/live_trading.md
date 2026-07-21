@@ -200,16 +200,36 @@ Telegram outage can never crash or block the engine.
 
 | Var | Required | Meaning |
 | --- | --- | --- |
-| `TELEGRAM_BOT_TOKEN` | yes | Bot token from **@BotFather** |
-| `TELEGRAM_CHAT_ID` | yes | Chat/channel/group id to send alerts to |
+| `TELEGRAM_BOT_TOKEN` | yes | Bot token from **@BotFather** (one bot serves every chat) |
+| `TELEGRAM_CHAT_ID` | no | **Default/fallback** chat id — used for accounts without their own (per-account) chat id |
 | `TELEGRAM_DEDUPE_MS` | no (default `60000`) | Suppress identical alerts within this window |
+| `VITE_TELEGRAM_BOT_USERNAME` | frontend | Bot @username (no `@`) — builds the per-account "Connect Telegram" deep link |
 
-To get the ids: create a bot via **@BotFather** (→ token), send the bot a message (or
-add it to a group), then read the chat id from
-`https://api.telegram.org/bot<token>/getUpdates`. If either var is unset, alerts are
-**silently disabled** (logged once) — paper-only / dev deployments need no config.
+Only the **bot token** is fundamentally required now; a message is sent when the token
+is set **and** a destination resolves (a per-account chat id, else the global
+`TELEGRAM_CHAT_ID`). If neither resolves, alerts are **silently disabled** (logged once).
 
-**What triggers an alert** (armed-real only — one shared chat):
+#### Per-account routing (`/start` deep-link auto-capture)
+
+Each **live account** can send its logs to its **own** Telegram chat instead of the
+shared group. Since the Bot API can't message a user by @username (a bot only reaches a
+chat it already has an id for), the chat id is captured automatically:
+
+1. In the account's **Edit** settings, **Connect Telegram** writes a random
+   `telegram_link_code` on the account row and reveals `t.me/<bot>?start=<code>`
+   (migrations `028` `telegram_chat_id`, `029` `telegram_link_code`).
+2. The user opens the link and presses **Start**; the bot receives `/start <code>`.
+3. A single global **`getUpdates` long-poll** in the engine supervisor
+   (`startTelegramLinkListener`, requires the token **and** the service_role key, and
+   **no webhook** set on the bot) matches the code, stores `telegram_chat_id`, clears
+   the code, and confirms in-chat. The account row change flows back to the UI via
+   Realtime, flipping it to **Connected**.
+4. `notifyLiveTrade`/`notifyLiveFailure` then send to that account's `chatId`, falling
+   back to `TELEGRAM_CHAT_ID` when an account has none. **Disconnect** clears the id.
+
+Accounts without a linked chat behave exactly as before (shared group, or silent).
+
+**What triggers an alert** (armed-real only — routed to the account's chat, else the shared default):
 
 - Order **send** rejected (entry or exit leg) — `submit`
 - Reduce-only **close** failed (unwind / orphan close) — leg may still be open.

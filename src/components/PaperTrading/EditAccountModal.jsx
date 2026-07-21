@@ -2,6 +2,7 @@ import React from 'react';
 import CustomInput from '../common/CustomInput';
 import { Loader2 } from 'lucide-react';
 import DeltaCredentialsSection from './DeltaCredentialsSection';
+import TelegramConnect from './TelegramConnect';
 
 export default function EditAccountModal({
   isOpen,
@@ -12,9 +13,18 @@ export default function EditAccountModal({
   isSaving,
   watch,
   setValue,
-  credentialsMeta
+  credentialsMeta,
+  account = null,
+  telegramBotUsername = '',
+  telegramBusy = false,
+  onTelegramConnect,
+  onTelegramDisconnect
 }) {
   if (!isOpen) return null;
+
+  // Per-account Telegram linking is a live-account feature (alerts fire on armed-real
+  // live trading only). Shown once the account exists (edit flow).
+  const showTelegram = (account?.mode || 'paper') === 'live';
 
   return (
     <div className="modal-overlay-wrapper">
@@ -50,6 +60,16 @@ export default function EditAccountModal({
             watch={watch}
             setValue={setValue}
             existingMeta={credentialsMeta}
+          />
+        )}
+
+        {showTelegram && (
+          <TelegramConnect
+            account={account}
+            botUsername={telegramBotUsername}
+            busy={telegramBusy}
+            onConnect={onTelegramConnect}
+            onDisconnect={onTelegramDisconnect}
           />
         )}
 

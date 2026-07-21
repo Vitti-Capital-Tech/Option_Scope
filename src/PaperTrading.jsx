@@ -985,6 +985,28 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     await fetchAccounts();
   };
 
+  // ── Telegram per-account linking (live accounts) ──────────────────────
+  // "Connect" writes a fresh single-use link code; the UI builds a t.me/<bot>?start=<code>
+  // deep link. When the user presses Start, the engine's bot listener matches the code,
+  // stores telegram_chat_id and clears the code — surfaced back here via Realtime refetch.
+  const [telegramBusy, setTelegramBusy] = useState(false);
+  const genTelegramCode = () => {
+    try { if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID().replace(/-/g, ''); } catch { /* fall through */ }
+    return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
+  };
+  const handleTelegramConnect = async (accountId) => {
+    if (!accountId) return;
+    setTelegramBusy(true);
+    try { await updateAccountFlags(accountId, { telegram_link_code: genTelegramCode() }); }
+    finally { setTelegramBusy(false); }
+  };
+  const handleTelegramDisconnect = async (accountId) => {
+    if (!accountId) return;
+    setTelegramBusy(true);
+    try { await updateAccountFlags(accountId, { telegram_chat_id: null, telegram_link_code: null }); }
+    finally { setTelegramBusy(false); }
+  };
+
   const triggerStartLive = (accountId) => {
     const acc = accounts.find(a => a.id === accountId);
     if (!window.confirm(`Start LIVE trading for "${acc?.name}"?\n\nThe engine will place real orders for this account (subject to the engine's dry-run switch).`)) return;
@@ -2960,6 +2982,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         watch={watchEdit}
         setValue={setValueEdit}
         credentialsMeta={editCredentialsMeta}
+        account={accounts.find(a => a.id === activeAccountId) || null}
+        telegramBotUsername={import.meta.env.VITE_TELEGRAM_BOT_USERNAME || ''}
+        telegramBusy={telegramBusy}
+        onTelegramConnect={() => handleTelegramConnect(activeAccountId)}
+        onTelegramDisconnect={() => handleTelegramDisconnect(activeAccountId)}
       />
 
       <ConfirmExitModal

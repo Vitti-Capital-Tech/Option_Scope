@@ -16,7 +16,7 @@
 import { supabase, hasServiceRole } from './lib/supabase.js';
 import { createHeartbeat } from './lib/heartbeat.js';
 import { createLiveExecutor, isLiveDryRun, longContracts, shortContracts, extractBalance } from './lib/liveExecution.js';
-import { notifyLiveFailure, notifyLiveTrade } from './lib/telegram.js';
+import { notifyLiveFailure, notifyLiveTrade, sendTelegramMessage } from './lib/telegram.js';
 import { getBalance } from './lib/deltaTradeApi.js';
 import {
   loadProducts, getExpiries, getSpotPrice,
@@ -212,7 +212,14 @@ async function startSingleAccountEngine(account) {
   // Fire-and-forget — telegram.js swallows all errors.
   function notifyTrade({ title, detail = '', pnl = null }) {
     if (!(accountState.mode === 'live' && accountState.live_enabled && !live.dryRun)) return;
-    notifyLiveTrade({ account: accountState.name, title, detail, pnl });
+    notifyLiveTrade({ account: accountState.name, title, detail, pnl, chatId: accountState.telegram_chat_id });
+  }
+
+  // Failure alert wrapper — injects this account's name + its own Telegram chat id
+  // (per-account routing; falls back to the global chat when unset). All engine
+  // failure alerts go through this instead of notifyLiveFailure directly.
+  function notifyFailure(args = {}) {
+    notifyLiveFailure({ account: accountState.name, chatId: accountState.telegram_chat_id, ...args });
   }
 
   // Load + decrypt Delta credentials for live accounts. Requires the engine to
@@ -1035,7 +1042,7 @@ async function startSingleAccountEngine(account) {
           if (c.ok || c.dryRun || c.skipped || c.alreadyClosed) {
             notifyTrade({ title: isTp ? '🎯 TAKE PROFIT (immediate)' : '🚨 STOP LOSS (immediate)', detail: `${label} · ${symbol} unprotected & level breached → market-closed` });
           } else {
-            notifyLiveFailure({ account: accountState.name, context: `Protective market close FAILED (${closeSide} ${symbol}) for unprotected leg — may still be OPEN and UNPROTECTED`, error: { message: c.error }, extra: `[${tag}]` });
+            notifyFailure({ account: accountState.name, context: `Protective market close FAILED (${closeSide} ${symbol}) for unprotected leg — may still be OPEN and UNPROTECTED`, error: { message: c.error }, extra: `[${tag}]` });
           }
         }
         // 'no_open_position' / 'other' → changePositionBracket already logs/alarms.
@@ -1263,7 +1270,7 @@ async function startSingleAccountEngine(account) {
         const c = await live.closeSymbol({ symbol, side: 'buy', contracts, tag: `ORPHAN-SHORTX-${symbol}` });
         const done = !!(c.ok || c.dryRun || c.skipped || c.alreadyClosed);
         if (done) orphanHandled.add(symbol);
-        notifyLiveFailure({ account: accountState.name, context: `Orphan naked short ${symbol} (size ${size}) — no DB row → reduce-only close ${done ? 'sent' : 'FAILED, may still be OPEN'}.`, error: { message: c.error || 'orphan-naked-short' } });
+        notifyFailure({ account: accountState.name, context: `Orphan naked short ${symbol} (size ${size}) — no DB row → reduce-only close ${done ? 'sent' : 'FAILED, may still be OPEN'}.`, error: { message: c.error || 'orphan-naked-short' } });
         continue;
       }
 
@@ -1291,13 +1298,13 @@ async function startSingleAccountEngine(account) {
       // Can't adopt (unknown symbol, strike collision, or adopt failed) → PROTECT + ALERT.
       if (!meta) {
         logWarn(`[${accountState.name}] 🛰️ UNPROTECTED orphan ${symbol} (size ${size}) not in symbolMeta → cannot compute a level; ALERT only.`);
-        notifyLiveFailure({ account: accountState.name, context: `UNPROTECTED untracked Delta position ${symbol} (size ${size}) — no DB row and symbol unknown to the engine. Close/protect manually NOW.`, error: { message: 'orphan-unprotected-unknown' } });
+        notifyFailure({ account: accountState.name, context: `UNPROTECTED untracked Delta position ${symbol} (size ${size}) — no DB row and symbol unknown to the engine. Close/protect manually NOW.`, error: { message: 'orphan-unprotected-unknown' } });
         continue;
       }
       const level = computeIndexTriggerLevel(meta.type, meta.strike, effExit);
       if (bracketBySymbol[symbol]) {
         logWarn(`[${accountState.name}] 🛰️ Orphan long ${symbol} (size ${size}) — couldn't adopt (strike taken) but IS bracket-protected → alerting, not managing.`);
-        notifyLiveFailure({ account: accountState.name, context: `Untracked Delta long ${symbol} (size ${size}) — buy strike ${meta.strike} already tracked, so not adopted; it is bracket-protected but unmanaged. Review manually.`, error: { message: 'orphan-collision-protected' } });
+        notifyFailure({ account: accountState.name, context: `Untracked Delta long ${symbol} (size ${size}) — buy strike ${meta.strike} already tracked, so not adopted; it is bracket-protected but unmanaged. Review manually.`, error: { message: 'orphan-collision-protected' } });
         orphanHandled.add(symbol);
         continue;
       }
@@ -1308,12 +1315,12 @@ async function startSingleAccountEngine(account) {
         const r = await live.changePositionBracket({ productId: pidBySymbol[symbol], symbol, side: 'tp', stopPrice: level, tag });
         if (r.ok && !r.skipped && !r.dryRun) {
           orphanHandled.add(symbol);
-          notifyLiveFailure({ account: accountState.name, context: `UNPROTECTED orphan long ${symbol} (size ${size}) — no DB row. Engine armed a protective bracket @ index ${level}; it is NOT being managed. Review/close manually.`, error: { message: 'orphan-protected' } });
+          notifyFailure({ account: accountState.name, context: `UNPROTECTED orphan long ${symbol} (size ${size}) — no DB row. Engine armed a protective bracket @ index ${level}; it is NOT being managed. Review/close manually.`, error: { message: 'orphan-protected' } });
         } else if (!r.ok && r.code === 'immediate_execution') {
           const c = await live.closeSymbol({ symbol, side: 'sell', contracts, tag: `${tag}-immed` });
           const done = !!(c.ok || c.dryRun || c.skipped || c.alreadyClosed);
           if (done) orphanHandled.add(symbol);
-          notifyLiveFailure({ account: accountState.name, context: `UNPROTECTED orphan ${symbol} (size ${size}) level ${level} already breached → protective MARKET close sell ${contracts}x — ${done ? 'done' : 'FAILED, may still be OPEN'}.`, error: { message: c.error || 'orphan-immediate' } });
+          notifyFailure({ account: accountState.name, context: `UNPROTECTED orphan ${symbol} (size ${size}) level ${level} already breached → protective MARKET close sell ${contracts}x — ${done ? 'done' : 'FAILED, may still be OPEN'}.`, error: { message: c.error || 'orphan-immediate' } });
         }
       } catch (e) {
         logError(`[${accountState.name}] protectOrphanExchangePositions failed for ${symbol}:`, e);
@@ -1574,7 +1581,7 @@ async function startSingleAccountEngine(account) {
             notifyTrade({ title: '🧹 PARTIAL EXIT (reconcile)', detail: `${sym} · stale resting scale-down cancelled → market-closed ${remaining} contract(s)` });
           } else {
             logWarn(`[${accountState.name}] 🧹 Stale -PEX cleanup: market-close FAILED on ${sym} (${remaining} contract(s)) — resting limit left in place, will retry next sweep.`);
-            notifyLiveFailure({ account: accountState.name, context: `Stale -PEX cleanup market-close FAILED on ${sym} — leg may still be OPEN`, error: { message: c.error || 'pexclean-failed' }, extra: `${remaining} contract(s) — will retry` });
+            notifyFailure({ account: accountState.name, context: `Stale -PEX cleanup market-close FAILED on ${sym} — leg may still be OPEN`, error: { message: c.error || 'pexclean-failed' }, extra: `${remaining} contract(s) — will retry` });
           }
         } else {
           // Nothing to close (order already fully consumed) — just drop the empty resting limit.
@@ -1717,7 +1724,7 @@ async function startSingleAccountEngine(account) {
         }
       } catch (e) {
         logError(`[${accountState.name}] reconcileOrphans failed for ${pos.id}:`, e);
-        notifyLiveFailure({ account: accountState.name, context: `Orphan reconcile FAILED (${pos.id}) — exchange/engine state may be out of sync`, error: e });
+        notifyFailure({ account: accountState.name, context: `Orphan reconcile FAILED (${pos.id}) — exchange/engine state may be out of sync`, error: e });
       }
     }
   }
@@ -4042,7 +4049,7 @@ async function startSingleAccountEngine(account) {
                 ? `rejected by Delta at submit (${liveEntry.error})`
                 : 'could not fill (chase exhausted)';
               logError(`[${accountState.name}] LIVE entry aborted (${liveEntry.legFailed} leg: ${liveEntry.error}) — not persisting ${t.buyLeg.strike}/${t.sellLeg.strike}`);
-              notifyLiveFailure({ account: accountState.name, context: `Entry ABORTED — ${liveEntry.legFailed} leg ${failMode}; position unwound, account left flat`, error: liveEntry.error, extra: `${t.type?.toUpperCase?.() || ''} ${t.buyLeg.strike}/${t.sellLeg.strike}` });
+              notifyFailure({ account: accountState.name, context: `Entry ABORTED — ${liveEntry.legFailed} leg ${failMode}; position unwound, account left flat`, error: liveEntry.error, extra: `${t.type?.toUpperCase?.() || ''} ${t.buyLeg.strike}/${t.sellLeg.strike}` });
               continue;
             }
             // Remember the exchange bracket level on each leg so a later
@@ -4150,7 +4157,7 @@ async function startSingleAccountEngine(account) {
                 } catch (unwindErr) {
                   logError(`[${accountState.name}] ✖ Orphan unwind FAILED for ${t.id} — MANUAL cleanup may be needed on Delta:`, unwindErr?.message || unwindErr);
                 }
-                notifyLiveFailure({
+                notifyFailure({
                   account: accountState.name,
                   context: `Entry not persisted (${why}) — just-placed legs unwound to keep the account flat`,
                   extra: `${t.type?.toUpperCase?.() || ''} ${t.buyLeg.strike}/${t.sellLeg.strike}`,
@@ -4327,7 +4334,7 @@ async function startSingleAccountEngine(account) {
         } else if (c.ok || c.dryRun || c.skipped) {
           notifyTrade({ title: isTp ? '🎯 TAKE PROFIT (immediate)' : '🚨 STOP LOSS (immediate)', detail: `${label} · ${symbol} level already breached → market-closed` });
         } else {
-          notifyLiveFailure({ account: accountState.name, context: `Protective market close FAILED (${closeSide} ${symbol}) after bracket immediate-execution — leg may still be OPEN and UNPROTECTED`, error: { message: c.error }, extra: `[${tag}]` });
+          notifyFailure({ account: accountState.name, context: `Protective market close FAILED (${closeSide} ${symbol}) after bracket immediate-execution — leg may still be OPEN and UNPROTECTED`, error: { message: c.error }, extra: `[${tag}]` });
         }
         return { ok: false, immediateClosed: !!(c.ok || c.dryRun || c.skipped) };
       }
@@ -4847,7 +4854,7 @@ export async function startPaperTradingEngine() {
       // are loaded separately via RPC (loadCredentials), never from this row.
       const { data: currentAccounts, error: syncError } = await supabase
         .from('paper_trading_accounts')
-        .select('id, name, mode, live_enabled, paused, is_active');
+        .select('id, name, mode, live_enabled, paused, is_active, telegram_chat_id, telegram_link_code');
 
       if (syncError || !currentAccounts) {
         logError('Fallback sync: failed to fetch accounts:', syncError?.message);
@@ -4982,9 +4989,78 @@ export async function startPaperTradingEngine() {
   }
   const requestPollTimer = setInterval(() => { pollAllRequests().catch(() => {}); }, 1500);
 
+  // ── Telegram /start deep-link listener ────────────────────────────────
+  // One global long-poll (getUpdates) that auto-captures each live account's Telegram
+  // chat id: when a user opens `t.me/<bot>?start=<code>` and presses Start, the bot
+  // receives `/start <code>`; we match `code` to the account's telegram_link_code,
+  // store telegram_chat_id, clear the code, and confirm in-chat. Needs the bot token
+  // AND the service_role key (to update accounts). The bot must have NO webhook set —
+  // getUpdates and webhooks are mutually exclusive. Single consumer (this process).
+  const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+  let tgListenerStop = false;
+  let tgUpdateOffset = 0;
+  const tgEscape = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  async function bindTelegramCode(code, chatId) {
+    const { data, error } = await supabase
+      .from('paper_trading_accounts')
+      .select('id, name')
+      .eq('telegram_link_code', code)
+      .limit(1);
+    if (error) { logError('Telegram bind lookup error:', error.message); return; }
+    const acc = data && data[0];
+    if (!acc) {
+      // No account holds this code — stale/expired link or an already-consumed /start.
+      await sendTelegramMessage(chatId, '⚠️ This link is invalid or already used. Open the account settings and click <b>Connect Telegram</b> to get a fresh link.');
+      return;
+    }
+    const { error: upErr } = await supabase
+      .from('paper_trading_accounts')
+      .update({ telegram_chat_id: String(chatId), telegram_link_code: null })
+      .eq('id', acc.id);
+    if (upErr) { logError('Telegram bind update error:', upErr.message); return; }
+    log(`Telegram linked: account "${acc.name}" (${acc.id}) → chat ${chatId}`);
+    await sendTelegramMessage(chatId, `✅ <b>Connected</b> — live trading logs for <b>${tgEscape(acc.name)}</b> will now arrive in this chat.`);
+  }
+
+  async function pollTelegramUpdates() {
+    while (!tgListenerStop) {
+      try {
+        const offsetParam = tgUpdateOffset ? `&offset=${tgUpdateOffset}` : '';
+        const url = `https://api.telegram.org/bot${TG_TOKEN}/getUpdates?timeout=50&allowed_updates=%5B%22message%22%5D${offsetParam}`;
+        const res = await fetch(url);
+        const body = await res.json().catch(() => null);
+        if (body && body.ok && Array.isArray(body.result)) {
+          for (const upd of body.result) {
+            tgUpdateOffset = upd.update_id + 1;
+            const msg = upd.message;
+            const text = msg?.text?.trim();
+            const chatId = msg?.chat?.id;
+            if (!text || chatId == null) continue;
+            const m = text.match(/^\/start(?:@\w+)?\s+(\S+)/); // "/start <code>" (deep link)
+            if (!m) continue;
+            await bindTelegramCode(m[1], chatId).catch(e => logError('Telegram bind error:', e.message));
+          }
+        }
+      } catch (e) {
+        // Network blip / Telegram outage — back off, never crash the process.
+        logError('Telegram getUpdates error:', e.message);
+        await new Promise(r => setTimeout(r, 5000));
+      }
+    }
+  }
+
+  if (TG_TOKEN && hasServiceRole) {
+    log('Telegram /start link listener started.');
+    pollTelegramUpdates().catch((e) => logError('Telegram listener crashed:', e.message));
+  } else if (TG_TOKEN) {
+    logWarn('Telegram token set but engine lacks service_role key — /start auto-linking disabled.');
+  }
+
   return {
     async stop() {
       log('Shutting down all running account engines...');
+      tgListenerStop = true;
       clearInterval(syncTimer);
       clearInterval(verifyTimer);
       clearInterval(requestPollTimer);

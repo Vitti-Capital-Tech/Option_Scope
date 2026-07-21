@@ -946,3 +946,35 @@ BEGIN
       CHECK (combined_split_pct > 0 AND combined_split_pct <= 100);
   END IF;
 END $$;
+
+
+-- ─── 028_account_telegram_chat.sql ───
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Migration 028 — Per-account Telegram chat id (independent live logs)
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Adds an optional per-account Telegram destination so each LIVE account can send
+-- its trade/failure alerts to its own chat instead of the single shared group.
+-- NULL → fall back to the global TELEGRAM_CHAT_ID env (unchanged). One shared bot
+-- token (TELEGRAM_BOT_TOKEN) still serves every chat. Additive only.
+-- ─────────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE public.paper_trading_accounts
+  ADD COLUMN IF NOT EXISTS telegram_chat_id text;
+
+
+-- ─── 029_account_telegram_link.sql ───
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Migration 029 — Telegram /start deep-link auto-capture code
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Companion to 028. Single-use linking token so a live account captures its Telegram
+-- chat id via a t.me/<bot>?start=<code> deep link (no manual numeric-id entry): UI
+-- writes telegram_link_code, the engine's bot listener matches an incoming /start
+-- <code>, stores telegram_chat_id and clears the code. Additive only.
+-- ─────────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE public.paper_trading_accounts
+  ADD COLUMN IF NOT EXISTS telegram_link_code text;
+
+CREATE INDEX IF NOT EXISTS idx_accounts_telegram_link_code
+  ON public.paper_trading_accounts (telegram_link_code)
+  WHERE telegram_link_code IS NOT NULL;
