@@ -189,6 +189,12 @@ async function startSingleAccountEngine(account) {
   let isEvaluating = false;
   let evaluationStart = 0;
   let lastWsReconnectTime = 0;
+  // Paper 4:30 AM IST full-deployment fill (paper only). `lastEntryIstMin` tracks the
+  // previous entry-eligible cycle's IST minute so we can detect the upward crossing of
+  // 04:30; `lastFullDeployKey` is the IST date the fill last fired, so it runs at most
+  // once per day. In-memory only — resets on restart (a same-day restart may re-fire).
+  let lastFullDeployKey = null;
+  let lastEntryIstMin = null;
   let lastDbWrite = 0;
   let schedules = []; // Time-based schedule windows
 
@@ -3392,6 +3398,11 @@ async function startSingleAccountEngine(account) {
       }
 
       let partMargin = null;
+      // Paper full-deployment clamp state (per cycle): the remaining allocated pool and
+      // how much of it has been consumed by entries opened this cycle, so the 4:30
+      // concentrate fill never deploys more than the pool.
+      let paperRemainingBudget = null;
+      let paperDeployed = 0;
       if (!onlyExits && !paused && dayAllowsEntry && liveArmed) {
         try {
           const bal = await live.walletBalance();
@@ -3439,8 +3450,62 @@ async function startSingleAccountEngine(account) {
         const occupiedSlots = openHere.filter(p => p.sellQty > 0).length; // full spreads occupy combined slots
         const remainingBudget = Math.max(0, budget - usedMargin);
         const remainingSlots = Math.max(1, maxPos - occupiedSlots);
-        partMargin = remainingBudget / remainingSlots;
-        log(`[${accountState.name}] 💰 PAPER sizing: equity $${equity.toFixed(2)} × ${allocPct}% = $${budget.toFixed(2)} budget | used $${usedMargin.toFixed(2)} | remaining $${remainingBudget.toFixed(2)} ÷ ${remainingSlots} free slot(s) (window combined cap ${maxPos}) = $${partMargin.toFixed(2)}/position`);
+        paperRemainingBudget = remainingBudget;
+
+        // ── 4:30 AM IST full-deployment fill (once per day) ──────────────────
+        // Detect the upward crossing of 04:30 IST on entry-eligible cycles, at most
+        // once per IST date. On that pass we DON'T reserve budget for slots that may
+        // never fill — instead we concentrate the whole remaining pool across the
+        // spreads scanning ACTUALLY found openable now, so idle balance is deployed.
+        const ist = new Date(Date.now() + 330 * 60000); // UTC → IST wall clock
+        const istMinNow = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+        const istDateKey = ist.toISOString().slice(0, 10);
+        const FULL_DEPLOY_MIN = 270; // 04:30 IST
+        const fullDeployPass = lastEntryIstMin != null
+          && lastEntryIstMin < FULL_DEPLOY_MIN && istMinNow >= FULL_DEPLOY_MIN
+          && lastFullDeployKey !== istDateKey;
+        lastEntryIstMin = istMinNow;
+
+        if (fullDeployPass) {
+          lastFullDeployKey = istDateKey;
+          // Count spreads that would actually open now — mirrors the entry-loop guards:
+          // per-type derived cap, combined cap, and buy/sell strike conflicts vs open
+          // positions (simulating acceptance in the same order the loop processes). No
+          // forced fills: a slot with no qualifying candidate stays empty.
+          const typeCap430 = paperTypeCap(effectiveConfig);
+          const simCounts = { call: 0, put: 0 };
+          let simCombined = 0;
+          const takenBuy = { call: new Set(), put: new Set() };
+          const takenSell = { call: new Set(), put: new Set() };
+          openHere.forEach(p => {
+            if (p.sellQty > 0 && (p.type === 'call' || p.type === 'put')) { simCounts[p.type]++; simCombined++; }
+            if (p.expiry === config.expiry && (p.type === 'call' || p.type === 'put')) {
+              if (!p.buyLeg?.isHedge) takenBuy[p.type].add(Number(p.buyLeg?.strike));
+              if (p.sellQty > 0) takenSell[p.type].add(Number(p.sellLeg?.strike));
+            }
+          });
+          let openable = 0;
+          for (const sp of uniqueTopSpreads) {
+            if (simCombined >= maxPos) break;
+            const t = sp.buyLeg?.type;
+            if (t !== 'call' && t !== 'put') continue;
+            const b = Number(sp.buyLeg.strike), s = Number(sp.sellLeg.strike);
+            if (simCounts[t] >= typeCap430) continue;
+            if (takenBuy[t].has(b) || takenSell[t].has(s)) continue;
+            takenBuy[t].add(b); takenSell[t].add(s);
+            simCounts[t]++; simCombined++; openable++;
+          }
+          if (openable > 0) {
+            partMargin = remainingBudget / openable;
+            log(`[${accountState.name}] 🌅 PAPER 4:30 full-deploy: remaining $${remainingBudget.toFixed(2)} ÷ ${openable} openable spread(s) = $${partMargin.toFixed(2)}/position (window combined cap ${maxPos}).`);
+          } else {
+            partMargin = 0; // scanning found nothing openable → fill nothing (no forced entries)
+            log(`[${accountState.name}] 🌅 PAPER 4:30 full-deploy: no qualifying spreads found — nothing filled, $${remainingBudget.toFixed(2)} stays idle.`);
+          }
+        } else {
+          partMargin = remainingBudget / remainingSlots;
+          log(`[${accountState.name}] 💰 PAPER sizing: equity $${equity.toFixed(2)} × ${allocPct}% = $${budget.toFixed(2)} budget | used $${usedMargin.toFixed(2)} | remaining $${remainingBudget.toFixed(2)} ÷ ${remainingSlots} free slot(s) (window combined cap ${maxPos}) = $${partMargin.toFixed(2)}/position`);
+        }
       }
 
       if (!onlyExits && !paused && dayAllowsEntry) {
@@ -3471,11 +3536,17 @@ async function startSingleAccountEngine(account) {
         for (const spread of uniqueTopSpreads) {
           // Live accounts need a valid per-position margin part to size safely.
           if (liveArmed && partMargin == null) continue;
-          // Paper accounts self-skip when the allocated pool is exhausted (no free
-          // margin left this cycle) — mirrors the live "no budget" self-skip.
-          if (isPaperAccount && (partMargin == null || partMargin <= 0.01)) {
-            logWarn(`[${accountState.name}] Entry candidate ${spread.buyLeg.type.toUpperCase()} skipped: paper allocated balance exhausted (no free margin this cycle).`);
-            continue;
+          // Paper accounts self-skip when the allocated pool is exhausted — either no
+          // per-position part at all, or the running pool consumed by entries already
+          // opened THIS cycle leaves nothing (mirrors the live "no budget" self-skip).
+          if (isPaperAccount) {
+            const poolLeft = paperRemainingBudget != null
+              ? Math.max(0, paperRemainingBudget - paperDeployed)
+              : (partMargin ?? 0);
+            if (partMargin == null || partMargin <= 0.01 || poolLeft <= 0.01) {
+              logWarn(`[${accountState.name}] Entry candidate ${spread.buyLeg.type.toUpperCase()} skipped: paper allocated balance exhausted (no free margin this cycle).`);
+              continue;
+            }
           }
           const bStrike = Number(spread.buyLeg.strike);
           const sStrike = Number(spread.sellLeg.strike);
@@ -3655,8 +3726,13 @@ async function startSingleAccountEngine(account) {
             // PAPER (migration 027): scale the base 1:ratio unit so its margin fills the
             // per-position part (allocated pool ÷ the active window's combined cap), then
             // clamp by the $195k / 200x short-notional cap. Paper tolerates fractional lots.
+            // Running-pool clamp: never size a position past the pool left this cycle, so the
+            // 4:30 concentrate fill (large partMargin) can't collectively over-deploy the pool.
+            const effectivePart = paperRemainingBudget != null
+              ? Math.min(partMargin, Math.max(0, paperRemainingBudget - paperDeployed))
+              : partMargin;
             const baseMargin = calcMargin(entryBuyPrice, originalLotSize, spotPrice, ratioToUse, sellLotSize);
-            scale = baseMargin > 0 ? (partMargin / baseMargin) : 1;
+            scale = baseMargin > 0 ? (effectivePart / baseMargin) : 1;
             if (!(scale > 0)) scale = 1;
             adjustedLotSize = Number((originalLotSize * scale).toFixed(4));
             adjustedSellQty = Number((ratioToUse * scale).toFixed(4));
@@ -3670,7 +3746,7 @@ async function startSingleAccountEngine(account) {
               shortValue = 195000;
             }
             const estMargin = calcMargin(entryBuyPrice, adjustedLotSize, spotPrice, adjustedSellQty, sellLotSize);
-            log(`[${accountState.name}] 💰 PAPER size ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: unit margin $${baseMargin.toFixed(2)} | part $${partMargin.toFixed(2)} → scale ${scale.toFixed(2)}× | lot ${adjustedLotSize} short ${adjustedSellQty} (base 1:${ratioToUse}) | est margin $${estMargin.toFixed(2)}`);
+            log(`[${accountState.name}] 💰 PAPER size ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: unit margin $${baseMargin.toFixed(2)} | part $${effectivePart.toFixed(2)} → scale ${scale.toFixed(2)}× | lot ${adjustedLotSize} short ${adjustedSellQty} (base 1:${ratioToUse}) | est margin $${estMargin.toFixed(2)}`);
           } else {
             // LIVE-but-unarmed (no balance sizing): unchanged $195,000 / 200x notional cap.
             let shortValue = spotPrice * ratioToUse * sellLotSize;
@@ -3783,6 +3859,9 @@ async function startSingleAccountEngine(account) {
             margin: candidateMargin + hedgeMargin,
           };
           newEntries.push(newPos);
+          // Track pool consumed this cycle so the paper running-pool clamp (and the 4:30
+          // concentrate fill) never collectively deploy more than the remaining pool.
+          if (isPaperAccount) paperDeployed += newPos.margin;
           // Reserve this entry's symbols so a later candidate in the SAME cycle can't be
           // sized onto a leg we just opened (Fix B — same-product collision).
           if (heldSymbols) {

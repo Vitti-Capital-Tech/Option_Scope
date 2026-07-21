@@ -481,6 +481,18 @@ If the pool is exhausted (`partMargin ≈ 0`), new paper entries self-skip that 
 
 The dashboard's **Paper Balance** KPI tile surfaces equity, allocated, buffer, and per-position margin (`KpiDashboard.jsx`); the engine also publishes these via the heartbeat.
 
+### 4. Daily full-deployment fill (4:30 AM IST, paper only)
+
+Normal sizing **reserves** budget for every empty combined slot (`partMargin = remainingBudget ÷ remainingSlots`). So when qualifying spreads are scarce, empty slots stay unfilled and that slice of the allocated pool sits **idle**. Once per day, at **4:30 AM IST**, the engine does a one-time **full-deployment fill** so the balance left at that time gets deployed into the trades scanning actually finds.
+
+- **Trigger**: an upward crossing of `04:30` IST (`FULL_DEPLOY_MIN = 270`) on an entry-eligible cycle, latched to fire **at most once per IST date** (`lastEntryIstMin`/`lastFullDeployKey`). Crossing-based, so an engine that starts *after* 4:30 doesn't back-fire that day. In-memory latch (a same-day restart may re-fire). Paper accounts only.
+- **Concentrate sizing**: instead of ÷ empty slots, the pass counts the spreads that would **actually open now** (`K` — mirrors the entry-loop guards: per-type derived cap, combined cap, buy/sell strike conflicts) and sizes `partMargin = remainingBudget ÷ K`. So if fewer spreads qualify than there are empty slots, the leftover is **concentrated** into the ones that open (fuller deployment), still within the Max Combined count.
+- **No forced fills**: only spreads that pass the **normal** entry filters open. If `K = 0` (scanning finds nothing openable), **nothing** is filled and the budget stays idle until a later cycle finds candidates. Existing open positions are never scaled/topped up.
+- **Running-pool clamp**: each paper entry is sized toward `min(partMargin, remainingPool − deployedThisCycle)` and `deployedThisCycle` accrues each position's margin, so the pass can never collectively deploy more than the remaining pool even if `K` slightly mis-estimates.
+
+> [!NOTE]
+> **Log line**: `🌅 PAPER 4:30 full-deploy: remaining $… ÷ K openable spread(s) = $…/position` (or `… no qualifying spreads found — nothing filled, $… stays idle`).
+
 ---
 
 ## Exit Priority Tree
@@ -788,6 +800,7 @@ Here's every safety guard in one table:
 | $195K short value cap | `paperTradingEngine.js` | Scales down lot sizes if short notional ≥ $195K. **Paper**: applied after scaling the spread to the per-position margin part |
 | DB count guard | `paperTradingEngine.js` | Database-level check: max `config.numberOfCalls`/`config.numberOfPuts` **full spreads** (`.gt('sell_qty', 0)`) |
 | Paper balance / allocation (paper) | `paperTradingEngine.js` | **Paper only (migration `027`)**: per-position margin = (equity × allocation%) ÷ active window's `max_combined_positions`; entries self-skip when the allocated pool is exhausted |
+| 4:30 AM IST full-deploy (paper) | `paperTradingEngine.js` | **Paper only**: once/day, concentrates the remaining pool across only the spreads scanning finds openable (no forced fills, cap respected); running-pool clamp prevents over-deployment. See [Paper Balance & Combined-Position Sizing §4](#paper-balance--combined-position-sizing-paper-only) |
 | DB buy strike uniqueness | `paperTradingEngine.js` | Database-level: no duplicate buy strikes |
 | DB sell strike uniqueness | `paperTradingEngine.js` | Database-level: no duplicate sell strikes among full spreads (`.gt('sell_qty', 0)`) |
 | Expiry buffer (5 min) | `paperTradingEngine.js` | Won't enter if less than 5 minutes to expiry |
