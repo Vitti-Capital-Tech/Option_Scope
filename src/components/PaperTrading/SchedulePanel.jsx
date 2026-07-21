@@ -198,70 +198,72 @@ export default function SchedulePanel({
         winIntervals.push({ start: 0, end: endShifted * 60 * 1000 });
       }
 
-      // Helper to compute max simultaneous active positions of a given type during this window
-      const getMaxSimultaneous = (type) => {
-        const events = [];
+      // Build entry/exit events for every full spread of this window, tagged by
+      // leg type. A single sweep then tracks the concurrent call and put counts
+      // together, so we capture the busiest *single instant* (combined peak) —
+      // not the sum of each type's independently-timed peak.
+      const events = [];
 
-        const addPositionInterval = (pos) => {
-          if (pos.underlying !== currentUnderlying) return;
-          if (pos.type !== type) return;
-          if ((pos.sellQty || 0) <= 0) return; // Only count full spreads
+      const addPositionInterval = (pos) => {
+        if (pos.underlying !== currentUnderlying) return;
+        if (pos.type !== 'call' && pos.type !== 'put') return;
+        if ((pos.sellQty || 0) <= 0) return; // Only count full spreads
 
-          const entryMs = new Date(pos.entryTime).getTime();
-          const exitMs = pos.exitTime ? new Date(pos.exitTime).getTime() : now;
+        const entryMs = new Date(pos.entryTime).getTime();
+        const exitMs = pos.exitTime ? new Date(pos.exitTime).getTime() : now;
 
-          const posStart = Math.max(entryMs, sessionStart);
-          const posEnd = Math.min(exitMs, sessionEnd);
+        const posStart = Math.max(entryMs, sessionStart);
+        const posEnd = Math.min(exitMs, sessionEnd);
 
-          if (posStart >= posEnd) return;
+        if (posStart >= posEnd) return;
 
-          const relStart = posStart - sessionStart;
-          const relEnd = posEnd - sessionStart;
+        const relStart = posStart - sessionStart;
+        const relEnd = posEnd - sessionStart;
 
-          // Intersect with each window interval
-          winIntervals.forEach(win => {
-            const intStart = Math.max(relStart, win.start);
-            const intEnd = Math.min(relEnd, win.end);
-            if (intStart < intEnd) {
-              events.push({ time: intStart, type: 1 });
-              events.push({ time: intEnd, type: -1 });
-            }
-          });
-        };
-
-        if (Array.isArray(positions)) {
-          positions.forEach(addPositionInterval);
-        }
-        if (Array.isArray(tradeHistory)) {
-          tradeHistory.forEach(addPositionInterval);
-        }
-
-        if (events.length === 0) return 0;
-
-        // Sort events: time ascending, exit (-1) before entry (+1)
-        events.sort((a, b) => {
-          if (a.time !== b.time) return a.time - b.time;
-          return a.type - b.type;
+        // Intersect with each window interval
+        winIntervals.forEach(win => {
+          const intStart = Math.max(relStart, win.start);
+          const intEnd = Math.min(relEnd, win.end);
+          if (intStart < intEnd) {
+            events.push({ time: intStart, dir: 1, kind: pos.type });
+            events.push({ time: intEnd, dir: -1, kind: pos.type });
+          }
         });
-
-        let current = 0;
-        let maxVal = 0;
-        events.forEach(ev => {
-          current += ev.type;
-          if (current > maxVal) maxVal = current;
-        });
-
-        return maxVal;
       };
 
-      const maxActiveCalls = getMaxSimultaneous('call');
-      const maxActivePuts = getMaxSimultaneous('put');
+      if (Array.isArray(positions)) {
+        positions.forEach(addPositionInterval);
+      }
+      if (Array.isArray(tradeHistory)) {
+        tradeHistory.forEach(addPositionInterval);
+      }
 
-      // Utilization is based on peak counts during the window
-      const callsCount = Math.min(s.numberOfCalls, maxActiveCalls);
-      const putsCount = Math.min(s.numberOfPuts, maxActivePuts);
-      const util = ((callsCount + putsCount) / cap) * 100;
+      if (events.length === 0) {
+        result[s.id] = 0;
+        return;
+      }
 
+      // Sort events: time ascending, exit (-1) before entry (+1) so a position
+      // closing exactly as another opens is not double-counted.
+      events.sort((a, b) => {
+        if (a.time !== b.time) return a.time - b.time;
+        return a.dir - b.dir;
+      });
+
+      // Sweep, tracking concurrent calls and puts. At each instant the combined
+      // count is each type clamped to its own cap, summed. The peak of that is
+      // the historical max utilisation — a fixed high-water mark for the window.
+      let curCalls = 0;
+      let curPuts = 0;
+      let maxCombined = 0;
+      events.forEach(ev => {
+        if (ev.kind === 'call') curCalls += ev.dir;
+        else curPuts += ev.dir;
+        const combined = Math.min(s.numberOfCalls, curCalls) + Math.min(s.numberOfPuts, curPuts);
+        if (combined > maxCombined) maxCombined = combined;
+      });
+
+      const util = (maxCombined / cap) * 100;
       result[s.id] = Math.round(util * 100) / 100;
     });
 
@@ -663,7 +665,7 @@ export default function SchedulePanel({
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                     background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: '5px',
                     padding: '0 10px', fontFamily: 'JetBrains Mono, monospace', boxSizing: 'border-box',
-                  }} title="Current live utilization of active full-spread positions (calls + puts) divided by the window's total cap. Long-only positions are excluded.">
+                  }} title="Historical peak utilization for this window: the busiest single instant's active full-spread positions (calls + puts, each clamped to its cap) divided by the window's total cap. A fixed high-water mark — long-only positions are excluded.">
                     {avgUtilMap[s.id] !== undefined ? `${avgUtilMap[s.id]}%` : '—'}
                   </div>
                 </div>
