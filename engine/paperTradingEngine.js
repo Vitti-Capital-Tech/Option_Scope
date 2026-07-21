@@ -1145,10 +1145,16 @@ async function startSingleAccountEngine(account) {
   async function protectOrphanExchangePositions(livePos, liveOrders) {
     const now = Date.now();
     // Every symbol the engine currently tracks (any leg of any tracked position).
+    // The SHORT is tracked only while it is actually open (`sellQty` > 0): once it exits,
+    // the buyback leaves `sellLeg.symbol` set for PnL/history but `sellQty` = 0 (see
+    // handleLiveRestingExit / externalShortExitToLongLadder), and the engine no longer
+    // manages that leg. If the same symbol is later re-opened on Delta (manual re-entry) it
+    // must be free to be seen as an orphan and adopted/protected — otherwise a stale exited
+    // short's symbol shadows the new leg and it sits unbracketed forever.
     const tracked = new Set();
     for (const p of positions) {
       if (p.buyLeg?.symbol) tracked.add(p.buyLeg.symbol);
-      if (p.sellLeg?.symbol) tracked.add(p.sellLeg.symbol);
+      if (p.sellQty > 0 && p.sellLeg?.symbol) tracked.add(p.sellLeg.symbol);
       if (p.hedgeLeg?.symbol) tracked.add(p.hedgeLeg.symbol);
     }
     const pidBySymbol = {};
