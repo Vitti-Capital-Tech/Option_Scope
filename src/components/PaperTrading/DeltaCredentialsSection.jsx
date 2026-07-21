@@ -253,6 +253,56 @@ export default function DeltaCredentialsSection({ register, watch, setValue, exi
           </span>
         </div>
       )}
+
+      {mode === 'paper' && (
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10,
+            padding: '12px',
+            borderRadius: 8,
+            border: '1px solid var(--border)',
+            background: 'var(--bg3)'
+          }}
+        >
+          <div style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--text-dim)' }}>
+            <strong style={{ color: '#3fb950' }}>Paper account.</strong> Positions are
+            sized against a simulated balance. Equity grows/shrinks with realized P&amp;L.
+          </div>
+
+          <div style={{ display: 'flex', gap: 12 }}>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <label style={labelStyle}>Initial Balance ($)</label>
+              <CustomInput
+                type="number"
+                step="100"
+                min="0"
+                {...register('initialBalance', { valueAsNumber: true })}
+                placeholder="3000"
+                style={fieldStyle}
+              />
+            </div>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <label style={labelStyle}>Balance Allocation (%)</label>
+              <CustomInput
+                type="number"
+                step="1"
+                min="1"
+                max="100"
+                {...register('balanceAllocationPct', { valueAsNumber: true })}
+                placeholder="90"
+                style={fieldStyle}
+              />
+            </div>
+          </div>
+          <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+            % of the (initial + realized) balance used for trading — the rest stays as a
+            buffer. The allocated pool is split equally across each schedule window's Max
+            Combined Positions; each position uses up to 1 part of margin.
+          </span>
+        </div>
+      )}
     </div>
   );
 }

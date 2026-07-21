@@ -45,6 +45,9 @@ const ACCOUNT_CONFIG_DEFAULTS = {
   longExitSlices: 10,
   variableExitSlices: false,
   balanceAllocationPct: 90,
+  initialBalance: 3000,
+  maxCombinedPositions: 4,
+  combinedSplitPct: 70,
   entryBuyOffset: 10,
   entrySellOffset: 3
 };
@@ -96,6 +99,8 @@ const makeFirstWindow = (cfg = {}) => ({
   endTime: '17:29',
   numberOfCalls: cfg.numberOfCalls ?? 3,
   numberOfPuts: cfg.numberOfPuts ?? 3,
+  maxCombinedPositions: cfg.maxCombinedPositions ?? 4,
+  combinedSplitPct: cfg.combinedSplitPct ?? 70,
   minLongDist: cfg.minLongDist ?? 500,
   minStrikeDiff: cfg.minStrikeDiff ?? 800,
   atmRatioScaling: cfg.atmRatioScaling ?? true,
@@ -206,6 +211,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       longExitSlices: 10,
       variableExitSlices: false,
       balanceAllocationPct: 90,
+      initialBalance: 3000,
+      maxCombinedPositions: 4,
+      combinedSplitPct: 70,
       entryBuyOffset: 10,
       entrySellOffset: 3
     }
@@ -728,6 +736,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       longExitSlices: data.longExitSlices,
       variableExitSlices: data.variableExitSlices,
       balanceAllocationPct: data.balanceAllocationPct,
+      initialBalance: data.initialBalance,
+      maxCombinedPositions: data.maxCombinedPositions,
+      combinedSplitPct: data.combinedSplitPct,
       entryBuyOffset: data.entryBuyOffset,
       entrySellOffset: data.entrySellOffset
     });
@@ -778,6 +789,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           long_exit_slices: data.longExitSlices ?? 10,
           variable_exit_slices: data.variableExitSlices ?? false,
           balance_allocation_pct: data.balanceAllocationPct ?? 90,
+          initial_balance: data.initialBalance ?? 3000,
+          max_combined_positions: data.maxCombinedPositions ?? 4,
+          combined_split_pct: data.combinedSplitPct ?? 70,
           entry_buy_offset: data.entryBuyOffset ?? 10,
           entry_sell_offset: data.entrySellOffset ?? 3,
           // Paper accounts are the experimental testbed → v2; live starts on stable v1.
@@ -840,7 +854,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       exitPoints: config.exitPoints ?? 0,
       shortExitPrice: config.shortExitPrice ?? 1.1,
       longExitSlices: config.longExitSlices ?? 10,
-      variableExitSlices: config.variableExitSlices ?? false
+      variableExitSlices: config.variableExitSlices ?? false,
+      balanceAllocationPct: config.balanceAllocationPct ?? 90,
+      initialBalance: config.initialBalance ?? 3000,
+      maxCombinedPositions: config.maxCombinedPositions ?? 4,
+      combinedSplitPct: config.combinedSplitPct ?? 70
     });
     setIsCreateModalOpen(true);
   };
@@ -855,6 +873,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       apiSecret: '',
       credVerified: false,
       balanceAllocationPct: activeAccount.default_config?.balanceAllocationPct ?? 90,
+      initialBalance: activeAccount.default_config?.initialBalance ?? 3000,
       entryBuyOffset: activeAccount.default_config?.entryBuyOffset ?? 10,
       entrySellOffset: activeAccount.default_config?.entrySellOffset ?? 3
     });
@@ -887,11 +906,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       const allocPct = Number.isFinite(data.balanceAllocationPct) ? data.balanceAllocationPct : 90;
       const buyOff = Number.isFinite(data.entryBuyOffset) ? data.entryBuyOffset : 10;
       const sellOff = Number.isFinite(data.entrySellOffset) ? data.entrySellOffset : 3;
+      // Paper starting equity (initial + realized). Ignored by live accounts.
+      const initBal = Number.isFinite(data.initialBalance) ? data.initialBalance : 3000;
       const activeAccount = accounts.find(a => a.id === activeAccountId);
       if (activeAccount?.default_config) {
         updatePayload.default_config = {
           ...activeAccount.default_config,
           balanceAllocationPct: allocPct,
+          initialBalance: initBal,
           entryBuyOffset: buyOff,
           entrySellOffset: sellOff,
         };
@@ -913,6 +935,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       await supabase.from('paper_trading_config')
         .update({
           balance_allocation_pct: allocPct,
+          initial_balance: initBal,
           entry_buy_offset: buyOff,
           entry_sell_offset: sellOff,
           updated_at: new Date().toISOString(),
@@ -1281,6 +1304,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           days_to_expiry: 0,
           number_of_calls: 3,
           number_of_puts: 3,
+          initial_balance: 3000,
+          max_combined_positions: 4,
+          combined_split_pct: 70,
           exit_type: 'ATM',
           exit_points: 0,
           variable_exit_slices: false,
@@ -1321,6 +1347,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           shortExitPrice: data.short_exit_price ?? 1.1,
           longExitSlices: data.long_exit_slices ?? 10,
           variableExitSlices: data.variable_exit_slices ?? false,
+          balanceAllocationPct: data.balance_allocation_pct ?? 90,
+          // Paper funded-account model (migration 027). Live accounts ignore these.
+          initialBalance: data.initial_balance ?? 3000,
+          maxCombinedPositions: data.max_combined_positions ?? 4,
+          combinedSplitPct: data.combined_split_pct ?? 70,
           // Which strategy logic this account runs (1 = stable/live, 2+ = experimental
           // paper). Gate v2-only UI controls on this so they don't show on live accounts,
           // e.g. {config.strategyVersion >= 2 && <NewFilterField />}. See migration 018.
@@ -1382,6 +1413,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           endTime: s.end_time ? s.end_time.substring(0, 5) : '17:29',
           numberOfCalls: s.number_of_calls ?? 3,
           numberOfPuts: s.number_of_puts ?? 3,
+          maxCombinedPositions: s.max_combined_positions ?? 4,
+          combinedSplitPct: s.combined_split_pct ?? 70,
           minLongDist: s.min_long_dist ?? 500,
           minStrikeDiff: s.min_strike_diff ?? 800,
           atmRatioScaling: s.atm_ratio_scaling ?? true,
@@ -1412,6 +1445,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           endTime: s.endTime,
           numberOfCalls: s.numberOfCalls,
           numberOfPuts: s.numberOfPuts,
+          maxCombinedPositions: s.maxCombinedPositions,
+          combinedSplitPct: s.combinedSplitPct,
           minLongDist: s.minLongDist,
           minStrikeDiff: s.minStrikeDiff,
           atmRatioScaling: s.atmRatioScaling,
@@ -1449,6 +1484,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         end_time: s.endTime,
         number_of_calls: s.numberOfCalls ?? 3,
         number_of_puts: s.numberOfPuts ?? 3,
+        max_combined_positions: s.maxCombinedPositions ?? 4,
+        combined_split_pct: s.combinedSplitPct ?? 70,
         min_long_dist: s.minLongDist ?? 500,
         min_strike_diff: s.minStrikeDiff ?? 800,
         atm_ratio_scaling: s.atmRatioScaling ?? true,
@@ -1491,6 +1528,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         endTime: s.endTime,
         numberOfCalls: s.numberOfCalls,
         numberOfPuts: s.numberOfPuts,
+        maxCombinedPositions: s.maxCombinedPositions,
+        combinedSplitPct: s.combinedSplitPct,
         minLongDist: s.minLongDist,
         minStrikeDiff: s.minStrikeDiff,
         atmRatioScaling: s.atmRatioScaling,
@@ -2811,12 +2850,22 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
               isLive={activeAccount?.mode === 'live'}
               walletBalance={walletBalance}
               allocationPct={engineAllocationPct ?? activeAccount?.default_config?.balanceAllocationPct ?? 90}
+              isPaper={activeAccount?.mode !== 'live'}
+              paperEquity={activeAccount?.mode !== 'live'
+                ? (config.initialBalance ?? activeAccount?.default_config?.initialBalance ?? 3000) + (totalRealizedPnl || 0)
+                : null}
               maxPositions={(() => {
-                // Per-position margin (allocated ÷ maxPositions) sizes for the
-                // BUSIEST window — the GREATEST (calls + puts) across ALL active
-                // schedule windows — matching the engine's sizing, so it's not tied
-                // to whichever window happens to be active now.
                 const active = (schedules || []).filter(s => s.isActive);
+                if (activeAccount?.mode !== 'live') {
+                  // PAPER: per-position margin = allocated ÷ the ACTIVE window's Max
+                  // Combined Positions (matches the engine's active-window divisor).
+                  const win = findActiveSchedule(active, now);
+                  if (win) return Math.max(1, Math.floor(win.maxCombinedPositions ?? 4));
+                  if (active.length > 0) return Math.max(1, ...active.map(s => Math.floor(s.maxCombinedPositions || 4)));
+                  return Math.max(1, Math.floor(config.maxCombinedPositions ?? activeAccount?.default_config?.maxCombinedPositions ?? 4));
+                }
+                // LIVE: per-position margin sizes for the BUSIEST window — the GREATEST
+                // (calls + puts) across ALL active windows — matching the engine's sizing.
                 if (active.length > 0) {
                   return Math.max(1, ...active.map(s => (s.numberOfCalls || 0) + (s.numberOfPuts || 0)));
                 }

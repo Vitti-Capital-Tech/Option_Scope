@@ -163,6 +163,10 @@ async function startSingleAccountEngine(account) {
     shortExitPrice: 1.1,
     longExitSlices: 10,
     balanceAllocationPct: 90,
+    // Paper funded-account model (migration 027) — paper only.
+    initialBalance: 3000,
+    maxCombinedPositions: 4,
+    combinedSplitPct: 70,
     entryBuyOffset: 10,
     entrySellOffset: 3,
     // Which strategy logic to run. 1 = stable (live accounts); an experimental
@@ -293,6 +297,9 @@ async function startSingleAccountEngine(account) {
           long_exit_slices: 10,
           variable_exit_slices: false,
           balance_allocation_pct: 90,
+          initial_balance: 3000,
+          max_combined_positions: 4,
+          combined_split_pct: 70,
           entry_buy_offset: 10,
           entry_sell_offset: 3,
           // Paper = experimental testbed (v2), live = stable (v1).
@@ -336,6 +343,11 @@ async function startSingleAccountEngine(account) {
           longExitSlices: data.long_exit_slices ?? 10,
           variableExitSlices: data.variable_exit_slices ?? false,
           balanceAllocationPct: data.balance_allocation_pct ?? 90,
+          // Paper funded-account model (migration 027). Live accounts ignore these
+          // (they size on the real wallet balance + numberOfCalls/numberOfPuts).
+          initialBalance: data.initial_balance ?? 3000,
+          maxCombinedPositions: data.max_combined_positions ?? 4,
+          combinedSplitPct: data.combined_split_pct ?? 70,
           entryBuyOffset: data.entry_buy_offset ?? 10,
           entrySellOffset: data.entry_sell_offset ?? 3,
           strategyVersion: data.strategy_version ?? 1,
@@ -368,6 +380,10 @@ async function startSingleAccountEngine(account) {
           endTime: s.end_time,      // 'HH:MM' IST
           numberOfCalls: s.number_of_calls ?? 3,
           numberOfPuts: s.number_of_puts ?? 3,
+          // Paper combined-position sizing (migration 027). Fall back to the
+          // account-level config value for windows that predate it.
+          maxCombinedPositions: s.max_combined_positions ?? config.maxCombinedPositions ?? 4,
+          combinedSplitPct: s.combined_split_pct ?? config.combinedSplitPct ?? 70,
           minLongDist: s.min_long_dist ?? 500,
           minStrikeDiff: s.min_strike_diff ?? 800,
           atmRatioScaling: s.atm_ratio_scaling ?? true,
@@ -638,6 +654,47 @@ async function startSingleAccountEngine(account) {
       return Math.max(1, ...activeWindows.map(s => (s.numberOfCalls || 0) + (s.numberOfPuts || 0)));
     }
     return Math.max(1, (config.numberOfCalls || 0) + (config.numberOfPuts || 0));
+  }
+
+  // ── Paper funded-account model (migration 027) ──────────────────────────
+  // Per-window derived type cap for PAPER: ceil(split% × maxCombined), applied to
+  // BOTH calls and puts, clamped to [0, maxCombined]. The combined total is
+  // separately hard-capped at maxCombined by the portfolio-cap guard, so a 70/4
+  // window yields 3 calls / 3 puts but never more than 4 open together. Live
+  // accounts never call this — they use numberOfCalls/numberOfPuts directly.
+  function paperTypeCap(effCfg) {
+    const combined = Math.max(0, Math.floor(effCfg?.maxCombinedPositions ?? config.maxCombinedPositions ?? 4));
+    const pct = effCfg?.combinedSplitPct ?? config.combinedSplitPct ?? 70;
+    return Math.min(combined, Math.ceil((pct / 100) * combined));
+  }
+
+  // Dynamic PAPER equity = initial balance + cumulative realized P&L across every
+  // closed trade for this account. Seeded once from trade_history, then refreshed on
+  // a TTL so the high-frequency eval loop never re-queries each cycle. Live accounts
+  // read the real wallet balance instead (live.walletBalance), so this is paper-only.
+  let realizedPnlToDate = 0;
+  let realizedPnlFetchedAt = 0;
+  let realizedPnlSeeded = false;
+  const REALIZED_PNL_TTL_MS = 45000;
+
+  async function refreshRealizedPnl(force = false) {
+    if (!force && realizedPnlSeeded && (Date.now() - realizedPnlFetchedAt) < REALIZED_PNL_TTL_MS) return;
+    try {
+      const { data, error } = await supabase
+        .from('trade_history')
+        .select('realized_net_pnl')
+        .eq('account_id', accountState.id);
+      if (error) { logError(`[${accountState.name}] realized P&L fetch error`, error); return; }
+      realizedPnlToDate = (data || []).reduce((s, r) => s + (Number(r.realized_net_pnl) || 0), 0);
+      realizedPnlFetchedAt = Date.now();
+      realizedPnlSeeded = true;
+    } catch (e) { logError(`[${accountState.name}] realized P&L fetch exception`, e); }
+  }
+
+  // Live equity for paper sizing. Returns initialBalance + realized P&L (never negative
+  // enough to matter — the allocation math clamps remaining budget at 0 downstream).
+  function getPaperEquity() {
+    return (config.initialBalance ?? 3000) + realizedPnlToDate;
   }
 
   // Margin of a LONG-ONLY position (short already exited). It MUST use the same basis as
@@ -2198,6 +2255,10 @@ async function startSingleAccountEngine(account) {
           ...config,
           numberOfCalls: activeSchedule.numberOfCalls,
           numberOfPuts: activeSchedule.numberOfPuts,
+          // Paper combined-position sizing (migration 027) — take the ACTIVE window's
+          // values, falling back to the account-level config for rows that predate it.
+          maxCombinedPositions: activeSchedule.maxCombinedPositions ?? config.maxCombinedPositions,
+          combinedSplitPct: activeSchedule.combinedSplitPct ?? config.combinedSplitPct,
           minLongDist: activeSchedule.minLongDist,
           minStrikeDiff: activeSchedule.minStrikeDiff,
           atmRatioScaling: activeSchedule.atmRatioScaling,
@@ -3359,6 +3420,29 @@ async function startSingleAccountEngine(account) {
         }
       }
 
+      // PAPER sizing (migration 027) — mirror of the live block, but the "balance" is
+      // the account's dynamic equity (initial balance + realized P&L) instead of a
+      // fetched wallet balance, and the divisor is the ACTIVE window's own
+      // maxCombinedPositions (not the peak across windows). Per-position margin =
+      // remaining allocated pool ÷ remaining free combined slots, so each new time
+      // window re-divides whatever balance is left by its own combined cap. Paper
+      // accounts only (mode !== 'live'); armed AND unarmed live accounts are untouched.
+      const isPaperAccount = accountState.mode !== 'live';
+      if (!onlyExits && !paused && dayAllowsEntry && isPaperAccount) {
+        await refreshRealizedPnl();
+        const equity = getPaperEquity();
+        const allocPct = config.balanceAllocationPct ?? 90;
+        const budget = Math.max(0, equity * (allocPct / 100));
+        const maxPos = Math.max(1, Math.floor(effectiveConfig.maxCombinedPositions ?? config.maxCombinedPositions ?? 4));
+        const openHere = remaining.filter(p => p.underlying === underlying);
+        const usedMargin = openHere.reduce((s, p) => s + (p.margin || 0), 0);
+        const occupiedSlots = openHere.filter(p => p.sellQty > 0).length; // full spreads occupy combined slots
+        const remainingBudget = Math.max(0, budget - usedMargin);
+        const remainingSlots = Math.max(1, maxPos - occupiedSlots);
+        partMargin = remainingBudget / remainingSlots;
+        log(`[${accountState.name}] 💰 PAPER sizing: equity $${equity.toFixed(2)} × ${allocPct}% = $${budget.toFixed(2)} budget | used $${usedMargin.toFixed(2)} | remaining $${remainingBudget.toFixed(2)} ÷ ${remainingSlots} free slot(s) (window combined cap ${maxPos}) = $${partMargin.toFixed(2)}/position`);
+      }
+
       if (!onlyExits && !paused && dayAllowsEntry) {
         // Fix B — pre-entry symbol guard (live armed). Delta treats each option contract as
         // ONE product, so if a position already exists on a candidate leg's symbol (e.g.
@@ -3387,6 +3471,12 @@ async function startSingleAccountEngine(account) {
         for (const spread of uniqueTopSpreads) {
           // Live accounts need a valid per-position margin part to size safely.
           if (liveArmed && partMargin == null) continue;
+          // Paper accounts self-skip when the allocated pool is exhausted (no free
+          // margin left this cycle) — mirrors the live "no budget" self-skip.
+          if (isPaperAccount && (partMargin == null || partMargin <= 0.01)) {
+            logWarn(`[${accountState.name}] Entry candidate ${spread.buyLeg.type.toUpperCase()} skipped: paper allocated balance exhausted (no free margin this cycle).`);
+            continue;
+          }
           const bStrike = Number(spread.buyLeg.strike);
           const sStrike = Number(spread.sellLeg.strike);
           const spreadType = spread.buyLeg.type;
@@ -3450,10 +3540,27 @@ async function startSingleAccountEngine(account) {
           // Long-only held positions (sellQty === 0) free up a slot for new entries.
           let count = remaining.filter(p => p.underlying === underlying && p.type === spreadType && p.sellQty > 0).length +
             newEntries.filter(p => p.underlying === underlying && p.type === spreadType).length;
-          const typeCap = spreadType === 'call' ? effectiveConfig.numberOfCalls : effectiveConfig.numberOfPuts;
+          // PAPER: per-type cap is derived from the window's combined + split% (same value
+          // for calls and puts); LIVE keeps its explicit numberOfCalls/numberOfPuts.
+          const typeCap = isPaperAccount
+            ? paperTypeCap(effectiveConfig)
+            : (spreadType === 'call' ? effectiveConfig.numberOfCalls : effectiveConfig.numberOfPuts);
           if (count >= typeCap) {
             logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Portfolio cap of ${typeCap} reached for type ${spreadType}`);
             continue;
+          }
+
+          // PAPER combined-total cap — total open full spreads (calls + puts) for this
+          // underlying must never exceed the active window's maxCombinedPositions, even
+          // though each per-type cap (ceil(split% × combined)) individually allows more.
+          if (isPaperAccount) {
+            const combinedCap = Math.max(1, Math.floor(effectiveConfig.maxCombinedPositions ?? config.maxCombinedPositions ?? 4));
+            const combinedCount = remaining.filter(p => p.underlying === underlying && p.sellQty > 0).length +
+              newEntries.filter(p => p.underlying === underlying).length;
+            if (combinedCount >= combinedCap) {
+              logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: combined position cap of ${combinedCap} reached (${combinedCount} open).`);
+              continue;
+            }
           }
 
           // Diversification guard removed
@@ -3544,8 +3651,28 @@ async function startSingleAccountEngine(account) {
             adjustedSellQty = shortC;
             liveMargin = calcMargin(entryBuyPrice, longCV * longC, spotPrice, adjustedSellQty, shortCV);
             log(`[${accountState.name}] 💰 LIVE size ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: unit margin $${baseMargin.toFixed(2)} | part $${partMargin.toFixed(2)} → scale ${scale.toFixed(2)}× | long ${longC} short ${shortC} (base 1:${ratioToUse}) | est margin $${liveMargin.toFixed(2)} | cv ${longCV}/${shortCV}`);
+          } else if (isPaperAccount && partMargin != null) {
+            // PAPER (migration 027): scale the base 1:ratio unit so its margin fills the
+            // per-position part (allocated pool ÷ the active window's combined cap), then
+            // clamp by the $195k / 200x short-notional cap. Paper tolerates fractional lots.
+            const baseMargin = calcMargin(entryBuyPrice, originalLotSize, spotPrice, ratioToUse, sellLotSize);
+            scale = baseMargin > 0 ? (partMargin / baseMargin) : 1;
+            if (!(scale > 0)) scale = 1;
+            adjustedLotSize = Number((originalLotSize * scale).toFixed(4));
+            adjustedSellQty = Number((ratioToUse * scale).toFixed(4));
+            // Short-notional cap: rescale BOTH legs down together so the 1:ratio is
+            // preserved and the short notional lands at the cap.
+            let shortValue = spotPrice * adjustedSellQty * sellLotSize;
+            if (shortValue >= 195000) {
+              const capScale = 195000 / shortValue;
+              adjustedLotSize = Number((adjustedLotSize * capScale).toFixed(4));
+              adjustedSellQty = Number((adjustedSellQty * capScale).toFixed(4));
+              shortValue = 195000;
+            }
+            const estMargin = calcMargin(entryBuyPrice, adjustedLotSize, spotPrice, adjustedSellQty, sellLotSize);
+            log(`[${accountState.name}] 💰 PAPER size ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: unit margin $${baseMargin.toFixed(2)} | part $${partMargin.toFixed(2)} → scale ${scale.toFixed(2)}× | lot ${adjustedLotSize} short ${adjustedSellQty} (base 1:${ratioToUse}) | est margin $${estMargin.toFixed(2)}`);
           } else {
-            // PAPER (unchanged): $195,000 / 200x notional cap.
+            // LIVE-but-unarmed (no balance sizing): unchanged $195,000 / 200x notional cap.
             let shortValue = spotPrice * ratioToUse * sellLotSize;
             if (shortValue >= 195000) {
               scale = 195000 / shortValue;
@@ -4264,6 +4391,8 @@ async function startSingleAccountEngine(account) {
   } catch (e) { /* tables may not exist on older DBs — non-fatal */ }
   await fetchSchedules();
   log(`[${accountState.name}] Schedules loaded: ${schedules.length} window(s)`);
+  // Seed paper equity (initial balance + cumulative realized P&L) once at startup.
+  await refreshRealizedPnl(true);
 
   // 2. Load products + expiry
   await refreshProducts();
@@ -4400,7 +4529,19 @@ async function startSingleAccountEngine(account) {
         // manual / external), so the books + KPI converge with Delta within ~60s.
         await reconcileOrphans();
       } else {
-        heartbeat.update({ wallet_balance: null, max_positions: null, allocation_pct: null });
+        // PAPER (migration 027): publish the dynamic equity as the "wallet" balance,
+        // the allocation %, and the PEAK combined cap across active windows so the
+        // dashboard's per-position figure lines up with the engine's sizing.
+        await refreshRealizedPnl();
+        const activeWindows = schedules.filter(s => s.isActive);
+        const maxCombined = activeWindows.length > 0
+          ? Math.max(1, ...activeWindows.map(s => Math.floor(s.maxCombinedPositions || 0)))
+          : Math.max(1, Math.floor(config.maxCombinedPositions || 4));
+        heartbeat.update({
+          wallet_balance: getPaperEquity(),
+          max_positions: maxCombined,
+          allocation_pct: config.balanceAllocationPct ?? 90,
+        });
       }
     } catch (e) { /* non-fatal */ }
   }, 60000);

@@ -14,17 +14,18 @@ This document explains **every** logic and condition in the Paper Trading engine
 6. [How Spreads Are Found (Scanning)](#how-spreads-are-found)
 7. [Entry Filters (What Makes a Good Spread)](#entry-filters)
 8. [How Entries Are Placed](#how-entries-are-placed)
-9. [Exit Priority Tree](#exit-priority-tree)
-10. [Partial Exit / Scaling Logic](#partial-exit--scaling-logic)
-11. [Short-Leg-Only Exit ($1.1)](#short-leg-only-exit)
-12. [Long-Only Laddered Exit](#long-only-laddered-exit)
-13. [Manual Exit (Liquidation)](#manual-exit-liquidation)
-14. [Duplicate Exit Prevention (Idempotent Writes)](#duplicate-exit-prevention-idempotent-writes)
-15. [Safety Guards Summary](#safety-guards-summary)
-16. [Diagnostic Logging (0 Candidates)](#diagnostic-logging-0-candidates)
-17. [Config Synchronization](#config-synchronization)
-18. [Time-Based Filter Schedules](#time-based-filter-schedules)
-19. [Frontend Dashboard Architecture](#frontend-dashboard-architecture)
+9. [Paper Balance & Combined-Position Sizing (Paper Only)](#paper-balance--combined-position-sizing-paper-only)
+10. [Exit Priority Tree](#exit-priority-tree)
+11. [Partial Exit / Scaling Logic](#partial-exit--scaling-logic)
+12. [Short-Leg-Only Exit ($1.1)](#short-leg-only-exit)
+13. [Long-Only Laddered Exit](#long-only-laddered-exit)
+14. [Manual Exit (Liquidation)](#manual-exit-liquidation)
+15. [Duplicate Exit Prevention (Idempotent Writes)](#duplicate-exit-prevention-idempotent-writes)
+16. [Safety Guards Summary](#safety-guards-summary)
+17. [Diagnostic Logging (0 Candidates)](#diagnostic-logging-0-candidates)
+18. [Config Synchronization](#config-synchronization)
+19. [Time-Based Filter Schedules](#time-based-filter-schedules)
+20. [Frontend Dashboard Architecture](#frontend-dashboard-architecture)
 
 ---
 
@@ -350,6 +351,9 @@ If there are already `config.numberOfCalls` (calls) / `config.numberOfPuts` (put
 ```
 The cap counts only **full spreads** (`sellQty > 0`). Long-only held positions do **not** count, so each short-leg exit frees a slot for a new closer-to-ATM spread. The total rows in the Active Positions table can therefore exceed the cap (full spreads + held longs); the cap limits only the full spreads. The same `sellQty > 0` rule is enforced again at the DB level (`.gt('sell_qty', 0)`) before insert.
 
+> [!NOTE]
+> **Paper accounts (migration `027`)** don't use `numberOfCalls`/`numberOfPuts` here. The per-type cap is **derived** as `ceil(combined_split_pct/100 × max_combined_positions)` (`paperTypeCap()`), and a **second guard** blocks any entry once total open full spreads (calls + puts) reach the active window's `max_combined_positions`. See [Paper Balance & Combined-Position Sizing](#paper-balance--combined-position-sizing-paper-only). Live accounts are unchanged.
+
 ### Guard 6: ATM Ratio Scaling (Optional)
 If `atmRatioScaling` is enabled in config:
 ```
@@ -369,6 +373,9 @@ If shortValue ≥ $195,000 → scale down both lot size and sell qty proportiona
 ```
 Ensures no single position has more than $195K notional exposure on the short side.
 
+> [!NOTE]
+> **Paper accounts (migration `027`)** first **scale the spread up/down to fill the per-position margin** (`partMargin` = allocated pool ÷ active window's Max Combined), and this $195K cap then applies as the upper bound on the result. See [Paper Balance & Combined-Position Sizing](#paper-balance--combined-position-sizing-paper-only).
+
 
 
 ### Guard 8: DB-Level Count Guard
@@ -376,7 +383,7 @@ Ensures no single position has more than $195K notional exposure on the short si
 Query: SELECT count(*) FROM active_positions WHERE type = X AND account_id = Y
 If count ≥ `config.numberOfCalls` (for calls) or `config.numberOfPuts` (for puts) → BLOCK
 ```
-Double-check against the **database** (not just local memory) to prevent race conditions.
+Double-check against the **database** (not just local memory) to prevent race conditions. On **paper accounts** the caps are the derived per-type + combined-total values from migration `027` (see Guard 5).
 
 ### Guard 9: DB-Level Buy Strike Uniqueness
 ```
@@ -399,6 +406,80 @@ If exists → BLOCK
 - **Sell price** = the live **Bid** (you're selling, so you receive the bid price)
 
 This is **execution-realistic** — no cheating with mid-prices.
+
+---
+
+## Paper Balance & Combined-Position Sizing (Paper Only)
+
+**File**: [paperTradingEngine.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js) · **Migration**: `027_paper_balance_combined.sql` · **Scope**: **paper accounts only** (gated on `accountState.mode !== 'live'`). Live accounts are unchanged — they keep their wallet-balance sizing and `numberOfCalls`/`numberOfPuts` caps.
+
+Before this, paper positions were sized to a fixed "1 unit" (the base ratio) capped only by the [$195K short-notional ceiling](#guard-7-195k-short-value-cap). Paper now behaves like a **real funded account**: it has a balance, allocates a fraction of it as the tradeable margin pool, and divides that pool equally across a per-window cap on concurrent positions.
+
+### 1. Balance & allocation
+
+| Field | Column | Default | Meaning |
+|---|---|---|---|
+| **Initial Balance** | `paper_trading_config.initial_balance` | `3000` | The account's starting equity, in $. |
+| **Balance Allocation %** | `paper_trading_config.balance_allocation_pct` (reused from migration `002`) | `90` | Fraction of equity that may be used as margin. The rest is an untouched **buffer**. |
+
+**Dynamic equity** — the balance is **not** fixed. It grows/shrinks with realized P&L:
+
+```
+equity          = initial_balance + Σ realized_net_pnl (all closed trades, this account)
+allocated pool  = equity × (balance_allocation_pct / 100)
+buffer          = equity − allocated pool          # never used for margin
+```
+
+The engine seeds cumulative realized P&L once at startup (a `SUM(realized_net_pnl)` over `trade_history`) and refreshes it on a short TTL (~45 s), so the 1-second eval loop never re-queries every cycle. (`getPaperEquity()` / `refreshRealizedPnl()`.)
+
+### 2. Per-window combined cap → derived per-type caps
+
+Two new per-window fields ([scheduled per window](#time-based-filter-schedules), account-level fallback in `paper_trading_config`):
+
+| Field | Column | Default | Meaning |
+|---|---|---|---|
+| **Max Combined Positions** | `max_combined_positions` | `4` | Hard cap on TOTAL open full spreads (calls **+** puts) for the underlying. |
+| **Split %** | `combined_split_pct` | `70` | Derives the per-type cap. |
+
+```
+perTypeCap = ceil( (combined_split_pct / 100) × max_combined_positions )   # same for calls AND puts
+```
+
+Example: Max Combined `4`, Split `70%` → `ceil(0.70 × 4) = 3`. So **max 3 calls and max 3 puts**, but the **combined total never exceeds 4** (e.g. 3C+1P, 2C+2P, …). This replaces `numberOfCalls`/`numberOfPuts` as the entry cap on paper accounts (`paperTypeCap()` + a separate combined-total guard).
+
+### 3. Per-position margin & sizing
+
+The divisor is the **active window's own** Max Combined (not the peak across windows), computed against the **remaining** pool so each new time window re-divides whatever balance is left:
+
+```
+maxPos          = activeWindow.max_combined_positions
+usedMargin      = Σ margin of open positions (this underlying)
+occupiedSlots   = open full spreads (sellQty > 0)
+remainingBudget = max(0, allocated pool − usedMargin)
+remainingSlots  = max(1, maxPos − occupiedSlots)
+partMargin      = remainingBudget / remainingSlots        # target margin for the next position
+```
+
+Each candidate spread is then **scaled** so its margin fills `partMargin` (still clamped by the $195K short-notional cap), instead of trading a fixed 1 unit:
+
+```
+baseMargin      = calcMargin(entryBuyPrice, originalLotSize, spot, ratioToUse, sellLotSize)
+scale           = partMargin / baseMargin
+adjustedLotSize = originalLotSize × scale
+adjustedSellQty = ratioToUse × scale
+```
+
+If the pool is exhausted (`partMargin ≈ 0`), new paper entries self-skip that cycle (mirrors the live "no budget" skip). Paper stays on its notional/`lotSize` margin basis (`contractValue` remains `null`) — only the sizing *amount* changed, not the P&L basis.
+
+**Worked example** — equity $3000, allocation 90%, window Max Combined 4:
+- Allocated pool = $2700; buffer = $300.
+- Per-position margin = $2700 ÷ 4 = **$675**.
+- Caps: 3 calls / 3 puts, ≤ 4 total. Opening 4 positions at ~$675 consumes the pool; the next cycle sees `remainingBudget ≈ 0` and skips until a slot frees or equity grows.
+
+> [!NOTE]
+> **Log line**: watch for `💰 PAPER sizing: equity $… × …% = $… budget | used $… | remaining $… ÷ N free slot(s) (window combined cap M) = $…/position`.
+
+The dashboard's **Paper Balance** KPI tile surfaces equity, allocated, buffer, and per-position margin (`KpiDashboard.jsx`); the engine also publishes these via the heartbeat.
 
 ---
 
@@ -702,9 +783,11 @@ Here's every safety guard in one table:
 | Max net premium debit | `utils.js` | Limits how much net debit is acceptable |
 | ATM PnL ≥ $50 | `paperTradingEngine.js` | Only enters spreads that would profit $50+ at ATM |
 | Days to Expiry | `paperTradingEngine.js` | Rejects candidates whose expiry is fewer than `daysToExpiry` days away |
-| Portfolio cap | `paperTradingEngine.js` | Max **full-spread** calls (`config.numberOfCalls`) and puts (`config.numberOfPuts`) per account — held long-only positions (`sellQty = 0`) excluded |
-| $195K short value cap | `paperTradingEngine.js` | Scales down lot sizes if short notional ≥ $195K |
+| Portfolio cap | `paperTradingEngine.js` | Max **full-spread** calls (`config.numberOfCalls`) and puts (`config.numberOfPuts`) per account — held long-only positions (`sellQty = 0`) excluded. **Paper (migration `027`)**: derived per-type cap `ceil(split% × combined)` + a combined-total cap of `max_combined_positions` |
+| Combined-position cap (paper) | `paperTradingEngine.js` | **Paper only**: total open full spreads (calls + puts) may not exceed the active window's `max_combined_positions` |
+| $195K short value cap | `paperTradingEngine.js` | Scales down lot sizes if short notional ≥ $195K. **Paper**: applied after scaling the spread to the per-position margin part |
 | DB count guard | `paperTradingEngine.js` | Database-level check: max `config.numberOfCalls`/`config.numberOfPuts` **full spreads** (`.gt('sell_qty', 0)`) |
+| Paper balance / allocation (paper) | `paperTradingEngine.js` | **Paper only (migration `027`)**: per-position margin = (equity × allocation%) ÷ active window's `max_combined_positions`; entries self-skip when the allocated pool is exhausted |
 | DB buy strike uniqueness | `paperTradingEngine.js` | Database-level: no duplicate buy strikes |
 | DB sell strike uniqueness | `paperTradingEngine.js` | Database-level: no duplicate sell strikes among full spreads (`.gt('sell_qty', 0)`) |
 | Expiry buffer (5 min) | `paperTradingEngine.js` | Won't enter if less than 5 minutes to expiry |
@@ -826,6 +909,8 @@ The following parameters are scheduled per window:
 11. **Exit Points** (`exitPoints`) — offset for ITM/OTM exit (migration `012`)
 12. **Days to Expiry** (`daysToExpiry`) — **v2 (experimental paper) accounts only** (migration `019`). The window's value guards its own entries; the account-global traded expiry **follows the active window** as **(current date + that window's DTE)**, re-selected in ~realtime as windows change (smallest DTE wins on overlap). On v1 (live) this stays an account-level Control Panel field and is **not** shown per window. See [Strategy Versioning](#strategy-versioning-paper-vs-live).
 13. **Hedge Leg** (`hedgeStrikeType` + `hedgeCallPrice`/`hedgeCallPct`/`hedgePutPrice`/`hedgePutPct`) — **v2 (experimental paper) accounts only** (config migration `022`, leg column `023`). Adds a per-spread 3rd long-only leg (long/short/long triplet). See [Hedge Leg](#hedge-leg--per-spread-3rd-long-long--short--long-triplet).
+14. **Max Combined Positions** (`maxCombinedPositions`, default `4`) — **paper accounts only** (migration `027`). Hard cap on TOTAL open full spreads (calls + puts); also the divisor for per-position margin. See [Paper Balance & Combined-Position Sizing](#paper-balance--combined-position-sizing-paper-only).
+15. **Split %** (`combinedSplitPct`, default `70`) — **paper accounts only** (migration `027`). Derives the per-type cap `ceil(split% × combined)` for both calls and puts. On live accounts the **Max Open Calls / Max Open Puts** inputs (items 1–2) are shown instead.
 
 All other filter settings (like `minIvDiff`, `minSellPremium`, etc.) default back to the base account config.
 
@@ -843,8 +928,10 @@ All other filter settings (like `minIvDiff`, `minSellPremium`, etc.) default bac
   - *Full Spreads Only*: Only positions that are active as full spreads (both long and short legs active) are counted. Long-only held positions are excluded.
   - *Capped Calculations*: The active counts are capped by the window's `numberOfCalls` and `numberOfPuts` limits to prevent greater than 100% utilization.
   - *Account-wide Counting*: All active full-spread positions in the account are checked against the window's capacity rules, ensuring the metric reflects current portfolio occupancy relative to that window's caps.
-  - *Formula*:
+  - *Formula* (live accounts):
     $$\text{Live Utilized} = \frac{\min(\text{numberOfCalls}, \text{activeCalls}) + \min(\text{numberOfPuts}, \text{activePuts})}{\text{numberOfCalls} + \text{numberOfPuts}} \times 100$$
+  - *Paper accounts* (migration `027`): the denominator is the window's `maxCombinedPositions` and the combined active count is clamped to it:
+    $$\text{Live Utilized} = \frac{\min(\text{maxCombinedPositions},\ \text{activeCalls} + \text{activePuts})}{\text{maxCombinedPositions}} \times 100$$
 
 ### Execution, Timezones & Evaluation
 - **Database (IST)**: All times in the database `paper_trading_schedules` table (columns `start_time` and `end_time`) are stored directly as IST values in `TIME` type columns.

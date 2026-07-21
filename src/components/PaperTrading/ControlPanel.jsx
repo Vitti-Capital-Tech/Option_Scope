@@ -230,6 +230,7 @@ export default function ControlPanel({
           now={now}
           currentUnderlying={underlying}
           strategyVersion={strategyVersion}
+          isPaper={!accountIsLive}
         />
       </div>
     </>

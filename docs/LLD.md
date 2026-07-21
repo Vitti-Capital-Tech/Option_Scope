@@ -199,8 +199,8 @@ After every scan, `publishTopSpreads` packages the top-3 calls and puts into a p
 | Table | Engine | Key Fields | Notes |
 |---|---|---|---|
 | `paper_trading_accounts` | Supervisor | `id`, `name`, `user_id`, `mode` (`paper`/`live`), `live_enabled`, `paused`, `close_all_requested`, `balance_allocation_pct` (90), `entry_buy_offset` (10), `entry_sell_offset` (3), `default_config` (JSONB) | One row per account. `mode`/`live_enabled`/`paused` gate live execution; switching back to paper forces `live_enabled=false`. `default_config` is the Reset target. |
-| `paper_trading_config` | PaperTrading | `underlying`, `expiry`, filter thresholds, `exit_type`, `exit_points`, `strategy_version` (1), `trade_days` (JSONB, all-7), `short_exit_price` (1.1), `long_exit_slices` (10), `spot_diff` | One row per account (id = account id), upserted on config change. `strategy_version` gates paper(2)/live(1) logic. |
-| `paper_trading_schedules` | PaperTrading | per-window overrides (see §12) incl. `max_net_premium`, `exit_type`, `exit_points`, `min_days_to_expiry`, `trade_days`, and hedge columns | Permanent, undeletable **Window 1** per account, seeded from base config. |
+| `paper_trading_config` | PaperTrading | `underlying`, `expiry`, filter thresholds, `exit_type`, `exit_points`, `strategy_version` (1), `trade_days` (JSONB, all-7), `short_exit_price` (1.1), `long_exit_slices` (10), `spot_diff`, `initial_balance` (3000), `max_combined_positions` (4), `combined_split_pct` (70) — last three **paper only**, migration `027` | One row per account (id = account id), upserted on config change. `strategy_version` gates paper(2)/live(1) logic. Paper sizing = (`initial_balance` + realized P&L) × `balance_allocation_pct` ÷ active window's `max_combined_positions`. |
+| `paper_trading_schedules` | PaperTrading | per-window overrides (see §12) incl. `max_net_premium`, `exit_type`, `exit_points`, `min_days_to_expiry`, `trade_days`, hedge columns, and (paper, migration `027`) `max_combined_positions` + `combined_split_pct` | Permanent, undeletable **Window 1** per account, seeded from base config. |
 | `active_positions` | PaperTrading | `id`, `buy_strike`, `sell_strike`, `buy_leg` (JSON), `sell_leg` (JSON), `hedge_leg` (JSON), `accumulated_sell_pnl`, `margin`, `exit_requested` | Account-scoped unique indexes `idx_active_positions_buy_strike_unique` / `..._sell_strike_unique` on `(account_id, underlying, type, expiry, buy_strike/sell_strike)` prevent duplicate inserts (**`expiry` added** so the same strike on different expiries no longer collides). |
 | `trade_history` | PaperTrading | `id`, `trade_id`, `realized_net_pnl`, `exit_reason`, `is_partial`, `exit_time`, `lot_size`, `total_fees`, `hedge_leg` (JSON) | `trade_id` has a **UNIQUE constraint**; all writes use `.upsert(rows, { onConflict: 'trade_id', ignoreDuplicates: true })` (= `INSERT … ON CONFLICT DO NOTHING`) so exits are **idempotent** (replaces the old non-atomic select-then-insert, which leaked duplicates because ids embedded `Date.now()`). `id` is a primary-key UUID; `lot_size` tracks trade volume. |
 | `delta_credentials` | Live | `account_id`, `api_key`, `api_secret_enc`, `key_last4`, `status`, `verified_at` | Encrypted secret (pgcrypto + Vault). See §6 Live Credential Security. |
@@ -462,6 +462,9 @@ When the engine starts for a new account and no `paper_trading_config` row exist
 | `trade_days` | `[0,1,2,3,4,5,6]` (all days) |
 | `short_exit_price` | `1.1` |
 | `long_exit_slices` | `10` |
+| `initial_balance` | `3000` (paper only, migration `027`) |
+| `max_combined_positions` | `4` (paper only, migration `027`) |
+| `combined_split_pct` | `70` (paper only, migration `027`) |
 
 ### J. Config Hot-Reload via Supabase Realtime
 
@@ -658,8 +661,10 @@ Table: `paper_trading_schedules`
 - `label` (TEXT, user-defined name for the window)
 - `start_time` (TIME, e.g., `"17:30:00"`, stored in IST)
 - `end_time` (TIME, e.g., `"22:29:00"`, stored in IST)
-- `number_of_calls` (INTEGER, max concurrent calls override)
-- `number_of_puts` (INTEGER, max concurrent puts override)
+- `number_of_calls` (INTEGER, max concurrent calls override — **live** cap)
+- `number_of_puts` (INTEGER, max concurrent puts override — **live** cap)
+- `max_combined_positions` (INTEGER, default `4`, migration `027`, **paper only**) — cap on total open full spreads (calls + puts); also the per-position-margin divisor
+- `combined_split_pct` (NUMERIC, default `70`, migration `027`, **paper only**) — derives the per-type cap `ceil(split% × combined)` for both calls and puts
 - `min_long_dist` (INTEGER, override for minimum long strike distance)
 - `min_strike_diff` (INTEGER, override for minimum strike difference)
 - `atm_ratio_scaling`, `atm_ratio_pct_call`, `atm_ratio_pct_put`, `spot_diff` (per-window sizing/scaling + re-entry step)
