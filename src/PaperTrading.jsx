@@ -256,7 +256,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     longExitSlices: 10,
     variableExitSlices: false,
     strategyVersion: 1,
-    tradeDays: [0, 1, 2, 3, 4, 5, 6]
+    tradeDays: [0, 1, 2, 3, 4, 5, 6],
+    // Paper full-deployment fill (migration 030) — paper only.
+    fullDeployEnabled: false,
+    fullDeployTime: '04:30'
   }));
   const [draftConfig, setDraftConfig] = useState(() => ({ ...config }));
   const [isConfigLoaded, setIsConfigLoaded] = useState(false);
@@ -1155,6 +1158,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         long_exit_slices: newCfg.longExitSlices ?? 10,
         variable_exit_slices: newCfg.variableExitSlices ?? false,
         trade_days: Array.isArray(newCfg.tradeDays) ? newCfg.tradeDays : [0, 1, 2, 3, 4, 5, 6],
+        full_deploy_enabled: newCfg.fullDeployEnabled ?? false,
+        full_deploy_time: newCfg.fullDeployTime ?? '04:30',
         updated_at: new Date().toISOString()
       }).select();
       if (error) {
@@ -1187,7 +1192,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     'shortExitPrice',
     'longExitSlices',
     'variableExitSlices',
-    'tradeDays'
+    'tradeDays',
+    'fullDeployEnabled',
+    'fullDeployTime'
   ];
 
   const updateConfig = (keyOrObj, value) => {
@@ -1266,7 +1273,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         if (arr1.length !== arr2.length) return true;
         return arr1.some((v, idx) => v !== arr2[idx]);
       }
-      if (k === 'exitType' || k === 'variableExitSlices' || k === 'atmRatioScaling' || k === 'underlying' || k === 'expiry') {
+      if (k === 'exitType' || k === 'variableExitSlices' || k === 'atmRatioScaling' || k === 'underlying' || k === 'expiry'
+        || k === 'fullDeployEnabled' || k === 'fullDeployTime') {
         return val1 !== val2;
       }
       const num1 = (val1 === '' || val1 === '-' || val1 == null) ? null : Number(val1);
@@ -1334,6 +1342,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           variable_exit_slices: false,
           strategy_version: 1,
           trade_days: [0, 1, 2, 3, 4, 5, 6],
+          full_deploy_enabled: false,
+          full_deploy_time: '04:30',
           updated_at: new Date().toISOString()
         };
         const { data: inserted, error: insertErr } = await supabase
@@ -1379,7 +1389,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           // e.g. {config.strategyVersion >= 2 && <NewFilterField />}. See migration 018.
           strategyVersion: data.strategy_version ?? 1,
           // Weekdays new entries are allowed on (0=Sun..6=Sat). v2/paper entry-gate. See migration 021.
-          tradeDays: Array.isArray(data.trade_days) ? data.trade_days : [0, 1, 2, 3, 4, 5, 6]
+          tradeDays: Array.isArray(data.trade_days) ? data.trade_days : [0, 1, 2, 3, 4, 5, 6],
+          // Paper full-deployment fill (migration 030) — paper only.
+          fullDeployEnabled: data.full_deploy_enabled ?? false,
+          fullDeployTime: data.full_deploy_time ?? '04:30'
         };
         setConfig(loadedConfig);
         setDraftConfig(loadedConfig);

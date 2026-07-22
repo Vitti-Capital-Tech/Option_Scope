@@ -185,6 +185,37 @@ export default function ControlPanel({
             </div>
           </div>
 
+          {/* Full Deployment — PAPER ONLY. Once per IST day at the set time, concentrate
+              the whole remaining allocated pool across the spreads openable then instead
+              of reserving budget per free slot ("go all out / use all margin"). Live
+              accounts size on the real wallet balance, so this is hidden for them. */}
+          {!accountIsLive && (
+            <div className="pt-filter-cluster">
+              <span className="pt-cluster-head">Full Deployment</span>
+              <div className="pt-cluster-fields">
+                <div key="fullDeployEnabled" className="form-group">
+                  <label htmlFor="fullDeployEnabled" className="pt-field-label" style={{ marginBottom: 0, cursor: 'pointer' }}>
+                    Deploy All Margin
+                  </label>
+                  <div style={{ height: 34, display: 'flex', alignItems: 'center' }}>
+                    <label className="pt-switch">
+                      <input type="checkbox" id="fullDeployEnabled" checked={draftConfig?.fullDeployEnabled ?? false}
+                        onChange={e => updateDraftConfig('fullDeployEnabled', e.target.checked)} />
+                      <span className="pt-slider"></span>
+                    </label>
+                  </div>
+                </div>
+                {draftConfig?.fullDeployEnabled && (
+                  <div key="fullDeployTime" className="form-group">
+                    <label className="pt-field-label" style={{ marginBottom: 0 }}>Deploy Time (IST)</label>
+                    <CustomInput type="time" width={110} value={draftConfig?.fullDeployTime ?? '04:30'}
+                      onChange={e => updateDraftConfig('fullDeployTime', e.target.value)} />
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Apply, Cancel & Reset Buttons */}
           <div className="pt-filter-actions">
             <button

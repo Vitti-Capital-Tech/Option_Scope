@@ -175,7 +175,12 @@ async function startSingleAccountEngine(account) {
     strategyVersion: 1,
     // Weekdays new entries are allowed on (0=Sun..6=Sat), aligned to the 17:30 IST
     // trading-day boundary. All seven = trade every day. v2/paper entry-gate only.
-    tradeDays: [0, 1, 2, 3, 4, 5, 6]
+    tradeDays: [0, 1, 2, 3, 4, 5, 6],
+    // Paper full-deployment fill (migration 030) — paper only. When enabled, once
+    // per IST day at fullDeployTime the whole remaining pool is concentrated across
+    // openable spreads instead of reserved per free slot. Disabled by default.
+    fullDeployEnabled: false,
+    fullDeployTime: '04:30'
   };
   let products = [];
   let expiries = [];
@@ -318,6 +323,8 @@ async function startSingleAccountEngine(account) {
           // Paper = experimental testbed (v2), live = stable (v1).
           strategy_version: accountState.mode === 'live' ? 1 : 2,
           trade_days: [0, 1, 2, 3, 4, 5, 6],
+          full_deploy_enabled: false,
+          full_deploy_time: '04:30',
           updated_at: new Date().toISOString()
         };
         const { data: inserted, error: insertErr } = await supabase
@@ -364,7 +371,10 @@ async function startSingleAccountEngine(account) {
           entryBuyOffset: data.entry_buy_offset ?? 10,
           entrySellOffset: data.entry_sell_offset ?? 3,
           strategyVersion: data.strategy_version ?? 1,
-          tradeDays: Array.isArray(data.trade_days) ? data.trade_days : [0, 1, 2, 3, 4, 5, 6]
+          tradeDays: Array.isArray(data.trade_days) ? data.trade_days : [0, 1, 2, 3, 4, 5, 6],
+          // Paper full-deployment fill (migration 030) — paper only.
+          fullDeployEnabled: data.full_deploy_enabled ?? false,
+          fullDeployTime: data.full_deploy_time ?? '04:30'
         };
         configDbId = data.id;
         // log(`[${accountState.name}] Config loaded: ${config.underlying} | Expiry: ${config.expiry || 'auto'}`);
@@ -3496,16 +3506,24 @@ async function startSingleAccountEngine(account) {
         const remainingSlots = Math.max(1, maxPos - occupiedSlots);
         paperRemainingBudget = remainingBudget;
 
-        // ── 4:30 AM IST full-deployment fill (once per day) ──────────────────
-        // Detect the upward crossing of 04:30 IST on entry-eligible cycles, at most
-        // once per IST date. On that pass we DON'T reserve budget for slots that may
-        // never fill — instead we concentrate the whole remaining pool across the
-        // spreads scanning ACTUALLY found openable now, so idle balance is deployed.
+        // ── Full-deployment fill (once per day, paper only) ──────────────────
+        // Config-driven (migration 030): fires only when config.fullDeployEnabled is
+        // on, at config.fullDeployTime IST (default 04:30). Detect the upward crossing
+        // of that IST minute on entry-eligible cycles, at most once per IST date. On
+        // that pass we DON'T reserve budget for slots that may never fill — instead we
+        // concentrate the whole remaining pool across the spreads scanning ACTUALLY
+        // found openable now, so idle balance is deployed.
         const ist = new Date(Date.now() + 330 * 60000); // UTC → IST wall clock
         const istMinNow = ist.getUTCHours() * 60 + ist.getUTCMinutes();
         const istDateKey = ist.toISOString().slice(0, 10);
-        const FULL_DEPLOY_MIN = 270; // 04:30 IST
-        const fullDeployPass = lastEntryIstMin != null
+        // Parse 'HH:MM' IST → minutes-since-midnight; fall back to 04:30 if malformed.
+        const parseIstMin = (hhmm) => {
+          const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(hhmm ?? ''));
+          return m ? Number(m[1]) * 60 + Number(m[2]) : 270;
+        };
+        const FULL_DEPLOY_MIN = parseIstMin(config.fullDeployTime); // configured IST time
+        const fullDeployPass = (config.fullDeployEnabled ?? false)
+          && lastEntryIstMin != null
           && lastEntryIstMin < FULL_DEPLOY_MIN && istMinNow >= FULL_DEPLOY_MIN
           && lastFullDeployKey !== istDateKey;
         lastEntryIstMin = istMinNow;
@@ -3541,10 +3559,10 @@ async function startSingleAccountEngine(account) {
           }
           if (openable > 0) {
             partMargin = remainingBudget / openable;
-            log(`[${accountState.name}] 🌅 PAPER 4:30 full-deploy: remaining $${remainingBudget.toFixed(2)} ÷ ${openable} openable spread(s) = $${partMargin.toFixed(2)}/position (window combined cap ${maxPos}).`);
+            log(`[${accountState.name}] 🌅 PAPER ${config.fullDeployTime} full-deploy: remaining $${remainingBudget.toFixed(2)} ÷ ${openable} openable spread(s) = $${partMargin.toFixed(2)}/position (window combined cap ${maxPos}).`);
           } else {
             partMargin = 0; // scanning found nothing openable → fill nothing (no forced entries)
-            log(`[${accountState.name}] 🌅 PAPER 4:30 full-deploy: no qualifying spreads found — nothing filled, $${remainingBudget.toFixed(2)} stays idle.`);
+            log(`[${accountState.name}] 🌅 PAPER ${config.fullDeployTime} full-deploy: no qualifying spreads found — nothing filled, $${remainingBudget.toFixed(2)} stays idle.`);
           }
         } else {
           partMargin = remainingBudget / remainingSlots;
