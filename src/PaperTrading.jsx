@@ -1584,6 +1584,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       endTime: s.endTime,
       numberOfCalls: s.numberOfCalls,
       numberOfPuts: s.numberOfPuts,
+      maxCombinedPositions: s.maxCombinedPositions,
+      combinedSplitPct: s.combinedSplitPct,
       minLongDist: s.minLongDist,
       minStrikeDiff: s.minStrikeDiff,
       atmRatioScaling: s.atmRatioScaling,
