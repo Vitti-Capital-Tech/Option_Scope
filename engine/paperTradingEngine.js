@@ -134,6 +134,29 @@ function isIndexTriggerMet(type, level, spot) {
   return type === 'call' ? spot >= level : spot <= level;
 }
 
+/**
+ * DECOY level for the resting EXCHANGE bracket/stop (migration 031, live only).
+ * Delta appears to leak resting SL/TP levels to market makers, so the order we
+ * rest on the exchange is offset from the REAL exit level by `cfg.slTpDecoyDiff`
+ * points — while the engine keeps triggering the true exit itself (its spot-cross
+ * catch-all market-closes reduce-only at computeIndexTriggerLevel).
+ *
+ * The shift is ALWAYS in the harder-to-trigger direction so the decoy fires strictly
+ * AFTER the real level (isIndexTriggerMet: a call triggers on spot ≥ level, a put on
+ * spot ≤ level → raise the call's level, lower the put's). That makes the exchange
+ * order a genuine, later, worse-level fallback for when the engine is down — and it
+ * behaves correctly for OTM, ATM and ITM exits alike (for an OTM exit this lands the
+ * decoy toward ATM, e.g. OTM 50 + diff 50 → ATM; a larger diff crosses into ITM).
+ *
+ * diff = 0 → returns exactly computeIndexTriggerLevel, i.e. current behaviour.
+ */
+function computeDecoyLevel(type, buyStrike, cfg) {
+  const real = computeIndexTriggerLevel(type, buyStrike, cfg);
+  const diff = Math.max(0, Number(cfg?.slTpDecoyDiff) || 0);
+  if (diff === 0) return real;
+  return type === 'call' ? real + diff : real - diff;
+}
+
 /** Greatest common divisor — reduces a ratio to minimal integer lots. */
 function gcdInt(a, b) {
   a = Math.abs(Math.round(a)); b = Math.abs(Math.round(b));
@@ -160,6 +183,10 @@ async function startSingleAccountEngine(account) {
     numberOfPuts: 3,
     exitType: 'ATM',
     exitPoints: 0,
+    // Points to offset the resting EXCHANGE SL/TP away from the real exit level
+    // (migration 031, live only). 0 = decoy disabled → exchange order sits at the
+    // real level (current behaviour). See computeDecoyLevel.
+    slTpDecoyDiff: 0,
     shortExitPrice: 1.1,
     longExitSlices: 10,
     balanceAllocationPct: 90,
@@ -311,6 +338,7 @@ async function startSingleAccountEngine(account) {
           number_of_puts: 3,
           exit_type: 'ATM',
           exit_points: 0,
+          sl_tp_decoy_diff: 0,
           short_exit_price: 1.1,
           long_exit_slices: 10,
           variable_exit_slices: false,
@@ -359,6 +387,9 @@ async function startSingleAccountEngine(account) {
           numberOfPuts: data.number_of_puts ?? 3,
           exitType: data.exit_type ?? 'ATM',
           exitPoints: data.exit_points ?? 0,
+          // Exchange SL/TP decoy offset (migration 031, live only). Account-level
+          // fallback; the per-window schedule value is primary. 0 = decoy off.
+          slTpDecoyDiff: data.sl_tp_decoy_diff ?? 0,
           shortExitPrice: data.short_exit_price ?? 1.1,
           longExitSlices: data.long_exit_slices ?? 10,
           variableExitSlices: data.variable_exit_slices ?? false,
@@ -415,6 +446,9 @@ async function startSingleAccountEngine(account) {
           maxNetPremium: s.max_net_premium ?? config.maxNetPremium ?? 20,
           exitType: s.exit_type ?? config.exitType ?? 'ATM',
           exitPoints: s.exit_points ?? config.exitPoints ?? 0,
+          // Per-window exchange SL/TP decoy offset (migration 031, live only). Falls
+          // back to the account-level config value for rows that predate it. 0 = off.
+          slTpDecoyDiff: s.sl_tp_decoy_diff ?? config.slTpDecoyDiff ?? 0,
           // Per-window min-days-to-expiry (migration 019) — all accounts, paper AND live.
           // Falls back to the account-level config value for rows that predate it.
           daysToExpiry: s.days_to_expiry ?? config.daysToExpiry ?? 0,
@@ -1023,6 +1057,7 @@ async function startSingleAccountEngine(account) {
     const effExit = {
       exitType: activeSchedule?.exitType ?? config.exitType,
       exitPoints: activeSchedule?.exitPoints ?? config.exitPoints,
+      slTpDecoyDiff: activeSchedule?.slTpDecoyDiff ?? config.slTpDecoyDiff,
     };
     const pidBySymbol = {};
     for (const p of livePos) pidBySymbol[p.product_symbol] = p.product_id;
@@ -1079,7 +1114,9 @@ async function startSingleAccountEngine(account) {
       if (pos.underlying !== config.underlying) continue;
       if (pos.buyLeg?.isHedge) continue; // engine-drained; never auto-bracket a hedge
       if (now - new Date(pos.entryTime).getTime() < 60000) continue; // let entry settle
-      const level = computeIndexTriggerLevel(pos.type, pos.buyLeg.strike, effExit);
+      // Resting exchange bracket rests at the DECOY level (migration 031); the engine's
+      // own spot-cross catch-all still fires the real exit first (computeIndexTriggerLevel).
+      const level = computeDecoyLevel(pos.type, pos.buyLeg.strike, effExit);
       const longSize = Math.abs(sizeBySymbol[pos.buyLeg?.symbol] ?? 0);
       const shortSize = Math.abs(sizeBySymbol[pos.sellLeg?.symbol] ?? 0);
       // Long leg open on Delta but no resting bracket → arm its TP.
@@ -1264,6 +1301,7 @@ async function startSingleAccountEngine(account) {
     const effExit = {
       exitType: activeSchedule?.exitType ?? config.exitType,
       exitPoints: activeSchedule?.exitPoints ?? config.exitPoints,
+      slTpDecoyDiff: activeSchedule?.slTpDecoyDiff ?? config.slTpDecoyDiff,
     };
 
     const liveOrphanSymbols = new Set();
@@ -1322,6 +1360,8 @@ async function startSingleAccountEngine(account) {
         notifyFailure({ account: accountState.name, context: `UNPROTECTED untracked Delta position ${symbol} (size ${size}) — no DB row and symbol unknown to the engine. Close/protect manually NOW.`, error: { message: 'orphan-unprotected-unknown' } });
         continue;
       }
+      // REAL level (NOT the decoy): an un-adoptable orphan is never managed by the engine,
+      // so this resting bracket is its ONLY protection and must sit at the true exit level.
       const level = computeIndexTriggerLevel(meta.type, meta.strike, effExit);
       if (bracketBySymbol[symbol]) {
         logWarn(`[${accountState.name}] 🛰️ Orphan long ${symbol} (size ${size}) — couldn't adopt (strike taken) but IS bracket-protected → alerting, not managing.`);
@@ -1370,7 +1410,9 @@ async function startSingleAccountEngine(account) {
       logWarn(`[${accountState.name}] 🧬 Adopt skipped ${symbol}: contracts ${contracts} / entry ${entryPx} not usable.`);
       return false;
     }
-    const level = computeIndexTriggerLevel(meta.type, meta.strike, effExit);
+    // Adopted orphan is managed (spot-cross + expiry catch-alls fire the real exit), so its
+    // protective bracket rests at the DECOY level (migration 031) like a normal position.
+    const level = computeDecoyLevel(meta.type, meta.strike, effExit);
     // lotSize is modelled as 1 notional unit per contract (originalLotSize 1 → longContracts
     // returns the real contract count); contractValue drives the live margin basis.
     const pos = {
@@ -2325,6 +2367,8 @@ async function startSingleAccountEngine(account) {
           maxNetPremium: activeSchedule.maxNetPremium ?? config.maxNetPremium,
           exitType: activeSchedule.exitType ?? config.exitType,
           exitPoints: activeSchedule.exitPoints ?? config.exitPoints,
+          // Per-window exchange SL/TP decoy offset (migration 031, live only).
+          slTpDecoyDiff: activeSchedule.slTpDecoyDiff ?? config.slTpDecoyDiff,
           // Per-window min-days-to-expiry (migration 019) — all accounts, paper AND live.
           // Falls back to the account-level value for rows that predate the migration.
           daysToExpiry: activeSchedule.daysToExpiry ?? config.daysToExpiry,
@@ -4075,10 +4119,13 @@ async function startSingleAccountEngine(account) {
             // entryBuyPrice/entrySellPrice (used for bookkeeping) are left as-is.
             const buyOff = config.entryBuyOffset ?? 10;
             const sellOff = config.entrySellOffset ?? 3;
-            // Exchange-native brackets at the exit-type SPOT level (ATM/ITM/OTM):
-            // long leg → take-profit, short leg → stop-loss. These fire even if the
-            // engine is down, and are the account's hard risk exit.
-            const bracketLevel = computeIndexTriggerLevel(t.type, t.buyLeg.strike, effectiveConfig);
+            // Exchange-native brackets at the DECOY level (migration 031): shifted away
+            // from the real exit level by slTpDecoyDiff so Delta (and any market maker it
+            // leaks the level to) sees a fake SL/TP. long leg → take-profit, short leg →
+            // stop-loss. These fire even if the engine is down, and are the account's hard
+            // risk exit — but the engine's own spot-cross catch-all triggers the REAL exit
+            // first (computeIndexTriggerLevel). diff = 0 → decoy == real == prior behaviour.
+            const bracketLevel = computeDecoyLevel(t.type, t.buyLeg.strike, effectiveConfig);
             const liveEntry = await live.openSpread(t, {
               long: longContracts(t.buyLeg),
               short: shortContracts(t.sellQty),
@@ -4311,13 +4358,16 @@ async function startSingleAccountEngine(account) {
     const effExit = {
       exitType: activeSchedule?.exitType ?? config.exitType,
       exitPoints: activeSchedule?.exitPoints ?? config.exitPoints,
+      slTpDecoyDiff: activeSchedule?.slTpDecoyDiff ?? config.slTpDecoyDiff,
     };
 
     // Which legs are out of sync? (pure in-memory — no API call unless there's real drift)
     const drift = [];
     for (const pos of positions) {
       if (pos.underlying !== config.underlying) continue;
-      const newLevel = computeIndexTriggerLevel(pos.type, pos.buyLeg.strike, effExit);
+      // Resting bracket target = DECOY level (migration 031); brkComputed stores the
+      // decoy so drift detection stays consistent when the diff / exit params change.
+      const newLevel = computeDecoyLevel(pos.type, pos.buyLeg.strike, effExit);
       // Drift = the engine's COMPUTED target changed (brkComputed), not the effective
       // brkLevel — so an adopted manual bracket isn't reverted on an unrelated config touch.
       // Undefined brkComputed (pre-upgrade rows) reads as drift → self-heals on first sync.

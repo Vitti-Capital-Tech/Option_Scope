@@ -149,7 +149,7 @@ logic is byte-for-byte unchanged when paper/disarmed:
 | Short-leg exit | Active model: buy-to-close @ ask. Resting model: the `-SEX` limit fills **fully** (order-id in fills **and** short position size 0) → book + place ladder (short SL bracket auto-cancels) |
 | Long laddered exit | Active model: sell reduce_only @ bid per level. Resting model: fixed-ladder resting **limit SELLs** fill on their own |
 | Partial ratio scale-down | Reduce-only **MARKET close** of the reduced buy lot (`live.closeSymbol`, IOC — immediate fill; `${id}-PEX-…`). Runs in **both** models: the active model fires it inline, and the armed-real resting model runs the **same** `applyAtmRatioScaling` helper on the long leg each cycle while the spread is full (the trigger is dynamic, so it market-closes rather than resting a limit) |
-| Risk exit (spot hits exit level) | **Brackets** close the whole spread exchange-side; engine's spot-cross catch-all (if up) also market-closes + books (reduce-only guards double-close) |
+| Risk exit (spot hits exit level) | Engine's spot-cross catch-all market-closes + books at the **real** exit level (primary). Exchange **brackets** sit at the **decoy** level (`sl_tp_decoy_diff`, migration `031`) and fire only as an engine-down fallback; `diff = 0` → decoy == real. Reduce-only guards double-close. See [Exit-level brackets](#exit-level-brackets-the-exchange-side-risk-exit) |
 | **Expiry / zombie exit** | **No leg order** — Delta cash-settles expired options; brackets auto-cancel, resting orders cancelled |
 
 All orders use limit orders at the engine's computed price and carry a
@@ -369,8 +369,39 @@ at that price or better), and `reconcile()` flags gross drift.
 #### Exit-level brackets (the exchange-side risk exit)
 
 At entry, `openSpread` attaches a **spot-triggered bracket** to each leg's order at the
-shared exit-type level (`computeIndexTriggerLevel` — ATM = buy strike, ITM/OTM = ±
-points), so the spread is protected even if the engine is down:
+shared exit level, so the spread is protected even if the engine is down. That level is
+the **decoy** level (`computeDecoyLevel`), which equals the **real** exit level
+(`computeIndexTriggerLevel` — ATM = buy strike, ITM/OTM = ± points) shifted by the
+per-window **SL/TP Diff** (see below):
+
+> [!IMPORTANT]
+> **Decoy SL/TP (`sl_tp_decoy_diff`, migration `031`, live only).** Delta appears to leak
+> resting SL/TP levels to market makers, so the level we **rest on the exchange** is
+> deliberately offset from the level the engine actually exits at:
+>
+> - **Real exit level** — `computeIndexTriggerLevel(type, buyStrike, cfg)`. The engine's own
+>   spot-cross catch-all (`handleLiveRestingExit`) market-closes reduce-only here, so **the
+>   engine is the primary trigger**.
+> - **Decoy level** — `computeDecoyLevel(...)` = the real level shifted by `slTpDecoyDiff`
+>   points in the **harder-to-trigger direction** (`call: real + diff`, `put: real − diff`).
+>   This is what every exchange bracket/stop is placed at (entry, `armMissingBrackets`,
+>   `syncExitBrackets`, adopted orphans). Because it always sits **beyond** the real level,
+>   the engine fires first and the exchange bracket is a genuine, later, worse-level
+>   **fallback** for when the engine is down.
+>
+> The shift is direction-consistent for **all** exit types: for an OTM exit it lands the
+> decoy toward ATM (e.g. **OTM 50 + diff 50 → ATM**); a larger diff crosses **past ATM into
+> ITM** (OTM 50 + diff 100 → ITM 50); ATM shifts one `diff` into the option, ITM shifts
+> deeper ITM. **`diff = 0` → decoy == real level == prior behaviour** (fully backward
+> compatible — no separate on/off flag). It's a **per-schedule-window** value (primary) with
+> an account-level `paper_trading_config` fallback, edited in the **Schedule Panel** ("SL/TP
+> Diff (pts)", live accounts only). `brkComputed`/`brkLevel` store the **decoy** level, so
+> drift detection stays consistent.
+>
+> **Trade-offs:** (1) with `diff > 0` the real exit now depends on the engine loop running —
+> if the process dies mid-position it's protected only by the decoy, at the worse level;
+> (2) the **un-adoptable orphan** bracket stays at the **real** level (it's never engine-
+> managed, so that bracket is its only protection).
 
 > [!NOTE]
 > **Exit Type / Exit Points are per-schedule-window** (`effectiveConfig`, migration `012`)
