@@ -674,6 +674,17 @@ reductions each book exactly once. In practice this covers the **long leg of a f
 carries only a bracket); a leg with a resting limit exit is left to its normal fill path. The
 closed slice is booked at the current mark (approximate — the manual fill wasn't ours).
 
+> [!IMPORTANT]
+> **Engine-drift guard (not a manual reduction).** The ATM-ratio **scale-down** closes its
+> slice with a fire-and-forget reduce-only MARKET order (`-PEX`); its actual fill/rounding can
+> leave the book a few contracts **ahead** of Delta. Without a guard, this residual gap looks
+> exactly like a manual reduction and gets mis-booked (a phantom P&L row + a false
+> "PARTIAL REDUCTION (Delta)" alert). Every engine-initiated reduce now stamps the symbol
+> (`markEngineReduce`); if a `book > Delta` gap appears within a 15-min grace of that stamp,
+> `reconcilePartialReductions` treats it as **engine drift** and syncs the book down
+> **silently** — no trade_history row, no alert (`bookExternalReduction(..., { silent: true })`).
+> A genuine user reduction (no recent engine reduce on that symbol) is still booked + alerted.
+
 > [!NOTE]
 > **Practical guidance.** Full close, short-only close, TP/SL edit, **and partial size reduction**
 > are now all reflected. Booked prices for externally-closed slices are **approximate** (current

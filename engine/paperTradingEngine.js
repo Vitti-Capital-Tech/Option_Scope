@@ -984,6 +984,17 @@ async function startSingleAccountEngine(account) {
   // transient mid-fill of the engine's own reduce order is not a manual reduction).
   const reduceSeen = new Map();
 
+  // symbol → ts of the last ENGINE-initiated reduce (e.g. the ATM-ratio scale-down's
+  // market-close). The scale-down close is fire-and-forget, so partial-fill/rounding can
+  // leave the book a few contracts ahead of Delta. Within this grace, reconcilePartial-
+  // Reductions treats such a book>Delta gap as ENGINE drift — it silently syncs the book
+  // down (no phantom trade_history row, no "manual reduction" alert) instead of misbooking
+  // it as a manual Delta reduction. A genuine user reduction (no recent engine reduce) is
+  // still booked + alerted as before.
+  const engineReducedAt = new Map();
+  const ENGINE_REDUCE_GRACE_MS = 15 * 60 * 1000;
+  const markEngineReduce = (symbol) => { if (symbol) engineReducedAt.set(symbol, Date.now()); };
+
   // Safety net (armed real): a leg that is OPEN on Delta but has NO resting protective
   // bracket/stop is UNPROTECTED — e.g. a position pushed by an older bug before its
   // TP/SL was attached, or a bracket that got cancelled/lost. Re-arm it from the current
@@ -1453,8 +1464,14 @@ async function startSingleAccountEngine(account) {
         if (!s || s.contracts !== actual) { reduceSeen.set(key, { contracts: actual, at: now }); continue; }
         if (now - s.at < 90000) continue; // wait for the reduction to prove stable
         reduceSeen.delete(key);
-        if (leg.tag === 'L') await bookExternalReduction(pos, 'long', actual, leg.expected);
-        else await bookExternalReduction(pos, 'short', actual, leg.expected);
+        // Engine-caused drift vs genuine manual reduction: if the engine itself reduced
+        // this symbol recently (e.g. the scale-down's fire-and-forget market-close, whose
+        // actual fill/rounding can leave the book a few contracts ahead of Delta), sync the
+        // book down SILENTLY — no phantom trade_history row, no "manual reduction" alert.
+        const engTs = engineReducedAt.get(leg.symbol);
+        const engineCaused = engTs != null && (now - engTs) < ENGINE_REDUCE_GRACE_MS;
+        if (leg.tag === 'L') await bookExternalReduction(pos, 'long', actual, leg.expected, { silent: engineCaused });
+        else await bookExternalReduction(pos, 'short', actual, leg.expected, { silent: engineCaused });
       }
     }
     // Drop stale trackers for legs no longer mid-reduction.
@@ -1462,7 +1479,11 @@ async function startSingleAccountEngine(account) {
   }
 
   // Book one external partial reduction and shrink the tracked leg to `actual` contracts.
-  async function bookExternalReduction(pos, side, actual, expected) {
+  // `silent` (engine-drift sync): shrink the book to match Delta but DON'T book a
+  // trade_history P&L row or send a "manual reduction" alert — used when the gap is
+  // attributable to the engine's own recent reduce (e.g. scale-down market-close
+  // fill/rounding), so it's not a genuine user action.
+  async function bookExternalReduction(pos, side, actual, expected, { silent = false } = {}) {
     lastDbWrite = Date.now(); // hold fetchActivePositions off during the mutate+persist
     const isLong = side === 'long';
     const ratio = actual / expected;
@@ -1478,21 +1499,23 @@ async function startSingleAccountEngine(account) {
       const exitFee = calculateFee(exitPx, spotPrice, reducedLot, base);
       const gross = (exitPx - pos.entryBuyPrice) * reducedLot;
       const net = gross - (entryFeePart + exitFee);
-      try {
-        await supabase.from('trade_history').upsert([{
-          trade_id: `${pos.id}-XPR-L-${actual}`, underlying: pos.underlying, expiry: pos.expiry, type: pos.type,
-          buy_leg: JSON.stringify({ ...pos.buyLeg, lotSize: reducedLot, ladderOrders: undefined }),
-          sell_leg: JSON.stringify({ ...pos.sellLeg, lotSize: 0 }),
-          sell_qty: 0, strike_diff: pos.strikeDiff,
-          entry_time: pos.entryTime.toISOString(),
-          entry_buy_price: pos.entryBuyPrice, entry_sell_price: pos.entrySellPrice, entry_spot_price: pos.entrySpotPrice,
-          margin: pos.margin, exit_time: new Date().toISOString(),
-          exit_buy_price: exitPx, exit_sell_price: null, exit_spot_price: spotPrice,
-          realized_gross_pnl: gross, realized_net_pnl: net, exit_fee: exitFee, total_fees: entryFeePart + exitFee,
-          exit_reason: `External partial reduction on Delta (long ${pos.buyLeg.strike}: ${expected}→${actual} contracts)`,
-          is_partial: true, account_id: accountState.id,
-        }], { onConflict: 'trade_id', ignoreDuplicates: true });
-      } catch (e) { logError(`[${accountState.name}] External long-reduction booking failed for ${pos.id}:`, e); }
+      if (!silent) {
+        try {
+          await supabase.from('trade_history').upsert([{
+            trade_id: `${pos.id}-XPR-L-${actual}`, underlying: pos.underlying, expiry: pos.expiry, type: pos.type,
+            buy_leg: JSON.stringify({ ...pos.buyLeg, lotSize: reducedLot, ladderOrders: undefined }),
+            sell_leg: JSON.stringify({ ...pos.sellLeg, lotSize: 0 }),
+            sell_qty: 0, strike_diff: pos.strikeDiff,
+            entry_time: pos.entryTime.toISOString(),
+            entry_buy_price: pos.entryBuyPrice, entry_sell_price: pos.entrySellPrice, entry_spot_price: pos.entrySpotPrice,
+            margin: pos.margin, exit_time: new Date().toISOString(),
+            exit_buy_price: exitPx, exit_sell_price: null, exit_spot_price: spotPrice,
+            realized_gross_pnl: gross, realized_net_pnl: net, exit_fee: exitFee, total_fees: entryFeePart + exitFee,
+            exit_reason: `External partial reduction on Delta (long ${pos.buyLeg.strike}: ${expected}→${actual} contracts)`,
+            is_partial: true, account_id: accountState.id,
+          }], { onConflict: 'trade_id', ignoreDuplicates: true });
+        } catch (e) { logError(`[${accountState.name}] External long-reduction booking failed for ${pos.id}:`, e); }
+      }
       pos.entryFee = Math.max(0, (pos.entryFee || 0) - entryFeePart);
       pos.buyLeg.lotSize = newLot;
       pos.buyLeg.longExitBaseLot = newLot;
@@ -1500,8 +1523,12 @@ async function startSingleAccountEngine(account) {
       try {
         await supabase.from('active_positions').update({ buy_leg: JSON.stringify(pos.buyLeg), entry_fee: pos.entryFee, margin: pos.margin }).eq('id', pos.id);
       } catch (e) { logError(`[${accountState.name}] External long-reduction persist failed for ${pos.id}:`, e); }
-      log(`[${accountState.name}] ✂️ EXTERNAL PARTIAL (long, Delta): ${pos.type.toUpperCase()} ${pos.buyLeg.strike} ${expected}→${actual} contracts | booked ${reducedLot} lot @ ${exitPx} | PnL $${net.toFixed(2)}`);
-      notifyTrade({ title: '✂️ PARTIAL REDUCTION (Delta)', detail: `${pos.type.toUpperCase()} long ${pos.buyLeg.strike} reduced ${expected}→${actual} on Delta`, pnl: net });
+      if (silent) {
+        log(`[${accountState.name}] 🔧 ENGINE-DRIFT SYNC (long): ${pos.type.toUpperCase()} ${pos.buyLeg.strike} book ${expected}→${actual} contracts synced to Delta (engine reduce; no P&L booked).`);
+      } else {
+        log(`[${accountState.name}] ✂️ EXTERNAL PARTIAL (long, Delta): ${pos.type.toUpperCase()} ${pos.buyLeg.strike} ${expected}→${actual} contracts | booked ${reducedLot} lot @ ${exitPx} | PnL $${net.toFixed(2)}`);
+        notifyTrade({ title: '✂️ PARTIAL REDUCTION (Delta)', detail: `${pos.type.toUpperCase()} long ${pos.buyLeg.strike} reduced ${expected}→${actual} on Delta`, pnl: net });
+      }
     } else {
       const oldQty = pos.sellQty;
       const newQty = Number((oldQty * ratio).toFixed(4));
@@ -1514,29 +1541,35 @@ async function startSingleAccountEngine(account) {
       const exitFee = calculateFee(exitPx, spotPrice, reducedQty, shortLot);
       const gross = (pos.entrySellPrice - exitPx) * reducedQty * shortLot;
       const net = gross - (entryFeePart + exitFee);
-      try {
-        await supabase.from('trade_history').upsert([{
-          trade_id: `${pos.id}-XPR-S-${actual}`, underlying: pos.underlying, expiry: pos.expiry, type: pos.type,
-          buy_leg: JSON.stringify({ ...pos.buyLeg, lotSize: 0 }),
-          sell_leg: JSON.stringify({ ...pos.sellLeg }),
-          sell_qty: reducedQty, strike_diff: pos.strikeDiff,
-          entry_time: pos.entryTime.toISOString(),
-          entry_buy_price: pos.entryBuyPrice, entry_sell_price: pos.entrySellPrice, entry_spot_price: pos.entrySpotPrice,
-          margin: pos.margin, exit_time: new Date().toISOString(),
-          exit_buy_price: null, exit_sell_price: exitPx, exit_spot_price: spotPrice,
-          realized_gross_pnl: gross, realized_net_pnl: net, exit_fee: exitFee, total_fees: entryFeePart + exitFee,
-          exit_reason: `External partial reduction on Delta (short ${pos.sellLeg.strike}: ${expected}→${actual} contracts)`,
-          is_partial: true, account_id: accountState.id,
-        }], { onConflict: 'trade_id', ignoreDuplicates: true });
-      } catch (e) { logError(`[${accountState.name}] External short-reduction booking failed for ${pos.id}:`, e); }
+      if (!silent) {
+        try {
+          await supabase.from('trade_history').upsert([{
+            trade_id: `${pos.id}-XPR-S-${actual}`, underlying: pos.underlying, expiry: pos.expiry, type: pos.type,
+            buy_leg: JSON.stringify({ ...pos.buyLeg, lotSize: 0 }),
+            sell_leg: JSON.stringify({ ...pos.sellLeg }),
+            sell_qty: reducedQty, strike_diff: pos.strikeDiff,
+            entry_time: pos.entryTime.toISOString(),
+            entry_buy_price: pos.entryBuyPrice, entry_sell_price: pos.entrySellPrice, entry_spot_price: pos.entrySpotPrice,
+            margin: pos.margin, exit_time: new Date().toISOString(),
+            exit_buy_price: null, exit_sell_price: exitPx, exit_spot_price: spotPrice,
+            realized_gross_pnl: gross, realized_net_pnl: net, exit_fee: exitFee, total_fees: entryFeePart + exitFee,
+            exit_reason: `External partial reduction on Delta (short ${pos.sellLeg.strike}: ${expected}→${actual} contracts)`,
+            is_partial: true, account_id: accountState.id,
+          }], { onConflict: 'trade_id', ignoreDuplicates: true });
+        } catch (e) { logError(`[${accountState.name}] External short-reduction booking failed for ${pos.id}:`, e); }
+      }
       pos.entryFee = Math.max(0, (pos.entryFee || 0) - entryFeePart);
       pos.sellQty = newQty;
       pos.margin = contractBasisMargin(pos, symbolMeta[pos.buyLeg.symbol]?.contractValue ?? null);
       try {
         await supabase.from('active_positions').update({ sell_qty: pos.sellQty, entry_fee: pos.entryFee, margin: pos.margin }).eq('id', pos.id);
       } catch (e) { logError(`[${accountState.name}] External short-reduction persist failed for ${pos.id}:`, e); }
-      log(`[${accountState.name}] ✂️ EXTERNAL PARTIAL (short, Delta): ${pos.type.toUpperCase()} ${pos.sellLeg.strike} ${expected}→${actual} contracts | PnL $${net.toFixed(2)}`);
-      notifyTrade({ title: '✂️ PARTIAL REDUCTION (Delta)', detail: `${pos.type.toUpperCase()} short ${pos.sellLeg.strike} reduced ${expected}→${actual} on Delta`, pnl: net });
+      if (silent) {
+        log(`[${accountState.name}] 🔧 ENGINE-DRIFT SYNC (short): ${pos.type.toUpperCase()} ${pos.sellLeg.strike} book ${expected}→${actual} contracts synced to Delta (engine reduce; no P&L booked).`);
+      } else {
+        log(`[${accountState.name}] ✂️ EXTERNAL PARTIAL (short, Delta): ${pos.type.toUpperCase()} ${pos.sellLeg.strike} ${expected}→${actual} contracts | PnL $${net.toFixed(2)}`);
+        notifyTrade({ title: '✂️ PARTIAL REDUCTION (Delta)', detail: `${pos.type.toUpperCase()} short ${pos.sellLeg.strike} reduced ${expected}→${actual} on Delta`, pnl: net });
+      }
     }
   }
 
@@ -2813,6 +2846,10 @@ async function startSingleAccountEngine(account) {
                   contracts: contractsToSell,
                   tag: `${pos.id}-PEX-${pos.buyLeg.lotSize}`,
                 });
+                // Engine-initiated reduce — mark the symbol so the partial-reduction
+                // reconcile treats any residual book↔Delta drift (fire-and-forget
+                // market-close fill/rounding) as engine drift, not a manual reduction.
+                markEngineReduce(pos.buyLeg.symbol);
                 const batchNet = partialExitsToRecord.reduce((s, r) => s + (r.realized_net_pnl || 0), 0);
                 notifyTrade({ title: '🔻 PARTIAL SCALE-DOWN', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike} · sold ${contractsToSell} contract(s) · remaining lot ${pos.buyLeg.lotSize}`, pnl: batchNet });
               }
