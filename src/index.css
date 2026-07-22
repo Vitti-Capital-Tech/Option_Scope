@@ -5975,3 +5975,108 @@ body.light-theme .pt-btn-apply.active {
     gap: 0;
   }
 }
+
+/* ── ATM intrinsic verification tooltip (ResultTable) ─────────────────────────
+   Anchored, position:fixed card explaining how a strike's ATM intrinsic price was
+   resolved (exact / bracket-average / single-neighbour / omitted). Fixed so the
+   scanner table's overflow:auto body never clips it. See renderIntrinsic. */
+.rt-intrinsic { line-height: 1.35; }
+.rt-intrinsic.rt-approx {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+}
+
+.rt-tip {
+  position: fixed;
+  z-index: 9999;
+  pointer-events: none;
+  min-width: 216px;
+  max-width: 300px;
+  padding: 11px 13px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.32), 0 2px 8px rgba(0, 0, 0, 0.18);
+  color: var(--text);
+  font-size: 11.5px;
+  transform: translate(-50%, calc(-100% - 10px));
+  animation: rt-tip-in 0.12s ease-out;
+}
+.rt-tip.below { transform: translate(-50%, 10px); }
+@keyframes rt-tip-in {
+  from { opacity: 0; transform: translate(-50%, calc(-100% - 3px)); }
+  to   { opacity: 1; transform: translate(-50%, calc(-100% - 10px)); }
+}
+/* down-pointing arrow (card above the cell) */
+.rt-tip::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: var(--bg2);
+  filter: drop-shadow(0 1px 0 var(--border));
+}
+/* up-pointing arrow (card below the cell) */
+.rt-tip.below::after {
+  top: auto;
+  bottom: 100%;
+  border-top-color: transparent;
+  border-bottom-color: var(--bg2);
+  filter: drop-shadow(0 -1px 0 var(--border));
+}
+
+.rt-tip-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 9px;
+}
+.rt-tip-badge {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 5px;
+}
+.rt-tip-badge.exact   { color: var(--call);   background: color-mix(in srgb, var(--call) 15%, transparent); }
+.rt-tip-badge.bracket { color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.rt-tip-badge.single  { color: #e3b341;        background: rgba(227, 179, 65, 0.16); }
+.rt-tip-badge.none    { color: var(--put);     background: color-mix(in srgb, var(--put) 15%, transparent); }
+.rt-tip-field {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.rt-tip-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 2.5px 0;
+}
+.rt-tip-row .k { color: var(--text-dim); }
+.rt-tip-row .v { font-weight: 600; font-variant-numeric: tabular-nums; }
+.rt-tip-sep { height: 1px; background: var(--border); margin: 7px 0; }
+.rt-tip-result {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  font-weight: 700;
+}
+.rt-tip-result .k { color: var(--text); }
+.rt-tip-result .v { color: var(--accent); font-variant-numeric: tabular-nums; }
+.rt-tip-note {
+  margin-top: 8px;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}

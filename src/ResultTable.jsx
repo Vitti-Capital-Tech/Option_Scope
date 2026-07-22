@@ -1,6 +1,30 @@
 import React, { useState, useMemo, useCallback } from 'react';
 import { RefreshCw, Target, ChevronRight } from 'lucide-react';
 
+// Human-readable explanation of how an ATM intrinsic price was resolved for a target
+// strike — exact listed / bracket-average / single-neighbour / omitted. Rendered as a
+// hover tooltip on the ATM P&L intrinsic cells so the bracket-and-average fallback
+// (getTickerPrice) can be verified at a glance without hand-checking the option chain.
+function describeIntrinsic(detail, field) {
+  if (!detail) return undefined;
+  const m = (n) => `$${Number(n).toFixed(2)}`;
+  const k = (s) => Number(s).toLocaleString();
+  switch (detail.mode) {
+    case 'exact':
+      return `${k(detail.strike)} — exact listed strike · ${field} ${m(detail.exactPrice)}`;
+    case 'bracket':
+      return `${k(detail.strike)} not listed → bracket-average of ${k(detail.below.strike)} (${m(detail.below.price)}) & ${k(detail.above.strike)} (${m(detail.above.price)}) = ${m((detail.below.price + detail.above.price) / 2)}  ·  tolerance ±${detail.tolerance}`;
+    case 'single': {
+      const s = detail.below || detail.above;
+      return `${k(detail.strike)} not listed → only one neighbour within ±${detail.tolerance}: ${k(s.strike)} (${m(s.price)})`;
+    }
+    default:
+      return `${k(detail.strike)} not listed → no strike within ±${detail.tolerance ?? '?'} → price omitted (—)`;
+  }
+}
+// A fallback (not an exact strike) produced the price → flag it with a "≈" marker.
+const isApproxIntrinsic = (detail) => !!detail && (detail.mode === 'bracket' || detail.mode === 'single');
+
 export default function ResultTable({
   title,
   type,
@@ -17,6 +41,17 @@ export default function ResultTable({
   tickerData
 }) {
   const [expandedStrikes, setExpandedStrikes] = useState({});
+  // Anchored hover tooltip for the ATM intrinsic cells (see renderIntrinsic /
+  // renderTipContent). One shared card, position:fixed so the table's overflow
+  // scroll container never clips it. { detail, field, x, y, below }.
+  const [tip, setTip] = useState(null);
+  const showTip = (e, detail, field) => {
+    if (!detail) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const below = rect.top < 170; // not enough room above → flip under the cell
+    setTip({ detail, field, x: rect.left + rect.width / 2, y: below ? rect.bottom : rect.top, below });
+  };
+  const hideTip = () => setTip(null);
 
   const currentSpot = spotPrice || 0;
   const atmStrike = trueAtmStrike || currentSpot;
@@ -27,16 +62,19 @@ export default function ResultTable({
    * within a tolerance of 10% of spot price (or 5000 absolute, whichever is larger).
    * Returns null when no suitable ticker exists at all.
    */
-  const getTickerPrice = useCallback((strike, optType, priceField) => {
+  // Resolve the price for a strike AND report how it was resolved (for the tooltip).
+  // Returns { price, detail } where detail.mode ∈ exact|bracket|single|none.
+  const resolveTickerPrice = useCallback((strike, optType, priceField) => {
     const lowerType = optType.toLowerCase();
     const allTickers = Object.values(tickerData || {}).filter(t => t.type === lowerType);
-    if (!allTickers.length) return null;
+    if (!allTickers.length) return { price: null, detail: { mode: 'none', strike } };
 
     // Exact match first
     const exact = allTickers.find(t => t.strike === strike);
     if (exact) {
       const val = exact[priceField] ?? exact.lastPrice ?? exact.markPrice;
-      return (val != null && val > 0) ? val : null;
+      const price = (val != null && val > 0) ? val : null;
+      return { price, detail: { mode: price != null ? 'exact' : 'none', strike, exactPrice: price } };
     }
 
     // The requested strike isn't listed (a "weird" ATM ± diff can land between two grid
@@ -61,16 +99,80 @@ export default function ResultTable({
     }
     const pBelow = priceOf(below);
     const pAbove = priceOf(above);
-    if (pBelow != null && pAbove != null) return (pBelow + pAbove) / 2;
-    return pBelow ?? pAbove;
+    const belowInfo = pBelow != null ? { strike: below.strike, price: pBelow } : null;
+    const aboveInfo = pAbove != null ? { strike: above.strike, price: pAbove } : null;
+    let price = null, mode = 'none';
+    if (pBelow != null && pAbove != null) { price = (pBelow + pAbove) / 2; mode = 'bracket'; }
+    else if (pBelow != null || pAbove != null) { price = pBelow ?? pAbove; mode = 'single'; }
+    return { price, detail: { mode, strike, tolerance: maxTolerance, below: belowInfo, above: aboveInfo } };
   }, [tickerData]);
+
+  // Render an ATM intrinsic cell: the price, a "≈" marker when the value came from the
+  // bracket-average / single-neighbour fallback, plus a styled hover card (renderTipContent)
+  // breaking down exactly how it was resolved. `aria-label` carries the same info for a11y.
+  const renderIntrinsic = (price, detail, field, className) => {
+    const approx = isApproxIntrinsic(detail);
+    return (
+      <div
+        className={`rt-intrinsic ${className}${approx ? ' rt-approx' : ''}`}
+        aria-label={describeIntrinsic(detail, field)}
+        onMouseEnter={detail ? (e) => showTip(e, detail, field) : undefined}
+        onMouseLeave={detail ? hideTip : undefined}
+      >
+        {price != null ? `${approx ? '≈' : ''}$${price.toFixed(2)}` : '—'}
+      </div>
+    );
+  };
+
+  // Structured content for the anchored intrinsic tooltip card.
+  const renderTipContent = (detail, field) => {
+    const m = (n) => `$${Number(n).toFixed(2)}`;
+    const k = (s) => Number(s).toLocaleString();
+    const label = { exact: 'Exact strike', bracket: 'Bracket average', single: 'Single side', none: 'Omitted' }[detail.mode] || detail.mode;
+    const s1 = detail.below || detail.above;
+    return (
+      <>
+        <div className="rt-tip-head">
+          <span className={`rt-tip-badge ${detail.mode}`}>{label}</span>
+          <span className="rt-tip-field">{field}</span>
+        </div>
+        <div className="rt-tip-row"><span className="k">Target strike</span><span className="v">{k(detail.strike)}</span></div>
+        {detail.mode === 'exact' && (
+          <div className="rt-tip-row"><span className="k">Listed price</span><span className="v">{m(detail.exactPrice)}</span></div>
+        )}
+        {detail.mode === 'bracket' && (
+          <>
+            <div className="rt-tip-sep" />
+            <div className="rt-tip-row"><span className="k">Below · {k(detail.below.strike)}</span><span className="v">{m(detail.below.price)}</span></div>
+            <div className="rt-tip-row"><span className="k">Above · {k(detail.above.strike)}</span><span className="v">{m(detail.above.price)}</span></div>
+            <div className="rt-tip-sep" />
+            <div className="rt-tip-result"><span className="k">Midpoint</span><span className="v">{m((detail.below.price + detail.above.price) / 2)}</span></div>
+            <div className="rt-tip-note">Strike not listed — averaged the nearest strikes within ±{detail.tolerance} pts.</div>
+          </>
+        )}
+        {detail.mode === 'single' && s1 && (
+          <>
+            <div className="rt-tip-sep" />
+            <div className="rt-tip-row"><span className="k">Nearest · {k(s1.strike)}</span><span className="v">{m(s1.price)}</span></div>
+            <div className="rt-tip-note">Only one neighbour within ±{detail.tolerance} pts — used it directly.</div>
+          </>
+        )}
+        {detail.mode === 'none' && (
+          <div className="rt-tip-note">No listed strike within ±{detail.tolerance ?? '?'} pts of the target — price omitted (shown as —).</div>
+        )}
+      </>
+    );
+  };
 
   const filteredResults = useMemo(() => {
     const processedResults = results.map(r => {
-      // Use nearest-available strike when exact ATM is missing
-      const buyIntrinsic = getTickerPrice(atmStrike, type, 'bid');          // null if unavailable
+      // Use nearest-available strike when exact ATM is missing. Capture the resolution
+      // detail (exact/bracket/single/none) so the cell can show a verification tooltip.
+      const buyInfo = resolveTickerPrice(atmStrike, type, 'bid');
+      const buyIntrinsic = buyInfo.price;                                   // null if unavailable
       const targetSellStrike = type === 'CALL' ? atmStrike + r.strikeDiff : atmStrike - r.strikeDiff;
-      const sellIntrinsic = getTickerPrice(targetSellStrike, type, 'ask'); // null if unavailable
+      const sellInfo = resolveTickerPrice(targetSellStrike, type, 'ask');
+      const sellIntrinsic = sellInfo.price;                                 // null if unavailable
       const lotSize = r.buyLeg.lotSize || 1;
 
       // Only compute P&L when both legs have valid prices
@@ -134,6 +236,8 @@ export default function ResultTable({
         netPremium: Number(rawNetPremium).toFixed(2),
         buyIntrinsic,
         sellIntrinsic,
+        buyIntrinsicDetail: buyInfo.detail,
+        sellIntrinsicDetail: sellInfo.detail,
         atAtmPnl,
         margin,
         roi,
@@ -151,7 +255,7 @@ export default function ResultTable({
     return processedResults.filter(r =>
       !r.hasAtmData || (r.atAtmPnl >= minAtmPnl && r.roi >= minAtmRoi)
     );
-  }, [results, getTickerPrice, atmStrike, type, config, currentSpot]);
+  }, [results, resolveTickerPrice, atmStrike, type, config, currentSpot]);
 
   return (
     <div className="scanner-table-wrap" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -338,8 +442,8 @@ export default function ResultTable({
 
                         <td style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.1)', background: 'rgba(0, 217, 163, 0.02)' }}>
                           <div>
-                            <div className="scanner-buy">{bestRow.buyIntrinsic != null ? `$${bestRow.buyIntrinsic.toFixed(2)}` : '—'}</div>
-                            <div className="scanner-sell">{bestRow.sellIntrinsic != null ? `$${bestRow.sellIntrinsic.toFixed(2)}` : '—'}</div>
+                            {renderIntrinsic(bestRow.buyIntrinsic, bestRow.buyIntrinsicDetail, 'bid', 'scanner-buy')}
+                            {renderIntrinsic(bestRow.sellIntrinsic, bestRow.sellIntrinsicDetail, 'ask', 'scanner-sell')}
                             <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>1:{bestRow.roundedAtmRatio}</div>
                           </div>
                         </td>
@@ -418,8 +522,8 @@ export default function ResultTable({
 
                             <td style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.1)', background: 'rgba(0, 217, 163, 0.01)' }}>
                               <div>
-                                <div className="scanner-buy">{r.buyIntrinsic != null ? `$${r.buyIntrinsic.toFixed(2)}` : '—'}</div>
-                                <div className="scanner-sell">{r.sellIntrinsic != null ? `$${r.sellIntrinsic.toFixed(2)}` : '—'}</div>
+                                {renderIntrinsic(r.buyIntrinsic, r.buyIntrinsicDetail, 'bid', 'scanner-buy')}
+                                {renderIntrinsic(r.sellIntrinsic, r.sellIntrinsicDetail, 'ask', 'scanner-sell')}
                                 <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>1:{r.roundedAtmRatio}</div>
                               </div>
                             </td>
@@ -449,6 +553,12 @@ export default function ResultTable({
           </table>
         )}
       </div>
+
+      {tip && (
+        <div className={`rt-tip${tip.below ? ' below' : ''}`} role="tooltip" style={{ left: tip.x, top: tip.y }}>
+          {renderTipContent(tip.detail, tip.field)}
+        </div>
+      )}
     </div>
   );
 }
