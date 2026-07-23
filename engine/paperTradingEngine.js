@@ -437,6 +437,12 @@ async function startSingleAccountEngine(account) {
           // Per-window SL/TP decoy diff (migration 031) — window value is primary,
           // account-level config is the fallback for rows that predate it.
           slTpDecoyDiff: s.sl_tp_decoy_diff ?? config.slTpDecoyDiff ?? 0,
+          // Per-window exit controls (migration 033) — window primary, account fallback.
+          // shortExitPrice governs the short buy-back trigger (and the live resting order);
+          // variableExitSlices + longExitSlices drive the long-only ladder's Variable mode.
+          shortExitPrice: s.short_exit_price ?? config.shortExitPrice ?? 1.1,
+          variableExitSlices: s.variable_exit_slices ?? config.variableExitSlices ?? false,
+          longExitSlices: s.long_exit_slices ?? config.longExitSlices ?? 10,
           // Per-window min-days-to-expiry (migration 019) — all accounts, paper AND live.
           // Falls back to the account-level config value for rows that predate it.
           daysToExpiry: s.days_to_expiry ?? config.daysToExpiry ?? 0,
@@ -2353,6 +2359,11 @@ async function startSingleAccountEngine(account) {
           exitPoints: activeSchedule.exitPoints ?? config.exitPoints,
           // SL/TP decoy diff (migration 031) — active window's value, account fallback.
           slTpDecoyDiff: activeSchedule.slTpDecoyDiff ?? config.slTpDecoyDiff ?? 0,
+          // Per-window exit controls (migration 033) — active window governs open
+          // positions (short buy-back trigger + long-only ladder), account is the fallback.
+          shortExitPrice: activeSchedule.shortExitPrice ?? config.shortExitPrice,
+          variableExitSlices: activeSchedule.variableExitSlices ?? config.variableExitSlices,
+          longExitSlices: activeSchedule.longExitSlices ?? config.longExitSlices,
           // Per-window min-days-to-expiry (migration 019) — all accounts, paper AND live.
           // Falls back to the account-level value for rows that predate the migration.
           daysToExpiry: activeSchedule.daysToExpiry ?? config.daysToExpiry,
@@ -3014,7 +3025,9 @@ async function startSingleAccountEngine(account) {
         // then closed later by the normal expiry / ATM-ITM-OTM exit rules.
         // the short leg will not be closed that cycle.
         const shortLiveAsk = tickerSell?.ask ?? null;
-        const targetShortExitPrice = config.shortExitPrice ?? 1.1;
+        // Active-window governs (migration 033): the short buy-back threshold follows the
+        // live schedule window, not the account base (which is only the gap fallback).
+        const targetShortExitPrice = effectiveConfig.shortExitPrice ?? 1.1;
         if (pos.sellQty > 0 && shortLiveAsk <= targetShortExitPrice) {
           const shortLotSize = pos.sellLeg.lotSize || 1;
           const exitShortPrice = liveExitSell; // ask (<= targetShortExitPrice)
@@ -3075,7 +3088,7 @@ async function startSingleAccountEngine(account) {
           // Snapshot the long lot (base for the 10-slice laddered exit) and build 10
           // equidistant exit levels spanning the long's current bid up to its entry price.
           const longBidAtExit = liveExitBuy; // long leg's live bid (the realistic sell price)
-          const generatedLevels = await getOrBuildLongExitLevels(longBidAtExit, pos, config);
+          const generatedLevels = await getOrBuildLongExitLevels(longBidAtExit, pos, effectiveConfig);
 
           pos.entryFee = Math.max(0, (pos.entryFee || 0) - shortEntryFee);
           pos.sellLeg = { ...pos.sellLeg, lotSize: 0 };
@@ -3087,7 +3100,7 @@ async function startSingleAccountEngine(account) {
             longExitLevels: generatedLevels,
           };
           pos.margin = longOnlyMargin(pos);
-          log(`[${accountState.name}] 🎚️ Long ladder set: ${pos.buyLeg.strike} | bid at exit: ${longBidAtExit} | config variable: ${config.variableExitSlices} | levels ${JSON.stringify(pos.buyLeg.longExitLevels)}`);
+          log(`[${accountState.name}] 🎚️ Long ladder set: ${pos.buyLeg.strike} | bid at exit: ${longBidAtExit} | window variable: ${effectiveConfig.variableExitSlices} | levels ${JSON.stringify(pos.buyLeg.longExitLevels)}`);
 
           try {
             await supabase.from('active_positions').update({
@@ -3123,7 +3136,7 @@ async function startSingleAccountEngine(account) {
             pos.buyLeg.longExitStage = pos.buyLeg.longExitStage || 0;
           }
           if (!Array.isArray(pos.buyLeg.longExitLevels) || pos.buyLeg.longExitLevels.length === 0) {
-            pos.buyLeg.longExitLevels = await getOrBuildLongExitLevels(longBid, pos, config);
+            pos.buyLeg.longExitLevels = await getOrBuildLongExitLevels(longBid, pos, effectiveConfig);
           }
           const exitLevels = pos.buyLeg.longExitLevels;
           const baseLot = pos.buyLeg.longExitBaseLot || 0;
@@ -4222,7 +4235,7 @@ async function startSingleAccountEngine(account) {
             // (Dry-run keeps the engine-active exit model; resting orders need a real
             // exchange to rest on.)
             if (liveArmed && !live.dryRun && t.sellQty > 0) {
-              const exitPx = config.shortExitPrice ?? 1.1;
+              const exitPx = effectiveConfig.shortExitPrice ?? 1.1; // active-window short-exit (migration 033)
               const seRes = await live.closeLeg({
                 symbol: t.sellLeg.symbol, side: 'buy',
                 contracts: shortContracts(t.sellQty), price: exitPx, tag: `${t.id}-SEX`,
@@ -4351,26 +4364,31 @@ async function startSingleAccountEngine(account) {
 
   // ── Config hot-reload via Supabase Realtime ───────────────────────────
 
-  // ── Re-sync the resting short buy-back price when shortExitPrice changes ───
-  // When shortExitPrice changes on an account with OPEN live positions, the resting
-  // buy-back limit order was placed at the old price — edit it in place. Armed real live
-  // only; no-op for paper, dry-run logs the intended edit.
-  async function resyncRestingOrders(oldCfg) {
+  // ── Re-sync the resting short buy-back price to the CURRENT effective shortExitPrice ───
+  // shortExitPrice now lives PER SCHEDULE WINDOW (migration 033; account config is the gap
+  // fallback), so the effective value can change on a base-config edit OR a window flip.
+  // This computes the active-window value and edits only the positions whose resting buy-back
+  // is actually resting at a different price (compared against sellLeg.exitOrderPx) — so it's
+  // idempotent and a no-op when nothing drifted, no matter WHAT changed. Armed real live only;
+  // no-op for paper, dry-run logs the intended edit.
+  async function resyncRestingOrders() {
     if (accountState.mode !== 'live') return;
-    const shortPxChanged = (oldCfg.shortExitPrice ?? 1.1) !== (config.shortExitPrice ?? 1.1);
-    if (!shortPxChanged) return;
-    log(`[${accountState.name}] 🔧 Short-exit price changed — re-syncing resting buy-backs on ${positions.length} open position(s) | shortPx ${oldCfg.shortExitPrice}→${config.shortExitPrice}`);
-    for (const pos of positions) {
-      if (pos.underlying !== config.underlying) continue;
-      if (!(pos.sellQty > 0 && pos.sellLeg?.exitOrderId)) continue;
+    const activeSchedule = getActiveSchedule();
+    const effShortPx = activeSchedule?.shortExitPrice ?? config.shortExitPrice ?? 1.1;
+    const drifted = positions.filter(pos =>
+      pos.underlying === config.underlying
+      && pos.sellQty > 0 && pos.sellLeg?.exitOrderId
+      && (pos.sellLeg?.exitOrderPx ?? null) !== effShortPx);
+    if (drifted.length === 0) return;
+    log(`[${accountState.name}] 🔧 Short-exit price re-sync — moving ${drifted.length} resting buy-back(s) to $${effShortPx}${activeSchedule ? ` [window "${activeSchedule.label}"]` : ''}`);
+    for (const pos of drifted) {
       try {
-        const newPx = config.shortExitPrice ?? 1.1;
         const r = await live.editOrder({
           id: pos.sellLeg.exitOrderId, symbol: pos.sellLeg.symbol,
-          price: newPx, size: shortContracts(pos.sellQty), tag: `${pos.id}-SEX-edit`,
+          price: effShortPx, size: shortContracts(pos.sellQty), tag: `${pos.id}-SEX-edit`,
         });
         if (r.ok && !r.skipped) {
-          pos.sellLeg = { ...pos.sellLeg, exitOrderPx: newPx };
+          pos.sellLeg = { ...pos.sellLeg, exitOrderPx: effShortPx };
           await supabase.from('active_positions').update({ sell_leg: JSON.stringify(pos.sellLeg) }).eq('id', pos.id);
         }
       } catch (e) {
@@ -4516,7 +4534,6 @@ async function startSingleAccountEngine(account) {
     try {
       const oldUnderlying = config.underlying;
       const oldExpiry = config.expiry;
-      const oldExitCfg = { shortExitPrice: config.shortExitPrice, exitType: config.exitType, exitPoints: config.exitPoints };
       await fetchConfig();
 
       if (config.underlying !== oldUnderlying || config.expiry !== oldExpiry) {
@@ -4528,8 +4545,8 @@ async function startSingleAccountEngine(account) {
         tickerData = await backfillTickers(config.underlying, symbolMeta, tickerData);
       }
 
-      // Modify open positions' resting orders to match the new exit config.
-      await resyncRestingOrders(oldExitCfg);
+      // Modify open positions' resting orders to match the new effective exit config.
+      await resyncRestingOrders();
       await syncExitBrackets('filter change');
     } catch (e) {
       logError(`[${accountState.name}] Error during config reload:`, e);
@@ -4558,10 +4575,12 @@ async function startSingleAccountEngine(account) {
       scheduleReloadTimer = setTimeout(() => {
         scheduleReloadTimer = null;
         log(`[${accountState.name}] Schedules change detected — reloading...`);
-        // Exit type/points live PER SCHEDULE WINDOW, so a window edit must also move the
-        // brackets of open positions the window governs — reload the windows first, then
-        // resync brackets to the new effective level (idempotent; no-op if nothing drifted).
+        // Exit type/points AND short-exit price / variable slices live PER SCHEDULE WINDOW
+        // (migrations 019/033), so a window edit must move open positions the window governs:
+        // reload the windows first, then re-sync the resting short buy-back price AND the
+        // SL/TP brackets to the new effective values (both idempotent; no-op if nothing drifted).
         fetchSchedules()
+          .then(() => resyncRestingOrders())
           .then(() => syncExitBrackets('schedule change'))
           .catch(e => logError(`[${accountState.name}] schedules reload failed:`, e));
       }, 400);
@@ -4638,12 +4657,13 @@ async function startSingleAccountEngine(account) {
   await fetchActivePositions();
   log(`[${accountState.name}] Active positions loaded: ${positions.length}`);
 
-  // Sync resting orders + brackets to Delta on startup to match the current DB config.
-  // (shortExitPrice: null → the short-px resync self-skips; the bracket sync is idempotent
-  // and corrects any exit-level drift that happened while the engine was down.)
+  // Sync resting orders + brackets to Delta on startup to match the current effective config.
+  // (both are idempotent — the short-px resync moves any resting buy-back whose price drifted
+  // from the active window's shortExitPrice, and the bracket sync corrects any exit-level
+  // drift that happened while the engine was down.)
   try {
     if (accountState.mode === 'live') {
-      await resyncRestingOrders({ shortExitPrice: null, exitType: null, exitPoints: null });
+      await resyncRestingOrders();
       await syncExitBrackets('startup');
     }
   } catch (e) {

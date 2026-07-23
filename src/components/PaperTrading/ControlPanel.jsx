@@ -156,34 +156,9 @@ export default function ControlPanel({
             </div>
           </div>
 
-          <div className="pt-filter-cluster">
-            <span className="pt-cluster-head">Exit Rules</span>
-            <div className="pt-cluster-fields">
-              <div className="form-group">
-                <label className="pt-field-label" style={{ marginBottom: 0 }}>Short Exit Price</label>
-                <CustomInput type="number" step="0.1" prefix="$" showStepper width={100}
-                  value={draftConfig?.shortExitPrice ?? ''}
-                  onChange={e => updateDraftConfig('shortExitPrice', e.target.value)} />
-              </div>
-              {draftConfig?.variableExitSlices && (
-                <div key="longExitSlices" className="form-group">
-                  <label className="pt-field-label" style={{ marginBottom: 0 }}>Long Exit Slices</label>
-                  <CustomInput type="number" step="1" showStepper width={100} value={draftConfig.longExitSlices ?? 10}
-                    onChange={e => updateDraftConfig('longExitSlices', e.target.value)} />
-                </div>
-              )}
-              <div key="variableExitSlices" className="form-group">
-                <label htmlFor="variableExitSlices" className="pt-field-label" style={{ marginBottom: 0, cursor: 'pointer' }}>Variable Exit Slices</label>
-                <div style={{ height: 34, display: 'flex', alignItems: 'center' }}>
-                  <label className="pt-switch">
-                    <input type="checkbox" id="variableExitSlices" checked={draftConfig?.variableExitSlices ?? false}
-                      onChange={e => updateDraftConfig('variableExitSlices', e.target.checked)} />
-                    <span className="pt-slider"></span>
-                  </label>
-                </div>
-              </div>
-            </div>
-          </div>
+          {/* Exit Rules (Short Exit Price, Variable Exit Slices, Long Exit Slices) moved to
+              per-schedule-window controls (migration 033) — edit them in the Schedule Panel,
+              per window. The account-level values remain only as the schedule-gap fallback. */}
 
           {/* Full Deployment — PAPER ONLY. Once per IST day at the set time, concentrate
               the whole remaining allocated pool across the spreads openable then instead

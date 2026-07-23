@@ -381,7 +381,7 @@ Evaluated only if no expiry exit was triggered.
 
 > The former Priority-4 **Rotation & Leg Swap** logic has been **removed** (see §E). A full spread is now unwound in two phases; this is phase one. In actual code order the short-leg exit and the long-ladder exit (§D) are checked **before** the expiry / ATM-ITM-OTM catch-alls above — those remain the catch-alls for the held long.
 
-- Config: `shortExitPrice` (default `1.1`). For full spreads (`sellQty > 0`), each cycle reads the short leg's **live ask**; if `liveAsk <= shortExitPrice` the engine buys back **only** the short at the ask (gap-safe — fires even if the ask jumped past the threshold) and **holds** the long.
+- Config: `shortExitPrice` (default `1.1`), **per schedule window** (migration 033 — `effectiveConfig.shortExitPrice`, active-window-governs; account base is the gap fallback). For full spreads (`sellQty > 0`), each cycle reads the short leg's **live ask**; if `liveAsk <= shortExitPrice` the engine buys back **only** the short at the ask (gap-safe — fires even if the ask jumped past the threshold) and **holds** the long. On **live** the resting reduce-only buy-back is re-priced to the active window's value on a window flip (`resyncRestingOrders`, called on schedule change + config change + startup — idempotent, edits only orders whose resting price drifted from the effective value).
 - Fires **once** per position — setting `sellQty → 0` blocks re-trigger.
 - Booked in `trade_history` as a partial (`is_partial = true`, `exit_reason = "Short Leg Exit @ Ask $…"`, `trade_id = ${pos.id}-SE`). The short's entry-fee share is apportioned (`calculateFee(entrySellPrice, entrySpotPrice, sellQty, sellLotSize)`, capped to the remaining entry fee).
 - Position becomes long-only: `sellQty = 0`, `sellLeg.lotSize = 0`, margin recomputed `calcMargin(entryBuyPrice, buyLot, spot, 0, 1)`; the long lot is snapshotted as `buyLeg.longExitBaseLot` (`longExitStage = 0`) and persisted in `buy_leg`. The row is **kept** (not deleted).
@@ -390,7 +390,7 @@ Evaluated only if no expiry exit was triggered.
 
 ### D. Long-Only Laddered Exit
 
-Once a position is long-only, the held long is scaled out as its own **bid** recovers. Config: `longExitSlices` (default `10`) + a "Variable Exit Slices" toggle.
+Once a position is long-only, the held long is scaled out as its own **bid** recovers. Config: `longExitSlices` (default `10`) + a "Variable Exit Slices" toggle — both **per schedule window** (migration 033; `getOrBuildLongExitLevels` is passed `effectiveConfig`, so the active window at ladder-build time governs, account base is the fallback).
 
 - **Constant Mode (toggle OFF):** exactly 5 slices — if current bid `< 25` → levels `[10,20,30,40,50]`; if bid `>= 25` → `[25,50,75,100,125]`.
 - **Variable Mode (toggle ON):** `longExitSlices` equidistant levels from the current bid up to `pastHigh` = the max candle high over the last 4h (`getOptionHigh(symbol, 4)`, falling back to the entry buy price if candles are unavailable). First slice exits immediately at the current bid; `step = (upperBound − currentBid) / (longExitSlices − 1)`, level `i = currentBid + i·step`.

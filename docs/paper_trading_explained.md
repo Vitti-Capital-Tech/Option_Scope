@@ -248,8 +248,9 @@ Every candidate pair must pass **all** of these filters to be considered:
 | 17 | **Exit Points** | `exitPoints` (default: 0) | Point offset threshold from the buy strike required to exit the position (applicable for ITM/OTM exit types). **Per schedule window**, alongside Exit Type. |
 | 17b | **SL/TP Diff (pts)** | `slTpDecoyDiff` / `sl_tp_decoy_diff` (default: 0) | Migration 031/032. Points to shift the exchange (decoy) SL/TP away from the real exit level, in the harder-to-trigger direction (call: real + diff, put: real − diff). `0` = decoy == real (feature off, backward compatible). **Per schedule window** (account config is fallback). Paper records real/decoy on the position for validation; live drives the exchange bracket. See [SL/TP Decoy](#sltp-decoy-sl_tp_decoy_diff-migration-031032). |
 | 18 | **Leg Swap Net Premium** | `legSwapNetPremium` (default: 0) | ⚠️ **Deprecated / unused.** Leg swaps have been removed from the engine. The config field is still loaded for backward compatibility but no longer affects behaviour. |
-| 19 | **Short Exit Price** | `shortExitPrice` (default: 1.1) | The short option's live ASK price threshold below which the short leg is automatically bought back (holding the long leg). |
-| 20 | **Long Exit Slices** | `longExitSlices` (default: 10) | The number of scale-out levels/slices the held long leg is exited in as its own BID price recovers. |
+| 19 | **Short Exit Price** | `shortExitPrice` (default: 1.1) | The short option's live ASK price threshold below which the short leg is automatically bought back (holding the long leg). **Now per schedule window** (migration 033) — the active window governs open positions (account base is the gap fallback). On live it also prices the resting reduce-only buy-back, re-synced on a window flip. |
+| 20 | **Long Exit Slices** | `longExitSlices` (default: 10) | The number of scale-out levels/slices the held long leg is exited in as its own BID price recovers (Variable mode only). **Per schedule window** (migration 033), coupled to Variable Exit Slices. |
+| 20b | **Variable Exit Slices** | `variableExitSlices` (default: false) | Toggle for the long-only ladder's Variable mode (equidistant bid levels up to the recent high) vs the fixed 5-step ladder. **Per schedule window** (migration 033). |
 
 ### How the Sell Quantity (Ratio) Is Calculated
 
@@ -709,6 +710,9 @@ If shortLeg liveAsk ≤ shortExitPrice (default: 1.1) → buy back ONLY the shor
 > [!NOTE]
 > The trigger is gap-safe — even if the ask jumps past the threshold (e.g. 1.15 → 1.05 when `shortExitPrice` is 1.1) between cycles it still fires. It only ever fires **once** per position: once the short is bought back, `sellQty` becomes 0 and the `sellQty > 0` guard blocks any re-trigger.
 
+> [!NOTE]
+> **`shortExitPrice` comes from the currently-active schedule window** (`effectiveConfig`, migration 033), not the account base. If the active window changes while a full spread is open, its buy-back threshold follows the new window (active-window-governs; account base is the gap fallback). On **live** the resting reduce-only buy-back order is re-priced to the new window's value on the flip (`resyncRestingOrders`).
+
 ### What Happens
 
 1. The short leg is **bought back at the ask** (`liveExitSell`, ≤ `shortExitPrice`). Its P&L is recorded in `trade_history` as a partial row (`is_partial = true`, reason `Short Leg Exit @ Ask $...`). Its `trade_id` is `${pos.id}-SE` — deterministic and fires once per position ([details](#duplicate-exit-prevention-idempotent-writes)).
@@ -721,7 +725,7 @@ If shortLeg liveAsk ≤ shortExitPrice (default: 1.1) → buy back ONLY the shor
 
 ## Long-Only Laddered Exit
 
-Once a position is long-only (short leg gone), the held long leg is scaled out in slices as its own **bid** recovers. The ladder levels are built based on the **Variable Exit Slices** configuration:
+Once a position is long-only (short leg gone), the held long leg is scaled out in slices as its own **bid** recovers. The ladder levels are built based on the **Variable Exit Slices** configuration (`variableExitSlices` + `longExitSlices`, **per schedule window** — migration 033; the active window at ladder-build time governs, account base is the fallback):
 
 ### 1. Constant Mode (Variable Exit Slices = OFF)
 Predefined exit tiers are constructed with exactly **5 slices** depending on the long option's current bid (`liveExitBuy`):

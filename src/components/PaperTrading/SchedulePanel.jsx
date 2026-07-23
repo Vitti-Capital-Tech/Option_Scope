@@ -20,6 +20,9 @@ const DEFAULT_WINDOW = {
   exitType: 'ATM',
   exitPoints: 0,
   slTpDecoyDiff: 0,
+  shortExitPrice: 1.1,
+  variableExitSlices: false,
+  longExitSlices: 10,
   daysToExpiry: 0,
   hedgeStrikeType: 'none',
   hedgeCallPrice: 0,
@@ -662,6 +665,31 @@ export default function SchedulePanel({
                   <span className="schedule-item-label" title="Shift the exchange (decoy) SL/TP this many points away from the real exit level (harder-to-trigger direction). 0 = off (decoy = real).">SL/TP Diff</span>
                   <CustomInput type="number" min="0" step="1" suffix="pts" value={s.slTpDecoyDiff ?? 0} onChange={e => handleChange(s.id, 'slTpDecoyDiff', Number(e.target.value))} />
                 </div>
+
+                {/* Per-window exit controls (migration 033) — moved here from the global
+                    filter panel. Short buy-back threshold + the long-only ladder's Variable
+                    mode (with its slice count, shown only when Variable is ON). */}
+                <div className="schedule-item-block schedule-item-num-block">
+                  <span className="schedule-item-label" title="The short leg's live-ask threshold below which the short is bought back and the long is held.">Short Exit Price</span>
+                  <CustomInput type="number" min="0" step="0.1" prefix="$" value={s.shortExitPrice ?? 1.1} onChange={e => handleChange(s.id, 'shortExitPrice', Number(e.target.value))} />
+                </div>
+
+                <div className="schedule-item-block schedule-item-num-block">
+                  <span className="schedule-item-label" htmlFor={`variableExitSlices_${s.id}`} style={{ cursor: 'pointer' }} title="Long-only ladder Variable mode: scale the held long out over N equidistant bid levels up to the recent high, instead of the fixed 5-step ladder.">Variable Exit Slices</span>
+                  <div style={{ height: 34, display: 'flex', alignItems: 'center' }}>
+                    <label className="pt-switch">
+                      <input type="checkbox" id={`variableExitSlices_${s.id}`} checked={s.variableExitSlices ?? false} onChange={e => handleChange(s.id, 'variableExitSlices', e.target.checked)} />
+                      <span className="pt-slider"></span>
+                    </label>
+                  </div>
+                </div>
+
+                {s.variableExitSlices && (
+                  <div className="schedule-item-block schedule-item-num-block">
+                    <span className="schedule-item-label" title="Number of scale-out slices for the held long leg in Variable mode.">Long Exit Slices</span>
+                    <CustomInput type="number" min="1" step="1" value={s.longExitSlices ?? 10} onChange={e => handleChange(s.id, 'longExitSlices', Number(e.target.value))} />
+                  </div>
+                )}
 
                 {/* Per-window Min Days to Expiry (migration 019) — all accounts, paper AND
                     live. The traded expiry follows the active window's DTE. */}
