@@ -19,6 +19,7 @@ const DEFAULT_WINDOW = {
   maxNetPremium: 20,
   exitType: 'ATM',
   exitPoints: 0,
+  slTpDecoyDiff: 0,
   daysToExpiry: 0,
   hedgeStrikeType: 'none',
   hedgeCallPrice: 0,
@@ -650,6 +651,17 @@ export default function SchedulePanel({
                   <div className="schedule-item-block schedule-item-num-block">
                     <span className="schedule-item-label">Exit Points</span>
                     <CustomInput type="number" min="0" step="1" value={s.exitPoints ?? 0} onChange={e => handleChange(s.id, 'exitPoints', Number(e.target.value))} />
+                  </div>
+                )}
+
+                {/* SL/TP Diff (migration 031) — LIVE only. Points to offset the resting
+                    exchange bracket AWAY from the real exit level so Delta shows a decoy
+                    SL/TP; the engine still triggers the real exit itself. 0 = decoy off
+                    (bracket sits at the real level). Inert for paper (no exchange orders). */}
+                {!isPaper && (
+                  <div className="schedule-item-block schedule-item-num-block">
+                    <span className="schedule-item-label" title="Offsets the exchange SL/TP away from the real exit level (decoy). The engine triggers the real exit itself; 0 = disabled.">SL/TP Diff (pts)</span>
+                    <CustomInput type="number" min="0" step="1" value={s.slTpDecoyDiff ?? 0} onChange={e => handleChange(s.id, 'slTpDecoyDiff', Number(e.target.value))} />
                   </div>
                 )}
 
