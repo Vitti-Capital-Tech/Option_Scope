@@ -469,21 +469,27 @@ remainingSlots  = max(1, maxPos − occupiedSlots)
 partMargin      = remainingBudget / remainingSlots        # target margin for the next position
 ```
 
-Each candidate spread is then **scaled** so its margin fills `partMargin` (still clamped by the $195K short-notional cap), instead of trading a fixed 1 unit:
+Each candidate spread is then **scaled** so its margin fills `partMargin` (still clamped by the $195K short-notional cap as an upper bound), instead of trading a fixed 1 unit. This mirrors the **live** sizing path — take the 1:ratio unit's margin, then multiply the whole spread by `partMargin ÷ unitMargin` — so the margin **actually used equals the assigned `partMargin`, never more**:
 
 ```
-baseMargin      = calcMargin(entryBuyPrice, originalLotSize, spot, ratioToUse, sellLotSize)
-scale           = partMargin / baseMargin
-adjustedLotSize = originalLotSize × scale
-adjustedSellQty = ratioToUse × scale
+baseShortNotional = spot × ratioToUse × sellLotSize          # UNCAPPED
+baseMargin        = entryBuyPrice × originalLotSize + baseShortNotional / 200
+scale             = partMargin / baseMargin
+adjustedLotSize   = originalLotSize × scale
+adjustedSellQty   = ratioToUse × scale
 ```
+
+> [!IMPORTANT]
+> **`baseMargin` (the scale basis) must use the UNCAPPED short notional.** `calcMargin()` hard-caps the short notional at $195K, but a paper base unit (`lotSize = 1`, full ratio) routinely has `spot × ratio × sellLot` far above $195K — so a *capped* unit margin comes out **deflated**. Scaling off a deflated base makes `scale` too large; then the scaled-**down** position's short sits well below the cap, so its real margin **overshoots** the intended `partMargin` (the observed "$32 target → $58 used" case, ~1.8×). Because every position over-consumed, the pool drained before all slots filled and the last slot was starved. Computing `baseMargin` from the **true** short notional keeps margin linear in `scale`, so `estMargin == partMargin` exactly (verified for parts up to where the cap binds). Paper allows **fractional lots**, so — unlike live, which rounds to whole contracts (min 1) — it lands on `partMargin` with no rounding drift.
+
+The $195K short-notional cap is still applied **after** scaling as a hard ceiling: for a large `partMargin` (e.g. the daily full-deployment concentrate fill) where the scaled short would exceed $195K notional, both legs are rescaled down together — so the position uses **less** than `partMargin`, never more, and no short ever exceeds $195K notional.
 
 If the pool is exhausted (`partMargin ≈ 0`), new paper entries self-skip that cycle (mirrors the live "no budget" skip). Paper stays on its notional/`lotSize` margin basis (`contractValue` remains `null`) — only the sizing *amount* changed, not the P&L basis.
 
 **Worked example** — equity $3000, allocation 90%, window Max Combined 4:
 - Allocated pool = $2700; buffer = $300.
 - Per-position margin = $2700 ÷ 4 = **$675**.
-- Caps: 3 calls / 3 puts, ≤ 4 total. Opening 4 positions at ~$675 consumes the pool; the next cycle sees `remainingBudget ≈ 0` and skips until a slot frees or equity grows.
+- Caps: 3 calls / 3 puts, ≤ 4 total. Each position is sized to use **exactly $675** of margin (below the $195K cap), so 4 positions consume the pool evenly ($2700); the next cycle sees `remainingBudget ≈ 0` and skips until a slot frees or equity grows. (Before the uncapped-`baseMargin` fix, each position over-consumed — e.g. ~$825 against a $675 target — so the pool drained early and the last slot(s) were starved down to a few dollars.)
 
 > [!NOTE]
 > **Log line**: watch for `💰 PAPER sizing: equity $… × …% = $… budget | used $… | remaining $… ÷ N free slot(s) (window combined cap M) = $…/position`.

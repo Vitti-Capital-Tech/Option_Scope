@@ -3801,13 +3801,26 @@ async function startSingleAccountEngine(account) {
             const effectivePart = paperRemainingBudget != null
               ? Math.min(partMargin, Math.max(0, paperRemainingBudget - paperDeployed))
               : partMargin;
-            const baseMargin = calcMargin(entryBuyPrice, originalLotSize, spotPrice, ratioToUse, sellLotSize);
+            // Base UNIT margin (the scale basis) MUST use the UNCAPPED short notional.
+            // calcMargin() hard-caps the short notional at $195k, but a paper base unit
+            // (lotSize 1, full ratio) routinely has spot × ratio × sellLot far above $195k,
+            // so the capped unit margin comes out DEFLATED. Scaling off a deflated base makes
+            // `scale` too large; then the scaled-DOWN position's short sits well below the
+            // cap, so its real margin overshoots the intended `part` (the $58-vs-$32 case).
+            // Computing the base with the TRUE (uncapped) short notional keeps margin linear
+            // in `scale`, so estMargin lands on `part` and positions don't over-consume the
+            // pool. The $195k ceiling is STILL enforced after scaling (below), so a large
+            // part / concentrate fill can never place a short past $195k notional.
+            const baseShortNotional = spotPrice * ratioToUse * sellLotSize;
+            const baseMargin = (entryBuyPrice || 0) * originalLotSize + baseShortNotional / 200;
             scale = baseMargin > 0 ? (effectivePart / baseMargin) : 1;
             if (!(scale > 0)) scale = 1;
             adjustedLotSize = Number((originalLotSize * scale).toFixed(4));
             adjustedSellQty = Number((ratioToUse * scale).toFixed(4));
-            // Short-notional cap: rescale BOTH legs down together so the 1:ratio is
-            // preserved and the short notional lands at the cap.
+            // Short-notional cap (HARD LIMIT — kept): rescale BOTH legs down together so the
+            // 1:ratio is preserved and the short notional never exceeds $195k. Only binds for
+            // a large part (e.g. the 4:30 concentrate fill); normal per-slot sizing stays
+            // below it, so estMargin == part there.
             let shortValue = spotPrice * adjustedSellQty * sellLotSize;
             if (shortValue >= 195000) {
               const capScale = 195000 / shortValue;
