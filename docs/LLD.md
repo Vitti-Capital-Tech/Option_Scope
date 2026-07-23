@@ -223,7 +223,12 @@ After every scan, `publishTopSpreads` packages the top-3 calls and puts into a p
 
 **DB-Level Count Guard (pre-insert)**: Before inserting any new position, the engine queries `active_positions` for the current `(underlying, type)` pair, counting **full spreads only** (`.gt('sell_qty', 0)`, so held long-only rows from a short-leg exit don't consume a slot — total active rows can exceed the cap). If the live count is `>= config.numberOfCalls` (calls) or `config.numberOfPuts` (puts), the insert is aborted. These pre-order reads are **fail-closed** for live: any query error skips the entry (so a transient read failure can't let a duplicate reach real placement). Uses plain `.select('id')` (not `{ head: true }`) to ensure non-null response data.
 
-**DB-Level Strike Uniqueness (pre-insert)**: After the count check, the engine queries active positions for duplicate `buy_strike` (`buyConflict`) and `sell_strike` (`sellConflict`) values for the same `(underlying, type)` and `account_id`. If any conflict is found, the insert is aborted with a console warning.
+**DB-Level Strike Uniqueness (pre-insert)**: A strike hosts **at most one leg** across all open positions of the same `(account_id, underlying, type, expiry)`. Occupied strikes = every open **long** (`buy_strike`) ∪ every **active short** (`sell_strike` WHERE `sell_qty > 0`); a long-only remnant frees its old short strike (migration `026`) but keeps its long strike occupied. After the count check the engine runs two `.or()` reads:
+
+- **Candidate long strike free** (`buyConflict`): abort if `buy_strike = candBuy` **OR** (`sell_strike = candBuy` AND `sell_qty > 0`).
+- **Candidate short strike free** (`sellConflict`): abort if `buy_strike = candSell` **OR** (`sell_strike = candSell` AND `sell_qty > 0`).
+
+Both reads include the **cross-role** half — a new **short** cannot land on an existing open **long** strike (e.g. a long-only remnant's own long — you'd be long and short the same product, which nets/conflicts on Delta), and a new **long** cannot land on an existing active **short**. The active-short half matches the partial unique index (migration `026`); the cross-role half has no index and is enforced by these fail-closed reads. Any conflict aborts the insert with a console warning.
 
 **DB Unique Constraint Fallback**: PostgreSQL unique constraints `unique_buy_strike_per_type` and `unique_sell_strike_per_type` (scoped by `account_id`) act as the final safety net. Error code `23505` is caught and logged but does not crash the engine.
 
@@ -421,7 +426,7 @@ Per-candidate guards (when `wantEntries` is true):
 
 1. **Expiry Buffer Guard**: Skip if `minutesToExpiry < 5`.
 2. **Min Days to Expiry Guard**: Now driven by the **active schedule window's** `daysToExpiry` (migration `019`, paper v2) rather than an account-level field; the traded expiry is chosen as `current date + window DTE` (see §7 Product Refresh & Expiry). Live (v1) uses the account-level threshold and rolls forward only.
-3. **Strike Uniqueness (Local)**: Block if buy or sell strike already active in `remaining` or `newEntries` (same type/underlying).
+3. **Strike Uniqueness (Local)**: One leg per strike (same type/underlying). Block if the candidate's buy **or** sell strike lands on any strike another open position already occupies — its open long strike, plus its short strike only while the short is still active (`sellQty > 0`). This is **cross-role**: a new short is blocked on an existing (incl. long-only) long strike, and a new long on an existing active short strike.
 4. **Portfolio Cap (Local)**: Block if `remaining + newEntries count >= config.numberOfCalls` (for calls) or `config.numberOfPuts` (for puts) for this type.
 4. **Execution**: `entryBuyPrice = spread.ask`, `entrySellPrice = spread.bid`. Entry IVs captured: `entryBuyIv = ticker.askIv`, `entrySellIv = ticker.bidIv`. Baseline ATM ratio (`entryAtmRatio`) and unscaled lot size (`originalLotSize`) are computed.
    - **ATM Ratio Entry Scaling**: If `atmRatioScaling` is enabled, the target ratio is scaled using a percentage offset: `targetRatio = originalRatio + (pct / 100) * (atmRatioVal - originalRatio)`, where `pct` is `atmRatioPctCall`/`atmRatioPctPut` and `atmRatioVal` is the live ATM ratio rounded to 0.25. The entry ratio to use is `ratioToUse = Math.max(spread.sellQty, Math.round(targetRatio / 0.25) * 0.25)`. Both long lot size and short quantity are scaled under the 200X leverage limit ($195k cap) using this `ratioToUse`.
@@ -429,9 +434,9 @@ Per-candidate guards (when `wantEntries` is true):
 5. **$195K Short Value Cap**: If `spotPrice × sellQty × sellLotSize >= $195,000`, both lot size and sell qty are scaled down proportionally to bring the short notional to exactly $195K.
 6. **Supabase Insert (with three DB-level guards)**:
    - Count guard: `SELECT id WHERE underlying AND type AND account_id` — abort if count `>= config.numberOfCalls` (for calls) or `config.numberOfPuts` (for puts).
-   - Buy strike uniqueness: `SELECT id WHERE buy_strike = X AND account_id` — abort if exists (`buyConflict`).
-   - Sell strike uniqueness: `SELECT id WHERE sell_strike = Y AND account_id` — abort if exists (`sellConflict`).
-   - Unique constraint `23505` is the final net.
+   - Buy strike free (`buyConflict`): abort if `buy_strike = X` **OR** (`sell_strike = X` AND `sell_qty > 0`).
+   - Sell strike free (`sellConflict`): abort if `buy_strike = Y` **OR** (`sell_strike = Y` AND `sell_qty > 0`) — the cross-role half blocks shorting a strike an open long (incl. a long-only remnant) already holds.
+   - Unique constraint `23505` is the final net (same-role only; cross-role has no index, so the reads above are the enforcement).
 
 ### H. State Update Strategy
 

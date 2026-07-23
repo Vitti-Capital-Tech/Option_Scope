@@ -2517,18 +2517,22 @@ async function startSingleAccountEngine(account) {
         }
       }
 
+      // A strike hosts at most ONE leg across all open positions (same underlying/type/
+      // expiry). Each position OCCUPIES its open long strike, plus its short strike ONLY
+      // while the short is still active — a long-only remnant frees its OLD short strike
+      // (migration 026), but its long strike stays occupied. A candidate conflicts if
+      // EITHER of its legs lands on an occupied strike, INCLUDING cross-role: a new SHORT
+      // on an existing (long-only) LONG strike, or a new LONG on an existing active SHORT.
       const hasConflictWithOtherActivePositions = (spread, activePositions) => {
         const bStrike = Number(spread.buyLeg.strike);
         const sStrike = Number(spread.sellLeg.strike);
         const type = spread.buyLeg.type;
 
         return activePositions.some(p => {
-          if (Number(p.buyLeg.strike) === bStrike && Number(p.sellLeg.strike) === sStrike) {
-            return false;
-          }
-          return p.underlying === underlying &&
-            p.type === type &&
-            (Number(p.buyLeg.strike) === bStrike || Number(p.sellLeg.strike) === sStrike);
+          if (p.underlying !== underlying || p.type !== type) return false;
+          const occupied = [Number(p.buyLeg.strike)];                 // long leg is always open
+          if (p.sellQty > 0 && p.sellLeg?.strike != null) occupied.push(Number(p.sellLeg.strike)); // active short only
+          return occupied.includes(bStrike) || occupied.includes(sStrike);
         });
       };
 
@@ -3531,19 +3535,21 @@ async function startSingleAccountEngine(account) {
         if (fullDeployPass) {
           lastFullDeployKey = istDateKey;
           // Count spreads that would actually open now — mirrors the entry-loop guards:
-          // per-type derived cap, combined cap, and buy/sell strike conflicts vs open
-          // positions (simulating acceptance in the same order the loop processes). No
-          // forced fills: a slot with no qualifying candidate stays empty.
+          // per-type derived cap, combined cap, and ONE-LEG-PER-STRIKE cross-role conflicts
+          // (simulating acceptance in the same order the loop processes). No forced fills: a
+          // slot with no qualifying candidate stays empty.
           const typeCap430 = paperTypeCap(effectiveConfig);
           const simCounts = { call: 0, put: 0 };
           let simCombined = 0;
-          const takenBuy = { call: new Set(), put: new Set() };
-          const takenSell = { call: new Set(), put: new Set() };
+          // Occupied strikes per type = every open long strike ∪ every active short strike
+          // (sellQty > 0); a long-only remnant keeps its long strike but frees its old short.
+          // A candidate needs BOTH legs on free strikes — cross-role, matching the entry loop.
+          const occupied = { call: new Set(), put: new Set() };
           openHere.forEach(p => {
             if (p.sellQty > 0 && (p.type === 'call' || p.type === 'put')) { simCounts[p.type]++; simCombined++; }
             if (p.expiry === config.expiry && (p.type === 'call' || p.type === 'put')) {
-              if (!p.buyLeg?.isHedge) takenBuy[p.type].add(Number(p.buyLeg?.strike));
-              if (p.sellQty > 0) takenSell[p.type].add(Number(p.sellLeg?.strike));
+              if (!p.buyLeg?.isHedge && (p.buyLeg?.lotSize ?? 1) > 0 && p.buyLeg?.strike != null) occupied[p.type].add(Number(p.buyLeg.strike));
+              if (p.sellQty > 0 && p.sellLeg?.strike != null) occupied[p.type].add(Number(p.sellLeg.strike));
             }
           });
           let openable = 0;
@@ -3553,8 +3559,8 @@ async function startSingleAccountEngine(account) {
             if (t !== 'call' && t !== 'put') continue;
             const b = Number(sp.buyLeg.strike), s = Number(sp.sellLeg.strike);
             if (simCounts[t] >= typeCap430) continue;
-            if (takenBuy[t].has(b) || takenSell[t].has(s)) continue;
-            takenBuy[t].add(b); takenSell[t].add(s);
+            if (occupied[t].has(b) || occupied[t].has(s)) continue; // either leg on an occupied strike (cross-role)
+            occupied[t].add(b); occupied[t].add(s);
             simCounts[t]++; simCombined++; openable++;
           }
           if (openable > 0) {
@@ -3631,30 +3637,32 @@ async function startSingleAccountEngine(account) {
             continue;
           }
 
-          // Buy strike conflict check (hedge overlays excluded — they don't block spreads).
-          // Scoped to the CURRENT expiry: the same strike on a different expiry (e.g. a
-          // leftover position from the expiry we just rolled off) is a different position and
-          // must NOT block this one. newEntries are all this cycle's config.expiry already.
-          const buyConflictPos = remaining.find(
-            p => p.expiry === config.expiry && p.underlying === underlying && p.type === spreadType && !p.buyLeg?.isHedge && Number(p.buyLeg.strike) === bStrike
-          ) || newEntries.find(
-            p => p.underlying === underlying && p.type === spreadType && !p.buyLeg?.isHedge && Number(p.buyLeg.strike) === bStrike
-          );
-
-          // Sell strike conflict check (ignore long-only held positions — their short leg is
-          // gone). Expiry-scoped for the same reason as the buy-strike check above.
-          const sellConflictPos = remaining.find(
-            p => p.expiry === config.expiry && p.underlying === underlying && p.type === spreadType && p.sellQty > 0 && Number(p.sellLeg.strike) === sStrike
-          ) || newEntries.find(
-            p => p.underlying === underlying && p.type === spreadType && Number(p.sellLeg.strike) === sStrike
-          );
-
-          if (buyConflictPos) {
-            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Buy strike conflict with active/new position ${buyConflictPos.id} (${buyConflictPos.buyLeg.strike}/${buyConflictPos.sellLeg.strike})`);
-            continue;
-          }
-          if (sellConflictPos) {
-            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Sell strike conflict with active/new position ${sellConflictPos.id} (${sellConflictPos.buyLeg.strike}/${sellConflictPos.sellLeg.strike})`);
+          // Strike conflict check — ONE LEG PER STRIKE, cross-role. A position occupies its
+          // open LONG strike, plus its SHORT strike only while the short is active
+          // (sellQty > 0); a long-only remnant frees its old short strike but keeps its long.
+          // A candidate is blocked if EITHER of its legs — buy OR sell — lands on an occupied
+          // strike, including cross-role (e.g. shorting a strike another spread holds LONG).
+          // Covers already-open positions (`remaining`, current expiry — a different expiry is
+          // a different product) AND spreads staged earlier THIS cycle (`newEntries`), so the
+          // DB guards (which can't see this cycle's not-yet-inserted rows) aren't the only net.
+          // Hedge overlays don't reserve strikes. Mirrors the DB `.or()` guards below.
+          const strikesOccupiedBy = (p) => {
+            const occ = [];
+            if (!p.buyLeg?.isHedge && (p.buyLeg?.lotSize ?? 1) > 0 && p.buyLeg?.strike != null) occ.push(Number(p.buyLeg.strike));
+            if (p.sellQty > 0 && p.sellLeg?.strike != null) occ.push(Number(p.sellLeg.strike));
+            return occ;
+          };
+          const conflictScope = [
+            ...remaining.filter(p => p.expiry === config.expiry && p.underlying === underlying && p.type === spreadType),
+            ...newEntries.filter(p => p.underlying === underlying && p.type === spreadType),
+          ];
+          const strikeClash = conflictScope.find(p => {
+            const occ = strikesOccupiedBy(p);
+            return occ.includes(bStrike) || occ.includes(sStrike);
+          });
+          if (strikeClash) {
+            const clashDesc = `${strikeClash.buyLeg.strike}${strikeClash.sellQty > 0 ? '/' + strikeClash.sellLeg.strike : ' (long-only)'}`;
+            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: strike conflict with ${strikeClash.id} (${clashDesc}) — one leg per strike (cross-role).`);
             continue;
           }
 
@@ -4025,46 +4033,48 @@ async function startSingleAccountEngine(account) {
 
             // DB-level diversification guard check removed
 
-            // Buy strike uniqueness per account. FAIL-CLOSED: a failed uniqueness read
-            // must NOT let a duplicate through to real order placement — the unique index
-            // would then reject the insert AFTER the Delta orders are live, orphaning
-            // them (exactly the 65500/67000 incident). Skip the entry on a query error.
+            // Buy strike must be FREE — not occupied by any open long (buy_strike) AND not
+            // by any ACTIVE short (sell_strike WHERE sell_qty > 0). The cross-role half (long
+            // landing on an existing active short) is enforced here by read since there's no
+            // combined index for it. FAIL-CLOSED: a failed uniqueness read must NOT let a
+            // duplicate through to real order placement — the unique index would then reject
+            // the insert AFTER the Delta orders are live, orphaning them (the 65500/67000
+            // incident). Skip the entry on a query error.
             const { data: buyConflict, error: buyConflictError } = await supabase.from('active_positions').select('id')
               .eq('account_id', accountState.id)
               .eq('underlying', underlying).eq('type', t.type)
               .eq('expiry', config.expiry)
-              .eq('buy_strike', t.buyLeg.strike).limit(1);
+              .or(`buy_strike.eq.${t.buyLeg.strike},and(sell_strike.eq.${t.buyLeg.strike},sell_qty.gt.0)`).limit(1);
             if (buyConflictError) {
               logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} skipped — buy-strike uniqueness check failed (${buyConflictError.message}); failing safe.`);
               continue;
             }
             if (buyConflict && buyConflict.length > 0) {
-              logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} blocked. Buy strike conflict on DB.`);
+              logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} blocked. Long strike ${t.buyLeg.strike} already occupied (open long or active short).`);
               continue;
             }
 
-            // Sell strike uniqueness per account, scoped to positions with an ACTIVE short
-            // (sell_qty > 0). This MUST match the DB unique index, which is partial
+            // Sell strike must be FREE — not occupied by any ACTIVE short (sell_strike WHERE
+            // sell_qty > 0) AND not by any open long (buy_strike, incl. a long-only remnant
+            // still long there). The active-short half MUST match the DB partial unique index
             // (WHERE sell_qty > 0, migration 026): a long-only remnant keeps its sell_strike
-            // populated after the short is bought back, but it holds no active short there,
-            // so that strike is free to short again (possibly paired with a different buy
-            // strike). Because the partial index also ignores remnants, this read seeing
-            // exactly what the index enforces means no long-only remnant can trigger a
-            // post-order 23505 — closing the orphan window while still allowing re-entry.
-            // A genuine duplicate (two active shorts at the same strike/expiry) both carry
-            // sell_qty > 0, so it is still caught here and by the index.
-            // FAIL-CLOSED for the same reason as the buy-strike check above.
+            // populated after its short is bought back but holds no active short there, so
+            // THAT strike is free to short again — matching the index means no remnant can
+            // trigger a post-order 23505. The cross-role half (a new SHORT on an existing
+            // open LONG strike — e.g. a long-only remnant's own long) has no index, so it is
+            // enforced here by read: you cannot short a strike you are already long (they net
+            // on Delta / conflict). FAIL-CLOSED for the same reason as the buy-strike check.
             const { data: sellConflict, error: sellConflictError } = await supabase.from('active_positions').select('id')
               .eq('account_id', accountState.id)
               .eq('underlying', underlying).eq('type', t.type)
               .eq('expiry', config.expiry)
-              .eq('sell_strike', t.sellLeg.strike).gt('sell_qty', 0).limit(1);
+              .or(`buy_strike.eq.${t.sellLeg.strike},and(sell_strike.eq.${t.sellLeg.strike},sell_qty.gt.0)`).limit(1);
             if (sellConflictError) {
               logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} skipped — sell-strike uniqueness check failed (${sellConflictError.message}); failing safe.`);
               continue;
             }
             if (sellConflict && sellConflict.length > 0) {
-              logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} blocked. Sell strike conflict on DB.`);
+              logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} blocked. Short strike ${t.sellLeg.strike} already occupied (open long or active short).`);
               continue;
             }
 

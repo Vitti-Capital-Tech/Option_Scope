@@ -333,17 +333,20 @@ If daysRemaining < daysToExpiry → SKIP
 ```
 Requires the option's expiry to be at least `daysToExpiry` days away from the current time. On **v2 (paper)** accounts this uses the **currently-active schedule window's** value (`effectiveConfig.daysToExpiry`, migration `019`); on **v1 (live)** it uses the account-level config value. See [Strategy Versioning](#strategy-versioning-paper-vs-live).
 
-### Guard 3: Buy Strike Conflict (Local)
-```
-If any existing or newly-staged position already has this buy strike → SKIP
-```
-Prevents duplicate buy strikes within the same option type.
+### Guards 3 & 4: Strike Conflict (Local) — one leg per strike
 
-### Guard 4: Sell Strike Conflict (Local)
+A strike hosts **at most one leg** across all open positions of the same option type. The set of **occupied** strikes = every open **long** strike ∪ every **active short** strike (`sellQty > 0`). A candidate is skipped if **either** of its legs — buy **or** sell — lands on an occupied strike:
 ```
-If any existing FULL-SPREAD or newly-staged position already has this sell strike → SKIP
+occupied = { every position's buy strike }
+         ∪ { every position's sell strike WHERE sellQty > 0 }
+If candidate.buyStrike ∈ occupied OR candidate.sellStrike ∈ occupied → SKIP
 ```
-Prevents duplicate sell strikes within the same option type. **Long-only held positions are ignored here** (`sellQty > 0` filter) — their short leg is gone, so their old sell strike no longer blocks new entries. (The buy-strike conflict above still applies to held longs, since their long leg is still live at that strike.)
+This is **cross-role**, not just same-role:
+
+- A new **short** is blocked on an existing open **long** strike — including a **long-only remnant's** own long. You're already long that strike, so shorting it nets/conflicts (on Delta they're the same product). *This was the "unique strike not working" bug.*
+- A new **long** is blocked on an existing **active short** strike.
+
+**Long-only remnant nuance:** a held long-only position (short bought back, `sellQty = 0`) keeps its **long** strike occupied but **frees its old short strike** — that old short strike can be shorted again (matches the partial unique index, migration `026`). So a remnant blocks shorting/longing its *long* strike, but not its former *short* strike.
 
 ### Guard 5: Portfolio Cap (Local)
 ```
@@ -385,17 +388,23 @@ If count ≥ `config.numberOfCalls` (for calls) or `config.numberOfPuts` (for pu
 ```
 Double-check against the **database** (not just local memory) to prevent race conditions. On **paper accounts** the caps are the derived per-type + combined-total values from migration `027` (see Guard 5).
 
-### Guard 9: DB-Level Buy Strike Uniqueness
+### Guard 9: DB-Level Buy Strike Free
 ```
-Query: SELECT * FROM active_positions WHERE buy_strike = X AND type = Y AND account_id = Z
+Query: SELECT id FROM active_positions
+       WHERE account_id AND underlying AND type AND expiry
+         AND ( buy_strike = candBuy OR (sell_strike = candBuy AND sell_qty > 0) )
 If exists → BLOCK
 ```
+The candidate's **long** strike must not be occupied by another open long, nor by an active short (cross-role).
 
-### Guard 10: DB-Level Sell Strike Uniqueness
+### Guard 10: DB-Level Sell Strike Free
 ```
-Query: SELECT * FROM active_positions WHERE sell_strike = X AND type = Y AND account_id = Z
+Query: SELECT id FROM active_positions
+       WHERE account_id AND underlying AND type AND expiry
+         AND ( buy_strike = candSell OR (sell_strike = candSell AND sell_qty > 0) )
 If exists → BLOCK
 ```
+The candidate's **short** strike must not be occupied by an active short (same-role, matches the partial unique index), **nor by any open long** (cross-role — including a long-only remnant's long). The active-short half has a DB unique index (migration `026`) as a final net; the cross-role half has no index, so these **fail-closed** reads are the enforcement (a query error skips the entry).
 
 > [!IMPORTANT]
 > Guards 8-10 are **database-level guards** that act as a second safety net. Even if the in-memory checks pass, the DB checks can still block an entry. This prevents duplicate positions if two evaluation cycles overlap or if the engine restarts.
@@ -481,12 +490,15 @@ If the pool is exhausted (`partMargin ≈ 0`), new paper entries self-skip that 
 
 The dashboard's **Paper Balance** KPI tile surfaces equity, allocated, buffer, and per-position margin (`KpiDashboard.jsx`); the engine also publishes these via the heartbeat.
 
-### 4. Daily full-deployment fill (4:30 AM IST, paper only)
+### 4. Daily full-deployment fill (configurable time, paper only)
 
-Normal sizing **reserves** budget for every empty combined slot (`partMargin = remainingBudget ÷ remainingSlots`). So when qualifying spreads are scarce, empty slots stay unfilled and that slice of the allocated pool sits **idle**. Once per day, at **4:30 AM IST**, the engine does a one-time **full-deployment fill** so the balance left at that time gets deployed into the trades scanning actually finds.
+Normal sizing **reserves** budget for every empty combined slot (`partMargin = remainingBudget ÷ remainingSlots`). So when qualifying spreads are scarce, empty slots stay unfilled and that slice of the allocated pool sits **idle**. Once per day, at a configurable time (**default 04:30 IST**), the engine can do a one-time **full-deployment fill** so the balance left at that time gets deployed into the trades scanning actually finds.
 
-- **Trigger**: an upward crossing of `04:30` IST (`FULL_DEPLOY_MIN = 270`) on an entry-eligible cycle, latched to fire **at most once per IST date** (`lastEntryIstMin`/`lastFullDeployKey`). Crossing-based, so an engine that starts *after* 4:30 doesn't back-fire that day. In-memory latch (a same-day restart may re-fire). Paper accounts only.
-- **Concentrate sizing**: instead of ÷ empty slots, the pass counts the spreads that would **actually open now** (`K` — mirrors the entry-loop guards: per-type derived cap, combined cap, buy/sell strike conflicts) and sizes `partMargin = remainingBudget ÷ K`. So if fewer spreads qualify than there are empty slots, the leftover is **concentrated** into the ones that open (fuller deployment), still within the Max Combined count.
+> [!NOTE]
+> **Opt-in & configurable (migration `030` — `full_deploy_enabled` / `full_deploy_time`).** The fill is **OFF by default** — it runs only when `full_deploy_enabled` is set, at the `full_deploy_time` (`'HH:MM'` IST, default `'04:30'`). Both are **account-level** paper config, edited in the **Config Panel → Full Deployment** (paper accounts only): a toggle plus a time picker. When disabled, sizing always uses the normal ÷ empty-slots path (no concentrate fill). *(The DB columns live on `paper_trading_config`; see the migration for `full_deploy_enabled`/`full_deploy_time`.)*
+
+- **Trigger**: an upward crossing of `full_deploy_time` IST (`FULL_DEPLOY_MIN = parseIstMin(config.fullDeployTime)`, default `270` = 04:30) on an entry-eligible cycle, gated on `config.fullDeployEnabled`, latched to fire **at most once per IST date** (`lastEntryIstMin`/`lastFullDeployKey`). Crossing-based, so an engine that starts *after* the configured time doesn't back-fire that day. In-memory latch (a same-day restart may re-fire). Paper accounts only.
+- **Concentrate sizing**: instead of ÷ empty slots, the pass counts the spreads that would **actually open now** (`K` — mirrors the entry-loop guards exactly: per-type derived cap, combined cap, and the **one-leg-per-strike cross-role** conflict rule — a single occupied-strike set per type, seeded from open positions and grown as it simulates accepting each candidate) and sizes `partMargin = remainingBudget ÷ K`. So if fewer spreads qualify than there are empty slots, the leftover is **concentrated** into the ones that open (fuller deployment), still within the Max Combined count.
 - **No forced fills**: only spreads that pass the **normal** entry filters open. If `K = 0` (scanning finds nothing openable), **nothing** is filled and the budget stays idle until a later cycle finds candidates. Existing open positions are never scaled/topped up.
 - **Running-pool clamp**: each paper entry is sized toward `min(partMargin, remainingPool − deployedThisCycle)` and `deployedThisCycle` accrues each position's margin, so the pass can never collectively deploy more than the remaining pool even if `K` slightly mis-estimates.
 
@@ -801,8 +813,8 @@ Here's every safety guard in one table:
 | DB count guard | `paperTradingEngine.js` | Database-level check: max `config.numberOfCalls`/`config.numberOfPuts` **full spreads** (`.gt('sell_qty', 0)`) |
 | Paper balance / allocation (paper) | `paperTradingEngine.js` | **Paper only (migration `027`)**: per-position margin = (equity × allocation%) ÷ active window's `max_combined_positions`; entries self-skip when the allocated pool is exhausted |
 | 4:30 AM IST full-deploy (paper) | `paperTradingEngine.js` | **Paper only**: once/day, concentrates the remaining pool across only the spreads scanning finds openable (no forced fills, cap respected); running-pool clamp prevents over-deployment. See [Paper Balance & Combined-Position Sizing §4](#paper-balance--combined-position-sizing-paper-only) |
-| DB buy strike uniqueness | `paperTradingEngine.js` | Database-level: no duplicate buy strikes |
-| DB sell strike uniqueness | `paperTradingEngine.js` | Database-level: no duplicate sell strikes among full spreads (`.gt('sell_qty', 0)`) |
+| DB buy strike free | `paperTradingEngine.js` | Database-level: candidate long strike unoccupied — no open long there, and no active short there (`sell_qty > 0`, cross-role) |
+| DB sell strike free | `paperTradingEngine.js` | Database-level: candidate short strike unoccupied — no active short there (`sell_qty > 0`) **and no open long there** (cross-role; blocks shorting a strike a long-only remnant still holds long) |
 | Expiry buffer (5 min) | `paperTradingEngine.js` | Won't enter if less than 5 minutes to expiry |
 | Scaling floor (50%) | `paperTradingEngine.js` | Buy lot size can never go below 50% of initial (full-spread scaling only) |
 | Scaling ATM ratio guard | `paperTradingEngine.js` | Live ATM ratio must justify the lot reduction (full-spread scaling only) |
