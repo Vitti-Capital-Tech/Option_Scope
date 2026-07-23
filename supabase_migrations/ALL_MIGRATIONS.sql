@@ -1016,3 +1016,87 @@ BEGIN
       CHECK (full_deploy_time ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$');
   END IF;
 END $$;
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Migration 031 — SL/TP decoy diff
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Delta appears to leak resting SL/TP levels to market makers. To hide the real
+-- exit, the engine now places the exchange bracket/stop at a DECOY level and
+-- triggers the REAL exit itself (its existing spot-cross catch-all market-closes
+-- reduce-only at the true level). The exchange order stays as a genuine fallback.
+--
+--   • sl_tp_decoy_diff — points to shift the exchange (decoy) SL/TP AWAY from the
+--                        real exit level, in the harder-to-trigger direction
+--                        (call: real + diff, put: real − diff). So for an OTM 50
+--                        exit with diff 50 the exchange shows ATM; a larger diff
+--                        crosses past ATM into ITM. The engine's own trigger always
+--                        fires first (at the real level), so the decoy is a later,
+--                        worse-level fallback if the engine is down.
+--
+-- diff = 0 → decoy == real level == current behaviour (fully backward compatible,
+-- no separate on/off flag). Per-window value on paper_trading_schedules is primary;
+-- the paper_trading_config value is the account-level fallback. Live accounts only —
+-- paper trading places no exchange orders, so the value is inert there.
+--
+-- Additive only: ADD COLUMN IF NOT EXISTS. No data modified or removed.
+-- ─────────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE public.paper_trading_config
+  ADD COLUMN IF NOT EXISTS sl_tp_decoy_diff numeric NOT NULL DEFAULT 0;
+
+ALTER TABLE public.paper_trading_schedules
+  ADD COLUMN IF NOT EXISTS sl_tp_decoy_diff numeric NOT NULL DEFAULT 0;
+
+-- Keep the diff non-negative.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'paper_trading_config_sl_tp_decoy_diff_check'
+  ) THEN
+    ALTER TABLE public.paper_trading_config
+      ADD CONSTRAINT paper_trading_config_sl_tp_decoy_diff_check
+      CHECK (sl_tp_decoy_diff >= 0);
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'paper_trading_schedules_sl_tp_decoy_diff_check'
+  ) THEN
+    ALTER TABLE public.paper_trading_schedules
+      ADD CONSTRAINT paper_trading_schedules_sl_tp_decoy_diff_check
+      CHECK (sl_tp_decoy_diff >= 0);
+  END IF;
+END $$;
+
+
+-- ─── 032_active_positions_decoy_levels.sql ───
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Migration 032 — active_positions real/decoy exit levels (paper observability)
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Companion to migration 031 (sl_tp_decoy_diff). Stores, per OPEN position, the
+-- two index (spot) levels the decoy feature reasons about:
+--
+--   • real_exit_level  — the engine's TRUE exit trigger (computeIndexTriggerLevel:
+--                        ATM = buy strike, ITM/OTM = ± exitPoints). This is the
+--                        level the engine actually exits on, unchanged by the decoy.
+--   • decoy_exit_level — real_exit_level shifted sl_tp_decoy_diff points in the
+--                        HARDER-to-trigger direction (call: real + diff,
+--                        put: real − diff). On live this is where the exchange
+--                        bracket would sit (a later, worse-level fallback); here it
+--                        is recorded so the geometry can be VALIDATED in paper first.
+--
+-- PAPER accounts populate both (observational only — paper places no exchange
+-- orders, so nothing acts on the decoy; the real exit is untouched). LIVE rows are
+-- left NULL by this engine (the live decoy is enforced on the exchange, not stored).
+-- diff = 0 → decoy_exit_level == real_exit_level.
+--
+-- Stamped at entry and re-synced only when the active window's exitType/exitPoints
+-- drift (a rare update, not per-cycle). Additive only: ADD COLUMN IF NOT EXISTS.
+-- No data modified or removed.
+-- ─────────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE public.active_positions
+  ADD COLUMN IF NOT EXISTS real_exit_level numeric DEFAULT NULL;
+
+ALTER TABLE public.active_positions
+  ADD COLUMN IF NOT EXISTS decoy_exit_level numeric DEFAULT NULL;
+

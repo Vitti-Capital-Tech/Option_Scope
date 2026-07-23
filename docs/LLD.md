@@ -375,6 +375,8 @@ Evaluated only if no expiry exit was triggered.
     - Exit Reason: `Full Exit @ OTM (-{exitPoints}pts)` for calls / `(+{exitPoints}pts)` for puts
 - Action: 100% exit.
 
+> **SL/TP decoy (migration 031/032).** The level computed above (`computeIndexTriggerLevel`) is the **real** exit — the engine always triggers on it. A **decoy** level is derived from it by shifting `sl_tp_decoy_diff` (per active window; account config is fallback) in the harder-to-trigger direction: `computeDecoyExitLevel(type, real, diff)` = `call: real + diff`, `put: real − diff` (a call exits on spot ≥ level, a put on spot ≤ level, so the shift always makes the decoy fire *after* the real exit). `diff = 0` → decoy == real (backward compatible). On **live** this is where the exchange bracket would sit (a later, engine-down fallback); on **paper** it is **observational only** — the real exit is unchanged and the two levels are stamped on `active_positions.real_exit_level` / `decoy_exit_level` at entry, re-synced only when the window's `exitType`/`exitPoints` drift (mechanics at the end of this section). Live rows leave both columns `NULL`.
+
 **Priority 4 — Short-Leg-Only Exit ($1.1):**
 
 > The former Priority-4 **Rotation & Leg Swap** logic has been **removed** (see §E). A full spread is now unwound in two phases; this is phase one. In actual code order the short-leg exit and the long-ladder exit (§D) are checked **before** the expiry / ATM-ITM-OTM catch-alls above — those remain the catch-alls for the held long.
@@ -383,6 +385,8 @@ Evaluated only if no expiry exit was triggered.
 - Fires **once** per position — setting `sellQty → 0` blocks re-trigger.
 - Booked in `trade_history` as a partial (`is_partial = true`, `exit_reason = "Short Leg Exit @ Ask $…"`, `trade_id = ${pos.id}-SE`). The short's entry-fee share is apportioned (`calculateFee(entrySellPrice, entrySpotPrice, sellQty, sellLotSize)`, capped to the remaining entry fee).
 - Position becomes long-only: `sellQty = 0`, `sellLeg.lotSize = 0`, margin recomputed `calcMargin(entryBuyPrice, buyLot, spot, 0, 1)`; the long lot is snapshotted as `buyLeg.longExitBaseLot` (`longExitStage = 0`) and persisted in `buy_leg`. The row is **kept** (not deleted).
+
+**Decoy level sync (paper, migration 031/032):** at the top of each cycle (right after `effectiveConfig` is resolved), paper accounts recompute `real = computeIndexTriggerLevel(type, buyStrike, effectiveConfig)` and `decoy = computeDecoyExitLevel(type, real, effectiveConfig.slTpDecoyDiff)` for every open position (hedge legs skipped). If either differs from the stamped `pos.realExitLevel` / `pos.decoyExitLevel` (a drift — the active window changed its `exitType`/`exitPoints`), it updates `active_positions.real_exit_level` / `decoy_exit_level` and the in-memory fields; otherwise it's a pure in-memory compare (no DB write). The **entry** path stamps the same two values on insert. Purely observational — nothing here changes the real exit. Live accounts are skipped (their decoy is enforced on the exchange bracket, and both columns stay `NULL`).
 
 ### D. Long-Only Laddered Exit
 

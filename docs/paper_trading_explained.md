@@ -246,6 +246,7 @@ Every candidate pair must pass **all** of these filters to be considered:
 | 15 | **Spot Diff (%)** | `spotDiff` (default: 0.5) | The spot diff required for the next entry in the Active Positions table. |
 | 16 | **Exit Type** | `exitType` (default: 'ATM') | Option exit type parameter: `ATM`, `ITM`, or `OTM`. **Now configured per schedule window** — the **currently-active window governs open positions** (active-window-governs), so the exit level follows the live window, not the account default. Account base value is the gap fallback. |
 | 17 | **Exit Points** | `exitPoints` (default: 0) | Point offset threshold from the buy strike required to exit the position (applicable for ITM/OTM exit types). **Per schedule window**, alongside Exit Type. |
+| 17b | **SL/TP Diff (pts)** | `slTpDecoyDiff` / `sl_tp_decoy_diff` (default: 0) | Migration 031/032. Points to shift the exchange (decoy) SL/TP away from the real exit level, in the harder-to-trigger direction (call: real + diff, put: real − diff). `0` = decoy == real (feature off, backward compatible). **Per schedule window** (account config is fallback). Paper records real/decoy on the position for validation; live drives the exchange bracket. See [SL/TP Decoy](#sltp-decoy-sl_tp_decoy_diff-migration-031032). |
 | 18 | **Leg Swap Net Premium** | `legSwapNetPremium` (default: 0) | ⚠️ **Deprecated / unused.** Leg swaps have been removed from the engine. The config field is still loaded for backward compatibility but no longer affects behaviour. |
 | 19 | **Short Exit Price** | `shortExitPrice` (default: 1.1) | The short option's live ASK price threshold below which the short leg is automatically bought back (holding the long leg). |
 | 20 | **Long Exit Slices** | `longExitSlices` (default: 10) | The number of scale-out levels/slices the held long leg is exited in as its own BID price recovers. |
@@ -610,6 +611,38 @@ For CALLS: if spotPrice ≥ buyStrike - exitPoints → EXIT
 For PUTS:  if spotPrice ≤ buyStrike + exitPoints → EXIT
 ```
 An **early exit** — closes the spread while the long leg is still `exitPoints` short of its strike (spot ≥ `buyStrike - exitPoints` for calls, spot ≤ `buyStrike + exitPoints` for puts).
+
+### SL/TP Decoy (`sl_tp_decoy_diff`, migration 031/032)
+
+Delta appears to leak resting SL/TP levels to market makers. To hide the real exit, the plan is for **live** to place the exchange bracket/stop at a **decoy** level while the engine triggers the **real** exit itself (its existing spot-cross catch-all above, market-closing reduce-only at the true level). The exchange order stays as a genuine engine-down fallback.
+
+The **decoy level** is the real exit level shifted `sl_tp_decoy_diff` points in the **harder-to-trigger direction**, so the exchange (decoy) SL/TP always fires *after* the engine's real exit:
+
+```
+Real level  = computeIndexTriggerLevel(type, buyStrike, exitType/exitPoints)   # ATM / ITM / OTM
+Decoy level = CALL: real + diff        (a call exits on spot ≥ level, so higher = harder)
+              PUT:  real − diff        (a put  exits on spot ≤ level, so lower  = harder)
+```
+
+One rule covers every exit type — no special ITM handling, no warnings:
+
+| Exit | diff | Real | Decoy | Where decoy lands |
+|---|---|---|---|---|
+| Call OTM 50 | 50 | strike − 50 | strike | **ATM** |
+| Call OTM 50 | 100 | strike − 50 | strike + 50 | **ITM** |
+| Call ITM 50 | 50 | strike + 50 | strike + 100 | deeper ITM |
+| Call ATM | 50 | strike | strike + 50 | ITM |
+| Put OTM 50 | 50 | strike + 50 | strike | ATM |
+
+> [!IMPORTANT]
+> **`diff = 0` → decoy == real → current behaviour (fully backward compatible).** No separate on/off flag. Configured **per schedule window** on `paper_trading_schedules.sl_tp_decoy_diff` (primary; `paper_trading_config` is the account-level fallback), editable in **Schedule Panel → each window → "SL/TP Diff (pts)"**.
+
+**Paper is observational only.** Paper places no exchange orders, so nothing acts on the decoy — the real exit is **unchanged**. Each paper position simply records both levels on `active_positions` so the geometry can be validated before it drives live brackets:
+
+- `real_exit_level` — the engine's true exit trigger (the level it actually exits on).
+- `decoy_exit_level` — the decoy level (real ± diff, as above).
+
+Both are stamped at **entry** and re-synced only when the active window's `exitType`/`exitPoints` **drift** (a rare DB update, not per-cycle). **Live** rows leave both `NULL` (the live decoy lives on the exchange bracket, not stored). The **Open Positions** table shows them in the **"Exit Level (real · decoy)"** column (real on top, `decoy …` below; `(=real)` when `diff = 0`).
 
 ## Partial Exit / Scaling Logic
 

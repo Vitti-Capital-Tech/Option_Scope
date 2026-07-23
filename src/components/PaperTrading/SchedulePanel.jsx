@@ -19,6 +19,7 @@ const DEFAULT_WINDOW = {
   maxNetPremium: 20,
   exitType: 'ATM',
   exitPoints: 0,
+  slTpDecoyDiff: 0,
   daysToExpiry: 0,
   hedgeStrikeType: 'none',
   hedgeCallPrice: 0,
@@ -652,6 +653,15 @@ export default function SchedulePanel({
                     <CustomInput type="number" min="0" step="1" value={s.exitPoints ?? 0} onChange={e => handleChange(s.id, 'exitPoints', Number(e.target.value))} />
                   </div>
                 )}
+
+                {/* SL/TP decoy diff (migration 031) — points to shift the exchange (decoy)
+                    SL/TP away from the real exit level, in the harder-to-trigger direction
+                    (call: real + diff, put: real − diff). 0 = decoy == real (feature off).
+                    Live drives the exchange bracket; paper records real/decoy for validation. */}
+                <div className="schedule-item-block schedule-item-num-block">
+                  <span className="schedule-item-label" title="Shift the exchange (decoy) SL/TP this many points away from the real exit level (harder-to-trigger direction). 0 = off (decoy = real).">SL/TP Diff</span>
+                  <CustomInput type="number" min="0" step="1" suffix="pts" value={s.slTpDecoyDiff ?? 0} onChange={e => handleChange(s.id, 'slTpDecoyDiff', Number(e.target.value))} />
+                </div>
 
                 {/* Per-window Min Days to Expiry (migration 019) — all accounts, paper AND
                     live. The traded expiry follows the active window's DTE. */}

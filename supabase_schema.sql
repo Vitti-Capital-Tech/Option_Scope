@@ -225,6 +225,11 @@ CREATE TABLE IF NOT EXISTS public.active_positions (
     accumulated_sell_pnl NUMERIC NOT NULL DEFAULT 0,
     buy_strike NUMERIC NOT NULL,
     sell_strike NUMERIC NOT NULL,
+    -- Decoy observability (migration 031/032). Paper only: real_exit_level = the
+    -- engine's true exit trigger; decoy_exit_level = real shifted sl_tp_decoy_diff pts
+    -- in the harder-to-trigger direction (call +diff, put −diff). Live rows stay NULL.
+    real_exit_level NUMERIC DEFAULT NULL,
+    decoy_exit_level NUMERIC DEFAULT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 

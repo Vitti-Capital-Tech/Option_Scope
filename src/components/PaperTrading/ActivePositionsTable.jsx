@@ -200,6 +200,7 @@ export default function ActivePositionsTable({
               <th>Entry<span className="pt-th-sub">prem · iv</span></th>
               <th>Mark<span className="pt-th-sub">prem · iv</span></th>
               <th>Dist. to Exit</th>
+              <th>Exit Level<span className="pt-th-sub">real · decoy</span></th>
               {legFilter !== 'spread' && <th>Scale-Out</th>}
               <th>Unrealized P&L</th>
               <th>Margin</th>
@@ -289,6 +290,27 @@ export default function ActivePositionsTable({
                         </div>
                         <span className="pt-dist-away">spot {liveSpot.toLocaleString()} · {Math.round(away).toLocaleString()} away</span>
                       </div>
+                    </td>
+                    {/* Exit levels (migration 031/032): the engine's stored REAL exit trigger
+                        and the DECOY level (real shifted by SL/TP diff, harder-to-trigger).
+                        Paper only — live rows store NULL (decoy lives on the exchange). */}
+                    <td>
+                      {p.realExitLevel != null ? (
+                        <>
+                          <span className="pt-mono" title="Real engine exit trigger — the level the engine actually exits on">
+                            {Number(p.realExitLevel).toLocaleString()}
+                          </span>
+                          <span
+                            className="pt-cell-sub"
+                            title="Decoy exit level — where the exchange SL/TP would sit (real shifted by the SL/TP diff, harder to trigger). Equals real when diff = 0."
+                          >
+                            decoy {p.decoyExitLevel != null ? Number(p.decoyExitLevel).toLocaleString() : '—'}
+                            {p.decoyExitLevel != null && Number(p.decoyExitLevel) === Number(p.realExitLevel) ? ' (=real)' : ''}
+                          </span>
+                        </>
+                      ) : (
+                        <span className="pt-mono pt-dim" title="No decoy level stored (live row, or entered before migration 032)">—</span>
+                      )}
                     </td>
                     {legFilter !== 'spread' && (
                       <td>

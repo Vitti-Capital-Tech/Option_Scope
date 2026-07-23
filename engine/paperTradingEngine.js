@@ -134,6 +134,20 @@ function isIndexTriggerMet(type, level, spot) {
   return type === 'call' ? spot >= level : spot <= level;
 }
 
+/**
+ * Decoy exit level (migration 031/032). The REAL trigger level shifted `diff`
+ * points in the HARDER-to-trigger direction so the exchange (decoy) SL/TP always
+ * fires AFTER the engine's real exit: a call exits on spot ≥ level, so a higher
+ * level (real + diff) is harder to hit; a put exits on spot ≤ level, so a lower
+ * level (real − diff) is harder to hit. `diff = 0` → decoy == real (backward
+ * compatible). Paper stores this for observation only — no exchange order acts on it.
+ */
+function computeDecoyExitLevel(type, realLevel, diff) {
+  if (realLevel == null) return null;
+  const d = Math.max(0, Number(diff) || 0);
+  return type === 'call' ? realLevel + d : realLevel - d;
+}
+
 /** Greatest common divisor — reduces a ratio to minimal integer lots. */
 function gcdInt(a, b) {
   a = Math.abs(Math.round(a)); b = Math.abs(Math.round(b));
@@ -160,6 +174,10 @@ async function startSingleAccountEngine(account) {
     numberOfPuts: 3,
     exitType: 'ATM',
     exitPoints: 0,
+    // SL/TP decoy diff (migration 031) — points to shift the exchange (decoy) SL/TP
+    // away from the real exit level. 0 = decoy == real (current behaviour). Live drives
+    // the exchange bracket; paper records real/decoy levels for validation only.
+    slTpDecoyDiff: 0,
     shortExitPrice: 1.1,
     longExitSlices: 10,
     balanceAllocationPct: 90,
@@ -359,6 +377,7 @@ async function startSingleAccountEngine(account) {
           numberOfPuts: data.number_of_puts ?? 3,
           exitType: data.exit_type ?? 'ATM',
           exitPoints: data.exit_points ?? 0,
+          slTpDecoyDiff: data.sl_tp_decoy_diff ?? 0, // migration 031 (account-level fallback)
           shortExitPrice: data.short_exit_price ?? 1.1,
           longExitSlices: data.long_exit_slices ?? 10,
           variableExitSlices: data.variable_exit_slices ?? false,
@@ -415,6 +434,9 @@ async function startSingleAccountEngine(account) {
           maxNetPremium: s.max_net_premium ?? config.maxNetPremium ?? 20,
           exitType: s.exit_type ?? config.exitType ?? 'ATM',
           exitPoints: s.exit_points ?? config.exitPoints ?? 0,
+          // Per-window SL/TP decoy diff (migration 031) — window value is primary,
+          // account-level config is the fallback for rows that predate it.
+          slTpDecoyDiff: s.sl_tp_decoy_diff ?? config.slTpDecoyDiff ?? 0,
           // Per-window min-days-to-expiry (migration 019) — all accounts, paper AND live.
           // Falls back to the account-level config value for rows that predate it.
           daysToExpiry: s.days_to_expiry ?? config.daysToExpiry ?? 0,
@@ -455,6 +477,10 @@ async function startSingleAccountEngine(account) {
             stagesExited: p.stages_exited || 0,
             margin: p.margin || 0, entryFee: p.entry_fee || 0,
             accumulatedSellPnl: p.accumulated_sell_pnl || 0,
+            // Decoy observability (migration 031/032) — carry the stored levels so the
+            // per-cycle drift-sync only writes when the computed level actually changes.
+            realExitLevel: p.real_exit_level != null ? Number(p.real_exit_level) : null,
+            decoyExitLevel: p.decoy_exit_level != null ? Number(p.decoy_exit_level) : null,
           };
         }).filter(p => p.buyLeg && p.sellLeg);
       } else if (data) {
@@ -2325,6 +2351,8 @@ async function startSingleAccountEngine(account) {
           maxNetPremium: activeSchedule.maxNetPremium ?? config.maxNetPremium,
           exitType: activeSchedule.exitType ?? config.exitType,
           exitPoints: activeSchedule.exitPoints ?? config.exitPoints,
+          // SL/TP decoy diff (migration 031) — active window's value, account fallback.
+          slTpDecoyDiff: activeSchedule.slTpDecoyDiff ?? config.slTpDecoyDiff ?? 0,
           // Per-window min-days-to-expiry (migration 019) — all accounts, paper AND live.
           // Falls back to the account-level value for rows that predate the migration.
           daysToExpiry: activeSchedule.daysToExpiry ?? config.daysToExpiry,
@@ -2346,6 +2374,34 @@ async function startSingleAccountEngine(account) {
       // }
 
       const underlying = effectiveConfig.underlying;
+
+      // ── Paper decoy/real exit-level observability (migration 031/032) ──────────
+      // PAPER ONLY, purely observational. Stamp each open position's REAL engine exit
+      // level and the DECOY level (real shifted sl_tp_decoy_diff pts, harder-to-trigger:
+      // call +diff, put −diff) onto active_positions, so the decoy geometry can be
+      // validated in paper before it drives live exchange brackets. The real exit is
+      // UNCHANGED — nothing here acts on the decoy. Entry stamps the snapshot; this
+      // re-syncs ONLY when the computed level drifts (active window's exitType/exitPoints
+      // changed), so it's a rare DB write, not a per-cycle one. Skips hedge overlays.
+      if (accountState.mode !== 'live') {
+        const decoyDiff = effectiveConfig.slTpDecoyDiff ?? 0;
+        for (const pos of positions) {
+          if (pos.underlying !== underlying) continue;
+          if (pos.buyLeg?.isHedge || pos.buyLeg?.strike == null) continue;
+          const realLvl = computeIndexTriggerLevel(pos.type, pos.buyLeg.strike, effectiveConfig);
+          const decoyLvl = computeDecoyExitLevel(pos.type, realLvl, decoyDiff);
+          if (pos.realExitLevel === realLvl && pos.decoyExitLevel === decoyLvl) continue; // no drift
+          pos.realExitLevel = realLvl;
+          pos.decoyExitLevel = decoyLvl;
+          try {
+            await supabase.from('active_positions')
+              .update({ real_exit_level: realLvl, decoy_exit_level: decoyLvl })
+              .eq('id', pos.id);
+          } catch (e) {
+            logWarn(`[${accountState.name}] Paper decoy-level sync failed for ${pos.id}: ${e?.message || e}`);
+          }
+        }
+      }
 
       // Identify ATM strike
       let atmStrike = null;
@@ -4180,6 +4236,18 @@ async function startSingleAccountEngine(account) {
               log(`[${accountState.name}] 🎯 Resting short-exit armed: limit BUY short ${t.sellLeg.strike} @ $${exitPx} (id ${seRes?.order?.id ?? '?'})`);
             }
 
+            // Decoy observability snapshot (migration 031/032) — PAPER only. Record the
+            // real engine exit level and the decoy level (real ± diff, harder-to-trigger)
+            // so the geometry can be validated. Live leaves these NULL (its decoy is the
+            // exchange bracket, not a stored value). Stamped on `t` too, so the in-memory
+            // book carries them and the per-cycle drift-sync doesn't re-write next cycle.
+            const paperReal = isPaperAccount
+              ? computeIndexTriggerLevel(t.type, t.buyLeg.strike, effectiveConfig) : null;
+            const paperDecoy = isPaperAccount
+              ? computeDecoyExitLevel(t.type, paperReal, effectiveConfig.slTpDecoyDiff ?? 0) : null;
+            t.realExitLevel = paperReal;
+            t.decoyExitLevel = paperDecoy;
+
             const { error: insertError } = await supabase.from('active_positions').insert([{
               id: t.id, underlying, expiry: config.expiry, type: t.type,
               buy_leg: JSON.stringify(t.buyLeg), sell_leg: JSON.stringify(t.sellLeg),
@@ -4190,6 +4258,7 @@ async function startSingleAccountEngine(account) {
               entry_spot_price: t.entrySpotPrice,
               margin: t.margin, entry_fee: t.entryFee, accumulated_sell_pnl: 0,
               buy_strike: t.buyLeg.strike, sell_strike: t.sellLeg.strike,
+              real_exit_level: paperReal, decoy_exit_level: paperDecoy,
               account_id: accountState.id,
             }]);
 
