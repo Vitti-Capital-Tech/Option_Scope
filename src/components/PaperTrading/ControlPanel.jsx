@@ -34,6 +34,11 @@ export default function ControlPanel({
   historyFilterDate,
   now,
   strategyVersion = 1,
+  balanceAllocationPct,
+  initialBalance,
+  walletBalance,
+  totalRealizedPnl,
+  paperEquity,
 }) {
   const UNDERLYINGS = ['BTC', 'ETH'];
 
