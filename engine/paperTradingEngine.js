@@ -3706,46 +3706,6 @@ async function startSingleAccountEngine(account) {
             continue;
           }
 
-          // Strike conflict check — ONE LEG PER STRIKE, cross-role. A position occupies its
-          // open LONG strike, plus its SHORT strike only while the short is active
-          // (sellQty > 0); a long-only remnant frees its old short strike but keeps its long.
-          // A candidate is blocked if EITHER of its legs — buy OR sell — lands on an occupied
-          // strike, including cross-role (e.g. shorting a strike another spread holds LONG).
-          // Covers already-open positions (`remaining`, current expiry — a different expiry is
-          // a different product) AND spreads staged earlier THIS cycle (`newEntries`), so the
-          // DB guards (which can't see this cycle's not-yet-inserted rows) aren't the only net.
-          // Hedge overlays don't reserve strikes. Mirrors the DB `.or()` guards below.
-          const strikesOccupiedBy = (p) => {
-            const occ = [];
-            if (!p.buyLeg?.isHedge && (p.buyLeg?.lotSize ?? 1) > 0 && p.buyLeg?.strike != null) occ.push(Number(p.buyLeg.strike));
-            if (p.sellQty > 0 && p.sellLeg?.strike != null) occ.push(Number(p.sellLeg.strike));
-            return occ;
-          };
-          const conflictScope = [
-            ...remaining.filter(p => p.expiry === config.expiry && p.underlying === underlying && p.type === spreadType),
-            ...newEntries.filter(p => p.underlying === underlying && p.type === spreadType),
-          ];
-          const strikeClash = conflictScope.find(p => {
-            const occ = strikesOccupiedBy(p);
-            return occ.includes(bStrike) || occ.includes(sStrike);
-          });
-          if (strikeClash) {
-            const clashDesc = `${strikeClash.buyLeg.strike}${strikeClash.sellQty > 0 ? '/' + strikeClash.sellLeg.strike : ' (long-only)'}`;
-            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: strike conflict with ${strikeClash.id} (${clashDesc}) — one leg per strike (cross-role).`);
-            continue;
-          }
-
-          // Fix B — symbol collision with an existing Delta/tracked position on EITHER leg
-          // (see heldSymbols above). Catches the cross-side case the strike checks miss —
-          // e.g. shorting a strike that another spread already holds LONG (same Delta
-          // product) → bracket_order_position_exists. Skip; the reconcile timer (Fix A)
-          // clears any stuck leg so the symbol frees up on its own.
-          if (heldSymbols && (heldSymbols.has(spread.buyLeg.symbol) || heldSymbols.has(spread.sellLeg.symbol))) {
-            const clash = heldSymbols.has(spread.sellLeg.symbol) ? spread.sellLeg.symbol : spread.buyLeg.symbol;
-            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: position already exists on ${clash} — would collide with an existing bracket/position on Delta (reconcile will clear any stuck leg).`);
-            continue;
-          }
-
           // Portfolio cap — count only full spreads (positions with an active short leg).
           // Long-only held positions (sellQty === 0) free up a slot for new entries.
           let count = remaining.filter(p => p.underlying === underlying && p.type === spreadType && p.sellQty > 0).length +
@@ -3763,12 +3723,60 @@ async function startSingleAccountEngine(account) {
           // PAPER combined-total cap — total open full spreads (calls + puts) for this
           // underlying must never exceed the active window's maxCombinedPositions, even
           // though each per-type cap (ceil(split% × combined)) individually allows more.
-          if (isPaperAccount) {
-            const combinedCap = Math.max(1, Math.floor(effectiveConfig.maxCombinedPositions ?? config.maxCombinedPositions ?? 4));
-            const combinedCount = remaining.filter(p => p.underlying === underlying && p.sellQty > 0).length +
-              newEntries.filter(p => p.underlying === underlying).length;
-            if (combinedCount >= combinedCap) {
-              logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: combined position cap of ${combinedCap} reached (${combinedCount} open).`);
+          const combinedCap = Math.max(1, Math.floor(effectiveConfig.maxCombinedPositions ?? config.maxCombinedPositions ?? 4));
+          const combinedCount = remaining.filter(p => p.underlying === underlying && p.sellQty > 0).length +
+            newEntries.filter(p => p.underlying === underlying).length;
+          if (isPaperAccount && combinedCount >= combinedCap) {
+            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: combined position cap of ${combinedCap} reached (${combinedCount} open).`);
+            continue;
+          }
+
+          // Strike conflict check — ONE LEG PER STRIKE, cross-role. A position occupies its
+          // open LONG strike, plus its SHORT strike only while the short is active
+          // (sellQty > 0); a long-only remnant frees its old short strike but keeps its long.
+          // A candidate is blocked if EITHER of its legs — buy OR sell — lands on an occupied
+          // strike, including cross-role (e.g. shorting a strike another spread holds LONG).
+          // Covers already-open positions (`remaining`, current expiry — a different expiry is
+          // a different product) AND spreads staged earlier THIS cycle (`newEntries`), so the
+          // DB guards (which can't see this cycle's not-yet-inserted rows) aren't the only net.
+          // Hedge overlays don't reserve strikes. Mirrors the DB `.or()` guards below.
+          let replaceableLongOnlyPos = null;
+          const strikesOccupiedBy = (p) => {
+            const occ = [];
+            if (!p.buyLeg?.isHedge && (p.buyLeg?.lotSize ?? 1) > 0 && p.buyLeg?.strike != null) occ.push(Number(p.buyLeg.strike));
+            if (p.sellQty > 0 && p.sellLeg?.strike != null) occ.push(Number(p.sellLeg.strike));
+            return occ;
+          };
+          const conflictScope = [
+            ...remaining.filter(p => p.expiry === config.expiry && p.underlying === underlying && p.type === spreadType),
+            ...newEntries.filter(p => p.underlying === underlying && p.type === spreadType),
+          ];
+          const conflictClashes = conflictScope.filter(p => {
+            const occ = strikesOccupiedBy(p);
+            return occ.includes(bStrike) || occ.includes(sStrike);
+          });
+
+          if (conflictClashes.length > 0) {
+            let canReplace = false;
+            if (isPaperAccount && conflictClashes.length === 1) {
+              const clash = conflictClashes[0];
+              const isLongOnly = clash.sellQty === 0 && (clash.buyLeg?.lotSize ?? 0) > 0;
+              const isSameLongStrike = Number(clash.buyLeg?.strike) === bStrike;
+
+              if (isLongOnly && isSameLongStrike) {
+                const sStrikeOccupied = conflictScope.some(p => p.id !== clash.id && strikesOccupiedBy(p).includes(sStrike));
+                if (!sStrikeOccupied) {
+                  canReplace = true;
+                  replaceableLongOnlyPos = clash;
+                  log(`[${accountState.name}] 💡 PAPER replacement candidate: Active long-only ${clash.id} (${spreadType.toUpperCase()} ${bStrike}) will be exited to enter better long/short pair ${bStrike}/${sStrike} (vacancy available).`);
+                }
+              }
+            }
+
+            if (!canReplace) {
+              const strikeClash = conflictClashes[0];
+              const clashDesc = `${strikeClash.buyLeg.strike}${strikeClash.sellQty > 0 ? '/' + strikeClash.sellLeg.strike : ' (long-only)'}`;
+              logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: strike conflict with ${strikeClash.id} (${clashDesc}) — one leg per strike (cross-role).`);
               continue;
             }
           }
@@ -4009,6 +4017,7 @@ async function startSingleAccountEngine(account) {
             // booked once in the -HX exit row, so it is never double-counted here.
             entryFee,
             margin: candidateMargin + hedgeMargin,
+            _replaceableLongOnlyPos: replaceableLongOnlyPos,
           };
           newEntries.push(newPos);
           // Track pool consumed this cycle so the paper running-pool clamp (and the 4:30
@@ -4092,6 +4101,70 @@ async function startSingleAccountEngine(account) {
       if (!onlyExits) {
         for (const t of newEntries) {
           try {
+            if (isPaperAccount && t._replaceableLongOnlyPos) {
+              try {
+                const posToExit = t._replaceableLongOnlyPos;
+                const tickerBuyExit = tickerData[posToExit.buyLeg.symbol];
+                const exitPrice = tickerBuyExit?.bid ?? tickerBuyExit?.lastPrice ?? posToExit.entryBuyPrice ?? 0;
+                const exitLotSize = posToExit.buyLeg.lotSize || 0;
+                const exitFee = calculateFee(exitPrice, spotPrice, exitLotSize, posToExit.buyLeg.originalLotSize || 1);
+                const entryFee = posToExit.entryFee || 0;
+                const grossPnl = (exitPrice - (posToExit.entryBuyPrice || 0)) * exitLotSize;
+                const netPnl = grossPnl - entryFee - exitFee;
+                const exitReason = 'Exited for Long/Short Pair';
+
+                const tradeId = `${posToExit.id}-REP`;
+                await supabase.from('trade_history').upsert([{
+                  trade_id: tradeId,
+                  underlying: posToExit.underlying,
+                  expiry: posToExit.expiry,
+                  type: posToExit.type,
+                  buy_leg: JSON.stringify({ ...posToExit.buyLeg, exitIv: tickerBuyExit?.bidIv ?? tickerBuyExit?.iv ?? null }),
+                  sell_leg: JSON.stringify({ lotSize: 0 }),
+                  sell_qty: 0,
+                  strike_diff: 0,
+                  entry_time: posToExit.entryTime ? (posToExit.entryTime instanceof Date ? posToExit.entryTime.toISOString() : posToExit.entryTime) : new Date().toISOString(),
+                  entry_buy_price: posToExit.entryBuyPrice ?? 0,
+                  entry_sell_price: 0,
+                  entry_spot_price: posToExit.entrySpotPrice ?? spotPrice,
+                  margin: posToExit.margin || 0,
+                  exit_time: new Date().toISOString(),
+                  exit_buy_price: exitPrice,
+                  exit_sell_price: null,
+                  exit_spot_price: spotPrice,
+                  realized_gross_pnl: grossPnl,
+                  realized_net_pnl: netPnl,
+                  exit_fee: exitFee,
+                  total_fees: entryFee + exitFee,
+                  exit_reason: exitReason,
+                  is_partial: false,
+                  lot_size: exitLotSize,
+                  account_id: accountState.id,
+                }], { onConflict: 'trade_id', ignoreDuplicates: true });
+
+                await supabase.from('active_positions').delete().eq('id', posToExit.id);
+
+                const remIndex = remaining.findIndex(p => p.id === posToExit.id);
+                if (remIndex !== -1) {
+                  remaining.splice(remIndex, 1);
+                }
+                exited.push({
+                  ...posToExit,
+                  exitTime: new Date(),
+                  exitBuyPrice: exitPrice,
+                  exitSpotPrice: spotPrice,
+                  realizedGrossPnl: grossPnl,
+                  realizedNetPnl: netPnl,
+                  exitReason,
+                });
+
+                await refreshRealizedPnl(true);
+                log(`[${accountState.name}] 🔄 PAPER: Exited active long-only ${posToExit.id} (${posToExit.type.toUpperCase()} ${posToExit.buyLeg.strike} @ $${exitPrice.toFixed(2)} | PnL $${netPnl.toFixed(2)}) to enter new long/short pair.`);
+              } catch (e) {
+                logError(`[${accountState.name}] Failed to exit long-only position for replacement:`, e);
+              }
+            }
+
             // DB-level count guard per account — count only full spreads (active short leg).
             // Long-only held positions (sell_qty === 0) don't count toward the cap.
             const { data: activeOfType, error: countError } = await supabase

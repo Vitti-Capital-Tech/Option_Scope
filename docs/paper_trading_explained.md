@@ -348,7 +348,10 @@ This is **cross-role**, not just same-role:
 - A new **short** is blocked on an existing open **long** strike — including a **long-only remnant's** own long. You're already long that strike, so shorting it nets/conflicts (on Delta they're the same product). *This was the "unique strike not working" bug.*
 - A new **long** is blocked on an existing **active short** strike.
 
-**Long-only remnant nuance:** a held long-only position (short bought back, `sellQty = 0`) keeps its **long** strike occupied but **frees its old short strike** — that old short strike can be shorted again (matches the partial unique index, migration `026`). So a remnant blocks shorting/longing its *long* strike, but not its former *short* strike.
+**Long-only remnant nuance & replacement:** a held long-only position (short bought back, `sellQty = 0`) keeps its **long** strike occupied but **frees its old short strike** — that old short strike can be shorted again (matches the partial unique index, migration `026`).
+
+> [!TIP]
+> **Paper Trading Long-Only Replacement:** In paper trading (`isPaperAccount`), if an active position is a long-only position (`sellQty = 0`) and candidate scanning finds a candidate long/short spread using the **same long strike** (`buyLeg.strike`), the engine can **exit that active long-only position** (booking its PnL/fees in `trade_history` with `exit_reason: 'Exited for Long/Short Pair'`) and enter the new long/short pair **if and only if** position cap vacancy exists (`count < typeCap` and `combinedCount < combinedCap`) and the candidate short strike is free. Live trading is untouched.
 
 ### Guard 5: Portfolio Cap (Local)
 ```
