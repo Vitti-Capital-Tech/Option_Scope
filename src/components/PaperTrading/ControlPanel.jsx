@@ -237,6 +237,11 @@ export default function ControlPanel({
           currentUnderlying={underlying}
           strategyVersion={strategyVersion}
           isPaper={!accountIsLive}
+          balanceAllocationPct={balanceAllocationPct}
+          initialBalance={initialBalance}
+          walletBalance={walletBalance}
+          totalRealizedPnl={totalRealizedPnl}
+          paperEquity={paperEquity}
         />
       </div>
     </>

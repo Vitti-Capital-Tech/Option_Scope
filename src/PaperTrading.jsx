@@ -2896,6 +2896,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
               historyFilterDate={historyFilterDate}
               now={now}
               strategyVersion={config.strategyVersion ?? 1}
+              balanceAllocationPct={engineAllocationPct ?? activeAccount?.default_config?.balanceAllocationPct ?? 90}
+              initialBalance={config.initialBalance ?? activeAccount?.default_config?.initialBalance ?? 3000}
+              walletBalance={walletBalance}
+              totalRealizedPnl={totalRealizedPnl}
+              paperEquity={activeAccount?.mode !== 'live'
+                ? ((config.initialBalance ?? activeAccount?.default_config?.initialBalance ?? 3000) + (totalRealizedPnl || 0))
+                : null}
             />
 
 

@@ -816,5 +816,5 @@ All four are dispatched by the manager-level `pollAllRequests` (see §7); migrat
 
 - **Heartbeat thresholds** (`engine_heartbeat`, polled 30s, paused when tab hidden): Online `age<60s` (green `#0ecb81`), Stale `60–120s` (yellow `#f0b90b`), Offline `≥120s` (red `#f85149`).
 - **Window Capacity row** (`TradeHistoryTable.jsx`): a chip per schedule window showing name + `C:`/`P:` caps and a color dot matching the Schedule Panel timeline palette; hover shows the time range.
-- **Live Utilized %** (SchedulePanel): `(min(numberOfCalls,activeCalls)+min(numberOfPuts,activePuts))/(numberOfCalls+numberOfPuts)×100`, full spreads only, account-wide.
+- **Max Margin Utilised %** (SchedulePanel): `(historical peak margin utilised / allocated balance) × 100`. Displays the peak percentage of allocated balance utilised by open positions at any single instant during the session for that window. Hover tooltip shows exact peak margin ($) vs allocated balance ($).
 - **Trade-History "today" filter** uses a **UTC+12h** offset (`d.setUTCHours(d.getUTCHours()+12)`) so the day flips at noon UTC = **17:30 IST**, matching Delta's settlement rollover.

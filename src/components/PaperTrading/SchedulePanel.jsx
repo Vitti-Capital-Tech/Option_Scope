@@ -167,7 +167,22 @@ export default function SchedulePanel({
   currentUnderlying = 'BTC',
   strategyVersion = 1,
   isPaper = false,
+  balanceAllocationPct = 90,
+  initialBalance = 3000,
+  walletBalance = null,
+  totalRealizedPnl = 0,
+  paperEquity = null,
 }) {
+  // Calculate allocated balance for margin utilization percentage
+  const allocatedBalance = React.useMemo(() => {
+    const allocPct = balanceAllocationPct ?? 90;
+    if (!isPaper && walletBalance != null && walletBalance > 0) {
+      return walletBalance * (allocPct / 100);
+    }
+    const equity = paperEquity != null ? paperEquity : ((initialBalance ?? 3000) + (totalRealizedPnl || 0));
+    return equity * (allocPct / 100);
+  }, [isPaper, walletBalance, paperEquity, initialBalance, totalRealizedPnl, balanceAllocationPct]);
+
   // Paper derived per-type cap: ceil(split% × combined), same for calls and puts,
   // clamped to the combined total. Mirrors paperTypeCap() in the engine.
   const derivePaperTypeCap = (s) => {
@@ -186,16 +201,10 @@ export default function SchedulePanel({
     const sessionStart = base - 12 * 3600 * 1000; // 17:30 IST of previous calendar day
     const sessionEnd = base + 12 * 3600 * 1000;   // 17:30 IST of activeDay
 
+    const allocBal = allocatedBalance > 0 ? allocatedBalance : 2700;
+
     schedules.forEach(s => {
       if (!s.isActive) return;
-      // Paper caps positions by the window's combined total; live caps per type.
-      const cap = isPaper
-        ? Math.max(0, Math.floor(s.maxCombinedPositions || 0))
-        : (s.numberOfCalls || 0) + (s.numberOfPuts || 0);
-      if (cap === 0) {
-        result[s.id] = 0;
-        return;
-      }
 
       // Convert schedule window startTime / endTime to relative minutes shifted from 17:30 IST (1050 minutes)
       const startMin = toMin(s.startTime);
@@ -215,16 +224,16 @@ export default function SchedulePanel({
         winIntervals.push({ start: 0, end: endShifted * 60 * 1000 });
       }
 
-      // Build entry/exit events for every full spread of this window, tagged by
-      // leg type. A single sweep then tracks the concurrent call and put counts
-      // together, so we capture the busiest *single instant* (combined peak) —
-      // not the sum of each type's independently-timed peak.
+      // Build entry/exit margin events for every position active during this window.
+      // Sweeping these margin events tracks the exact peak margin ($) utilised at any
+      // single instant in this schedule window.
       const events = [];
 
       const addPositionInterval = (pos) => {
         if (pos.underlying !== currentUnderlying) return;
         if (pos.type !== 'call' && pos.type !== 'put') return;
-        if ((pos.sellQty || 0) <= 0) return; // Only count full spreads
+        const posMargin = Number(pos.margin) || 0;
+        if (posMargin <= 0) return;
 
         const entryMs = new Date(pos.entryTime).getTime();
         const exitMs = pos.exitTime ? new Date(pos.exitTime).getTime() : now;
@@ -242,8 +251,8 @@ export default function SchedulePanel({
           const intStart = Math.max(relStart, win.start);
           const intEnd = Math.min(relEnd, win.end);
           if (intStart < intEnd) {
-            events.push({ time: intStart, dir: 1, kind: pos.type });
-            events.push({ time: intEnd, dir: -1, kind: pos.type });
+            events.push({ time: intStart, marginDelta: posMargin });
+            events.push({ time: intEnd, marginDelta: -posMargin });
           }
         });
       };
@@ -256,40 +265,36 @@ export default function SchedulePanel({
       }
 
       if (events.length === 0) {
-        result[s.id] = 0;
+        result[s.id] = { peakMargin: 0, pctUtil: 0, allocatedBalance: allocBal };
         return;
       }
 
-      // Sort events: time ascending, exit (-1) before entry (+1) so a position
+      // Sort events: time ascending, exit (-marginDelta) before entry (+marginDelta) so a position
       // closing exactly as another opens is not double-counted.
       events.sort((a, b) => {
         if (a.time !== b.time) return a.time - b.time;
-        return a.dir - b.dir;
+        return a.marginDelta - b.marginDelta;
       });
 
-      // Sweep, tracking concurrent calls and puts. At each instant the combined
-      // count is each type clamped to its own cap, summed. The peak of that is
-      // the historical max utilisation — a fixed high-water mark for the window.
-      let curCalls = 0;
-      let curPuts = 0;
-      let maxCombined = 0;
+      // Sweep events, tracking concurrent margin utilised ($). Peak is the max margin utilised.
+      let curMargin = 0;
+      let peakMargin = 0;
       events.forEach(ev => {
-        if (ev.kind === 'call') curCalls += ev.dir;
-        else curPuts += ev.dir;
-        // Paper clamps the combined concurrent count to the window's combined cap;
-        // live clamps each type to its own cap then sums.
-        const combined = isPaper
-          ? Math.min(cap, curCalls + curPuts)
-          : Math.min(s.numberOfCalls, curCalls) + Math.min(s.numberOfPuts, curPuts);
-        if (combined > maxCombined) maxCombined = combined;
+        curMargin += ev.marginDelta;
+        if (curMargin > peakMargin) peakMargin = curMargin;
       });
 
-      const util = (maxCombined / cap) * 100;
-      result[s.id] = Math.round(util * 100) / 100;
+      const pctUtil = allocBal > 0 ? (peakMargin / allocBal) * 100 : 0;
+
+      result[s.id] = {
+        peakMargin: Math.round(peakMargin * 100) / 100,
+        pctUtil: Math.round(pctUtil * 100) / 100,
+        allocatedBalance: Math.round(allocBal * 100) / 100,
+      };
     });
 
     return result;
-  }, [positions, tradeHistory, schedules, currentUnderlying, historyFilterDate, now, isPaper]);
+  }, [positions, tradeHistory, schedules, currentUnderlying, historyFilterDate, now, allocatedBalance]);
 
   const [deletingId, setDeletingId] = useState(null); // id of schedule window pending deletion
 
@@ -745,14 +750,18 @@ export default function SchedulePanel({
                 )}
 
                 <div className="schedule-item-block schedule-item-num-block">
-                  <span className="schedule-item-label">Live Utilized</span>
+                  <span className="schedule-item-label">Max Margin Utilised</span>
                   <div style={{
                     fontSize: '13px', fontWeight: '700', color: '#3b82f6', height: '36px',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                     background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: '5px',
-                    padding: '0 10px', fontFamily: 'JetBrains Mono, monospace', boxSizing: 'border-box',
-                  }} title="Historical peak utilization for this window: the busiest single instant's active full-spread positions (calls + puts, each clamped to its cap) divided by the window's total cap. A fixed high-water mark — long-only positions are excluded.">
-                    {avgUtilMap[s.id] !== undefined ? `${avgUtilMap[s.id]}%` : '—'}
+                    padding: '0 10px', fontFamily: 'JetBrains Mono, monospace', boxSizing: 'border-box', whiteSpace: 'nowrap',
+                  }} title={avgUtilMap[s.id] !== undefined
+                    ? `Peak margin utilised: $${avgUtilMap[s.id].peakMargin.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} of $${avgUtilMap[s.id].allocatedBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} allocated balance (${avgUtilMap[s.id].pctUtil.toFixed(2)}%)`
+                    : 'Historical peak margin utilised in this window as % of allocated balance.'}>
+                    {avgUtilMap[s.id] !== undefined
+                      ? `${avgUtilMap[s.id].pctUtil.toFixed(2)}%`
+                      : '—'}
                   </div>
                 </div>
 

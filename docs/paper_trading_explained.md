@@ -995,14 +995,7 @@ All other filter settings (like `minIvDiff`, `minSellPremium`, etc.) default bac
 - **Compact List Style**: The configuration interface (`SchedulePanel.jsx`) features a compact, horizontal, inline-editable list. Users can edit window names, times, and overrides directly within the row.
 - **Visual Timeline**: A 24-hour horizontal bar visualizes active windows, gaps, and overrides. The timeline boundary starts/ends at `05:30` IST (representing the `00:00` UTC Delta Exchange daily rollover/day boundary). This ensures that any empty slots wrap around `05:30` IST and display at the end of the bar.
 - **Permanent Activation**: All configured schedule windows are permanently active/enabled (`is_active = true`), and the checkbox toggle has been removed.
-- **Live Utilized Percentage**: Displays the current real-time utilization of slot capacity (calls + puts) for active full spreads in that window.
-  - *Full Spreads Only*: Only positions that are active as full spreads (both long and short legs active) are counted. Long-only held positions are excluded.
-  - *Capped Calculations*: The active counts are capped by the window's `numberOfCalls` and `numberOfPuts` limits to prevent greater than 100% utilization.
-  - *Account-wide Counting*: All active full-spread positions in the account are checked against the window's capacity rules, ensuring the metric reflects current portfolio occupancy relative to that window's caps.
-  - *Formula* (live accounts):
-    $$\text{Live Utilized} = \frac{\min(\text{numberOfCalls}, \text{activeCalls}) + \min(\text{numberOfPuts}, \text{activePuts})}{\text{numberOfCalls} + \text{numberOfPuts}} \times 100$$
-  - *Paper accounts* (migration `027`): the denominator is the window's `maxCombinedPositions` and the combined active count is clamped to it:
-    $$\text{Live Utilized} = \frac{\min(\text{maxCombinedPositions},\ \text{activeCalls} + \text{activePuts})}{\text{maxCombinedPositions}} \times 100$$
+- **Max Margin Utilised (%)**: Displays the historical peak margin utilized as a percentage of allocated balance (`(peak margin / allocated balance) × 100`) for active positions open at any single instant during the session for that schedule window. Hover tooltip shows exact peak margin ($) vs allocated balance ($).
 
 ### Execution, Timezones & Evaluation
 - **Database (IST)**: All times in the database `paper_trading_schedules` table (columns `start_time` and `end_time`) are stored directly as IST values in `TIME` type columns.
