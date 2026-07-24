@@ -203,6 +203,70 @@ export default function SchedulePanel({
 
     const allocBal = allocatedBalance > 0 ? allocatedBalance : 2700;
 
+    // Deduplicate active positions and trade history rows by base position ID
+    // so partial exit rows (e.g. -SE, -LE) do not inflate the margin count.
+    const posMap = new Map();
+    const getBaseId = (rawId) => {
+      if (!rawId) return '';
+      const str = String(rawId);
+      const idx = str.indexOf('-');
+      return idx !== -1 ? str.slice(0, idx) : str;
+    };
+
+    if (Array.isArray(positions)) {
+      positions.forEach(p => {
+        const rawId = p.id || p.trade_id;
+        if (!rawId) return;
+        const baseId = getBaseId(rawId);
+        const margin = Number(p.margin) || 0;
+        if (margin <= 0) return;
+
+        posMap.set(baseId, {
+          id: baseId,
+          underlying: p.underlying,
+          type: p.type,
+          entryTime: p.entryTime || p.entry_time,
+          exitTime: null, // open currently
+          margin,
+        });
+      });
+    }
+
+    if (Array.isArray(tradeHistory)) {
+      tradeHistory.forEach(t => {
+        const rawId = t.trade_id || t.id;
+        if (!rawId) return;
+        const baseId = getBaseId(rawId);
+
+        // If position is currently open in positions, skip
+        if (posMap.has(baseId) && posMap.get(baseId).exitTime === null) return;
+
+        const margin = Number(t.margin) || 0;
+        if (margin <= 0) return;
+
+        const entryTime = t.entry_time || t.entryTime;
+        const exitTime = t.exit_time || t.exitTime;
+
+        if (!posMap.has(baseId)) {
+          posMap.set(baseId, {
+            id: baseId,
+            underlying: t.underlying,
+            type: t.type,
+            entryTime,
+            exitTime,
+            margin,
+          });
+        } else {
+          const existing = posMap.get(baseId);
+          if (exitTime && (!existing.exitTime || new Date(exitTime) > new Date(existing.exitTime))) {
+            existing.exitTime = exitTime;
+          }
+        }
+      });
+    }
+
+    const uniquePositions = Array.from(posMap.values());
+
     schedules.forEach(s => {
       if (!s.isActive) return;
 
@@ -224,16 +288,11 @@ export default function SchedulePanel({
         winIntervals.push({ start: 0, end: endShifted * 60 * 1000 });
       }
 
-      // Build entry/exit margin events for every position active during this window.
-      // Sweeping these margin events tracks the exact peak margin ($) utilised at any
-      // single instant in this schedule window.
       const events = [];
 
-      const addPositionInterval = (pos) => {
+      uniquePositions.forEach(pos => {
         if (pos.underlying !== currentUnderlying) return;
         if (pos.type !== 'call' && pos.type !== 'put') return;
-        const posMargin = Number(pos.margin) || 0;
-        if (posMargin <= 0) return;
 
         const entryMs = new Date(pos.entryTime).getTime();
         const exitMs = pos.exitTime ? new Date(pos.exitTime).getTime() : now;
@@ -251,18 +310,11 @@ export default function SchedulePanel({
           const intStart = Math.max(relStart, win.start);
           const intEnd = Math.min(relEnd, win.end);
           if (intStart < intEnd) {
-            events.push({ time: intStart, marginDelta: posMargin });
-            events.push({ time: intEnd, marginDelta: -posMargin });
+            events.push({ time: intStart, marginDelta: pos.margin });
+            events.push({ time: intEnd, marginDelta: -pos.margin });
           }
         });
-      };
-
-      if (Array.isArray(positions)) {
-        positions.forEach(addPositionInterval);
-      }
-      if (Array.isArray(tradeHistory)) {
-        tradeHistory.forEach(addPositionInterval);
-      }
+      });
 
       if (events.length === 0) {
         result[s.id] = { peakMargin: 0, pctUtil: 0, allocatedBalance: allocBal };
@@ -276,7 +328,7 @@ export default function SchedulePanel({
         return a.marginDelta - b.marginDelta;
       });
 
-      // Sweep events, tracking concurrent margin utilised ($). Peak is the max margin utilised.
+      // Sweep events, tracking concurrent margin utilised ($) at any single instant.
       let curMargin = 0;
       let peakMargin = 0;
       events.forEach(ev => {
