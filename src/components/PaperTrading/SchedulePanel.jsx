@@ -194,6 +194,14 @@ export default function SchedulePanel({
     if (!schedules || schedules.length === 0) return {};
 
     const result = {};
+    const allocBal = allocatedBalance > 0 ? allocatedBalance : 2700;
+
+    // Filter active open positions for the current underlying
+    const activeList = (Array.isArray(positions) ? positions : []).filter(pos => {
+      if (pos.underlying !== currentUnderlying) return false;
+      if (pos.type !== 'call' && pos.type !== 'put') return false;
+      return true;
+    });
 
     // Get active day YYYY-MM-DD
     const activeDay = historyFilterDate || new Date(now + 12 * 3600 * 1000).toISOString().split('T')[0];
@@ -201,82 +209,63 @@ export default function SchedulePanel({
     const sessionStart = base - 12 * 3600 * 1000; // 17:30 IST of previous calendar day
     const sessionEnd = base + 12 * 3600 * 1000;   // 17:30 IST of activeDay
 
-    const allocBal = allocatedBalance > 0 ? allocatedBalance : 2700;
-
-    // Deduplicate active positions and trade history rows by base position ID
-    // so partial exit rows (e.g. -SE, -LE) do not inflate the margin count.
-    const posMap = new Map();
-    const getBaseId = (rawId) => {
-      if (!rawId) return '';
-      const str = String(rawId);
-      const idx = str.indexOf('-');
-      return idx !== -1 ? str.slice(0, idx) : str;
-    };
-
-    if (Array.isArray(positions)) {
-      positions.forEach(p => {
-        const rawId = p.id || p.trade_id;
-        if (!rawId) return;
-        const baseId = getBaseId(rawId);
-        const margin = Number(p.margin) || 0;
-        if (margin <= 0) return;
-
-        posMap.set(baseId, {
-          id: baseId,
-          underlying: p.underlying,
-          type: p.type,
-          entryTime: p.entryTime || p.entry_time,
-          exitTime: null, // open currently
-          margin,
-        });
+    // A position holds its FULL margin only while it is a full spread (both legs). Once the
+    // SHORT leg closes it becomes long-only and its margin drops to ~the long premium — so the
+    // long-only ladder / wind-down exits must NOT count toward the full-margin peak. Every
+    // trade_history row carries sell_qty: it is > 0 while the short was still present (entry
+    // state / short-exit / full-spread full exit) and 0 for every long-only exit (ladder -LE,
+    // expiry-long). Filtering to sell_qty > 0 keeps EXACTLY the full-spread phase.
+    //
+    // Lifetimes for the peak sweep — reflects the instant the most FULL margin was deployed,
+    // not just what's open right now (which under-states it once positions have wound down):
+    //  • Open FULL spreads (sellQty > 0) → [entry, now] at their current (full) margin.
+    //  • Every other position (open-but-long-only OR fully closed) → its full-spread phase
+    //    [entry, short-close] at the full margin, rebuilt from its sellQty > 0 history rows
+    //    (widest span, MAX margin = the full-spread entry margin). The long-only phase after
+    //    the short closes is dropped. Ids still full-spread-open are skipped (counted above)
+    //    so nothing is double-counted.
+    const openFullIds = new Set(activeList.filter(p => (p.sellQty || 0) > 0).map(p => String(p.id)));
+    const lifetimes = [];
+    activeList.forEach(pos => {
+      if ((pos.sellQty || 0) <= 0) return; // long-only open → full-spread phase comes from history
+      lifetimes.push({
+        entry: new Date(pos.entryTime).getTime(),
+        exit: now,
+        margin: Number(pos.margin) > 0 ? Number(pos.margin) : null,
       });
-    }
-
-    if (Array.isArray(tradeHistory)) {
-      tradeHistory.forEach(t => {
-        const rawId = t.trade_id || t.id;
-        if (!rawId) return;
-        const baseId = getBaseId(rawId);
-
-        // If position is currently open in positions, skip
-        if (posMap.has(baseId) && posMap.get(baseId).exitTime === null) return;
-
-        const margin = Number(t.margin) || 0;
-        if (margin <= 0) return;
-
-        const entryTime = t.entry_time || t.entryTime;
-        const exitTime = t.exit_time || t.exitTime;
-
-        if (!posMap.has(baseId)) {
-          posMap.set(baseId, {
-            id: baseId,
-            underlying: t.underlying,
-            type: t.type,
-            entryTime,
-            exitTime,
-            margin,
-          });
-        } else {
-          const existing = posMap.get(baseId);
-          if (exitTime && (!existing.exitTime || new Date(exitTime) > new Date(existing.exitTime))) {
-            existing.exitTime = exitTime;
-          }
-        }
-      });
-    }
-
-    const uniquePositions = Array.from(posMap.values());
+    });
+    const histByPos = new Map();
+    (Array.isArray(tradeHistory) ? tradeHistory : []).forEach(t => {
+      if (t.underlying !== currentUnderlying) return;
+      if (t.type !== 'call' && t.type !== 'put') return;
+      if (Number(t.sellQty) <= 0) return; // long-only wind-down (ladder / expiry-long) — not full margin
+      const baseId = String(t.id ?? '').split('-')[0];
+      if (!baseId || openFullIds.has(baseId)) return; // still a full spread → counted above
+      const entry = new Date(t.entryTime).getTime();
+      const exit = new Date(t.exitTime).getTime();
+      if (isNaN(entry) || isNaN(exit)) return;
+      const m = Number(t.margin) > 0 ? Number(t.margin) : 0;
+      const cur = histByPos.get(baseId);
+      if (!cur) histByPos.set(baseId, { entry, exit, margin: m });
+      else { cur.entry = Math.min(cur.entry, entry); cur.exit = Math.max(cur.exit, exit); cur.margin = Math.max(cur.margin, m); }
+    });
+    histByPos.forEach(v => lifetimes.push({ entry: v.entry, exit: v.exit, margin: v.margin > 0 ? v.margin : null }));
 
     schedules.forEach(s => {
       if (!s.isActive) return;
 
-      // Convert schedule window startTime / endTime to relative minutes shifted from 17:30 IST (1050 minutes)
+      const cap = isPaper
+        ? Math.max(1, Math.floor(s.maxCombinedPositions ?? 4))
+        : Math.max(1, (s.numberOfCalls || 0) + (s.numberOfPuts || 0));
+
+      // Each position slot carries 1 equal part of the allocated balance budget (allocBal / cap)
+      const slotMargin = allocBal / cap;
+
       const startMin = toMin(s.startTime);
       const endMin = toMin(s.endTime);
       const startShifted = (startMin - 1050 + 1440) % 1440;
       const endShifted = (endMin - 1050 + 1440) % 1440;
 
-      // Define window interval(s) in milliseconds relative to sessionStart
       const winIntervals = [];
       if (startShifted <= endShifted) {
         winIntervals.push({
@@ -290,12 +279,17 @@ export default function SchedulePanel({
 
       const events = [];
 
-      uniquePositions.forEach(pos => {
-        if (pos.underlying !== currentUnderlying) return;
-        if (pos.type !== 'call' && pos.type !== 'put') return;
+      lifetimes.forEach(life => {
+        // Use each position's ACTUAL margin (both paper AND live) — the same stored value the
+        // engine subtracts from the allocated budget (usedMargin = Σ pos.margin). slotMargin
+        // (the even allocBal/cap split) is only a fallback when a row has no stored margin yet.
+        // Paper previously ALWAYS used slotMargin, which over/under-stated utilisation vs the
+        // real margins used (e.g. showed 3×450/2700 instead of (350+452+353)/2700).
+        const posMargin = life.margin != null && life.margin > 0 ? life.margin : slotMargin;
+        const entryMs = life.entry;
+        if (isNaN(entryMs)) return;
 
-        const entryMs = new Date(pos.entryTime).getTime();
-        const exitMs = pos.exitTime ? new Date(pos.exitTime).getTime() : now;
+        const exitMs = life.exit;
 
         const posStart = Math.max(entryMs, sessionStart);
         const posEnd = Math.min(exitMs, sessionEnd);
@@ -305,13 +299,12 @@ export default function SchedulePanel({
         const relStart = posStart - sessionStart;
         const relEnd = posEnd - sessionStart;
 
-        // Intersect with each window interval
         winIntervals.forEach(win => {
           const intStart = Math.max(relStart, win.start);
           const intEnd = Math.min(relEnd, win.end);
           if (intStart < intEnd) {
-            events.push({ time: intStart, marginDelta: pos.margin });
-            events.push({ time: intEnd, marginDelta: -pos.margin });
+            events.push({ time: intStart, marginDelta: posMargin });
+            events.push({ time: intEnd, marginDelta: -posMargin });
           }
         });
       });
@@ -321,14 +314,13 @@ export default function SchedulePanel({
         return;
       }
 
-      // Sort events: time ascending, exit (-marginDelta) before entry (+marginDelta) so a position
-      // closing exactly as another opens is not double-counted.
+      // Sort events: time ascending, exit (-marginDelta) before entry (+marginDelta)
       events.sort((a, b) => {
         if (a.time !== b.time) return a.time - b.time;
         return a.marginDelta - b.marginDelta;
       });
 
-      // Sweep events, tracking concurrent margin utilised ($) at any single instant.
+      // Sweep events to track peak concurrent margin utilised at any single instant in this window
       let curMargin = 0;
       let peakMargin = 0;
       events.forEach(ev => {
@@ -336,17 +328,18 @@ export default function SchedulePanel({
         if (curMargin > peakMargin) peakMargin = curMargin;
       });
 
-      const pctUtil = allocBal > 0 ? (peakMargin / allocBal) * 100 : 0;
+      const clampedPeak = Math.min(allocBal, peakMargin);
+      const pctUtil = allocBal > 0 ? (clampedPeak / allocBal) * 100 : 0;
 
       result[s.id] = {
-        peakMargin: Math.round(peakMargin * 100) / 100,
+        peakMargin: Math.round(clampedPeak * 100) / 100,
         pctUtil: Math.round(pctUtil * 100) / 100,
         allocatedBalance: Math.round(allocBal * 100) / 100,
       };
     });
 
     return result;
-  }, [positions, tradeHistory, schedules, currentUnderlying, historyFilterDate, now, allocatedBalance]);
+  }, [positions, tradeHistory, schedules, currentUnderlying, historyFilterDate, now, allocatedBalance, isPaper]);
 
   const [deletingId, setDeletingId] = useState(null); // id of schedule window pending deletion
 
