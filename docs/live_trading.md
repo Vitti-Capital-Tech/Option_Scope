@@ -369,8 +369,11 @@ at that price or better), and `reconcile()` flags gross drift.
 #### Exit-level brackets (the exchange-side risk exit)
 
 At entry, `openSpread` attaches a **spot-triggered bracket** to each leg's order at the
-shared exit-type level (`computeIndexTriggerLevel` — ATM = buy strike, ITM/OTM = ±
-points), so the spread is protected even if the engine is down:
+shared **decoy** exit-type level (`computeDecoyExitLevel` of `computeIndexTriggerLevel` —
+ATM = buy strike, ITM/OTM = ± points, then shifted `slTpDecoyDiff` pts in the harder-to-
+trigger direction; `diff = 0` → the real level), so the spread is protected even if the
+engine is down (at the worse decoy level — the engine's own spot-cross exit fires at the
+real level first while it's running):
 
 > [!NOTE]
 > **Exit Type / Exit Points are per-schedule-window** (`effectiveConfig`, migration `012`)

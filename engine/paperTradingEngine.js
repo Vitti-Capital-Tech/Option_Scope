@@ -1054,6 +1054,7 @@ async function startSingleAccountEngine(account) {
     const effExit = {
       exitType: activeSchedule?.exitType ?? config.exitType,
       exitPoints: activeSchedule?.exitPoints ?? config.exitPoints,
+      slTpDecoyDiff: activeSchedule?.slTpDecoyDiff ?? config.slTpDecoyDiff ?? 0,
     };
     const pidBySymbol = {};
     for (const p of livePos) pidBySymbol[p.product_symbol] = p.product_id;
@@ -1110,7 +1111,10 @@ async function startSingleAccountEngine(account) {
       if (pos.underlying !== config.underlying) continue;
       if (pos.buyLeg?.isHedge) continue; // engine-drained; never auto-bracket a hedge
       if (now - new Date(pos.entryTime).getTime() < 60000) continue; // let entry settle
-      const level = computeIndexTriggerLevel(pos.type, pos.buyLeg.strike, effExit);
+      // Re-arm at the DECOY level (migration 031, live decoy) so a re-armed bracket matches
+      // what entry / syncExitBrackets set — the engine's spot-cross exit still fires at real.
+      const realLevel = computeIndexTriggerLevel(pos.type, pos.buyLeg.strike, effExit);
+      const level = computeDecoyExitLevel(pos.type, realLevel, effExit.slTpDecoyDiff ?? 0);
       const longSize = Math.abs(sizeBySymbol[pos.buyLeg?.symbol] ?? 0);
       const shortSize = Math.abs(sizeBySymbol[pos.sellLeg?.symbol] ?? 0);
       // Long leg open on Delta but no resting bracket → arm its TP.
@@ -2383,15 +2387,15 @@ async function startSingleAccountEngine(account) {
 
       const underlying = effectiveConfig.underlying;
 
-      // ── Paper decoy/real exit-level observability (migration 031/032) ──────────
-      // PAPER ONLY, purely observational. Stamp each open position's REAL engine exit
-      // level and the DECOY level (real shifted sl_tp_decoy_diff pts, harder-to-trigger:
-      // call +diff, put −diff) onto active_positions, so the decoy geometry can be
-      // validated in paper before it drives live exchange brackets. The real exit is
-      // UNCHANGED — nothing here acts on the decoy. Entry stamps the snapshot; this
-      // re-syncs ONLY when the computed level drifts (active window's exitType/exitPoints
-      // changed), so it's a rare DB write, not a per-cycle one. Skips hedge overlays.
-      if (accountState.mode !== 'live') {
+      // ── Decoy/real exit-level observability (migration 031/032) ────────────────
+      // ALL accounts. Stamp each open position's REAL engine exit level and the DECOY
+      // level (real shifted sl_tp_decoy_diff pts, harder-to-trigger: call +diff, put −diff)
+      // onto active_positions. On PAPER this is purely observational; on LIVE these levels
+      // are what the engine actually uses — the engine's spot-cross catch-all exits at the
+      // REAL level and the exchange SL/TP bracket sits at the DECOY level. Entry stamps the
+      // snapshot; this re-syncs ONLY when the computed level drifts (active window's
+      // exitType/exitPoints/decoy diff changed), so it's a rare DB write. Skips hedge overlays.
+      {
         const decoyDiff = effectiveConfig.slTpDecoyDiff ?? 0;
         for (const pos of positions) {
           if (pos.underlying !== underlying) continue;
@@ -2406,7 +2410,7 @@ async function startSingleAccountEngine(account) {
               .update({ real_exit_level: realLvl, decoy_exit_level: decoyLvl })
               .eq('id', pos.id);
           } catch (e) {
-            logWarn(`[${accountState.name}] Paper decoy-level sync failed for ${pos.id}: ${e?.message || e}`);
+            logWarn(`[${accountState.name}] Decoy-level sync failed for ${pos.id}: ${e?.message || e}`);
           }
         }
       }
@@ -3529,6 +3533,69 @@ async function startSingleAccountEngine(account) {
       // concentrate fill never deploys more than the pool.
       let paperRemainingBudget = null;
       let paperDeployed = 0;
+
+      // ── Full-deployment fill (migration 030, paper + live) ─────────────────────
+      // Off by default (config.fullDeployEnabled). Once per IST day at config.fullDeployTime,
+      // DON'T reserve budget per free slot — concentrate the whole remaining pool across the
+      // spreads scanning ACTUALLY found openable now ("deploy all margin"), so idle balance
+      // is deployed. Shared by the LIVE (wallet-balance) and PAPER (equity) sizing blocks so
+      // both behave identically; `label` distinguishes the log line. Advances the daily latch.
+      // Returns { partMargin, isFullDeploy } — the caller logs its normal sizing line only when
+      // NOT a full-deploy (the full-deploy line is logged here).
+      const sizePartMargin = ({ remainingBudget, remainingSlots, maxPos, openHere, label }) => {
+        const ist = new Date(Date.now() + 330 * 60000); // UTC → IST wall clock
+        const istMinNow = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+        const istDateKey = ist.toISOString().slice(0, 10);
+        // Parse 'HH:MM' IST → minutes-since-midnight; fall back to 04:30 if malformed.
+        const parseIstMin = (hhmm) => {
+          const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(hhmm ?? ''));
+          return m ? Number(m[1]) * 60 + Number(m[2]) : 270;
+        };
+        const FULL_DEPLOY_MIN = parseIstMin(config.fullDeployTime);
+        const fullDeployPass = (config.fullDeployEnabled ?? false)
+          && lastEntryIstMin != null
+          && lastEntryIstMin < FULL_DEPLOY_MIN && istMinNow >= FULL_DEPLOY_MIN
+          && lastFullDeployKey !== istDateKey;
+        lastEntryIstMin = istMinNow;
+        if (!fullDeployPass) {
+          return { partMargin: remainingBudget / remainingSlots, isFullDeploy: false };
+        }
+        lastFullDeployKey = istDateKey;
+        // Count spreads that would actually open now — mirrors the entry-loop guards:
+        // per-type derived cap, combined cap, and the ONE-LEG-PER-STRIKE cross-role conflict
+        // rule (simulating acceptance in the same order the loop processes). No forced fills:
+        // a slot with no qualifying candidate stays empty.
+        const typeCap430 = derivedTypeCap(effectiveConfig);
+        const simCounts = { call: 0, put: 0 };
+        let simCombined = 0;
+        const occupied = { call: new Set(), put: new Set() };
+        openHere.forEach(p => {
+          if (p.sellQty > 0 && (p.type === 'call' || p.type === 'put')) { simCounts[p.type]++; simCombined++; }
+          if (p.expiry === config.expiry && (p.type === 'call' || p.type === 'put')) {
+            if (!p.buyLeg?.isHedge && (p.buyLeg?.lotSize ?? 1) > 0 && p.buyLeg?.strike != null) occupied[p.type].add(Number(p.buyLeg.strike));
+            if (p.sellQty > 0 && p.sellLeg?.strike != null) occupied[p.type].add(Number(p.sellLeg.strike));
+          }
+        });
+        let openable = 0;
+        for (const sp of uniqueTopSpreads) {
+          if (simCombined >= maxPos) break;
+          const t = sp.buyLeg?.type;
+          if (t !== 'call' && t !== 'put') continue;
+          const b = Number(sp.buyLeg.strike), s = Number(sp.sellLeg.strike);
+          if (simCounts[t] >= typeCap430) continue;
+          if (occupied[t].has(b) || occupied[t].has(s)) continue; // either leg on an occupied strike (cross-role)
+          occupied[t].add(b); occupied[t].add(s);
+          simCounts[t]++; simCombined++; openable++;
+        }
+        if (openable > 0) {
+          const pm = remainingBudget / openable;
+          log(`[${accountState.name}] 🌅 ${label} ${config.fullDeployTime} full-deploy: remaining $${remainingBudget.toFixed(2)} ÷ ${openable} openable spread(s) = $${pm.toFixed(2)}/position (window combined cap ${maxPos}).`);
+          return { partMargin: pm, isFullDeploy: true };
+        }
+        log(`[${accountState.name}] 🌅 ${label} ${config.fullDeployTime} full-deploy: no qualifying spreads found — nothing filled, $${remainingBudget.toFixed(2)} stays idle.`);
+        return { partMargin: 0, isFullDeploy: true };
+      };
+
       if (!onlyExits && !paused && dayAllowsEntry && liveArmed) {
         try {
           const bal = await live.walletBalance();
@@ -3547,8 +3614,13 @@ async function startSingleAccountEngine(account) {
             const occupiedSlots = openHere.filter(p => p.sellQty > 0).length; // full spreads occupy cap slots
             const remainingBudget = Math.max(0, budget - usedMargin);
             const remainingSlots = Math.max(1, maxPos - occupiedSlots);
-            partMargin = remainingBudget / remainingSlots;
-            log(`[${accountState.name}] 💰 LIVE sizing: balance $${bal.toFixed(2)} × ${allocPct}% = $${budget.toFixed(2)} budget | used $${usedMargin.toFixed(2)} | remaining $${remainingBudget.toFixed(2)} ÷ ${remainingSlots} free slot(s) (peak cap ${maxPos}) = $${partMargin.toFixed(2)}/position`);
+            // Normal: remaining ÷ free slots. Full-deploy pass: concentrate the whole
+            // remaining pool across openable spreads (migration 030, now live too).
+            const sized = sizePartMargin({ remainingBudget, remainingSlots, maxPos, openHere, label: 'LIVE' });
+            partMargin = sized.partMargin;
+            if (!sized.isFullDeploy) {
+              log(`[${accountState.name}] 💰 LIVE sizing: balance $${bal.toFixed(2)} × ${allocPct}% = $${budget.toFixed(2)} budget | used $${usedMargin.toFixed(2)} | remaining $${remainingBudget.toFixed(2)} ÷ ${remainingSlots} free slot(s) (peak cap ${maxPos}) = $${partMargin.toFixed(2)}/position`);
+            }
           } else {
             logWarn(`[${accountState.name}] LIVE sizing: wallet balance unavailable — skipping live entries this cycle.`);
           }
@@ -3578,68 +3650,11 @@ async function startSingleAccountEngine(account) {
         const remainingSlots = Math.max(1, maxPos - occupiedSlots);
         paperRemainingBudget = remainingBudget;
 
-        // ── Full-deployment fill (once per day, paper only) ──────────────────
-        // Config-driven (migration 030): fires only when config.fullDeployEnabled is
-        // on, at config.fullDeployTime IST (default 04:30). Detect the upward crossing
-        // of that IST minute on entry-eligible cycles, at most once per IST date. On
-        // that pass we DON'T reserve budget for slots that may never fill — instead we
-        // concentrate the whole remaining pool across the spreads scanning ACTUALLY
-        // found openable now, so idle balance is deployed.
-        const ist = new Date(Date.now() + 330 * 60000); // UTC → IST wall clock
-        const istMinNow = ist.getUTCHours() * 60 + ist.getUTCMinutes();
-        const istDateKey = ist.toISOString().slice(0, 10);
-        // Parse 'HH:MM' IST → minutes-since-midnight; fall back to 04:30 if malformed.
-        const parseIstMin = (hhmm) => {
-          const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(hhmm ?? ''));
-          return m ? Number(m[1]) * 60 + Number(m[2]) : 270;
-        };
-        const FULL_DEPLOY_MIN = parseIstMin(config.fullDeployTime); // configured IST time
-        const fullDeployPass = (config.fullDeployEnabled ?? false)
-          && lastEntryIstMin != null
-          && lastEntryIstMin < FULL_DEPLOY_MIN && istMinNow >= FULL_DEPLOY_MIN
-          && lastFullDeployKey !== istDateKey;
-        lastEntryIstMin = istMinNow;
-
-        if (fullDeployPass) {
-          lastFullDeployKey = istDateKey;
-          // Count spreads that would actually open now — mirrors the entry-loop guards:
-          // per-type derived cap, combined cap, and ONE-LEG-PER-STRIKE cross-role conflicts
-          // (simulating acceptance in the same order the loop processes). No forced fills: a
-          // slot with no qualifying candidate stays empty.
-          const typeCap430 = derivedTypeCap(effectiveConfig);
-          const simCounts = { call: 0, put: 0 };
-          let simCombined = 0;
-          // Occupied strikes per type = every open long strike ∪ every active short strike
-          // (sellQty > 0); a long-only remnant keeps its long strike but frees its old short.
-          // A candidate needs BOTH legs on free strikes — cross-role, matching the entry loop.
-          const occupied = { call: new Set(), put: new Set() };
-          openHere.forEach(p => {
-            if (p.sellQty > 0 && (p.type === 'call' || p.type === 'put')) { simCounts[p.type]++; simCombined++; }
-            if (p.expiry === config.expiry && (p.type === 'call' || p.type === 'put')) {
-              if (!p.buyLeg?.isHedge && (p.buyLeg?.lotSize ?? 1) > 0 && p.buyLeg?.strike != null) occupied[p.type].add(Number(p.buyLeg.strike));
-              if (p.sellQty > 0 && p.sellLeg?.strike != null) occupied[p.type].add(Number(p.sellLeg.strike));
-            }
-          });
-          let openable = 0;
-          for (const sp of uniqueTopSpreads) {
-            if (simCombined >= maxPos) break;
-            const t = sp.buyLeg?.type;
-            if (t !== 'call' && t !== 'put') continue;
-            const b = Number(sp.buyLeg.strike), s = Number(sp.sellLeg.strike);
-            if (simCounts[t] >= typeCap430) continue;
-            if (occupied[t].has(b) || occupied[t].has(s)) continue; // either leg on an occupied strike (cross-role)
-            occupied[t].add(b); occupied[t].add(s);
-            simCounts[t]++; simCombined++; openable++;
-          }
-          if (openable > 0) {
-            partMargin = remainingBudget / openable;
-            log(`[${accountState.name}] 🌅 PAPER ${config.fullDeployTime} full-deploy: remaining $${remainingBudget.toFixed(2)} ÷ ${openable} openable spread(s) = $${partMargin.toFixed(2)}/position (window combined cap ${maxPos}).`);
-          } else {
-            partMargin = 0; // scanning found nothing openable → fill nothing (no forced entries)
-            log(`[${accountState.name}] 🌅 PAPER ${config.fullDeployTime} full-deploy: no qualifying spreads found — nothing filled, $${remainingBudget.toFixed(2)} stays idle.`);
-          }
-        } else {
-          partMargin = remainingBudget / remainingSlots;
+        // Normal: remaining ÷ free slots. Full-deploy pass: concentrate the whole remaining
+        // pool across openable spreads (shared with the live block via sizePartMargin).
+        const sized = sizePartMargin({ remainingBudget, remainingSlots, maxPos, openHere, label: 'PAPER' });
+        partMargin = sized.partMargin;
+        if (!sized.isFullDeploy) {
           log(`[${accountState.name}] 💰 PAPER sizing: equity $${equity.toFixed(2)} × ${allocPct}% = $${budget.toFixed(2)} budget | used $${usedMargin.toFixed(2)} | remaining $${remainingBudget.toFixed(2)} ÷ ${remainingSlots} free slot(s) (window combined cap ${maxPos}) = $${partMargin.toFixed(2)}/position`);
         }
       }
@@ -4260,10 +4275,15 @@ async function startSingleAccountEngine(account) {
             // entryBuyPrice/entrySellPrice (used for bookkeeping) are left as-is.
             const buyOff = config.entryBuyOffset ?? 10;
             const sellOff = config.entrySellOffset ?? 3;
-            // Exchange-native brackets at the exit-type SPOT level (ATM/ITM/OTM):
-            // long leg → take-profit, short leg → stop-loss. These fire even if the
-            // engine is down, and are the account's hard risk exit.
-            const bracketLevel = computeIndexTriggerLevel(t.type, t.buyLeg.strike, effectiveConfig);
+            // Exchange-native brackets at the DECOY exit-type SPOT level (migration 031,
+            // live decoy): long leg → take-profit, short leg → stop-loss. The engine's own
+            // spot-cross catch-all (handleLiveRestingExit) exits at the REAL level each cycle,
+            // so the exchange bracket sits at the DECOY level = real shifted sl_tp_decoy_diff
+            // pts in the harder-to-trigger direction (call +diff, put −diff) — a later,
+            // engine-down-only fallback that hides the real exit from the exchange. diff = 0 →
+            // decoy == real (current behaviour). Both levels are recorded on the row below.
+            const realExitLvl = computeIndexTriggerLevel(t.type, t.buyLeg.strike, effectiveConfig);
+            const bracketLevel = computeDecoyExitLevel(t.type, realExitLvl, effectiveConfig.slTpDecoyDiff ?? 0);
             const liveEntry = await live.openSpread(t, {
               long: longContracts(t.buyLeg),
               short: shortContracts(t.sellQty),
@@ -4342,17 +4362,12 @@ async function startSingleAccountEngine(account) {
               log(`[${accountState.name}] 🎯 Resting short-exit armed: limit BUY short ${t.sellLeg.strike} @ $${exitPx} (id ${seRes?.order?.id ?? '?'})`);
             }
 
-            // Decoy observability snapshot (migration 031/032) — PAPER only. Record the
-            // real engine exit level and the decoy level (real ± diff, harder-to-trigger)
-            // so the geometry can be validated. Live leaves these NULL (its decoy is the
-            // exchange bracket, not a stored value). Stamped on `t` too, so the in-memory
-            // book carries them and the per-cycle drift-sync doesn't re-write next cycle.
-            const paperReal = isPaperAccount
-              ? computeIndexTriggerLevel(t.type, t.buyLeg.strike, effectiveConfig) : null;
-            const paperDecoy = isPaperAccount
-              ? computeDecoyExitLevel(t.type, paperReal, effectiveConfig.slTpDecoyDiff ?? 0) : null;
-            t.realExitLevel = paperReal;
-            t.decoyExitLevel = paperDecoy;
+            // Decoy observability snapshot (migration 031/032) — ALL accounts. Reuse the
+            // levels computed above: realExitLvl = the engine's real exit trigger, bracketLevel
+            // = the decoy (= the exchange bracket level on live). Stamped on `t` too, so the
+            // in-memory book carries them and the per-cycle drift-sync doesn't re-write next cycle.
+            t.realExitLevel = realExitLvl;
+            t.decoyExitLevel = bracketLevel;
 
             const { error: insertError } = await supabase.from('active_positions').insert([{
               id: t.id, underlying, expiry: config.expiry, type: t.type,
@@ -4364,7 +4379,7 @@ async function startSingleAccountEngine(account) {
               entry_spot_price: t.entrySpotPrice,
               margin: t.margin, entry_fee: t.entryFee, accumulated_sell_pnl: 0,
               buy_strike: t.buyLeg.strike, sell_strike: t.sellLeg.strike,
-              real_exit_level: paperReal, decoy_exit_level: paperDecoy,
+              real_exit_level: realExitLvl, decoy_exit_level: bracketLevel,
               account_id: accountState.id,
             }]);
 
@@ -4514,13 +4529,17 @@ async function startSingleAccountEngine(account) {
     const effExit = {
       exitType: activeSchedule?.exitType ?? config.exitType,
       exitPoints: activeSchedule?.exitPoints ?? config.exitPoints,
+      slTpDecoyDiff: activeSchedule?.slTpDecoyDiff ?? config.slTpDecoyDiff ?? 0,
     };
 
     // Which legs are out of sync? (pure in-memory — no API call unless there's real drift)
+    // The bracket target is the DECOY level (migration 031, live decoy) = real shifted by the
+    // active window's sl_tp_decoy_diff; the engine's own spot-cross exit stays at the real level.
     const drift = [];
     for (const pos of positions) {
       if (pos.underlying !== config.underlying) continue;
-      const newLevel = computeIndexTriggerLevel(pos.type, pos.buyLeg.strike, effExit);
+      const realLevel = computeIndexTriggerLevel(pos.type, pos.buyLeg.strike, effExit);
+      const newLevel = computeDecoyExitLevel(pos.type, realLevel, effExit.slTpDecoyDiff ?? 0);
       // Drift = the engine's COMPUTED target changed (brkComputed), not the effective
       // brkLevel — so an adopted manual bracket isn't reverted on an unrelated config touch.
       // Undefined brkComputed (pre-upgrade rows) reads as drift → self-heals on first sync.
@@ -4532,7 +4551,8 @@ async function startSingleAccountEngine(account) {
 
     // ATM = buy strike (points are NOT applied); only ITM/OTM add/subtract exitPoints.
     const exitDesc = effExit.exitType === 'ATM' ? 'ATM' : `${effExit.exitType}±${effExit.exitPoints ?? 0}`;
-    log(`[${accountState.name}] 🔧 Exit brackets (${reason}): moving ${drift.length} position(s) to ${exitDesc}${activeSchedule ? ` [window "${activeSchedule.label}"]` : ''}`);
+    const decoyDesc = (effExit.slTpDecoyDiff ?? 0) > 0 ? ` decoy +${effExit.slTpDecoyDiff}pts` : '';
+    log(`[${accountState.name}] 🔧 Exit brackets (${reason}): moving ${drift.length} position(s) to ${exitDesc}${decoyDesc}${activeSchedule ? ` [window "${activeSchedule.label}"]` : ''}`);
 
     // Fetch (armed real only) the product_ids and the CURRENT resting bracket/stop orders
     // per symbol, so we can cancel the existing bracket before re-posting. Only stop/bracket

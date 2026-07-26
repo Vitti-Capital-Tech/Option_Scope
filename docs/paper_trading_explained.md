@@ -505,20 +505,20 @@ If the pool is exhausted (`partMargin ≈ 0`), new paper entries self-skip that 
 
 The dashboard's **Paper Balance** KPI tile surfaces equity, allocated, buffer, and per-position margin (`KpiDashboard.jsx`); the engine also publishes these via the heartbeat.
 
-### 4. Daily full-deployment fill (configurable time, paper only)
+### 4. Daily full-deployment fill (configurable time, paper AND live — migration 030, promoted to live)
 
 Normal sizing **reserves** budget for every empty combined slot (`partMargin = remainingBudget ÷ remainingSlots`). So when qualifying spreads are scarce, empty slots stay unfilled and that slice of the allocated pool sits **idle**. Once per day, at a configurable time (**default 04:30 IST**), the engine can do a one-time **full-deployment fill** so the balance left at that time gets deployed into the trades scanning actually finds.
 
 > [!NOTE]
-> **Opt-in & configurable (migration `030` — `full_deploy_enabled` / `full_deploy_time`).** The fill is **OFF by default** — it runs only when `full_deploy_enabled` is set, at the `full_deploy_time` (`'HH:MM'` IST, default `'04:30'`). Both are **account-level** paper config, edited in the **Config Panel → Full Deployment** (paper accounts only): a toggle plus a time picker. When disabled, sizing always uses the normal ÷ empty-slots path (no concentrate fill). *(The DB columns live on `paper_trading_config`; see the migration for `full_deploy_enabled`/`full_deploy_time`.)*
+> **Opt-in & configurable (migration `030` — `full_deploy_enabled` / `full_deploy_time`).** The fill is **OFF by default** — it runs only when `full_deploy_enabled` is set, at the `full_deploy_time` (`'HH:MM'` IST, default `'04:30'`). Both are **account-level** config, edited in the **Config Panel → Full Deployment** for **paper AND live** accounts (a toggle plus a time picker). When disabled, sizing always uses the normal ÷ empty-slots path (no concentrate fill). The engine shares one `sizePartMargin()` helper for both the live (wallet-balance) and paper (equity) sizing blocks, so they behave identically. *(The DB columns live on `paper_trading_config`; see the migration for `full_deploy_enabled`/`full_deploy_time`.)*
 
-- **Trigger**: an upward crossing of `full_deploy_time` IST (`FULL_DEPLOY_MIN = parseIstMin(config.fullDeployTime)`, default `270` = 04:30) on an entry-eligible cycle, gated on `config.fullDeployEnabled`, latched to fire **at most once per IST date** (`lastEntryIstMin`/`lastFullDeployKey`). Crossing-based, so an engine that starts *after* the configured time doesn't back-fire that day. In-memory latch (a same-day restart may re-fire). Paper accounts only.
+- **Trigger**: an upward crossing of `full_deploy_time` IST (`FULL_DEPLOY_MIN = parseIstMin(config.fullDeployTime)`, default `270` = 04:30) on an entry-eligible cycle, gated on `config.fullDeployEnabled`, latched to fire **at most once per IST date** (`lastEntryIstMin`/`lastFullDeployKey`). Crossing-based, so an engine that starts *after* the configured time doesn't back-fire that day. In-memory latch (a same-day restart may re-fire). Paper AND armed-live accounts (live's block runs under `liveArmed`).
 - **Concentrate sizing**: instead of ÷ empty slots, the pass counts the spreads that would **actually open now** (`K` — mirrors the entry-loop guards exactly: per-type derived cap, combined cap, and the **one-leg-per-strike cross-role** conflict rule — a single occupied-strike set per type, seeded from open positions and grown as it simulates accepting each candidate) and sizes `partMargin = remainingBudget ÷ K`. So if fewer spreads qualify than there are empty slots, the leftover is **concentrated** into the ones that open (fuller deployment), still within the Max Combined count.
 - **No forced fills**: only spreads that pass the **normal** entry filters open. If `K = 0` (scanning finds nothing openable), **nothing** is filled and the budget stays idle until a later cycle finds candidates. Existing open positions are never scaled/topped up.
 - **Running-pool clamp**: each paper entry is sized toward `min(partMargin, remainingPool − deployedThisCycle)` and `deployedThisCycle` accrues each position's margin, so the pass can never collectively deploy more than the remaining pool even if `K` slightly mis-estimates.
 
 > [!NOTE]
-> **Log line**: `🌅 PAPER 4:30 full-deploy: remaining $… ÷ K openable spread(s) = $…/position` (or `… no qualifying spreads found — nothing filled, $… stays idle`).
+> **Log line**: `🌅 LIVE|PAPER 4:30 full-deploy: remaining $… ÷ K openable spread(s) = $…/position` (or `… no qualifying spreads found — nothing filled, $… stays idle`).
 
 ---
 
@@ -622,7 +622,7 @@ An **early exit** — closes the spread while the long leg is still `exitPoints`
 
 ### SL/TP Decoy (`sl_tp_decoy_diff`, migration 031/032)
 
-Delta appears to leak resting SL/TP levels to market makers. To hide the real exit, the plan is for **live** to place the exchange bracket/stop at a **decoy** level while the engine triggers the **real** exit itself (its existing spot-cross catch-all above, market-closing reduce-only at the true level). The exchange order stays as a genuine engine-down fallback.
+Delta appears to leak resting SL/TP levels to market makers. To hide the real exit, **live** places the exchange bracket/stop at a **decoy** level while the engine triggers the **real** exit itself (its existing spot-cross catch-all above — `handleLiveRestingExit` market-closes reduce-only at the true level each cycle). The exchange order stays as a genuine engine-down fallback (at the worse decoy level).
 
 The **decoy level** is the real exit level shifted `sl_tp_decoy_diff` points in the **harder-to-trigger direction**, so the exchange (decoy) SL/TP always fires *after* the engine's real exit:
 
@@ -645,12 +645,17 @@ One rule covers every exit type — no special ITM handling, no warnings:
 > [!IMPORTANT]
 > **`diff = 0` → decoy == real → current behaviour (fully backward compatible).** No separate on/off flag. Configured **per schedule window** on `paper_trading_schedules.sl_tp_decoy_diff` (primary; `paper_trading_config` is the account-level fallback), editable in **Schedule Panel → each window → "SL/TP Diff (pts)"**.
 
-**Paper is observational only.** Paper places no exchange orders, so nothing acts on the decoy — the real exit is **unchanged**. Each paper position simply records both levels on `active_positions` so the geometry can be validated before it drives live brackets:
+**Where the decoy acts, per account type:**
+
+- **Live** — the decoy level is the **exchange SL/TP bracket** (`longTp` / `shortSl` on `openSpread`). The engine's spot-cross catch-all still exits at the **real** level first each cycle; the exchange bracket (at the decoy) is only the engine-down fallback. `syncExitBrackets` moves the bracket to the decoy of the new active window on a window/config flip, and `armMissingBrackets` re-arms a vanished bracket at the decoy — both keep the exchange level = decoy while the engine keeps exiting at real. (Un-adopted orphan / protect-only brackets stay at the **real** level — they have no engine real-level monitor, so the tighter level is the safer net.)
+- **Paper** — observational only: paper places no exchange orders, so nothing acts on the decoy and the real exit is **unchanged**. The levels are just recorded to validate the geometry.
+
+Both account types **record both levels** on `active_positions`:
 
 - `real_exit_level` — the engine's true exit trigger (the level it actually exits on).
-- `decoy_exit_level` — the decoy level (real ± diff, as above).
+- `decoy_exit_level` — the decoy level (real ± diff, as above) = the live exchange bracket level.
 
-Both are stamped at **entry** and re-synced only when the active window's `exitType`/`exitPoints` **drift** (a rare DB update, not per-cycle). **Live** rows leave both `NULL` (the live decoy lives on the exchange bracket, not stored). The **Open Positions** table shows them in the **"Exit Level (real · decoy)"** column (real on top, `decoy …` below; `(=real)` when `diff = 0`).
+Both are stamped at **entry** and re-synced only when the active window's `exitType`/`exitPoints`/decoy diff **drift** (a rare DB update, not per-cycle), for **all accounts**. The **Open Positions** table shows them in the **"Exit Level (real · decoy)"** column (real on top, `decoy …` below; `(=real)` when `diff = 0`).
 
 ## Partial Exit / Scaling Logic
 
@@ -862,7 +867,7 @@ Here's every safety guard in one table:
 | $195K short value cap | `paperTradingEngine.js` | Scales down lot sizes if short notional ≥ $195K. **Paper**: applied after scaling the spread to the per-position margin part |
 | DB count guard | `paperTradingEngine.js` | Database-level check (all accounts): derived per-type cap AND combined-total cap on **full spreads** (`.gt('sell_qty', 0)`), fail-closed |
 | Paper balance / allocation (paper) | `paperTradingEngine.js` | **Paper only (migration `027`)**: per-position margin = (equity × allocation%) ÷ active window's `max_combined_positions`; entries self-skip when the allocated pool is exhausted |
-| 4:30 AM IST full-deploy (paper) | `paperTradingEngine.js` | **Paper only**: once/day, concentrates the remaining pool across only the spreads scanning finds openable (no forced fills, cap respected); running-pool clamp prevents over-deployment. See [Paper Balance & Combined-Position Sizing §4](#paper-balance--combined-position-sizing-paper-only) |
+| Daily full-deploy | `paperTradingEngine.js` | **Paper AND live** (migration `030`, promoted to live): once/day at the configured time, concentrates the remaining pool across only the spreads scanning finds openable (no forced fills, cap respected). Shared `sizePartMargin()` helper. See [Balance & Combined-Position Sizing §4](#paper-balance--combined-position-sizing-paper-only) |
 | DB buy strike free | `paperTradingEngine.js` | Database-level: candidate long strike unoccupied — no open long there, and no active short there (`sell_qty > 0`, cross-role) |
 | DB sell strike free | `paperTradingEngine.js` | Database-level: candidate short strike unoccupied — no active short there (`sell_qty > 0`) **and no open long there** (cross-role; blocks shorting a strike a long-only remnant still holds long) |
 | Expiry buffer (5 min) | `paperTradingEngine.js` | Won't enter if less than 5 minutes to expiry |
