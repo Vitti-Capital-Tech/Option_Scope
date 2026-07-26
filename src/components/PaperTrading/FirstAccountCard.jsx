@@ -223,20 +223,22 @@ export default function FirstAccountCard({
                 )}
               </div>
 
+              {/* Combined-cap model (migration 027, promoted to LIVE) — entry caps for paper
+                  AND live. Per-type cap is derived = ceil(Split% × Max Combined). */}
               <div className="first-account-row">
                 <div className="first-account-form-group">
-                  <label className="first-account-label">Max Open Calls</label>
+                  <label className="first-account-label">Max Combined Positions</label>
                   <CustomInput
                     type="number"
-                    {...register('numberOfCalls', { valueAsNumber: true })}
+                    {...register('maxCombinedPositions', { valueAsNumber: true })}
                     className="first-account-input"
                   />
                 </div>
                 <div className="first-account-form-group">
-                  <label className="first-account-label">Max Open Puts</label>
+                  <label className="first-account-label">Split %</label>
                   <CustomInput
                     type="number"
-                    {...register('numberOfPuts', { valueAsNumber: true })}
+                    {...register('combinedSplitPct', { valueAsNumber: true })}
                     className="first-account-input"
                   />
                 </div>

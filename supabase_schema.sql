@@ -101,8 +101,6 @@ CREATE TABLE IF NOT EXISTS public.paper_trading_config (
     atm_ratio_distance_call NUMERIC NOT NULL DEFAULT 50,
     atm_ratio_distance_put NUMERIC NOT NULL DEFAULT 25,
     days_to_expiry NUMERIC NOT NULL DEFAULT 0,
-    number_of_calls INTEGER NOT NULL DEFAULT 3,
-    number_of_puts INTEGER NOT NULL DEFAULT 3,
     exit_type TEXT NOT NULL DEFAULT 'ATM',
     exit_points NUMERIC NOT NULL DEFAULT 0,
     short_exit_price NUMERIC NOT NULL DEFAULT 1.1,
@@ -157,8 +155,6 @@ CREATE TABLE IF NOT EXISTS public.paper_trading_schedules (
     label TEXT NOT NULL DEFAULT 'Window',
     start_time TIME NOT NULL, -- IST time e.g. '17:30'
     end_time TIME NOT NULL,   -- IST time e.g. '22:29'
-    number_of_calls INTEGER NOT NULL DEFAULT 3,
-    number_of_puts INTEGER NOT NULL DEFAULT 3,
     min_long_dist INTEGER NOT NULL DEFAULT 500,
     min_strike_diff INTEGER NOT NULL DEFAULT 800,
     is_active BOOLEAN NOT NULL DEFAULT true,

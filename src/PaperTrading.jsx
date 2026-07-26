@@ -37,8 +37,6 @@ const ACCOUNT_CONFIG_DEFAULTS = {
   atmRatioPctCall: 50,
   atmRatioPctPut: 25,
   daysToExpiry: 0,
-  numberOfCalls: 3,
-  numberOfPuts: 3,
   exitType: 'ATM',
   exitPoints: 0,
   shortExitPrice: 1.1,
@@ -97,8 +95,6 @@ const makeFirstWindow = (cfg = {}) => ({
   label: 'Window 1',
   startTime: '17:30',
   endTime: '17:29',
-  numberOfCalls: cfg.numberOfCalls ?? 3,
-  numberOfPuts: cfg.numberOfPuts ?? 3,
   maxCombinedPositions: cfg.maxCombinedPositions ?? 4,
   combinedSplitPct: cfg.combinedSplitPct ?? 70,
   minLongDist: cfg.minLongDist ?? 500,
@@ -207,8 +203,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       atmRatioPctCall: 50,
       atmRatioPctPut: 25,
       daysToExpiry: 0,
-      numberOfCalls: 3,
-      numberOfPuts: 3,
       exitType: 'ATM',
       exitPoints: 0,
       shortExitPrice: 1.1,
@@ -252,8 +246,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     atmRatioPctCall: 50,
     atmRatioPctPut: 25,
     daysToExpiry: 0,
-    numberOfCalls: 3,
-    numberOfPuts: 3,
     exitType: 'ATM',
     exitPoints: 0,
     shortExitPrice: 1.1,
@@ -735,8 +727,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       atmRatioPctCall: data.atmRatioPctCall,
       atmRatioPctPut: data.atmRatioPctPut,
       daysToExpiry: data.daysToExpiry,
-      numberOfCalls: data.numberOfCalls,
-      numberOfPuts: data.numberOfPuts,
       exitType: data.exitType,
       exitPoints: data.exitPoints,
       shortExitPrice: data.shortExitPrice,
@@ -788,8 +778,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           atm_ratio_distance_call: data.atmRatioPctCall,
           atm_ratio_distance_put: data.atmRatioPctPut,
           days_to_expiry: data.daysToExpiry,
-          number_of_calls: data.numberOfCalls ?? 3,
-          number_of_puts: data.numberOfPuts ?? 3,
           exit_type: data.exitType ?? 'ATM',
           exit_points: data.exitPoints ?? 0,
           short_exit_price: data.shortExitPrice ?? 1.1,
@@ -855,8 +843,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       atmRatioPctCall: config.atmRatioPctCall,
       atmRatioPctPut: config.atmRatioPctPut,
       daysToExpiry: config.daysToExpiry,
-      numberOfCalls: config.numberOfCalls ?? 3,
-      numberOfPuts: config.numberOfPuts ?? 3,
       exitType: config.exitType ?? 'ATM',
       exitPoints: config.exitPoints ?? 0,
       shortExitPrice: config.shortExitPrice ?? 1.1,
@@ -1154,8 +1140,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         atm_ratio_distance_call: newCfg.atmRatioPctCall,
         atm_ratio_distance_put: newCfg.atmRatioPctPut,
         days_to_expiry: newCfg.daysToExpiry,
-        number_of_calls: newCfg.numberOfCalls ?? 3,
-        number_of_puts: newCfg.numberOfPuts ?? 3,
         exit_type: newCfg.exitType ?? 'ATM',
         exit_points: newCfg.exitPoints ?? 0,
         short_exit_price: newCfg.shortExitPrice ?? 1.1,
@@ -1336,8 +1320,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           atm_ratio_distance_call: 50,
           atm_ratio_distance_put: 25,
           days_to_expiry: 0,
-          number_of_calls: 3,
-          number_of_puts: 3,
           initial_balance: 3000,
           max_combined_positions: 4,
           combined_split_pct: 70,
@@ -1376,8 +1358,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           atmRatioPctCall: data.atm_ratio_distance_call ?? 50,
           atmRatioPctPut: data.atm_ratio_distance_put ?? 25,
           daysToExpiry: data.days_to_expiry ?? 0,
-          numberOfCalls: data.number_of_calls ?? 3,
-          numberOfPuts: data.number_of_puts ?? 3,
           exitType: data.exit_type ?? 'ATM',
           exitPoints: data.exit_points ?? 0,
           shortExitPrice: data.short_exit_price ?? 1.1,
@@ -1450,8 +1430,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           label: s.label || 'Window',
           startTime: s.start_time ? s.start_time.substring(0, 5) : '17:30',
           endTime: s.end_time ? s.end_time.substring(0, 5) : '17:29',
-          numberOfCalls: s.number_of_calls ?? 3,
-          numberOfPuts: s.number_of_puts ?? 3,
           maxCombinedPositions: s.max_combined_positions ?? 4,
           combinedSplitPct: s.combined_split_pct ?? 70,
           minLongDist: s.min_long_dist ?? 500,
@@ -1486,8 +1464,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           label: s.label,
           startTime: s.startTime,
           endTime: s.endTime,
-          numberOfCalls: s.numberOfCalls,
-          numberOfPuts: s.numberOfPuts,
           maxCombinedPositions: s.maxCombinedPositions,
           combinedSplitPct: s.combinedSplitPct,
           minLongDist: s.minLongDist,
@@ -1529,8 +1505,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         label: s.label || 'Window',
         start_time: s.startTime,
         end_time: s.endTime,
-        number_of_calls: s.numberOfCalls ?? 3,
-        number_of_puts: s.numberOfPuts ?? 3,
         max_combined_positions: s.maxCombinedPositions ?? 4,
         combined_split_pct: s.combinedSplitPct ?? 70,
         min_long_dist: s.minLongDist ?? 500,
@@ -1577,8 +1551,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         label: s.label,
         startTime: s.startTime,
         endTime: s.endTime,
-        numberOfCalls: s.numberOfCalls,
-        numberOfPuts: s.numberOfPuts,
         maxCombinedPositions: s.maxCombinedPositions,
         combinedSplitPct: s.combinedSplitPct,
         minLongDist: s.minLongDist,
@@ -1615,8 +1587,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       label: s.label,
       startTime: s.startTime,
       endTime: s.endTime,
-      numberOfCalls: s.numberOfCalls,
-      numberOfPuts: s.numberOfPuts,
       maxCombinedPositions: s.maxCombinedPositions,
       combinedSplitPct: s.combinedSplitPct,
       minLongDist: s.minLongDist,
@@ -2936,13 +2906,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
                   if (active.length > 0) return Math.max(1, ...active.map(s => Math.floor(s.maxCombinedPositions || 4)));
                   return Math.max(1, Math.floor(config.maxCombinedPositions ?? activeAccount?.default_config?.maxCombinedPositions ?? 4));
                 }
-                // LIVE: per-position margin sizes for the BUSIEST window — the GREATEST
-                // (calls + puts) across ALL active windows — matching the engine's sizing.
+                // LIVE (combined-cap model, migration 027 promoted to live): per-position
+                // margin sizes for the PEAK Max Combined across ALL active windows —
+                // matching the engine's computeMaxPositions().
                 if (active.length > 0) {
-                  return Math.max(1, ...active.map(s => (s.numberOfCalls || 0) + (s.numberOfPuts || 0)));
+                  return Math.max(1, ...active.map(s => Math.floor(s.maxCombinedPositions || 4)));
                 }
                 // No windows: fall back to the engine's published value, else base config.
-                return engineMaxPositions ?? Math.max(1, (activeAccount?.default_config?.numberOfCalls ?? 3) + (activeAccount?.default_config?.numberOfPuts ?? 3));
+                return engineMaxPositions ?? Math.max(1, Math.floor(config.maxCombinedPositions ?? activeAccount?.default_config?.maxCombinedPositions ?? 4));
               })()}
             />
 

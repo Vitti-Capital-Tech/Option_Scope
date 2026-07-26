@@ -469,7 +469,7 @@ ceiling** on the resulting quantity (see the max-qty cap below):
 - Each account has a **`balance_allocation_pct`** (default **90**) — the share of
   wallet balance used for trading; the rest is buffer.
 - **max positions** = peak concurrent positions across the base config and all active
-  schedule windows (`max(numberOfCalls + numberOfPuts)`).
+  schedule windows (`max(maxCombinedPositions)` — combined-cap model, migration `027` promoted to live).
 - **part** = `(balance × allocation%) ÷ max positions`.
 
 **"1 unit" scale sizing (fill one part, keep the ratio).** The base unit is

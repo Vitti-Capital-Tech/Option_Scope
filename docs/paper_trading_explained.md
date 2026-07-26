@@ -238,8 +238,8 @@ Every candidate pair must pass **all** of these filters to be considered:
 | 7 | **Max Sell Qty** | `maxSellQty` (default: 10) | The sell quantity (ratio) must not exceed 10 |
 | 8 | **Max Net Premium** | `maxNetPremium` (default: $20) | The net premium debit cannot exceed $20. **ATM Ratio Scaling is applied first**, so this is checked against the *scaled* short quantity (i.e., `scaledSellQty × sellPrice - buyPrice ≥ -$20`). When scaling is disabled, `scaledSellQty` equals the natural `sellQty`. **Now configured per schedule window** (see [Time-Based Filter Schedules](#time-based-filter-schedules)); the account base value is the gap fallback. |
 | 9 | **Days to Expiry** | `daysToExpiry` (default: 0) | The option expiry date must be at least this many days away from the current time. Options closer to expiry are rejected. **Location depends on `strategy_version`** (migration `019`): on **v1 (live)** it is an account-level Control Panel field; on **v2 (experimental paper)** it moves **per schedule window** (see [Time-Based Filter Schedules](#time-based-filter-schedules)) — each window guards its own entries, and the account-global traded expiry **follows the active window** as **(current date + that window's DTE)**, re-selected in ~realtime as windows change (smallest DTE wins on overlap). See [Strategy Versioning](#strategy-versioning-paper-vs-live). |
-| 10 | **Max Calls (#)** | `numberOfCalls` (default: 3) | Maximum **full-spread** calls allowed concurrently. Only positions with an active short leg (`sellQty > 0`) count — long-only held positions do **not** count toward the cap. Re-applied at entry and whenever a schedule window changes the value. |
-| 11 | **Max Puts (#)** | `numberOfPuts` (default: 3) | Maximum **full-spread** puts allowed concurrently. Same counting rule as Max Calls — held long-only positions are excluded from the cap. |
+| 10 | **Max Combined Positions (#)** | `maxCombinedPositions` (default: 4) | Hard cap on TOTAL open **full-spread** positions (calls + puts) per underlying. Only positions with an active short leg (`sellQty > 0`) count — long-only held positions do **not** count. Governs entry caps for **ALL accounts** now — paper AND live (migration `027` combined model, promoted to live; migration `034` dropped the old `numberOfCalls`/`numberOfPuts`). Per schedule window. |
+| 11 | **Split % (#)** | `combinedSplitPct` (default: 70) | Derives the per-**type** cap = `ceil(split% × maxCombined)`, applied to both calls and puts (but the combined total still can't exceed Max Combined). E.g. 4 / 70% → max 3 calls **and** 3 puts, ≤ 4 together. Per schedule window. |
 | 12 | **ATM Ratio Entry** | `atmRatioScaling` (default: true) | Checkbox toggle to enable scaling of entry sell quantities based on ATM strike option prices. |
 | 13 | **Call ATM Pct (%)** | `atmRatioPctCall` (default: 50) | The scaling percentage for ATM ratio adjustments on call spreads. |
 | 14 | **Put ATM Pct (%)** | `atmRatioPctPut` (default: 25) | The scaling percentage for ATM ratio adjustments on put spreads. |
@@ -305,7 +305,7 @@ Only spreads that meet this adjusted minimum floor survive the filter.
    - Keep the one with the **highest ROI** (primary candidate).
    - If this highest ROI candidate conflicts with any of your currently active positions (other than itself), ALSO keep the next best **non-conflicting fallback candidate** for that same buy strike (if one exists). This allows normal entries to execute on non-conflicting spreads even when the primary highest ROI spread is blocked by active positions.
 2. Sort by **distance to ATM** (closest first)
-3. Take the top **10 calls + 10 puts** maximum (or higher if the configured `numberOfCalls`/`numberOfPuts` is set to more than 10, ensuring candidates always cover your max limits).
+3. Take the top **10 calls + 10 puts** maximum (or higher if the derived per-type cap `ceil(split% × maxCombined)` exceeds 10, ensuring candidates always cover your max limits).
 
 > [!IMPORTANT]
 > **Why we keep both the primary and a non-conflicting fallback candidate:** normal entries require candidates that do **not** conflict with any active position strikes. If we only kept the single highest-ROI candidate per buy strike and it conflicted with an active position, we'd be locked out of entering any trade on that buy strike even when other non-conflicting spreads existed. Keeping a fallback prevents that lockout. (This is also what lets a freed slot — after a short-leg exit — be filled by the next-best closest-to-ATM spread.)
@@ -355,12 +355,14 @@ This is **cross-role**, not just same-role:
 
 ### Guard 5: Portfolio Cap (Local)
 ```
-If there are already `config.numberOfCalls` (calls) / `config.numberOfPuts` (puts) FULL-SPREAD positions of this type → SKIP
+Per-type cap  = ceil(combinedSplitPct/100 × maxCombinedPositions)   # derivedTypeCap()
+If FULL-SPREAD positions of this type ≥ per-type cap → SKIP
+If TOTAL FULL-SPREAD positions (calls + puts) ≥ maxCombinedPositions → SKIP
 ```
 The cap counts only **full spreads** (`sellQty > 0`). Long-only held positions do **not** count, so each short-leg exit frees a slot for a new closer-to-ATM spread. The total rows in the Active Positions table can therefore exceed the cap (full spreads + held longs); the cap limits only the full spreads. The same `sellQty > 0` rule is enforced again at the DB level (`.gt('sell_qty', 0)`) before insert.
 
 > [!NOTE]
-> **Paper accounts (migration `027`)** don't use `numberOfCalls`/`numberOfPuts` here. The per-type cap is **derived** as `ceil(combined_split_pct/100 × max_combined_positions)` (`paperTypeCap()`), and a **second guard** blocks any entry once total open full spreads (calls + puts) reach the active window's `max_combined_positions`. See [Paper Balance & Combined-Position Sizing](#paper-balance--combined-position-sizing-paper-only). Live accounts are unchanged.
+> **Combined-cap model — ALL accounts** (migration `027`, promoted to LIVE; `numberOfCalls`/`numberOfPuts` dropped in migration `034`). The per-type cap is **derived** as `ceil(combined_split_pct/100 × max_combined_positions)` (`derivedTypeCap()`), and a **second guard** blocks any entry once total open full spreads (calls + puts) reach the active window's `max_combined_positions`. Both guards apply to paper AND live. See [Balance & Combined-Position Sizing](#paper-balance--combined-position-sizing-paper-only).
 
 ### Guard 6: ATM Ratio Scaling (Optional)
 If `atmRatioScaling` is enabled in config:
@@ -388,10 +390,12 @@ Ensures no single position has more than $195K notional exposure on the short si
 
 ### Guard 8: DB-Level Count Guard
 ```
-Query: SELECT count(*) FROM active_positions WHERE type = X AND account_id = Y
-If count ≥ `config.numberOfCalls` (for calls) or `config.numberOfPuts` (for puts) → BLOCK
+Per-type:  SELECT id FROM active_positions WHERE type = X AND sell_qty > 0 AND account_id = Y
+           If count ≥ derivedTypeCap → BLOCK
+Combined:  SELECT id FROM active_positions WHERE sell_qty > 0 AND account_id = Y  (this underlying)
+           If count ≥ maxCombinedPositions → BLOCK
 ```
-Double-check against the **database** (not just local memory) to prevent race conditions. On **paper accounts** the caps are the derived per-type + combined-total values from migration `027` (see Guard 5).
+Double-check against the **database** (not just local memory) to prevent race conditions across cycles/restarts. **Both** the derived per-type cap AND the combined-total cap are enforced at the DB level, for **all accounts** (paper AND live — migration `027` combined model, promoted to live). Fail-closed: a query error skips the entry.
 
 ### Guard 9: DB-Level Buy Strike Free
 ```
@@ -425,7 +429,7 @@ This is **execution-realistic** — no cheating with mid-prices.
 
 ## Paper Balance & Combined-Position Sizing (Paper Only)
 
-**File**: [paperTradingEngine.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js) · **Migration**: `027_paper_balance_combined.sql` · **Scope**: **paper accounts only** (gated on `accountState.mode !== 'live'`). Live accounts are unchanged — they keep their wallet-balance sizing and `numberOfCalls`/`numberOfPuts` caps.
+**File**: [paperTradingEngine.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js) · **Migration**: `027_paper_balance_combined.sql` (combined-cap model) + `034_drop_number_of_calls_puts.sql`. **Scope**: the **combined-cap model (entry caps) now applies to ALL accounts — paper AND live**. *Balance-based sizing* still differs: paper sizes on its funded equity (this section); live sizes on the real Delta wallet balance ÷ `maxCombinedPositions` (see live sizing). The old `numberOfCalls`/`numberOfPuts` caps are gone.
 
 Before this, paper positions were sized to a fixed "1 unit" (the base ratio) capped only by the [$195K short-notional ceiling](#guard-7-195k-short-value-cap). Paper now behaves like a **real funded account**: it has a balance, allocates a fraction of it as the tradeable margin pool, and divides that pool equally across a per-window cap on concurrent positions.
 
@@ -459,7 +463,7 @@ Two new per-window fields ([scheduled per window](#time-based-filter-schedules),
 perTypeCap = ceil( (combined_split_pct / 100) × max_combined_positions )   # same for calls AND puts
 ```
 
-Example: Max Combined `4`, Split `70%` → `ceil(0.70 × 4) = 3`. So **max 3 calls and max 3 puts**, but the **combined total never exceeds 4** (e.g. 3C+1P, 2C+2P, …). This replaces `numberOfCalls`/`numberOfPuts` as the entry cap on paper accounts (`paperTypeCap()` + a separate combined-total guard).
+Example: Max Combined `4`, Split `70%` → `ceil(0.70 × 4) = 3`. So **max 3 calls and max 3 puts**, but the **combined total never exceeds 4** (e.g. 3C+1P, 2C+2P, …). This is the entry cap for **all accounts** now — paper AND live (`derivedTypeCap()` + a separate combined-total guard); it fully replaced the old `numberOfCalls`/`numberOfPuts` (dropped in migration `034`).
 
 ### 3. Per-position margin & sizing
 
@@ -853,10 +857,10 @@ Here's every safety guard in one table:
 | Max net premium debit | `utils.js` | Limits how much net debit is acceptable |
 | ATM PnL ≥ $50 | `paperTradingEngine.js` | Only enters spreads that would profit $50+ at ATM |
 | Days to Expiry | `paperTradingEngine.js` | Rejects candidates whose expiry is fewer than `daysToExpiry` days away |
-| Portfolio cap | `paperTradingEngine.js` | Max **full-spread** calls (`config.numberOfCalls`) and puts (`config.numberOfPuts`) per account — held long-only positions (`sellQty = 0`) excluded. **Paper (migration `027`)**: derived per-type cap `ceil(split% × combined)` + a combined-total cap of `max_combined_positions` |
+| Portfolio cap | `paperTradingEngine.js` | **All accounts** (migration `027` combined model, promoted to live): derived per-type cap `ceil(split% × maxCombined)` (both calls and puts) + a combined-total cap of `max_combined_positions`. Held long-only positions (`sellQty = 0`) excluded. |
 | Combined-position cap (paper) | `paperTradingEngine.js` | **Paper only**: total open full spreads (calls + puts) may not exceed the active window's `max_combined_positions` |
 | $195K short value cap | `paperTradingEngine.js` | Scales down lot sizes if short notional ≥ $195K. **Paper**: applied after scaling the spread to the per-position margin part |
-| DB count guard | `paperTradingEngine.js` | Database-level check: max `config.numberOfCalls`/`config.numberOfPuts` **full spreads** (`.gt('sell_qty', 0)`) |
+| DB count guard | `paperTradingEngine.js` | Database-level check (all accounts): derived per-type cap AND combined-total cap on **full spreads** (`.gt('sell_qty', 0)`), fail-closed |
 | Paper balance / allocation (paper) | `paperTradingEngine.js` | **Paper only (migration `027`)**: per-position margin = (equity × allocation%) ÷ active window's `max_combined_positions`; entries self-skip when the allocated pool is exhausted |
 | 4:30 AM IST full-deploy (paper) | `paperTradingEngine.js` | **Paper only**: once/day, concentrates the remaining pool across only the spreads scanning finds openable (no forced fills, cap respected); running-pool clamp prevents over-deployment. See [Paper Balance & Combined-Position Sizing §4](#paper-balance--combined-position-sizing-paper-only) |
 | DB buy strike free | `paperTradingEngine.js` | Database-level: candidate long strike unoccupied — no open long there, and no active short there (`sell_qty > 0`, cross-role) |
@@ -967,8 +971,8 @@ Time-Based Filter Schedules allow users to define multiple named time windows pe
 
 ### Overridden Parameters
 The following parameters are scheduled per window:
-1. **Max Calls** (`numberOfCalls`)
-2. **Max Puts** (`numberOfPuts`)
+1. **Max Combined Positions** (`maxCombinedPositions`)
+2. **Split %** (`combinedSplitPct`) — derives the per-type cap `ceil(split% × maxCombined)`
 3. **Min Strike Difference** (`minStrikeDiff`)
 4. **Min Long Distance** (`minLongDist`)
 5. **ATM Ratio Entry** (`atmRatioScaling`)
@@ -1318,7 +1322,7 @@ flowchart TD
 | Quote freshness limit | 120 seconds | Max age of option quotes for entry |
 | Expiry exit buffer | 2 minutes | How early before expiry to force-exit |
 | Zombie threshold | 10 minutes | Past expiry, use expiry time as exit time |
-| Max **full-spread** positions per type | Configurable | Max calls (`config.numberOfCalls`) or puts (`config.numberOfPuts`) per account (default: 3); held long-only positions excluded |
+| Max **full-spread** positions | Configurable | Combined cap `maxCombinedPositions` (default: 4) + derived per-type cap `ceil(split% × maxCombined)`, all accounts; held long-only positions excluded |
 | Short-leg exit trigger | ask ≤ 1.1 | Short leg's live ask `≤ 1.1` → buy back short, hold long (gap-safe, once per position) |
 | Long-only exit levels | 10 equidistant | Evenly-spaced **bid** levels in [current bid, max(entry, last 2hr high)]; exit 1/10 long per crossed level (bid-triggered) |
 | $195K cap | $195,000 | Max short notional value |

@@ -177,12 +177,18 @@ export default function TradeHistoryTable({
               const dot = WINDOW_COLORS[i % WINDOW_COLORS.length];
               const name = s.label || `Window ${i + 1}`;
               const fill = windowFill(s);
-              const cFull = fill.c >= s.numberOfCalls;
-              const pFull = fill.p >= s.numberOfPuts;
+              // Combined-cap model (migration 027, promoted to live): per-type cap is
+              // derived = ceil(Split% × Max Combined), same for calls and puts; the total
+              // is separately hard-capped at Max Combined.
+              const combined = Math.max(1, Math.floor(s.maxCombinedPositions ?? 4));
+              const typeCap = Math.min(combined, Math.ceil(((s.combinedSplitPct ?? 70) / 100) * combined));
+              const cFull = fill.c >= typeCap;
+              const pFull = fill.p >= typeCap;
+              const combinedFull = (fill.c + fill.p) >= combined;
               return (
                 <div
                   key={s.id ?? i}
-                  title={`${name} (${(s.startTime || '').slice(0, 5)}–${(s.endTime || '').slice(0, 5)} IST) — ${fill.c}/${s.numberOfCalls} calls, ${fill.p}/${s.numberOfPuts} puts active${s.isActive ? '' : ' · inactive'}`}
+                  title={`${name} (${(s.startTime || '').slice(0, 5)}–${(s.endTime || '').slice(0, 5)} IST) — ${fill.c}/${typeCap} calls, ${fill.p}/${typeCap} puts, ${fill.c + fill.p}/${combined} combined active${s.isActive ? '' : ' · inactive'}`}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 6,
                     background: 'var(--bg3)', border: '1px solid var(--border)',
@@ -193,9 +199,11 @@ export default function TradeHistoryTable({
                   <span style={{ width: 8, height: 8, borderRadius: '50%', background: dot, flexShrink: 0 }} />
                   <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text)' }}>{name}</span>
                   <span style={{ fontSize: '10px', fontWeight: 600, color: 'var(--text-dim)' }}>
-                    C:<b style={{ color: cFull ? 'var(--call)' : 'var(--text)' }}>{fill.c}</b>/{s.numberOfCalls}
+                    C:<b style={{ color: cFull ? 'var(--call)' : 'var(--text)' }}>{fill.c}</b>/{typeCap}
                     {' · '}
-                    P:<b style={{ color: pFull ? 'var(--put)' : 'var(--text)' }}>{fill.p}</b>/{s.numberOfPuts}
+                    P:<b style={{ color: pFull ? 'var(--put)' : 'var(--text)' }}>{fill.p}</b>/{typeCap}
+                    {' · '}
+                    Σ:<b style={{ color: combinedFull ? 'var(--accent)' : 'var(--text)' }}>{fill.c + fill.p}</b>/{combined}
                   </span>
                 </div>
               );

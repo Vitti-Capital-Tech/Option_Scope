@@ -7,8 +7,6 @@ const DEFAULT_WINDOW = {
   label: 'Window',
   startTime: '17:30',
   endTime: '17:29',
-  numberOfCalls: 3,
-  numberOfPuts: 3,
   maxCombinedPositions: 4,
   combinedSplitPct: 70,
   minLongDist: 500,
@@ -254,9 +252,8 @@ export default function SchedulePanel({
     schedules.forEach(s => {
       if (!s.isActive) return;
 
-      const cap = isPaper
-        ? Math.max(1, Math.floor(s.maxCombinedPositions ?? 4))
-        : Math.max(1, (s.numberOfCalls || 0) + (s.numberOfPuts || 0));
+      // Combined-cap model for ALL accounts now (migration 027, promoted to live).
+      const cap = Math.max(1, Math.floor(s.maxCombinedPositions ?? 4));
 
       // Each position slot carries 1 equal part of the allocated balance budget (allocBal / cap)
       const slotMargin = allocBal / cap;
@@ -339,7 +336,7 @@ export default function SchedulePanel({
     });
 
     return result;
-  }, [positions, tradeHistory, schedules, currentUnderlying, historyFilterDate, now, allocatedBalance, isPaper]);
+  }, [positions, tradeHistory, schedules, currentUnderlying, historyFilterDate, now, allocatedBalance]);
 
   const [deletingId, setDeletingId] = useState(null); // id of schedule window pending deletion
 
@@ -410,9 +407,7 @@ export default function SchedulePanel({
             const endShifted = (endMin - 1050 + 1440) % 1440;
             const isSplit = startShifted > endShifted;
 
-            const capLine = isPaper
-              ? `Combined: ${Math.max(1, Math.floor(s.maxCombinedPositions ?? 4))} (${derivePaperTypeCap(s)}C / ${derivePaperTypeCap(s)}P @ ${s.combinedSplitPct ?? 70}%)`
-              : `Calls: ${s.numberOfCalls} | Puts: ${s.numberOfPuts}`;
+            const capLine = `Combined: ${Math.max(1, Math.floor(s.maxCombinedPositions ?? 4))} (${derivePaperTypeCap(s)}C / ${derivePaperTypeCap(s)}P @ ${s.combinedSplitPct ?? 70}%)`;
             const tooltip = `${s.label || 'Window'} (${cleanTime(s.startTime)} - ${cleanTime(s.endTime)})\n${capLine}\nStrike Diff: ${s.minStrikeDiff} | Long Dist: ${s.minLongDist}\nScaling: ${(s.atmRatioScaling ?? true) ? 'ON' : 'OFF'} (C: ${s.atmRatioPctCall ?? 50}%, P: ${s.atmRatioPctPut ?? 25}%)`;
 
             if (isSplit) {
@@ -613,43 +608,30 @@ export default function SchedulePanel({
                   <CustomInput type="time" className="schedule-inline-input" value={cleanTime(s.endTime)} onChange={e => handleChange(s.id, 'endTime', e.target.value)} />
                 </div>
 
-                {isPaper ? (
-                  <>
-                    <div className="schedule-item-block schedule-item-num-block">
-                      <span className="schedule-item-label">Max Combined Positions</span>
-                      <CustomInput type="number" min="1" max="40" value={s.maxCombinedPositions ?? 4} onChange={e => handleChange(s.id, 'maxCombinedPositions', Number(e.target.value))} />
-                    </div>
+                {/* Combined-cap model (migration 027, promoted to LIVE) — Max Combined +
+                    Split% govern entry caps for ALL accounts now (paper AND live); the old
+                    per-type Calls/Puts inputs are retired. */}
+                <div className="schedule-item-block schedule-item-num-block">
+                  <span className="schedule-item-label">Max Combined Positions</span>
+                  <CustomInput type="number" min="1" max="40" value={s.maxCombinedPositions ?? 4} onChange={e => handleChange(s.id, 'maxCombinedPositions', Number(e.target.value))} />
+                </div>
 
-                    <div className="schedule-item-block schedule-item-num-block">
-                      <span className="schedule-item-label">Split %</span>
-                      <CustomInput type="number" min="1" max="100" suffix="%" step="5" value={s.combinedSplitPct ?? 70} onChange={e => handleChange(s.id, 'combinedSplitPct', Number(e.target.value))} />
-                    </div>
+                <div className="schedule-item-block schedule-item-num-block">
+                  <span className="schedule-item-label">Split %</span>
+                  <CustomInput type="number" min="1" max="100" suffix="%" step="5" value={s.combinedSplitPct ?? 70} onChange={e => handleChange(s.id, 'combinedSplitPct', Number(e.target.value))} />
+                </div>
 
-                    <div className="schedule-item-block schedule-item-num-block">
-                      <span className="schedule-item-label">Derived Caps</span>
-                      <div style={{
-                        fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', height: '36px',
-                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: '5px',
-                        padding: '0 10px', fontFamily: 'JetBrains Mono, monospace', boxSizing: 'border-box', whiteSpace: 'nowrap',
-                      }} title={`Per-type cap = ceil(Split% × Max Combined). Max ${derivePaperTypeCap(s)} calls and ${derivePaperTypeCap(s)} puts, but no more than ${Math.max(1, Math.floor(s.maxCombinedPositions ?? 4))} open in total.`}>
-                        {derivePaperTypeCap(s)}C / {derivePaperTypeCap(s)}P
-                      </div>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="schedule-item-block schedule-item-num-block">
-                      <span className="schedule-item-label">Max Open Calls</span>
-                      <CustomInput type="number" min="0" max="20" value={s.numberOfCalls} onChange={e => handleChange(s.id, 'numberOfCalls', Number(e.target.value))} />
-                    </div>
-
-                    <div className="schedule-item-block schedule-item-num-block">
-                      <span className="schedule-item-label">Max Open Puts</span>
-                      <CustomInput type="number" min="0" max="20" value={s.numberOfPuts} onChange={e => handleChange(s.id, 'numberOfPuts', Number(e.target.value))} />
-                    </div>
-                  </>
-                )}
+                <div className="schedule-item-block schedule-item-num-block">
+                  <span className="schedule-item-label">Derived Caps</span>
+                  <div style={{
+                    fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', height: '36px',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: '5px',
+                    padding: '0 10px', fontFamily: 'JetBrains Mono, monospace', boxSizing: 'border-box', whiteSpace: 'nowrap',
+                  }} title={`Per-type cap = ceil(Split% × Max Combined). Max ${derivePaperTypeCap(s)} calls and ${derivePaperTypeCap(s)} puts, but no more than ${Math.max(1, Math.floor(s.maxCombinedPositions ?? 4))} open in total.`}>
+                    {derivePaperTypeCap(s)}C / {derivePaperTypeCap(s)}P
+                  </div>
+                </div>
 
                 <div className="schedule-item-block schedule-item-num-block">
                   <span className="schedule-item-label">Min Spread Width</span>

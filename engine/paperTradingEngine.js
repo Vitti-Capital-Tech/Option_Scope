@@ -170,8 +170,6 @@ async function startSingleAccountEngine(account) {
     atmRatioPctCall: 50,
     atmRatioPctPut: 25,
     daysToExpiry: 0,
-    numberOfCalls: 3,
-    numberOfPuts: 3,
     exitType: 'ATM',
     exitPoints: 0,
     // SL/TP decoy diff (migration 031) — points to shift the exchange (decoy) SL/TP
@@ -373,8 +371,6 @@ async function startSingleAccountEngine(account) {
           atmRatioPctCall: data.atm_ratio_distance_call ?? 50,
           atmRatioPctPut: data.atm_ratio_distance_put ?? 25,
           daysToExpiry: data.days_to_expiry ?? 0,
-          numberOfCalls: data.number_of_calls ?? 3,
-          numberOfPuts: data.number_of_puts ?? 3,
           exitType: data.exit_type ?? 'ATM',
           exitPoints: data.exit_points ?? 0,
           slTpDecoyDiff: data.sl_tp_decoy_diff ?? 0, // migration 031 (account-level fallback)
@@ -382,8 +378,9 @@ async function startSingleAccountEngine(account) {
           longExitSlices: data.long_exit_slices ?? 10,
           variableExitSlices: data.variable_exit_slices ?? false,
           balanceAllocationPct: data.balance_allocation_pct ?? 90,
-          // Paper funded-account model (migration 027). Live accounts ignore these
-          // (they size on the real wallet balance + numberOfCalls/numberOfPuts).
+          // Combined-cap model (migration 027, promoted to LIVE). maxCombinedPositions +
+          // combinedSplitPct now govern entry caps AND sizing for BOTH paper and live
+          // (initialBalance stays paper-only — live sizes on the real wallet balance).
           initialBalance: data.initial_balance ?? 3000,
           maxCombinedPositions: data.max_combined_positions ?? 4,
           combinedSplitPct: data.combined_split_pct ?? 70,
@@ -420,8 +417,6 @@ async function startSingleAccountEngine(account) {
           label: s.label || 'Window',
           startTime: s.start_time,  // 'HH:MM' IST
           endTime: s.end_time,      // 'HH:MM' IST
-          numberOfCalls: s.number_of_calls ?? 3,
-          numberOfPuts: s.number_of_puts ?? 3,
           // Paper combined-position sizing (migration 027). Fall back to the
           // account-level config value for windows that predate it.
           maxCombinedPositions: s.max_combined_positions ?? config.maxCombinedPositions ?? 4,
@@ -703,21 +698,25 @@ async function startSingleAccountEngine(account) {
   // the busiest window (largest calls+puts sum) means a position is funded so it
   // never over-allocates regardless of which window opens it; smaller windows just
   // leave part of the budget unused.
+  // Combined-cap model (migration 027, promoted to LIVE): the max concurrent full
+  // spreads is the ACTIVE window's maxCombinedPositions (peak across windows so a
+  // position is funded to never over-allocate whichever window opens it). Replaces the
+  // old numberOfCalls + numberOfPuts sum for BOTH paper and live sizing.
   function computeMaxPositions() {
     const activeWindows = schedules.filter(s => s.isActive);
     if (activeWindows.length > 0) {
-      return Math.max(1, ...activeWindows.map(s => (s.numberOfCalls || 0) + (s.numberOfPuts || 0)));
+      return Math.max(1, ...activeWindows.map(s => Math.floor(s.maxCombinedPositions ?? config.maxCombinedPositions ?? 4)));
     }
-    return Math.max(1, (config.numberOfCalls || 0) + (config.numberOfPuts || 0));
+    return Math.max(1, Math.floor(config.maxCombinedPositions ?? 4));
   }
 
-  // ── Paper funded-account model (migration 027) ──────────────────────────
-  // Per-window derived type cap for PAPER: ceil(split% × maxCombined), applied to
-  // BOTH calls and puts, clamped to [0, maxCombined]. The combined total is
-  // separately hard-capped at maxCombined by the portfolio-cap guard, so a 70/4
-  // window yields 3 calls / 3 puts but never more than 4 open together. Live
-  // accounts never call this — they use numberOfCalls/numberOfPuts directly.
-  function paperTypeCap(effCfg) {
+  // ── Combined-cap model (migration 027, promoted to LIVE) ────────────────
+  // Per-window derived type cap: ceil(split% × maxCombined), applied to BOTH calls
+  // and puts, clamped to [0, maxCombined]. The combined total is separately hard-
+  // capped at maxCombined by the portfolio-cap guard, so a 70/4 window yields 3 calls
+  // / 3 puts but never more than 4 open together. Used by ALL accounts now — paper AND
+  // live — replacing live's old explicit numberOfCalls/numberOfPuts per-type caps.
+  function derivedTypeCap(effCfg) {
     const combined = Math.max(0, Math.floor(effCfg?.maxCombinedPositions ?? config.maxCombinedPositions ?? 4));
     const pct = effCfg?.combinedSplitPct ?? config.combinedSplitPct ?? 70;
     return Math.min(combined, Math.ceil((pct / 100) * combined));
@@ -2341,8 +2340,6 @@ async function startSingleAccountEngine(account) {
       const effectiveConfig = activeSchedule
         ? {
           ...config,
-          numberOfCalls: activeSchedule.numberOfCalls,
-          numberOfPuts: activeSchedule.numberOfPuts,
           // Paper combined-position sizing (migration 027) — take the ACTIVE window's
           // values, falling back to the account-level config for rows that predate it.
           maxCombinedPositions: activeSchedule.maxCombinedPositions ?? config.maxCombinedPositions,
@@ -2629,8 +2626,10 @@ async function startSingleAccountEngine(account) {
       uniqueCalls.sort((a, b) => Math.abs(a.buyLeg.strike - spotPrice) - Math.abs(b.buyLeg.strike - spotPrice));
       uniquePuts.sort((a, b) => Math.abs(a.buyLeg.strike - spotPrice) - Math.abs(b.buyLeg.strike - spotPrice));
 
-      const maxCallCandidates = Math.max(10, effectiveConfig.numberOfCalls || 3);
-      const maxPutCandidates = Math.max(10, effectiveConfig.numberOfPuts || 3);
+      // Candidate pool size (not a cap — just how many to rank). Floored at 10, and at
+      // least the derived per-type cap so the combined model always has enough to fill.
+      const maxCallCandidates = Math.max(10, derivedTypeCap(effectiveConfig));
+      const maxPutCandidates = Math.max(10, derivedTypeCap(effectiveConfig));
 
       const uniqueTopSpreads = [
         ...uniqueCalls.slice(0, maxCallCandidates),
@@ -3607,7 +3606,7 @@ async function startSingleAccountEngine(account) {
           // per-type derived cap, combined cap, and ONE-LEG-PER-STRIKE cross-role conflicts
           // (simulating acceptance in the same order the loop processes). No forced fills: a
           // slot with no qualifying candidate stays empty.
-          const typeCap430 = paperTypeCap(effectiveConfig);
+          const typeCap430 = derivedTypeCap(effectiveConfig);
           const simCounts = { call: 0, put: 0 };
           let simCombined = 0;
           // Occupied strikes per type = every open long strike ∪ every active short strike
@@ -3710,23 +3709,23 @@ async function startSingleAccountEngine(account) {
           // Long-only held positions (sellQty === 0) free up a slot for new entries.
           let count = remaining.filter(p => p.underlying === underlying && p.type === spreadType && p.sellQty > 0).length +
             newEntries.filter(p => p.underlying === underlying && p.type === spreadType).length;
-          // PAPER: per-type cap is derived from the window's combined + split% (same value
-          // for calls and puts); LIVE keeps its explicit numberOfCalls/numberOfPuts.
-          const typeCap = isPaperAccount
-            ? paperTypeCap(effectiveConfig)
-            : (spreadType === 'call' ? effectiveConfig.numberOfCalls : effectiveConfig.numberOfPuts);
+          // Per-type cap is derived from the window's combined + split% (same value for
+          // calls and puts), for ALL accounts now — paper AND live (migration 027 combined
+          // model, promoted to live; numberOfCalls/numberOfPuts are no longer the live caps).
+          const typeCap = derivedTypeCap(effectiveConfig);
           if (count >= typeCap) {
             logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Portfolio cap of ${typeCap} reached for type ${spreadType}`);
             continue;
           }
 
-          // PAPER combined-total cap — total open full spreads (calls + puts) for this
-          // underlying must never exceed the active window's maxCombinedPositions, even
-          // though each per-type cap (ceil(split% × combined)) individually allows more.
+          // Combined-total cap — total open full spreads (calls + puts) for this underlying
+          // must never exceed the active window's maxCombinedPositions, even though each
+          // per-type cap (ceil(split% × combined)) individually allows more. Applies to ALL
+          // accounts now (paper AND live).
           const combinedCap = Math.max(1, Math.floor(effectiveConfig.maxCombinedPositions ?? config.maxCombinedPositions ?? 4));
           const combinedCount = remaining.filter(p => p.underlying === underlying && p.sellQty > 0).length +
             newEntries.filter(p => p.underlying === underlying).length;
-          if (isPaperAccount && combinedCount >= combinedCap) {
+          if (combinedCount >= combinedCap) {
             logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: combined position cap of ${combinedCap} reached (${combinedCount} open).`);
             continue;
           }
@@ -4165,24 +4164,45 @@ async function startSingleAccountEngine(account) {
               }
             }
 
-            // DB-level count guard per account — count only full spreads (active short leg).
-            // Long-only held positions (sell_qty === 0) don't count toward the cap.
+            // DB-level PER-TYPE count guard — count only full spreads (active short leg).
+            // Long-only held positions (sell_qty === 0) don't count toward the cap. The cap
+            // is the derived per-type cap (ceil(split% × maxCombined)) for ALL accounts now
+            // — paper AND live (migration 027 combined model, promoted to live).
             const { data: activeOfType, error: countError } = await supabase
               .from('active_positions').select('id')
               .eq('account_id', accountState.id)
               .eq('underlying', underlying).eq('type', t.type)
               .gt('sell_qty', 0);
-            const typeCap = t.type === 'call' ? effectiveConfig.numberOfCalls : effectiveConfig.numberOfPuts;
+            const typeCap = derivedTypeCap(effectiveConfig);
             // FAIL-CLOSED: if the count query errored (DB throttled/unreachable) we cannot
             // trust the cap — skip rather than risk an over-cap entry we'd then have to
             // unwind. A missed entry is far cheaper than placing real orders we can't
             // safely persist.
             if (countError) {
-              logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} skipped — count query failed (${countError.message}); failing safe.`);
+              logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} skipped — per-type count query failed (${countError.message}); failing safe.`);
               continue;
             }
             if ((activeOfType?.length ?? 0) >= typeCap) {
-              logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} blocked. Active count on DB: ${activeOfType?.length ?? 0}`);
+              logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} blocked. Per-type cap ${typeCap} reached (DB: ${activeOfType?.length ?? 0}).`);
+              continue;
+            }
+
+            // DB-level COMBINED count guard (migration 027 combined model, promoted to live):
+            // total open full spreads (calls + puts, sell_qty > 0) for this underlying must not
+            // exceed maxCombinedPositions. This is the DB-level twin of the in-memory combined
+            // cap — the fail-closed net across cycles/restarts before any real order is placed.
+            const combinedCapDb = Math.max(1, Math.floor(effectiveConfig.maxCombinedPositions ?? config.maxCombinedPositions ?? 4));
+            const { data: activeCombined, error: combinedCountError } = await supabase
+              .from('active_positions').select('id')
+              .eq('account_id', accountState.id)
+              .eq('underlying', underlying)
+              .gt('sell_qty', 0);
+            if (combinedCountError) {
+              logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} skipped — combined count query failed (${combinedCountError.message}); failing safe.`);
+              continue;
+            }
+            if ((activeCombined?.length ?? 0) >= combinedCapDb) {
+              logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} blocked. Combined cap ${combinedCapDb} reached (DB: ${activeCombined?.length ?? 0}).`);
               continue;
             }
 

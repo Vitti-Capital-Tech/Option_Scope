@@ -221,7 +221,7 @@ After every scan, `publishTopSpreads` packages the top-3 calls and puts into a p
 
 **Trade History Realtime Optimization**: The `trade_history` INSERT subscription now uses `payload.new` directly instead of triggering a full `fetchSupabaseTradeHistory()` refetch on every trade close. The new trade row is mapped and prepended to local state immediately. This eliminates the largest source of Supabase egress (previously a full-table fetch with JSONB buy_leg/sell_leg on every exit). A full history fetch still occurs on initial load and tab focus restoration.
 
-**DB-Level Count Guard (pre-insert)**: Before inserting any new position, the engine queries `active_positions` for the current `(underlying, type)` pair, counting **full spreads only** (`.gt('sell_qty', 0)`, so held long-only rows from a short-leg exit don't consume a slot — total active rows can exceed the cap). If the live count is `>= config.numberOfCalls` (calls) or `config.numberOfPuts` (puts), the insert is aborted. These pre-order reads are **fail-closed** for live: any query error skips the entry (so a transient read failure can't let a duplicate reach real placement). Uses plain `.select('id')` (not `{ head: true }`) to ensure non-null response data.
+**DB-Level Count Guard (pre-insert)**: Before inserting any new position, the engine runs TWO count checks against `active_positions`, counting **full spreads only** (`.gt('sell_qty', 0)`, so held long-only rows from a short-leg exit don't consume a slot — total active rows can exceed the cap): (1) **per-type** — `(underlying, type)` count `>= derivedTypeCap(effectiveConfig)` = `ceil(split% × maxCombined)`; (2) **combined** — `(underlying)` count of all full spreads `>= maxCombinedPositions`. Either abort blocks the entry. Applies to **all accounts** (migration `027` combined model, promoted to live; migration `034` dropped `numberOfCalls`/`numberOfPuts`). These pre-order reads are **fail-closed** for live: any query error skips the entry (so a transient read failure can't let a duplicate reach real placement). Uses plain `.select('id')` (not `{ head: true }`) to ensure non-null response data.
 
 **DB-Level Strike Uniqueness (pre-insert)**: A strike hosts **at most one leg** across all open positions of the same `(account_id, underlying, type, expiry)`. Occupied strikes = every open **long** (`buy_strike`) ∪ every **active short** (`sell_strike` WHERE `sell_qty > 0`); a long-only remnant frees its old short strike (migration `026`) but keeps its long strike occupied. After the count check the engine runs two `.or()` reads:
 
@@ -317,7 +317,7 @@ Steps: A → B → C → D → E → F (detailed in sections below).
 ### A. Candidate Pool Construction
 
 1. **Self-Contained Local Scan**: The headless engine runs its own `scanTickers` (same algorithm as `RatioSpreadScanner`) on calls and puts separately, filtered by option type and ATM direction. Unlike the browser-based version, the headless engine does **not** merge results from the `RatioSpreadScanner` `BroadcastChannel` — it is fully self-contained.
-2. **Unique Ranking List (`uniqueTopSpreads`)**: A deduplicated and filtered view of candidate spreads. Grouped by buy strike: we keep the highest-ROI candidate and, if it conflicts with active positions, also append the next best non-conflicting fallback candidate (to prevent entry lockouts as slots free up after two-phase exits). The lists of candidates are sorted by distance to ATM (closest first) and sliced to `Math.max(10, numberOfCalls/numberOfPuts)` dynamically. Used for ranking and entry decisions.
+2. **Unique Ranking List (`uniqueTopSpreads`)**: A deduplicated and filtered view of candidate spreads. Grouped by buy strike: we keep the highest-ROI candidate and, if it conflicts with active positions, also append the next best non-conflicting fallback candidate (to prevent entry lockouts as slots free up after two-phase exits). The lists of candidates are sorted by distance to ATM (closest first) and sliced to `Math.max(10, derivedTypeCap(effectiveConfig))` dynamically. Used for ranking and entry decisions.
 
 ### B. Sorted Position Processing (Worst-First)
 
@@ -431,13 +431,13 @@ Per-candidate guards (when `wantEntries` is true):
 1. **Expiry Buffer Guard**: Skip if `minutesToExpiry < 5`.
 2. **Min Days to Expiry Guard**: Now driven by the **active schedule window's** `daysToExpiry` (migration `019`, paper v2) rather than an account-level field; the traded expiry is chosen as `current date + window DTE` (see §7 Product Refresh & Expiry). Live (v1) uses the account-level threshold and rolls forward only.
 3. **Strike Uniqueness (Local) & Paper Long-Only Replacement**: One leg per strike (same type/underlying). Block if the candidate's buy **or** sell strike lands on any strike another open position already occupies — its open long strike, plus its short strike only while the short is still active (`sellQty > 0`). This is **cross-role**: a new short is blocked on an existing (incl. long-only) long strike, and a new long on an existing active short strike. *Paper Trading Exception:* In paper trading (`isPaperAccount`), if the conflict is solely an active long-only position (`sellQty === 0`) sharing the same long strike (`buyLeg.strike`), position cap vacancy exists (`count < typeCap` AND `combinedCount < combinedCap`), and the candidate short strike is free, the engine exits the long-only position (booking `trade_history` with `exit_reason: 'Exited for Long/Short Pair'` and deleting from `active_positions`) and allows the new long/short pair entry.
-4. **Portfolio Cap (Local)**: Block if `remaining + newEntries count >= config.numberOfCalls` (for calls) or `config.numberOfPuts` (for puts) for this type.
+4. **Portfolio Cap (Local)**: Block if `remaining + newEntries` full-spread count of this type `>= derivedTypeCap(effectiveConfig)` (`= ceil(split% × maxCombined)`), OR total full spreads (calls + puts) `>= maxCombinedPositions`. All accounts (migration `027` combined model, promoted to live).
 4. **Execution**: `entryBuyPrice = spread.ask`, `entrySellPrice = spread.bid`. Entry IVs captured: `entryBuyIv = ticker.askIv`, `entrySellIv = ticker.bidIv`. Baseline ATM ratio (`entryAtmRatio`) and unscaled lot size (`originalLotSize`) are computed.
    - **ATM Ratio Entry Scaling**: If `atmRatioScaling` is enabled, the target ratio is scaled using a percentage offset: `targetRatio = originalRatio + (pct / 100) * (atmRatioVal - originalRatio)`, where `pct` is `atmRatioPctCall`/`atmRatioPctPut` and `atmRatioVal` is the live ATM ratio rounded to 0.25. The entry ratio to use is `ratioToUse = Math.max(spread.sellQty, Math.round(targetRatio / 0.25) * 0.25)`. Both long lot size and short quantity are scaled under the 200X leverage limit ($195k cap) using this `ratioToUse`.
    - The final scaled values are written to `buy_leg` JSON metadata and stored inside Supabase `active_positions`.
 5. **$195K Short Value Cap**: If `spotPrice × sellQty × sellLotSize >= $195,000`, both lot size and sell qty are scaled down proportionally to bring the short notional to exactly $195K.
 6. **Supabase Insert (with three DB-level guards)**:
-   - Count guard: `SELECT id WHERE underlying AND type AND account_id` — abort if count `>= config.numberOfCalls` (for calls) or `config.numberOfPuts` (for puts).
+   - Count guard: per-type `SELECT id WHERE underlying AND type AND sell_qty>0` — abort if `>= derivedTypeCap`; AND combined `SELECT id WHERE underlying AND sell_qty>0` — abort if `>= maxCombinedPositions`.
    - Buy strike free (`buyConflict`): abort if `buy_strike = X` **OR** (`sell_strike = X` AND `sell_qty > 0`).
    - Sell strike free (`sellConflict`): abort if `buy_strike = Y` **OR** (`sell_strike = Y` AND `sell_qty > 0`) — the cross-role half blocks shorting a strike an open long (incl. a long-only remnant) already holds.
    - Unique constraint `23505` is the final net (same-role only; cross-role has no index, so the reads above are the enforcement).
@@ -670,8 +670,9 @@ Table: `paper_trading_schedules`
 - `label` (TEXT, user-defined name for the window)
 - `start_time` (TIME, e.g., `"17:30:00"`, stored in IST)
 - `end_time` (TIME, e.g., `"22:29:00"`, stored in IST)
-- `number_of_calls` (INTEGER, max concurrent calls override — **live** cap)
-- `number_of_puts` (INTEGER, max concurrent puts override — **live** cap)
+- `max_combined_positions` (INTEGER, hard cap on total open full spreads — all accounts)
+- `combined_split_pct` (NUMERIC, derives the per-type cap `ceil(split% × maxCombined)` — all accounts)
+  - *(the old `number_of_calls` / `number_of_puts` per-type caps were dropped in migration `034`)*
 - `max_combined_positions` (INTEGER, default `4`, migration `027`, **paper only**) — cap on total open full spreads (calls + puts); also the per-position-margin divisor
 - `combined_split_pct` (NUMERIC, default `70`, migration `027`, **paper only**) — derives the per-type cap `ceil(split% × combined)` for both calls and puts
 - `min_long_dist` (INTEGER, override for minimum long strike distance)
@@ -700,7 +701,7 @@ RLS Policies:
   - The first matching active schedule window is returned.
   - On overlap, the window with the **smallest DTE** wins; in an uncovered gap the last-ended window carries forward before dropping to the base config.
 - **`effectiveConfig` Generation**:
-  - If a schedule window matches, the engine creates an `effectiveConfig` by spreading the account's base configuration and overriding the scheduled properties: `numberOfCalls`, `numberOfPuts`, `minLongDist`, `minStrikeDiff`, the ATM-ratio scaling fields, `spotDiff`, `maxNetPremium`, `exitType`, `exitPoints`, `minDaysToExpiry` (v2), and the hedge fields.
+  - If a schedule window matches, the engine creates an `effectiveConfig` by spreading the account's base configuration and overriding the scheduled properties: `maxCombinedPositions`, `combinedSplitPct`, `minLongDist`, `minStrikeDiff`, the ATM-ratio scaling fields, `spotDiff`, `maxNetPremium`, `exitType`, `exitPoints`, `slTpDecoyDiff`, `shortExitPrice`, `variableExitSlices`, `longExitSlices`, `minDaysToExpiry` (v2), and the hedge fields.
   - If no schedule window matches, `effectiveConfig` falls back to the base account config.
   - All scanner candidate matching, position-limit evaluations, and the **exit-type check** (paper) / spot-cross catch-all (live) inside `evaluateStrategy()` utilize this `effectiveConfig` — so an open position's exit level follows the active window. (Live SL/TP brackets are placed at entry from the then-active window and are re-synced, not auto-moved, on a window flip — see §13.)
 
@@ -709,7 +710,7 @@ RLS Policies:
 - **Visual Schedule Timeline**: A 24-hour visual bar is rendered at the top of the schedule panel, representing the daily trading cycle starting and ending at `17:30` IST (the Delta Exchange daily rollover/settlement boundary = `12:00` UTC). The bar renders colored blocks indicating configured schedule windows and gaps (hashed fallback/base configuration). Empty slots naturally display at the end of the bar, and calculations wrap around the `17:30` IST boundary.
 - **Timezone Serialization**: Frontend inputs and the timeline visualization operate in Indian Standard Time (IST) for user convenience. Times are loaded and saved directly as raw IST time strings without UTC offset translations. trailing seconds (`:00`) added by database `TIME` columns are cleaned using `.substring(0, 5)` on fetch.
 - **CRUD Operations**:
-  - Users edit schedule labels, time inputs (in IST), and strategy override parameters (`numberOfCalls`, `numberOfPuts`, `minLongDist`, `minStrikeDiff`) directly in inline-editable fields.
+  - Users edit schedule labels, time inputs (in IST), and strategy override parameters (`maxCombinedPositions`, `combinedSplitPct`, `minLongDist`, `minStrikeDiff`, …) directly in inline-editable fields.
   - The "Enabled" checkbox has been removed, making all schedule windows permanently active (`isActive = true`).
   - **Add Window**: Appends a new default window to the state.
   - **Delete Window**: Removes the window from the state (Window 1 is not deletable).
@@ -752,7 +753,7 @@ The live engine is the **same** `paperTradingEngine.js` with real-order effects 
 
 ### 13.6 Balance-allocation sizing
 
-- Live accounts size from the **live Delta USDT wallet balance** (not the paper `$195k`). `part = (balance × balance_allocation_pct) ÷ maxPositions`, `maxPositions = max(numberOfCalls + numberOfPuts)` across base + all windows. Unit margin via `calcMargin` using real per-contract `contractValue` + current spot; `scale = part ÷ unitMargin` (floored at 1); `longC = round(scale)`, `shortC = round(longC × ratioToUse)`. Then capped so short notional (`spot × shortC × contractValue`) ≤ **$195,000**. Missing `contractValue` for either leg ⇒ **skip the entry** (never guess). Logs `💰 LIVE size…` / `🧢 LIVE qty capped…`.
+- Live accounts size from the **live Delta USDT wallet balance** (not the paper `$195k`). `part = (balance × balance_allocation_pct) ÷ maxPositions`, `maxPositions = max(maxCombinedPositions)` across base + all windows (migration `027` combined model, promoted to live — was `max(numberOfCalls + numberOfPuts)`). Unit margin via `calcMargin` using real per-contract `contractValue` + current spot; `scale = part ÷ unitMargin` (floored at 1); `longC = round(scale)`, `shortC = round(longC × ratioToUse)`. Then capped so short notional (`spot × shortC × contractValue`) ≤ **$195,000**. Missing `contractValue` for either leg ⇒ **skip the entry** (never guess). Logs `💰 LIVE size…` / `🧢 LIVE qty capped…`.
 - **Long-only margin** uses the contract-value basis (`longOnlyMargin`, `buyLeg.contractValue` persisted at entry). A per-cycle **margin self-heal** recomputes each open live position's margin on that basis (preferring `symbolMeta.contractValue`), persisting only on material change (contractValue fix or drift past `max($0.50, 2%)`).
 
 ### 13.7 Entry robustness

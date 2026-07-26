@@ -286,12 +286,14 @@ export default function CreateAccountModal({
               )}
             </div>
 
+            {/* Combined-cap model (migration 027, promoted to LIVE) — governs entry caps for
+                paper AND live. Per-type cap is derived = ceil(Split% × Max Combined). */}
             <div style={{ display: 'flex', gap: '16px' }}>
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Max Open Calls</label>
+                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Max Combined Positions</label>
                 <CustomInput
                   type="number"
-                  {...register('numberOfCalls', { valueAsNumber: true })}
+                  {...register('maxCombinedPositions', { valueAsNumber: true })}
                   style={{
                     padding: '10px 14px',
                     borderRadius: 8,
@@ -301,10 +303,10 @@ export default function CreateAccountModal({
                 />
               </div>
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Max Open Puts</label>
+                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Split %</label>
                 <CustomInput
                   type="number"
-                  {...register('numberOfPuts', { valueAsNumber: true })}
+                  {...register('combinedSplitPct', { valueAsNumber: true })}
                   style={{
                     padding: '10px 14px',
                     borderRadius: 8,
