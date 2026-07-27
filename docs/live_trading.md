@@ -846,8 +846,9 @@ Four fixes close the window (all in the entry loop of `paperTradingEngine.js`):
 ### Exit residual sweep (orphan prevention on close)
 
 The mirror-image of the entry orphan: a **close** that leaves a few contracts open on Delta after
-the engine has already dropped the `active_positions` row. It bites the **resting-model laddered
-long exit** (`handleLiveRestingExit`).
+the engine has already dropped the `active_positions` row. It bites **both** exit paths in
+`handleLiveRestingExit` — the **laddered long exit** and the **spot-cross / expiry catch-all**
+full exit — because both size their reduce-only closes from the engine's lot accounting.
 
 **How the residual forms.** When the short is bought back, the held long is laddered out via a fixed
 set of resting reduce-only SELL limits sized by `S = longContracts(buyLeg)` contracts, and
@@ -871,14 +872,28 @@ it. **Observed:** a `63200` put where all slices filled yet **4 lots stayed open
   (nothing left over) costs one `positions()` read and nothing else.
 - **Best-effort:** on a `positions()` hiccup the engine **still deletes** (no worse than before) and
   logs a warning; the entry-time exchange bracket remains the backstop. On a successful sweep it logs
-  `🧹 LONG SWEEP: flattened N residual contract(s)`.
+  `🧹 LONG SWEEP: flattened N residual contract(s)` (laddered path) /
+  `🧹 RESIDUAL SWEEP: flattened N residual contract(s)` (catch-all path).
+
+**Both exit paths now sweep.** The generalized helper `sweepResidualLegs(pos, symbols, tagSuffix)`
+reads `live.positions()` once and reduce-only MARKET-closes any residual on each listed symbol, with
+the closing **side derived from the sign of the live size** (long/hedge `> 0` → sell, short `< 0` →
+buy). The laddered path calls it (via its inline `-LSWEEP` block) for the buy leg; the **spot-cross /
+expiry catch-all** (`spotCross || atExpiry`) calls it for **all** closed legs — short + long + hedge —
+with the `-CASWEEP` tag, right after the reduce-only limit closes and **before** the row is booked and
+deleted.
 
 > [!NOTE]
-> This closes the **laddered** long exit only. The **spot-cross / expiry catch-all** full-exit
-> (`spotCross || atExpiry`) closes its legs with reduce-only **limit** orders that can likewise
-> under-fill — but an immediate sweep there would market **over** a limit that simply hasn't traded
-> yet, worsening the fill. That path already carries the exchange SL/TP bracket as backup; a
-> **delayed / next-cycle** residual sweep is the recommended follow-up rather than an inline one.
+> The catch-all previously carried **no** inline sweep — the concern was that market-closing right
+> after a reduce-only **limit** would trade **over** a limit that simply hadn't filled yet. In
+> practice that risk is negligible here: the catch-all prices each close **at the current bid**
+> (`exitLong = longBid`), i.e. a **marketable** limit that fills immediately, so a residual only
+> survives on genuine drift / depth shortfall — and a reduce-only MARKET at the same bid closes it at
+> effectively the same price. It can never over-close (reduce-only caps at the live size). The
+> delayed backstop (`protectOrphanExchangePositions`) was **not** reliable for this case: when the
+> residual symbol is unknown to the engine it only **alarms** (`orphan-unprotected-unknown`, repeating
+> every reconcile tick) instead of flattening — which is exactly the recurring-alarm symptom the
+> inline sweep now prevents.
 
 ### Reverse-reconcile of orphan exchange positions
 

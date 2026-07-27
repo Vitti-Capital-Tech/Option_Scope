@@ -2060,6 +2060,44 @@ async function startSingleAccountEngine(account) {
     await publishLiveSnapshot(true).catch(() => {});
   }
 
+  /**
+   * Guarantee every listed leg of `pos` is actually FLAT on Delta before its DB row is
+   * deleted. The reduce-only exit orders that precede a full-exit book are sized from the
+   * engine's tracked lot (round(lotSize/base)) and priced as limits, so a partial fill or
+   * integer drift after ATM-ratio scale steps can strand a few contracts. Once the row is
+   * gone, reconcileOrphans (which iterates the book) can no longer match those contracts to
+   * any position → orphan-unprotected-unknown (the recurring alarm).
+   *
+   * Fetch the REAL open size per symbol and reduce-only MARKET close any residual — side is
+   * derived from the sign of the live size (long/hedge > 0 → sell; short < 0 → buy) and the
+   * order is sized to the actual open size, so it flattens the true remainder regardless of
+   * how far the engine's book drifted, caps at that size (reduce-only), and no-ops if already
+   * flat — it can never over-close. Armed-real only (no-op for paper/dry-run); best-effort —
+   * a positions() hiccup just warns and lets the delete proceed (no worse than before).
+   */
+  async function sweepResidualLegs(pos, symbols, tagSuffix = 'SWEEP') {
+    if (!(accountState.mode === 'live' && accountState.live_enabled && !live.dryRun)) return;
+    try {
+      const livePos = await live.positions();
+      if (livePos == null) {
+        logWarn(`[${accountState.name}] ⚠ Residual sweep for ${pos.id}: positions() fetch failed — proceeding to delete; reconcile bracket is the backstop.`);
+        return;
+      }
+      const seen = new Set();
+      for (const symbol of symbols) {
+        if (!symbol || seen.has(symbol)) continue;
+        seen.add(symbol);
+        const sz = Number(livePos.find(p => p.product_symbol === symbol)?.size) || 0;
+        if (sz === 0) continue;
+        const side = sz > 0 ? 'sell' : 'buy';
+        await live.closeSymbol({ symbol, side, contracts: Math.abs(sz), tag: `${pos.id}-${tagSuffix}` });
+        log(`[${accountState.name}] 🧹 RESIDUAL SWEEP: flattened ${Math.abs(sz)} residual contract(s) on ${symbol} (${side}) before close [${pos.id}]`);
+      }
+    } catch (e) {
+      logWarn(`[${accountState.name}] Residual sweep failed for ${pos.id}: ${e.message}`);
+    }
+  }
+
   async function handleLiveRestingExit(pos, remaining, fillIds, sizeBySymbol, eff = config, applyAtmRatioScaling = null) {
     const tickerBuy = tickerData[pos.buyLeg.symbol];
     const tickerSell = tickerData[pos.sellLeg.symbol];
@@ -2098,6 +2136,12 @@ async function startSingleAccountEngine(account) {
         if (hedge) {
           await live.closeLeg({ symbol: hedge.symbol, side: 'sell', contracts: longContracts(hedge), price: exitHedge, tag: `${pos.id}-HX` });
         }
+        // The reduce-only closes above are limits sized from the engine's tracked lot, so a
+        // partial fill or integer drift after ATM-ratio scale steps can leave a few contracts
+        // open. Sweep the true residual on every closed leg with a reduce-only MARKET close
+        // BEFORE the row is deleted below — otherwise reconcileOrphans can't see the remainder
+        // and it orphans (orphan-unprotected-unknown). Mirrors the ladder-exit sweep.
+        await sweepResidualLegs(pos, [pos.sellLeg.symbol, pos.buyLeg.symbol, hedge?.symbol], 'CASWEEP');
       }
       const grossLong = (exitLong - pos.entryBuyPrice) * longLot;
       const grossShort = pos.sellQty > 0 ? (pos.entrySellPrice - exitShort) * pos.sellQty * shortLot : 0;
