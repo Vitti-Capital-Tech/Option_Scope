@@ -202,6 +202,7 @@ async function startSingleAccountEngine(account) {
   let expiries = [];
   let spotPrice = null;
   let lastSpotUpdate = 0;
+  let lastOptionTickAt = 0; // last time ANY option ticker updated — drives the option-feed watchdog
   let positions = []; // Active positions (in-memory mirror of Supabase)
   let tickerData = {}; // Live ticker data from WS
   let wsHandle = null;
@@ -627,6 +628,7 @@ async function startSingleAccountEngine(account) {
         const processed = processTickerMessage(msg, symbolMeta, tickerData);
         if (processed) {
           tickerData[processed.symbol] = processed;
+          lastOptionTickAt = Date.now(); // an option quote just moved — feed is live
         }
       },
       (status) => {
@@ -634,6 +636,8 @@ async function startSingleAccountEngine(account) {
         heartbeat.update({ ws_status: mappedWsStatus });
         if (status === 'live') {
           log('WebSocket connected');
+        } else if (status === 'stale') {
+          logWarn('WebSocket silent (no data past keepalive window) — terminating to force reconnect.');
         } else if (status === 'disconnected') {
           logWarn('WebSocket disconnected — auto-reconnecting in 3s...');
         }
@@ -2316,7 +2320,7 @@ async function startSingleAccountEngine(account) {
       logWarn(`[${accountState.name}] Spot stale (${Math.round(spotAge / 1000)}s). Skipping evaluation.`);
 
       const now = Date.now();
-      if (now - lastWsReconnectTime > 60000) {
+      if (now - lastWsReconnectTime > 30000) {
         logWarn(`[${accountState.name}] Forcing WebSocket reconnect due to stale spot...`);
         lastWsReconnectTime = now;
         try {
@@ -2326,6 +2330,29 @@ async function startSingleAccountEngine(account) {
         }
       }
       return;
+    }
+
+    // Option-feed staleness watchdog (runs every tick, ~1s). Perp/spot and options share ONE
+    // socket, so the exchange can keep streaming perp ticks (spot fresh, guard above never
+    // trips) while silently stopping OPTION ticks — every candidate then fails scanTickers'
+    // freshness check and the account misses entries. If NO option quote has moved in
+    // OPTION_STALE_MS while spot IS live (proving the socket is up but options are dead),
+    // force a reconnect + re-subscribe. 30s target keeps the max stale window minimal; the
+    // 30s reconnect throttle (shared with the spot guard) prevents reconnect storms.
+    const OPTION_STALE_MS = 30000;
+    if (lastOptionTickAt > 0 && (Date.now() - lastOptionTickAt) > OPTION_STALE_MS) {
+      const now = Date.now();
+      const spotFresh = lastSpotUpdate > 0 && (now - lastSpotUpdate) < OPTION_STALE_MS;
+      if (spotFresh && now - lastWsReconnectTime > 30000) {
+        logWarn(`[${accountState.name}] 🛰️ Option feed stale ${Math.round((now - lastOptionTickAt) / 1000)}s while spot is live — forcing WebSocket reconnect.`);
+        lastWsReconnectTime = now;
+        try {
+          startWebSocket();
+        } catch (e) {
+          logError(`[${accountState.name}] Failed to force WS reconnect (stale options):`, e);
+        }
+        return;
+      }
     }
 
     isEvaluating = true;
@@ -2433,10 +2460,13 @@ async function startSingleAccountEngine(account) {
         const stalePutCount = putTickers.filter(t => !((t.bidUpdatedAt || 0) > 0 && (now - t.bidUpdatedAt) < 120000)).length;
         const totalTickers = allTickers.length;
         const expiryMatchCount = callTickers.length + putTickers.length;
+        const staleCount = staleCallCount + stalePutCount;
         if (expiryMatchCount === 0) {
           logWarn(`[${accountState.name}] Ticker pool: ${totalTickers} total, 0 match expiry ${config.expiry} — WS may not have started yet.`);
-        } else if (staleCallCount + stalePutCount > 0) {
-          logWarn(`[${accountState.name}] Ticker pool: ${expiryMatchCount} matching expiry (${callTickers.length} calls, ${putTickers.length} puts), but ${staleCallCount + stalePutCount} have stale quotes (>120s) — waiting for fresh WS data.`);
+        } else if (staleCount > 0) {
+          // Informational only — recovery is handled proactively by the per-tick option-feed
+          // watchdog near the spot-staleness guard (fires within ~30s), not here.
+          logWarn(`[${accountState.name}] Ticker pool: ${expiryMatchCount} matching expiry (${callTickers.length} calls, ${putTickers.length} puts), but ${staleCount} have stale quotes (>120s) — waiting for fresh WS data.`);
         }
       }
 

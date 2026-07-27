@@ -18,7 +18,7 @@ This document is the authoritative implementation reference for every module, en
 | `scannerUtils.js` | Shared helpers: `normalizeIv`, `toFiniteNumber`, `matchesOptionType`, `formatTime`, `formatDateTime`. |
 | `supabase.js` | Supabase client singleton. |
 | `useTabSync.js` | `BroadcastChannel` sync hook (`useTabSync` for root, `useTabListener` for children). |
-| `engine/lib/deltaApi.js` | Backend API adapter for Delta Exchange. Implements WebSockets with auto-reconnect, ticker stream parsing, REST endpoints, and unconfirmed (timestamp = 0) REST ticker backfills. |
+| `engine/lib/deltaApi.js` | Backend API adapter for Delta Exchange. Implements WebSockets with auto-reconnect **plus a stale-feed keepalive watchdog** (terminates a silent/zombie socket after 30s), ticker stream parsing, REST endpoints, and unconfirmed (timestamp = 0) REST ticker backfills. |
 | `engine/lib/utils.js` | Shared backend algorithmic logic including candidate spread scanning (`scanTickers` with quote freshness validation), rotation target selection, and margin calculations. |
 | `engine/lib/heartbeat.js` | Helper module executing the continuous status update ticks for the backend engines to Supabase. |
 | `engine/lib/supabase.js` | Supabase client initialization wrapper for backend VPS engines. Prefers `SUPABASE_SERVICE_ROLE_KEY` (needed to decrypt credentials and satisfy admin/live RLS). |
@@ -46,7 +46,8 @@ Used by `RatioSpreadScanner` and `PaperTrading`. Subscribes to the Delta Exchang
 - **`alive` flag**: Set to `true` on creation, `false` only on a deliberate `.close()` call. Prevents reconnects after intentional shutdown.
 - **`reconnectTimer`**: On `onclose` (if `alive` is still `true`), a 3-second `setTimeout` schedules a fresh `new WebSocket()`. Any previous timer is always cleared before setting a new one to prevent ghost reconnect loops.
 - **Error Handling**: If the `WebSocket` constructor throws (e.g., bad URL), the catch block also schedules a reconnect if `alive` is true.
-- **Clean Shutdown**: `.close()` sets `alive = false`, clears the timer, nullifies `ws.onclose` to suppress the reconnect trigger, then calls `ws.close()`.
+- **Stale-Feed Watchdog (engine, `engine/lib/deltaApi.js`)**: A half-open ("zombie") TCP socket keeps looking connected — no `close` or `error` event fires — while the server has silently stopped sending data. Since the reconnect path only reacts to `close`, a dead socket could otherwise sit undetected until the OS TCP timeout eventually trips it (observed in production: **~4 minutes**). To close this gap, every message updates a `lastMsgAt` timestamp and a `setInterval` watchdog (`WATCHDOG_INTERVAL_MS = 5000`) fires `ws.terminate()` when no message of any kind has arrived within `STALE_TIMEOUT_MS` (**30s**, override via `opts.staleTimeoutMs`). `terminate()` forces the socket shut → the normal `close` → 3-second reconnect path runs. It emits an `onStatus('stale')` event first (logged by the engine). Because the perp/spot symbol ticks constantly on a healthy feed, this only fires when the **whole** socket is dead — it does **not** false-trigger during quiet option markets (an options-only stall is caught engine-side — see [Option-Feed Staleness Watchdog](#option-feed-staleness-watchdog)).
+- **Clean Shutdown**: `.close()` sets `alive = false`, clears the reconnect timer **and the watchdog interval**, removes the `close` listener to suppress the reconnect trigger, then calls `ws.close()`.
 
 **Message Parsing:**
 
@@ -310,7 +311,13 @@ Called every second by `setInterval`. Uses the `isEvaluating` mutex to prevent r
 * **Exit Evaluation (every 1 second)**: The engine runs `evaluateStrategy(true)` (Exit-Only) on intermediate seconds. It iterates over active positions, calculates real-time liquidation value P&L and fees, and checks exit triggers (ATM, expiry, rotations) against streaming WebSocket ticker quotes and polled spot prices. If no exits occur, it does not query or write to Supabase.
 * **Full Evaluation (every minute boundary)**: The engine runs `evaluateStrategy(false)` (Full Run) when a new clock-minute crosses (`currentMinute > lastMinute` or on startup). In addition to checking exits, it scans for new spread candidates, filters them by ATM P&L >= $50, sorts them to pick the best ROI candidate per buy strike, checks DB-level count/strike restrictions, and inserts new positions into Supabase.
 
-* **Spot Price Staleness Guard**: If the polled spot price hasn't updated in 120 seconds (`120000` ms), the evaluation is skipped as a safety measure against dead pricing feeds.
+* **Spot Price Staleness Guard**: If the spot price hasn't updated in 120 seconds (`120000` ms), the evaluation is skipped as a safety measure against dead pricing feeds. In addition, if it has been more than 30s since the last forced reconnect (`lastWsReconnectTime`), the engine calls `startWebSocket()` to rebuild the feed — recovering from a dead perp/spot stream rather than merely skipping.
+
+#### Option-Feed Staleness Watchdog
+
+The spot guard above only watches the **perp/spot** symbol. Because perp and option symbols share a single WebSocket connection, the exchange can keep streaming perp ticks (spot stays fresh, so the spot guard never trips) while silently stopping **option** ticker updates. Every candidate then fails `scanTickers`' 120s quote-freshness check and the account misses entries — in a production incident this persisted for **~4 minutes** until the socket finally died on its own.
+
+To close this, the WS message handler stamps `lastOptionTickAt` every time any option quote moves, and the evaluation loop checks it **every tick (~1s)** — right beside the spot guard, not only on the minute boundary. When no option quote has moved in `OPTION_STALE_MS` (**30s**) **while spot is still live** (proving the socket is up but options are dead), and the 30s reconnect throttle (`lastWsReconnectTime`, shared with the spot guard) allows, the engine logs `🛰️ Option feed stale …s while spot is live — forcing WebSocket reconnect` and calls `startWebSocket()` to re-subscribe. The `spotFresh` precondition ensures this fires only on a genuine options-only stall, never redundantly with the stream-level watchdog. This complements the stream-level [Stale-Feed Watchdog](#websocket-telemetry--auto-reconnect-engine-createtickerstream), which detects a fully-silent socket (perp included); together they cap the max stale window at **~30s** for both "whole socket dead" and "options-only dead" failure modes. The minute-boundary candidate scan still logs a `Ticker pool: … stale quotes` line for visibility, but recovery is driven by this per-tick watchdog. The `scanTickers` 120s freshness guard remains the last line of defence — it blocks entries on stale prices regardless, so a stale feed only ever costs missed opportunities, never a bad fill.
 
 Steps: A → B → C → D → E → F (detailed in sections below).
 
@@ -528,6 +535,7 @@ The manual, dollar-based visual "Base/Extra" credit simulation has been complete
 
 - The 1-second `setInterval` heartbeat drives `evaluateStrategy` continuously, ensuring live calculations are maintained even if WebSocket is quiet.
 - `createTickerStream` auto-reconnects every 3 seconds on unexpected close.
+- **Stale-feed watchdogs** recover from silent feed death without waiting for the OS TCP timeout: the stream-level keepalive (`STALE_TIMEOUT_MS = 30s`) terminates a fully-silent ("zombie") socket, and the engine-level per-tick option-feed watchdog forces a reconnect within ~30s when option quotes go stale while spot is still live. See [Option-Feed Staleness Watchdog](#option-feed-staleness-watchdog).
 - `lastWsSymbolsRef` prevents needless WebSocket churn during product refreshes.
 - Margin backfill on load.
 - **Supabase Realtime** keeps all open browser sessions in sync with the VPS engine tab within < 1 second of any position change, eliminating the previous 10-15 second cross-device lag.

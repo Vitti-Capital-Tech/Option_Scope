@@ -135,18 +135,39 @@ export async function getTickers(underlying, symbols) {
  * Uses the `ws` npm package for server-side WebSocket.
  * Auto-reconnects on unexpected close (3-second backoff).
  */
-export function createTickerStream(symbols, onTicker, onStatus) {
+export function createTickerStream(symbols, onTicker, onStatus, opts = {}) {
+  // Stream-level keepalive. A half-open ("zombie") TCP socket keeps looking connected
+  // — no 'close' or 'error' event fires — while the server has silently stopped sending
+  // ANY data. The reconnect logic below only reacts to 'close', so without this a dead
+  // socket can sit undetected until the OS TCP timeout eventually trips it (minutes).
+  // If no message of any kind (perp OR option) arrives within STALE_TIMEOUT_MS (30s) we force
+  // a hard reconnect. Because the perp/spot symbol ticks constantly on a healthy feed, this
+  // only fires when the WHOLE socket is dead — it does NOT false-trigger during quiet
+  // option markets (an options-only stall is handled engine-side by the option-feed watchdog).
+  const STALE_TIMEOUT_MS = opts.staleTimeoutMs ?? 30000;
+  const WATCHDOG_INTERVAL_MS = opts.watchdogIntervalMs ?? 5000;
+
   let ws = null;
   let alive = true;
   let reconnectTimer = null;
+  let watchdogTimer = null;
+  let lastMsgAt = 0;
+
+  const scheduleReconnect = () => {
+    if (!alive) return;
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connect, 3000);
+  };
 
   const connect = () => {
     if (!alive) return;
     try {
       ws = new WebSocket(WS_URL);
+      lastMsgAt = Date.now(); // grace period: don't let the watchdog fire before the handshake
 
       ws.on('open', () => {
         onStatus?.('live');
+        lastMsgAt = Date.now();
         ws.send(JSON.stringify({
           type: 'subscribe',
           payload: {
@@ -158,6 +179,7 @@ export function createTickerStream(symbols, onTicker, onStatus) {
       });
 
       ws.on('message', (data) => {
+        lastMsgAt = Date.now(); // any message keeps the socket "alive" for the watchdog
         try {
           const msg = JSON.parse(data.toString());
           if (!msg || msg.type === 'subscriptions') return;
@@ -172,25 +194,29 @@ export function createTickerStream(symbols, onTicker, onStatus) {
 
       ws.on('close', () => {
         onStatus?.('disconnected');
-        if (alive) {
-          clearTimeout(reconnectTimer);
-          reconnectTimer = setTimeout(connect, 3000);
-        }
+        scheduleReconnect();
       });
     } catch (e) {
-      if (alive) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = setTimeout(connect, 3000);
-      }
+      scheduleReconnect();
     }
   };
 
   connect();
 
+  watchdogTimer = setInterval(() => {
+    if (!alive || !ws || lastMsgAt === 0) return;
+    if (Date.now() - lastMsgAt <= STALE_TIMEOUT_MS) return;
+    onStatus?.('stale');
+    lastMsgAt = Date.now(); // reset so we don't re-fire during the reconnect gap
+    // terminate() forces the socket shut → the 'close' handler runs the normal reconnect.
+    try { ws.terminate(); } catch { try { ws.close(); } catch { /* noop */ } }
+  }, WATCHDOG_INTERVAL_MS);
+
   return {
     close: () => {
       alive = false;
       clearTimeout(reconnectTimer);
+      clearInterval(watchdogTimer);
       if (ws) {
         ws.removeAllListeners('close');
         ws.close();
