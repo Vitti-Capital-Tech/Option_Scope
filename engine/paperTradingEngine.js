@@ -696,22 +696,18 @@ async function startSingleAccountEngine(account) {
     return mostRecent;
   }
 
-  // Position slots = the PEAK (calls + puts) across ALL active schedule windows —
-  // falls back to base config when there are no windows. Used to divide the
-  // allocated balance into equal "parts" (1 part of margin per position). Sizing on
-  // the busiest window (largest calls+puts sum) means a position is funded so it
-  // never over-allocates regardless of which window opens it; smaller windows just
-  // leave part of the budget unused.
-  // Combined-cap model (migration 027, promoted to LIVE): the max concurrent full
-  // spreads is the ACTIVE window's maxCombinedPositions (peak across windows so a
-  // position is funded to never over-allocate whichever window opens it). Replaces the
-  // old numberOfCalls + numberOfPuts sum for BOTH paper and live sizing.
-  function computeMaxPositions() {
-    const activeWindows = schedules.filter(s => s.isActive);
-    if (activeWindows.length > 0) {
-      return Math.max(1, ...activeWindows.map(s => Math.floor(s.maxCombinedPositions ?? config.maxCombinedPositions ?? 4)));
-    }
-    return Math.max(1, Math.floor(config.maxCombinedPositions ?? 4));
+  // Per-position sizing divisor = the ACTIVE window's OWN maxCombinedPositions — the cap
+  // that changes as the day moves through schedule windows. The allocated balance is
+  // divided into this many equal "parts" (1 part of margin per position), so each window
+  // deploys according to ITS cap (smaller-cap window → fewer, larger positions; larger-cap
+  // window → more, smaller ones) instead of the peak across all windows. Uses
+  // getActiveSchedule() (the current window, the most-recent window in a gap, then the
+  // account base config), so it matches the PAPER sizing block's
+  // effectiveConfig.maxCombinedPositions exactly. Over-allocation across a window change is
+  // still prevented by the remaining-budget guard at each sizing site (budget − usedMargin).
+  function activeCombinedCap() {
+    const active = getActiveSchedule();
+    return Math.max(1, Math.floor(active?.maxCombinedPositions ?? config.maxCombinedPositions ?? 4));
   }
 
   // ── Combined-cap model (migration 027, promoted to LIVE) ────────────────
@@ -3676,11 +3672,11 @@ async function startSingleAccountEngine(account) {
           if (bal != null && bal > 0) {
             const allocPct = config.balanceAllocationPct ?? 90;
             const budget = bal * (allocPct / 100);
-            const maxPos = computeMaxPositions(); // PEAK cap across all windows (calls + puts)
+            const maxPos = activeCombinedCap(); // ACTIVE window's own combined cap (not the peak)
             // Size on the REMAINING budget over the REMAINING free slots, not the raw
             // total ÷ cap. Positions already open (this underlying) lock margin and
-            // occupy cap slots — subtracting both means positions carried over from a
-            // smaller-cap window into a larger-cap one can never over-allocate (the
+            // occupy cap slots — subtracting both means positions carried across a window
+            // change (into a smaller- OR larger-cap window) can never over-allocate (the
             // remaining budget shrinks to ~0 → new entries self-skip). Uses `remaining`
             // (post-exit survivors this cycle) so slots freed this cycle are reusable.
             const openHere = remaining.filter(p => p.underlying === underlying);
@@ -3693,7 +3689,7 @@ async function startSingleAccountEngine(account) {
             const sized = sizePartMargin({ remainingBudget, remainingSlots, maxPos, openHere, label: 'LIVE' });
             partMargin = sized.partMargin;
             if (!sized.isFullDeploy) {
-              log(`[${accountState.name}] 💰 LIVE sizing: balance $${bal.toFixed(2)} × ${allocPct}% = $${budget.toFixed(2)} budget | used $${usedMargin.toFixed(2)} | remaining $${remainingBudget.toFixed(2)} ÷ ${remainingSlots} free slot(s) (peak cap ${maxPos}) = $${partMargin.toFixed(2)}/position`);
+              log(`[${accountState.name}] 💰 LIVE sizing: balance $${bal.toFixed(2)} × ${allocPct}% = $${budget.toFixed(2)} budget | used $${usedMargin.toFixed(2)} | remaining $${remainingBudget.toFixed(2)} ÷ ${remainingSlots} free slot(s) (window combined cap ${maxPos}) = $${partMargin.toFixed(2)}/position`);
             }
           } else {
             logWarn(`[${accountState.name}] LIVE sizing: wallet balance unavailable — skipping live entries this cycle.`);
@@ -3759,6 +3755,9 @@ async function startSingleAccountEngine(account) {
           }
         }
         for (const spread of uniqueTopSpreads) {
+          const bStrike = Number(spread.buyLeg.strike);
+          const sStrike = Number(spread.sellLeg.strike);
+          const spreadType = spread.buyLeg.type;
           // Live accounts need a valid per-position margin part to size safely.
           if (liveArmed && partMargin == null) continue;
           // Paper accounts self-skip when the allocated pool is exhausted — either no
@@ -3769,13 +3768,15 @@ async function startSingleAccountEngine(account) {
               ? Math.max(0, paperRemainingBudget - paperDeployed)
               : (partMargin ?? 0);
             if (partMargin == null || partMargin <= 0.01 || poolLeft <= 0.01) {
-              logWarn(`[${accountState.name}] Entry candidate ${spread.buyLeg.type.toUpperCase()} skipped: paper allocated balance exhausted (no free margin this cycle).`);
+              // Diagnostic: if a same-strike long-only was waiting to be replaced, THIS
+              // budget self-skip is why the replacement never fired — sizing counts the
+              // long-only's margin BEFORE its replacement exit would free it (chicken-and-egg).
+              const blockedReplace = remaining.find(p => p.underlying === underlying && p.type === spreadType
+                && p.sellQty === 0 && (p.buyLeg?.lotSize ?? 0) > 0 && Number(p.buyLeg?.strike) === bStrike);
+              logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: paper allocated balance exhausted (no free margin this cycle)${blockedReplace ? ` — 🔎 REPLACE-DIAG: same-strike long-only ${blockedReplace.id} could have been REPLACED but budget starved it (sizing counts its margin before the replacement exit frees it)` : ''}.`);
               continue;
             }
           }
-          const bStrike = Number(spread.buyLeg.strike);
-          const sStrike = Number(spread.sellLeg.strike);
-          const spreadType = spread.buyLeg.type;
 
           // Expiry buffer guard
           const minutesToExpiry = (new Date(spread.buyLeg.symbol?.includes(config.expiry) ? config.expiry : config.expiry).getTime() - Date.now()) / 60000;
@@ -3803,7 +3804,8 @@ async function startSingleAccountEngine(account) {
           // model, promoted to live; numberOfCalls/numberOfPuts are no longer the live caps).
           const typeCap = derivedTypeCap(effectiveConfig);
           if (count >= typeCap) {
-            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Portfolio cap of ${typeCap} reached for type ${spreadType}`);
+            const dlo = isPaperAccount && remaining.find(p => p.expiry === config.expiry && p.underlying === underlying && p.type === spreadType && p.sellQty === 0 && (p.buyLeg?.lotSize ?? 0) > 0 && Number(p.buyLeg?.strike) === bStrike);
+            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Portfolio cap of ${typeCap} reached for type ${spreadType}${dlo ? ` — 🔎 REPLACE-DIAG: same-strike long-only ${dlo.id} could have been REPLACED but the per-type cap blocks the new full spread` : ''}`);
             continue;
           }
 
@@ -3815,7 +3817,8 @@ async function startSingleAccountEngine(account) {
           const combinedCount = remaining.filter(p => p.underlying === underlying && p.sellQty > 0).length +
             newEntries.filter(p => p.underlying === underlying).length;
           if (combinedCount >= combinedCap) {
-            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: combined position cap of ${combinedCap} reached (${combinedCount} open).`);
+            const dlo = isPaperAccount && remaining.find(p => p.expiry === config.expiry && p.underlying === underlying && p.type === spreadType && p.sellQty === 0 && (p.buyLeg?.lotSize ?? 0) > 0 && Number(p.buyLeg?.strike) === bStrike);
+            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: combined position cap of ${combinedCap} reached (${combinedCount} open)${dlo ? ` — 🔎 REPLACE-DIAG: same-strike long-only ${dlo.id} could have been REPLACED but the combined cap blocks the new full spread` : ''}.`);
             continue;
           }
 
@@ -3843,6 +3846,31 @@ async function startSingleAccountEngine(account) {
             const occ = strikesOccupiedBy(p);
             return occ.includes(bStrike) || occ.includes(sStrike);
           });
+
+          // ── Replacement diagnostic (paper, log-only) ───────────────────────────────
+          // A same-strike replacement is *relevant* whenever a long-only remnant sits on
+          // THIS candidate's buy strike. Emit the full gate state so it's obvious whether the
+          // replace is eligible and, if not, exactly which condition blocks it. No behaviour
+          // change — grep `REPLACE-DIAG`. (The budget self-skip above and the caps below carry
+          // their own REPLACE-DIAG / strike notes for the cases that never reach here.)
+          const sameStrikeLongOnly = conflictScope.find(p =>
+            p.sellQty === 0 && (p.buyLeg?.lotSize ?? 0) > 0 && Number(p.buyLeg?.strike) === bStrike);
+          if (sameStrikeLongOnly) {
+            const sStrikeBlockers = conflictScope
+              .filter(p => p.id !== sameStrikeLongOnly.id && strikesOccupiedBy(p).includes(sStrike))
+              .map(p => p.id);
+            const extraClashes = conflictClashes
+              .filter(p => p.id !== sameStrikeLongOnly.id)
+              .map(p => `${p.id}[${strikesOccupiedBy(p).join('&')}]`);
+            const reason = !isPaperAccount
+              ? 'BLOCKED — account is LIVE (replacement is paper-only)'
+              : conflictClashes.length !== 1
+                ? `BLOCKED — needs exactly 1 clash but has ${conflictClashes.length} (extra clash(es): ${extraClashes.join(', ') || 'none'}) — short leg ${sStrike} is on another position`
+                : sStrikeBlockers.length > 0
+                  ? `BLOCKED — short strike ${sStrike} occupied by ${sStrikeBlockers.join(', ')}`
+                  : 'ELIGIBLE — replacement will fire this cycle';
+            log(`[${accountState.name}] 🔎 REPLACE-DIAG ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: long-only ${sameStrikeLongOnly.id} holds buy strike ${bStrike} → ${reason}. [paper=${isPaperAccount}, clashes=${conflictClashes.length}]`);
+          }
 
           if (conflictClashes.length > 0) {
             let canReplace = false;
@@ -4959,10 +4987,10 @@ async function startSingleAccountEngine(account) {
     try {
       if (accountState.mode === 'live' && accountState.live_enabled) {
         const bal = await live.walletBalance();
-        // Publish the SAME max-positions the engine uses for sizing (max of
-        // calls+puts across the base config AND every schedule window) + the live
-        // allocation %, so the UI's per-position figure matches the engine exactly.
-        const hb = { max_positions: computeMaxPositions(), allocation_pct: config.balanceAllocationPct ?? 90 };
+        // Publish the SAME max-positions the engine uses for sizing (the ACTIVE window's
+        // own maxCombinedPositions) + the live allocation %, so the UI's per-position
+        // figure matches the engine exactly.
+        const hb = { max_positions: activeCombinedCap(), allocation_pct: config.balanceAllocationPct ?? 90 };
         if (bal != null) hb.wallet_balance = bal;
         heartbeat.update(hb);
         // Also clean up any positions the exchange has closed under us (bracket /

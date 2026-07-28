@@ -471,8 +471,13 @@ ceiling** on the resulting quantity (see the max-qty cap below):
 
 - Each account has a **`balance_allocation_pct`** (default **90**) — the share of
   wallet balance used for trading; the rest is buffer.
-- **max positions** = peak concurrent positions across the base config and all active
-  schedule windows (`max(maxCombinedPositions)` — combined-cap model, migration `027` promoted to live).
+- **max positions** = the **ACTIVE window's own** `maxCombinedPositions` (`activeCombinedCap()`
+  — the cap that changes per schedule window), **not** the peak across all windows. This matches
+  the paper sizing block exactly, so each window divides the balance by ITS OWN cap (a smaller-cap
+  window → fewer, larger positions; a larger-cap window → more, smaller ones). Over-allocation when
+  positions carry across a window change is still prevented by the remaining-budget guard
+  (`budget − usedMargin`, below). The same value is published to the heartbeat so the UI's
+  per-position figure matches the engine.
 - **part** = `(balance × allocation%) ÷ max positions`.
 
 **"1 unit" scale sizing (fill one part, keep the ratio).** The base unit is
