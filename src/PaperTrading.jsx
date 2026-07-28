@@ -2898,22 +2898,19 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
                 : null}
               maxPositions={(() => {
                 const active = (schedules || []).filter(s => s.isActive);
-                if (activeAccount?.mode !== 'live') {
-                  // PAPER: per-position margin = allocated ÷ the ACTIVE window's Max
-                  // Combined Positions (matches the engine's active-window divisor).
-                  const win = findActiveSchedule(active, now);
-                  if (win) return Math.max(1, Math.floor(win.maxCombinedPositions ?? 4));
-                  if (active.length > 0) return Math.max(1, ...active.map(s => Math.floor(s.maxCombinedPositions || 4)));
-                  return Math.max(1, Math.floor(config.maxCombinedPositions ?? activeAccount?.default_config?.maxCombinedPositions ?? 4));
+                // Per-position margin = allocated ÷ the ACTIVE window's OWN Max Combined
+                // Positions — the cap that changes per schedule window — for BOTH paper and
+                // live (matches the engine's activeCombinedCap() divisor; live no longer uses
+                // the peak across all windows). Prefer the window covering `now`; for live in
+                // an uncovered gap use the engine's published value (authoritative — what it
+                // actually sized with); then any active window, then base config.
+                const win = findActiveSchedule(active, now);
+                if (win) return Math.max(1, Math.floor(win.maxCombinedPositions ?? 4));
+                if (activeAccount?.mode === 'live' && engineMaxPositions != null) {
+                  return Math.max(1, Math.floor(engineMaxPositions));
                 }
-                // LIVE (combined-cap model, migration 027 promoted to live): per-position
-                // margin sizes for the PEAK Max Combined across ALL active windows —
-                // matching the engine's computeMaxPositions().
-                if (active.length > 0) {
-                  return Math.max(1, ...active.map(s => Math.floor(s.maxCombinedPositions || 4)));
-                }
-                // No windows: fall back to the engine's published value, else base config.
-                return engineMaxPositions ?? Math.max(1, Math.floor(config.maxCombinedPositions ?? activeAccount?.default_config?.maxCombinedPositions ?? 4));
+                if (active.length > 0) return Math.max(1, ...active.map(s => Math.floor(s.maxCombinedPositions || 4)));
+                return Math.max(1, Math.floor(config.maxCombinedPositions ?? activeAccount?.default_config?.maxCombinedPositions ?? 4));
               })()}
             />
 
