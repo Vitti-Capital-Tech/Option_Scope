@@ -2645,18 +2645,23 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   //    order-history record (the same number Delta shows in its Realized PnL
   //    column), so the cards match Delta exactly. Net subtracts Delta's own
   //    commission (paid_commission). Today = orders whose fill/close time
-  //    (updated_at) falls on the local (IST) calendar day.
+  //    (updated_at) falls on the current UTC calendar day (05:30 IST → 05:30 IST) —
+  //    the SAME daily boundary Delta uses to reset its Realized PnL (Delta's day flips
+  //    at 00:00 UTC = 05:30 IST), so this "Daily P&L" lines up with Delta's own figure.
   const liveRealized = useMemo(() => {
     if (!useLive) return null;
     const orders = (liveExchangeState?.order_history || [])
       .filter(o => liveBelongsToUnderlying(o.product_symbol));
-    const today = new Date().toDateString();
+    // UTC date key 'YYYY-MM-DD' — comparing these gives a 05:30 IST → 05:30 IST window
+    // (= Delta's daily reset) regardless of the browser's timezone.
+    const utcDayKey = (t) => new Date(t).toISOString().slice(0, 10);
+    const today = utcDayKey(new Date());
     let grossAll = 0, grossToday = 0, feesAll = 0, feesToday = 0;
     for (const o of orders) {
       const pnl = Number(o.meta_data?.pnl);         // realized P&L (USD), closes only
       const fee = Number(o.paid_commission ?? o.commission);
       let isToday = false;
-      try { isToday = new Date(o.updated_at ?? o.created_at).toDateString() === today; } catch { /* skip */ }
+      try { isToday = utcDayKey(o.updated_at ?? o.created_at) === today; } catch { /* skip */ }
       if (Number.isFinite(pnl)) { grossAll += pnl; if (isToday) grossToday += pnl; }
       if (Number.isFinite(fee)) { feesAll += fee; if (isToday) feesToday += fee; }
     }
