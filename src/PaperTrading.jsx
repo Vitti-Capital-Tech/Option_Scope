@@ -2645,26 +2645,25 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   //    order-history record (the same number Delta shows in its Realized PnL
   //    column), so the cards match Delta exactly. Net subtracts Delta's own
   //    commission (paid_commission). Today = orders whose fill/close time
-  //    (updated_at) falls on the current TRADING day: 17:30 IST (previous day) →
-  //    17:30 IST (today). This is the SAME daily boundary the engine's trading-day
-  //    logic and the PAPER get_trade_stats RPC use ((exit_time + 12h)::date), so live
-  //    and paper "Daily P&L" share one boundary regardless of the browser's timezone.
+  //    (updated_at) falls on the current UTC calendar day (00:00 UTC = 05:30 IST) —
+  //    the SAME daily boundary Delta uses to reset its Realized PnL (Delta's day flips
+  //    at 00:00 UTC), so this live "Daily P&L" lines up with Delta's own daily figure
+  //    regardless of the browser's timezone.
   const liveRealized = useMemo(() => {
     if (!useLive) return null;
     const orders = (liveExchangeState?.order_history || [])
       .filter(o => liveBelongsToUnderlying(o.product_symbol));
-    // Trading-day key: 17:30 IST = 12:00 UTC, so shift the timestamp +12h and take the
-    // UTC date — the day label flips at 17:30 IST. Mirrors paper's
-    // (exit_time + interval '12 hours')::date. Comparing these keys gives a
-    // 17:30 IST → 17:30 IST window.
-    const tradingDayKey = (t) => new Date(new Date(t).getTime() + 12 * 3600 * 1000).toISOString().slice(0, 10);
-    const today = tradingDayKey(new Date());
+    // UTC date key 'YYYY-MM-DD' — the day flips at 00:00 UTC (= 05:30 IST), matching
+    // Delta's own daily reset. Comparing these keys gives a 05:30 IST → 05:30 IST window,
+    // independent of the browser's timezone.
+    const utcDayKey = (t) => new Date(t).toISOString().slice(0, 10);
+    const today = utcDayKey(new Date());
     let grossAll = 0, grossToday = 0, feesAll = 0, feesToday = 0;
     for (const o of orders) {
       const pnl = Number(o.meta_data?.pnl);         // realized P&L (USD), closes only
       const fee = Number(o.paid_commission ?? o.commission);
       let isToday = false;
-      try { isToday = tradingDayKey(o.updated_at ?? o.created_at) === today; } catch { /* skip */ }
+      try { isToday = utcDayKey(o.updated_at ?? o.created_at) === today; } catch { /* skip */ }
       if (Number.isFinite(pnl)) { grossAll += pnl; if (isToday) grossToday += pnl; }
       if (Number.isFinite(fee)) { feesAll += fee; if (isToday) feesToday += fee; }
     }
