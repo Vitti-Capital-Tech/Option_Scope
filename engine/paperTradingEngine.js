@@ -358,7 +358,7 @@ async function startSingleAccountEngine(account) {
       }
 
       if (data && !error) {
-        config = {
+        const newConfig = {
           underlying: data.underlying || 'BTC',
           expiry: data.expiry || '',
           minStrikeDiff: data.min_strike_diff,
@@ -393,8 +393,27 @@ async function startSingleAccountEngine(account) {
           fullDeployEnabled: data.full_deploy_enabled ?? false,
           fullDeployTime: data.full_deploy_time ?? '04:30'
         };
+
+        if (config) {
+          const diffs = [];
+          Object.keys(newConfig).forEach(k => {
+            const oldVal = config[k];
+            const newVal = newConfig[k];
+            if (Array.isArray(oldVal) || Array.isArray(newVal)) {
+              if (JSON.stringify(oldVal) !== JSON.stringify(newVal)) {
+                diffs.push(`${k}: [${oldVal}] → [${newVal}]`);
+              }
+            } else if (oldVal !== newVal && oldVal !== undefined) {
+              diffs.push(`${k}: ${oldVal} → ${newVal}`);
+            }
+          });
+          if (diffs.length > 0) {
+            log(`[${accountState.name}] ⚙️ Config changed: ${diffs.join(', ')}`);
+          }
+        }
+
+        config = newConfig;
         configDbId = data.id;
-        // log(`[${accountState.name}] Config loaded: ${config.underlying} | Expiry: ${config.expiry || 'auto'}`);
       }
     } catch (e) { logError(`[${accountState.name}] Config fetch error`, e); }
   }
@@ -413,7 +432,7 @@ async function startSingleAccountEngine(account) {
         return;
       }
       if (data) {
-        schedules = data.map(s => ({
+        const newSchedules = data.map(s => ({
           id: s.id,
           label: s.label || 'Window',
           startTime: s.start_time,  // 'HH:MM' IST
@@ -450,6 +469,50 @@ async function startSingleAccountEngine(account) {
           hedgePutPct: s.hedge_put_pct ?? 0,
           isActive: s.is_active ?? true,
         }));
+
+        if (schedules && schedules.length > 0) {
+          const diffs = [];
+          const oldMap = new Map(schedules.map(s => [s.id, s]));
+          const newMap = new Map(newSchedules.map(s => [s.id, s]));
+
+          // Check removed windows
+          schedules.forEach(oldWin => {
+            if (!newMap.has(oldWin.id)) {
+              diffs.push(`Removed "${oldWin.label}" (${oldWin.startTime}–${oldWin.endTime})`);
+            }
+          });
+
+          // Check added or updated windows
+          newSchedules.forEach(newWin => {
+            if (!oldMap.has(newWin.id)) {
+              diffs.push(`Added "${newWin.label}" (${newWin.startTime}–${newWin.endTime})`);
+            } else {
+              const oldWin = oldMap.get(newWin.id);
+              const fieldDiffs = [];
+              const fieldsToCompare = [
+                'label', 'startTime', 'endTime', 'maxCombinedPositions', 'combinedSplitPct',
+                'minLongDist', 'minStrikeDiff', 'atmRatioScaling', 'atmRatioPctCall',
+                'atmRatioPctPut', 'maxNetPremium', 'exitType', 'exitPoints', 'slTpDecoyDiff',
+                'shortExitPrice', 'variableExitSlices', 'longExitSlices', 'daysToExpiry',
+                'hedgeStrikeType', 'hedgeCallPrice', 'hedgeCallPct', 'hedgePutPrice', 'hedgePutPct'
+              ];
+              fieldsToCompare.forEach(f => {
+                if (oldWin[f] !== newWin[f] && oldWin[f] !== undefined) {
+                  fieldDiffs.push(`${f}: ${oldWin[f]} → ${newWin[f]}`);
+                }
+              });
+              if (fieldDiffs.length > 0) {
+                diffs.push(`Updated "${newWin.label}": ${fieldDiffs.join(', ')}`);
+              }
+            }
+          });
+
+          if (diffs.length > 0) {
+            log(`[${accountState.name}] 📅 Schedule changed: ${diffs.join(' | ')}`);
+          }
+        }
+
+        schedules = newSchedules;
       }
     } catch (e) { logError(`[${accountState.name}] Schedule fetch error`, e); }
   }
