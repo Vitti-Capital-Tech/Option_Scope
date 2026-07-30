@@ -3830,13 +3830,14 @@ async function startSingleAccountEngine(account) {
             const poolLeft = paperRemainingBudget != null
               ? Math.max(0, paperRemainingBudget - paperDeployed)
               : (partMargin ?? 0);
-            if (partMargin == null || partMargin <= 0.01 || poolLeft <= 0.01) {
-              // Diagnostic: if a same-strike long-only was waiting to be replaced, THIS
-              // budget self-skip is why the replacement never fired — sizing counts the
-              // long-only's margin BEFORE its replacement exit would free it (chicken-and-egg).
-              const blockedReplace = remaining.find(p => p.underlying === underlying && p.type === spreadType
-                && p.sellQty === 0 && (p.buyLeg?.lotSize ?? 0) > 0 && Number(p.buyLeg?.strike) === bStrike);
-              logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: paper allocated balance exhausted (no free margin this cycle)${blockedReplace ? ` — 🔎 REPLACE-DIAG: same-strike long-only ${blockedReplace.id} could have been REPLACED but budget starved it (sizing counts its margin before the replacement exit frees it)` : ''}.`);
+            // Check if there is a same-strike long-only position that WILL be exited if this candidate opens
+            const blockedReplace = remaining.find(p => p.underlying === underlying && p.type === spreadType
+              && p.sellQty === 0 && (p.buyLeg?.lotSize ?? 0) > 0 && Number(p.buyLeg?.strike) === bStrike);
+            // If a same-strike long-only exists, its exit will free its margin into the pool
+            const effectivePoolLeft = poolLeft + (blockedReplace ? (blockedReplace.margin || partMargin || 0) : 0);
+
+            if (partMargin == null || partMargin <= 0.01 || effectivePoolLeft <= 0.01) {
+              logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: paper allocated balance exhausted (no free margin this cycle)${blockedReplace ? ` — 🔎 REPLACE-DIAG: same-strike long-only ${blockedReplace.id} could have been REPLACED but budget starved it` : ''}.`);
               continue;
             }
           }
