@@ -3833,9 +3833,10 @@ async function startSingleAccountEngine(account) {
               ? Math.max(0, paperRemainingBudget - paperDeployed)
               : (partMargin ?? 0);
 
-            // Check if there is an active long-only position whose strike matches candidate SHORT strike (sStrike)
+            // Check if there is an active long-only position whose strike matches EITHER candidate BUY strike (bStrike) or SHORT strike (sStrike)
             const blockedReplace = remaining.find(p => p.underlying === underlying && p.type === spreadType
-              && p.sellQty === 0 && (p.buyLeg?.lotSize ?? 0) > 0 && Number(p.buyLeg?.strike) === sStrike);
+              && p.sellQty === 0 && (p.buyLeg?.lotSize ?? 0) > 0
+              && (Number(p.buyLeg?.strike) === bStrike || Number(p.buyLeg?.strike) === sStrike));
 
             // If a replacement long-only exists, its exit will free its margin into the pool
             const freedMargin = blockedReplace ? (blockedReplace.margin || (partMargin > 0 ? partMargin : 0)) : 0;
@@ -3845,7 +3846,8 @@ async function startSingleAccountEngine(account) {
               : (freedMargin > 0 ? (freedMargin / Math.max(1, paperRemainingSlots)) : (partMargin ?? 0));
 
             if (effPartMargin <= 0.01 || effectivePoolLeft <= 0.01) {
-              logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: paper allocated balance exhausted (no free margin this cycle)${blockedReplace ? ` — 🔎 REPLACE-DIAG: long-only ${blockedReplace.id} at strike ${sStrike} could have been REPLACED as short leg but budget starved it` : ''}.`);
+              const loStrike = blockedReplace ? Number(blockedReplace.buyLeg?.strike) : null;
+              logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: paper allocated balance exhausted (no free margin this cycle)${blockedReplace ? ` — 🔎 REPLACE-DIAG: long-only ${blockedReplace.id} at strike ${loStrike} could have been REPLACED but budget starved it` : ''}.`);
               continue;
             }
 
@@ -3881,8 +3883,8 @@ async function startSingleAccountEngine(account) {
           // model, promoted to live; numberOfCalls/numberOfPuts are no longer the live caps).
           const typeCap = derivedTypeCap(effectiveConfig);
           if (count >= typeCap) {
-            const dlo = isPaperAccount && remaining.find(p => p.expiry === config.expiry && p.underlying === underlying && p.type === spreadType && p.sellQty === 0 && (p.buyLeg?.lotSize ?? 0) > 0 && Number(p.buyLeg?.strike) === sStrike);
-            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Portfolio cap of ${typeCap} reached for type ${spreadType}${dlo ? ` — 🔎 REPLACE-DIAG: long-only ${dlo.id} at strike ${sStrike} could have been REPLACED as short leg but the per-type cap blocks the new full spread` : ''}`);
+            const dlo = isPaperAccount && remaining.find(p => p.expiry === config.expiry && p.underlying === underlying && p.type === spreadType && p.sellQty === 0 && (p.buyLeg?.lotSize ?? 0) > 0 && (Number(p.buyLeg?.strike) === bStrike || Number(p.buyLeg?.strike) === sStrike));
+            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Portfolio cap of ${typeCap} reached for type ${spreadType}${dlo ? ` — 🔎 REPLACE-DIAG: long-only ${dlo.id} at strike ${Number(dlo.buyLeg?.strike)} could have been REPLACED but the per-type cap blocks the new full spread` : ''}`);
             continue;
           }
 
@@ -3894,8 +3896,8 @@ async function startSingleAccountEngine(account) {
           const combinedCount = remaining.filter(p => p.underlying === underlying && p.sellQty > 0).length +
             newEntries.filter(p => p.underlying === underlying).length;
           if (combinedCount >= combinedCap) {
-            const dlo = isPaperAccount && remaining.find(p => p.expiry === config.expiry && p.underlying === underlying && p.type === spreadType && p.sellQty === 0 && (p.buyLeg?.lotSize ?? 0) > 0 && Number(p.buyLeg?.strike) === sStrike);
-            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: combined position cap of ${combinedCap} reached (${combinedCount} open)${dlo ? ` — 🔎 REPLACE-DIAG: long-only ${dlo.id} at strike ${sStrike} could have been REPLACED as short leg but the combined cap blocks the new full spread` : ''}.`);
+            const dlo = isPaperAccount && remaining.find(p => p.expiry === config.expiry && p.underlying === underlying && p.type === spreadType && p.sellQty === 0 && (p.buyLeg?.lotSize ?? 0) > 0 && (Number(p.buyLeg?.strike) === bStrike || Number(p.buyLeg?.strike) === sStrike));
+            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: combined position cap of ${combinedCap} reached (${combinedCount} open)${dlo ? ` — 🔎 REPLACE-DIAG: long-only ${dlo.id} at strike ${Number(dlo.buyLeg?.strike)} could have been REPLACED but the combined cap blocks the new full spread` : ''}.`);
             continue;
           }
 
@@ -3925,13 +3927,15 @@ async function startSingleAccountEngine(account) {
           });
 
           // ── Replacement diagnostic (paper, log-only) ───────────────────────────────
-          // Replacement is eligible when an active long-only position holds the candidate's SHORT strike (sStrike)
-          // and candidate's new long strike (bStrike) is free.
+          // Replacement is eligible when an active long-only position holds EITHER the candidate's buy strike (bStrike) or short strike (sStrike)
+          // and the candidate's other leg is free.
           const sameStrikeLongOnly = conflictScope.find(p =>
-            p.sellQty === 0 && (p.buyLeg?.lotSize ?? 0) > 0 && Number(p.buyLeg?.strike) === sStrike);
+            p.sellQty === 0 && (p.buyLeg?.lotSize ?? 0) > 0 && (Number(p.buyLeg?.strike) === bStrike || Number(p.buyLeg?.strike) === sStrike));
           if (sameStrikeLongOnly) {
-            const bStrikeBlockers = conflictScope
-              .filter(p => p.id !== sameStrikeLongOnly.id && strikesOccupiedBy(p).includes(bStrike))
+            const loStrike = Number(sameStrikeLongOnly.buyLeg.strike);
+            const otherStrike = loStrike === sStrike ? bStrike : sStrike;
+            const otherBlockers = conflictScope
+              .filter(p => p.id !== sameStrikeLongOnly.id && strikesOccupiedBy(p).includes(otherStrike))
               .map(p => p.id);
             const extraClashes = conflictClashes
               .filter(p => p.id !== sameStrikeLongOnly.id)
@@ -3939,11 +3943,11 @@ async function startSingleAccountEngine(account) {
             const reason = !isPaperAccount
               ? 'BLOCKED — account is LIVE (replacement is paper-only)'
               : conflictClashes.length !== 1
-                ? `BLOCKED — needs exactly 1 clash but has ${conflictClashes.length} (extra clash(es): ${extraClashes.join(', ') || 'none'}) — strike ${sStrike} is on another position`
-                : bStrikeBlockers.length > 0
-                  ? `BLOCKED — new buy strike ${bStrike} occupied by ${bStrikeBlockers.join(', ')}`
+                ? `BLOCKED — needs exactly 1 clash but has ${conflictClashes.length} (extra clash(es): ${extraClashes.join(', ') || 'none'})`
+                : otherBlockers.length > 0
+                  ? `BLOCKED — other strike ${otherStrike} occupied by ${otherBlockers.join(', ')}`
                   : 'ELIGIBLE — replacement will fire this cycle';
-            log(`[${accountState.name}] 🔎 REPLACE-DIAG ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: active long-only ${sameStrikeLongOnly.id} holds strike ${sStrike} → ${reason}. [paper=${isPaperAccount}, clashes=${conflictClashes.length}]`);
+            log(`[${accountState.name}] 🔎 REPLACE-DIAG ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: active long-only ${sameStrikeLongOnly.id} holds strike ${loStrike} → ${reason}. [paper=${isPaperAccount}, clashes=${conflictClashes.length}]`);
           }
 
           if (conflictClashes.length > 0) {
@@ -3951,14 +3955,17 @@ async function startSingleAccountEngine(account) {
             if (isPaperAccount && conflictClashes.length === 1) {
               const clash = conflictClashes[0];
               const isLongOnly = clash.sellQty === 0 && (clash.buyLeg?.lotSize ?? 0) > 0;
-              const isShortStrikeMatch = Number(clash.buyLeg?.strike) === sStrike;
+              const loStrike = Number(clash.buyLeg?.strike);
+              const isEitherStrikeMatch = loStrike === bStrike || loStrike === sStrike;
 
-              if (isLongOnly && isShortStrikeMatch) {
-                const bStrikeOccupied = conflictScope.some(p => p.id !== clash.id && strikesOccupiedBy(p).includes(bStrike));
-                if (!bStrikeOccupied) {
+              if (isLongOnly && isEitherStrikeMatch) {
+                const otherStrike = loStrike === sStrike ? bStrike : sStrike;
+                const otherOccupied = conflictScope.some(p => p.id !== clash.id && strikesOccupiedBy(p).includes(otherStrike));
+                if (!otherOccupied) {
                   canReplace = true;
                   replaceableLongOnlyPos = clash;
-                  log(`[${accountState.name}] 💡 PAPER replacement candidate: Active long-only ${clash.id} (${spreadType.toUpperCase()} ${sStrike}) will be exited to enter better long/short pair ${bStrike}/${sStrike} (active long ${sStrike} becomes short leg of new pair).`);
+                  const roleDesc = loStrike === sStrike ? `long ${loStrike} becomes short leg` : `upgrading long ${loStrike} to full spread with short ${sStrike}`;
+                  log(`[${accountState.name}] 💡 PAPER replacement candidate: Active long-only ${clash.id} (${spreadType.toUpperCase()} ${loStrike}) will be exited to enter better long/short pair ${bStrike}/${sStrike} (${roleDesc}).`);
                 }
               }
             }
