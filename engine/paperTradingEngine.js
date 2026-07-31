@@ -3665,6 +3665,7 @@ async function startSingleAccountEngine(account) {
       // how much of it has been consumed by entries opened this cycle, so the 4:30
       // concentrate fill never deploys more than the pool.
       let paperRemainingBudget = null;
+      let paperRemainingSlots = 1;
       let paperDeployed = 0;
 
       // ── Full-deployment fill (migration 030, paper + live) ─────────────────────
@@ -3782,6 +3783,7 @@ async function startSingleAccountEngine(account) {
         const remainingBudget = Math.max(0, budget - usedMargin);
         const remainingSlots = Math.max(1, maxPos - occupiedSlots);
         paperRemainingBudget = remainingBudget;
+        paperRemainingSlots = remainingSlots;
 
         // Normal: remaining ÷ free slots. Full-deploy pass: concentrate the whole remaining
         // pool across openable spreads (shared with the live block via sizePartMargin).
@@ -3830,15 +3832,26 @@ async function startSingleAccountEngine(account) {
             const poolLeft = paperRemainingBudget != null
               ? Math.max(0, paperRemainingBudget - paperDeployed)
               : (partMargin ?? 0);
+
             // Check if there is a same-strike long-only position that WILL be exited if this candidate opens
             const blockedReplace = remaining.find(p => p.underlying === underlying && p.type === spreadType
               && p.sellQty === 0 && (p.buyLeg?.lotSize ?? 0) > 0 && Number(p.buyLeg?.strike) === bStrike);
-            // If a same-strike long-only exists, its exit will free its margin into the pool
-            const effectivePoolLeft = poolLeft + (blockedReplace ? (blockedReplace.margin || partMargin || 0) : 0);
 
-            if (partMargin == null || partMargin <= 0.01 || effectivePoolLeft <= 0.01) {
+            // If a same-strike long-only exists, its replacement exit will free its margin into the pool
+            const freedMargin = blockedReplace ? (blockedReplace.margin || (partMargin > 0 ? partMargin : 0)) : 0;
+            const effectivePoolLeft = poolLeft + freedMargin;
+            const effPartMargin = (partMargin != null && partMargin > 0.01)
+              ? partMargin
+              : (freedMargin > 0 ? (freedMargin / Math.max(1, paperRemainingSlots)) : (partMargin ?? 0));
+
+            if (effPartMargin <= 0.01 || effectivePoolLeft <= 0.01) {
               logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: paper allocated balance exhausted (no free margin this cycle)${blockedReplace ? ` — 🔎 REPLACE-DIAG: same-strike long-only ${blockedReplace.id} could have been REPLACED but budget starved it` : ''}.`);
               continue;
+            }
+
+            // Update candidate partMargin if replacing long-only
+            if (partMargin <= 0.01 && effPartMargin > 0.01) {
+              partMargin = effPartMargin;
             }
           }
 

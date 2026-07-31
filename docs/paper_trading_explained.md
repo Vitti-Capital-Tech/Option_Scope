@@ -351,7 +351,9 @@ This is **cross-role**, not just same-role:
 **Long-only remnant nuance & replacement:** a held long-only position (short bought back, `sellQty = 0`) keeps its **long** strike occupied but **frees its old short strike** — that old short strike can be shorted again (matches the partial unique index, migration `026`).
 
 > [!TIP]
-> **Paper Trading Long-Only Replacement:** In paper trading (`isPaperAccount`), if an active position is a long-only position (`sellQty = 0`) and candidate scanning finds a candidate long/short spread using the **same long strike** (`buyLeg.strike`), the engine can **exit that active long-only position** (booking its PnL/fees in `trade_history` with `exit_reason: 'Exited for Long/Short Pair'`) and enter the new long/short pair **if and only if** position cap vacancy exists (`count < typeCap` and `combinedCount < combinedCap`) and the candidate short strike is free. Live trading is untouched.
+> **Paper Trading Long-Only Replacement & Budget Sizing Fix:** In paper trading (`isPaperAccount`), if an active position is a long-only position (`sellQty = 0`) and candidate scanning finds a candidate long/short spread using the **same long strike** (`buyLeg.strike`), the engine can **exit that active long-only position** (booking its PnL/fees in `trade_history` with `exit_reason: 'Exited for Long/Short Pair'`) and enter the new long/short pair **if and only if** position cap vacancy exists (`count < typeCap` and `combinedCount < combinedCap`) and the candidate short strike is free.
+> 
+> **Zero-Budget Starvation Fix (`effPartMargin`):** When all position slots are occupied (e.g. 4/4 slots full), `remainingBudget` evaluates to `$0`, yielding `partMargin = $0`. To prevent the paper budget check from starving a replacement candidate before it reaches the exit stage, the engine computes **`effPartMargin = freedMargin / remainingSlots`** (adding the replaceable long-only position's freed margin into `effectivePoolLeft`). This allows the replacement candidate to pass the budget check and size properly without being blocked by `$0` pre-exit margin. Live trading is untouched.
 
 ### Guard 5: Portfolio Cap (Local)
 ```
@@ -493,7 +495,7 @@ adjustedSellQty   = ratioToUse × scale
 
 The $195K short-notional cap is still applied **after** scaling as a hard ceiling: for a large `partMargin` (e.g. the daily full-deployment concentrate fill) where the scaled short would exceed $195K notional, both legs are rescaled down together — so the position uses **less** than `partMargin`, never more, and no short ever exceeds $195K notional.
 
-If the pool is exhausted (`partMargin ≈ 0`), new paper entries self-skip that cycle (mirrors the live "no budget" skip). Paper stays on its notional/`lotSize` margin basis (`contractValue` remains `null`) — only the sizing *amount* changed, not the P&L basis.
+If the pool is exhausted (`partMargin ≈ 0`), new paper entries self-skip that cycle (mirrors the live "no budget" skip). *Exception for Long-Only Replacement:* If a candidate replaces an active long-only position on the same long strike, the candidate uses `effPartMargin` derived from the long-only position's freed margin (`freedMargin / remainingSlots`), so pool exhaustion from held long-only positions does not block replacement entries. Paper stays on its notional/`lotSize` margin basis (`contractValue` remains `null`) — only the sizing *amount* changed, not the P&L basis.
 
 **Worked example** — equity $3000, allocation 90%, window Max Combined 4:
 - Allocated pool = $2700; buffer = $300.
