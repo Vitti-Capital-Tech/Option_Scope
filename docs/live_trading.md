@@ -150,7 +150,7 @@ logic is byte-for-byte unchanged when paper/disarmed:
 | Long laddered exit | Active model: sell reduce_only @ bid per level. Resting model: fixed-ladder resting **limit SELLs** fill on their own |
 | Partial ratio scale-down | Reduce-only **MARKET close** of the reduced buy lot (`live.closeSymbol`, IOC — immediate fill; `${id}-PEX-…`). Runs in **both** models: the active model fires it inline, and the armed-real resting model runs the **same** `applyAtmRatioScaling` helper on the long leg each cycle while the spread is full (the trigger is dynamic, so it market-closes rather than resting a limit) |
 | Risk exit (spot hits exit level) | **Brackets** close the whole spread exchange-side; engine's spot-cross catch-all (if up) also market-closes + books (reduce-only guards double-close) |
-| **Expiry / zombie exit** | **No leg order** — Delta cash-settles expired options; brackets auto-cancel, resting orders cancelled |
+| **Expiry / zombie exit** | **No leg order** — Delta cash-settles expired options; brackets auto-cancel, resting orders cancelled. Booked at each leg's **intrinsic value** at settlement (call: `max(0, spot−strike)`, put: `max(0, strike−spot)`) — not the illiquid bid/ask 2 min early — and with **zero exit fee** (no close order is placed), so the PnL matches Delta's cash settlement |
 
 All orders use limit orders at the engine's computed price and carry a
 `client_order_id` derived from the position id + leg + stage (idempotency).
@@ -632,11 +632,11 @@ platform**, outside OptionScope. All of it is **armed-live only** and runs on th
 
 | Done directly on Delta | Detected? | Engine reaction |
 | --- | --- | --- |
-| **Full close** of a position (both legs, or a bracket fired) | Yes (~30–90s) | `reconcileOrphans` books a full exit at current mark + deletes the row (existing behaviour) |
-| **Close of ONLY the short leg** (long still open) | Yes (~90s) | `externalShortExitToLongLadder` — books the short exit + starts the long-slice ladder (**dangling-long recovery**, below) |
+| **Full close** of a position (both legs, or a bracket fired) | Yes (~30–90s) | `reconcileOrphans` books a full exit + deletes the row. The exit price is Delta's **actual close-fill** — size-weighted over the recent closing fills for the leg (`closingFillPrice`, long sells / short buys) so the booked PnL matches Delta — falling back to the current mark only when no matching fill is found. |
+| **Close of ONLY the short leg** (long still open) | Yes (~90s) | `externalShortExitToLongLadder` — books the short exit (at Delta's **actual buy-back fill**, `closingFillPriceFrom`; mark fallback) + starts the long-slice ladder (**dangling-long recovery**, below) |
 | **TP / SL price change** on a bracket | Yes (~30s) | `adoptManualBrackets` — adopts the Delta value into `brkLevel` (below) |
 | **Cancel of a protective bracket/stop** (leg still open) | Yes | `armMissingBrackets` re-arms it at the engine level (your cancel is undone) |
-| **Partial size reduction** of a leg | Yes (~90s, stable) | `reconcilePartialReductions` — shrinks the tracked size to match + books the closed slice (below) |
+| **Partial size reduction** of a leg | Yes (~90s, stable) | `reconcilePartialReductions` — shrinks the tracked size to match + books the closed slice at Delta's **actual fill** (`closingFillPriceFrom`, long sold / short bought; mark fallback) (below) |
 | **Stale `-PEX` resting limit** (leftover from the old limit-based scale-down) | Yes (each sweep) | Reduce-only **market-closes** its remaining size (`PEXCLEAN-<symbol>`) then cancels the redundant limit (close-first → retry-safe). The scale-down slice was already booked optimistically, so the exchange holds long the book thinks is gone; this reconciles it. Fires a **Telegram** alert (`🧹 PARTIAL EXIT (reconcile)`; failures → `notifyLiveFailure`). Self-heals to a no-op once none remain. |
 
 **Dangling-long recovery (`externalShortExitToLongLadder`).** The mirror of the

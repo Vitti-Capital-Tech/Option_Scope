@@ -1260,7 +1260,11 @@ async function startSingleAccountEngine(account) {
     lastDbWrite = Date.now(); // hold fetchActivePositions off during the convert+persist
     const tSell = tickerData[pos.sellLeg.symbol];
     const tBuy = tickerData[pos.buyLeg.symbol];
-    const exitPx = tSell?.markPrice ?? tSell?.ask ?? tSell?.lastPrice ?? pos.entrySellPrice;
+    // The short was closed on Delta by BUYING it back — prefer that ACTUAL fill price so the
+    // booked PnL matches Delta, falling back to the mark when no fill is found.
+    const fills = await live.fills().catch(() => []);
+    const fillShort = closingFillPriceFrom(fills, pos.sellLeg.symbol, 'buy', shortContracts(pos.sellQty));
+    const exitPx = fillShort ?? tSell?.markPrice ?? tSell?.ask ?? tSell?.lastPrice ?? pos.entrySellPrice;
     const longBid = tBuy?.bid ?? tBuy?.markPrice ?? tBuy?.lastPrice ?? pos.entryBuyPrice;
     const shortLot = pos.sellLeg.lotSize || 1;
     const gross = (pos.entrySellPrice - exitPx) * pos.sellQty * shortLot;
@@ -1595,13 +1599,18 @@ async function startSingleAccountEngine(account) {
     lastDbWrite = Date.now(); // hold fetchActivePositions off during the mutate+persist
     const isLong = side === 'long';
     const ratio = actual / expected;
+    // The reduced slice was closed on Delta (long → sold, short → bought back). Prefer that
+    // ACTUAL fill price so the booked PnL matches Delta. Skipped for `silent` engine-drift
+    // syncs (they book no P&L row, so the price is unused) to avoid a needless fills fetch.
+    const redFills = silent ? [] : await live.fills().catch(() => []);
     if (isLong) {
       const oldLot = pos.buyLeg.lotSize;
       const newLot = Number((oldLot * ratio).toFixed(4));
       const reducedLot = Number((oldLot - newLot).toFixed(4));
       if (reducedLot <= 0) return;
       const t = tickerData[pos.buyLeg.symbol];
-      const exitPx = t?.bid ?? t?.markPrice ?? t?.lastPrice ?? pos.entryBuyPrice;
+      const fillLong = closingFillPriceFrom(redFills, pos.buyLeg.symbol, 'sell', expected - actual);
+      const exitPx = fillLong ?? t?.bid ?? t?.markPrice ?? t?.lastPrice ?? pos.entryBuyPrice;
       const base = pos.buyLeg.originalLotSize || 1;
       const entryFeePart = Math.min(pos.entryFee || 0, calculateFee(pos.entryBuyPrice, pos.entrySpotPrice, reducedLot, base));
       const exitFee = calculateFee(exitPx, spotPrice, reducedLot, base);
@@ -1644,7 +1653,8 @@ async function startSingleAccountEngine(account) {
       if (reducedQty <= 0) return;
       const shortLot = pos.sellLeg.lotSize || 1;
       const t = tickerData[pos.sellLeg.symbol];
-      const exitPx = t?.ask ?? t?.markPrice ?? t?.lastPrice ?? pos.entrySellPrice;
+      const fillShort = closingFillPriceFrom(redFills, pos.sellLeg.symbol, 'buy', expected - actual);
+      const exitPx = fillShort ?? t?.ask ?? t?.markPrice ?? t?.lastPrice ?? pos.entrySellPrice;
       const entryFeePart = Math.min(pos.entryFee || 0, calculateFee(pos.entrySellPrice, pos.entrySpotPrice, reducedQty, shortLot));
       const exitFee = calculateFee(exitPx, spotPrice, reducedQty, shortLot);
       const gross = (pos.entrySellPrice - exitPx) * reducedQty * shortLot;
@@ -1689,6 +1699,28 @@ async function startSingleAccountEngine(account) {
   //   • the leg must have been CONFIRMED open on Delta here at least once
   //     (`_everOpenOnDelta`) — so a symbol we can't match / a never-opened row is
   //     never mistaken for a close. In-memory latch resets on restart (conservative).
+  // Size-weighted average price of the most-recent CLOSING fills for `symbol` on `side`,
+  // covering up to `wantContracts`. Delta fills are the ACTUAL executions, so this is the
+  // real price a leg closed at (a bracket / manual-on-Delta fill) — vs the up-to-90s-stale
+  // mark. A long closes by SELLING, a short by BUYING. Returns null when no matching fill is
+  // found, so the caller falls back to the mark. Pure — the caller supplies the fills array.
+  function closingFillPriceFrom(fills, symbol, side, wantContracts) {
+    if (!Array.isArray(fills) || !(wantContracts > 0)) return null;
+    const matches = fills
+      .filter(f => f.product_symbol === symbol && String(f.side) === side
+        && Number(f.size) > 0 && Number(f.price) > 0)
+      .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0)); // newest first
+    let remaining = wantContracts, notional = 0, filled = 0;
+    for (const f of matches) {
+      if (remaining <= 0) break;
+      const take = Math.min(remaining, Number(f.size));
+      notional += take * Number(f.price);
+      filled += take;
+      remaining -= take;
+    }
+    return filled > 0 ? notional / filled : null;
+  }
+
   async function reconcileOrphans() {
     if (!(accountState.mode === 'live' && accountState.live_enabled && !live.dryRun)) return;
     const livePos = await live.positions();
@@ -1696,6 +1728,16 @@ async function startSingleAccountEngine(account) {
     const liveOrders = await live.orders();
     const sizeBySymbol = {};
     for (const p of livePos) sizeBySymbol[p.product_symbol] = Number(p.size) || 0;
+
+    // Actual close-fill price for a vanished leg, fetched LAZILY (once per pass, only if an
+    // orphan actually needs booking) so clean sweeps add no API call. Delegates the math to
+    // the shared closingFillPriceFrom.
+    let _fillsCache;
+    async function closingFillPrice(symbol, side, wantContracts) {
+      if (!(wantContracts > 0)) return null;
+      if (_fillsCache === undefined) _fillsCache = await live.fills().catch(() => []);
+      return closingFillPriceFrom(_fillsCache, symbol, side, wantContracts);
+    }
 
     // Stale `-PEX` cleanup / auto-reconcile. Older builds placed the ATM-ratio partial
     // scale-down as a resting GTC limit (`-PEX`) at the bid, booked it optimistically, then
@@ -1829,8 +1871,14 @@ async function startSingleAccountEngine(account) {
       // (Realtime removes it from the in-memory `positions` and the UI).
       const tBuy = tickerData[pos.buyLeg.symbol];
       const tSell = tickerData[pos.sellLeg.symbol];
-      const exitLong = tBuy?.markPrice ?? tBuy?.bid ?? tBuy?.lastPrice ?? pos.entryBuyPrice;
-      const exitShort = tSell?.markPrice ?? tSell?.ask ?? tSell?.lastPrice ?? pos.entrySellPrice;
+      // Prefer Delta's ACTUAL close-fill price (the position vanished because a real order —
+      // e.g. the TP/SL bracket — filled), so the booked PnL matches Delta instead of the
+      // ~90s-stale mark. A long closes by SELLING, a short by BUYING. Fall back to mark/bid
+      // when no matching fill is found (fills window missed it / fetch failed).
+      const fillLong = await closingFillPrice(pos.buyLeg.symbol, 'sell', longContracts(pos.buyLeg));
+      const fillShort = pos.sellQty > 0 ? await closingFillPrice(pos.sellLeg.symbol, 'buy', shortContracts(pos.sellQty)) : null;
+      const exitLong = fillLong ?? tBuy?.markPrice ?? tBuy?.bid ?? tBuy?.lastPrice ?? pos.entryBuyPrice;
+      const exitShort = fillShort ?? tSell?.markPrice ?? tSell?.ask ?? tSell?.lastPrice ?? pos.entrySellPrice;
       const longLot = pos.buyLeg.lotSize || 0;
       const shortLot = pos.sellLeg.lotSize || 1;
       const gross = (exitLong - pos.entryBuyPrice) * longLot
@@ -2177,12 +2225,21 @@ async function startSingleAccountEngine(account) {
       lastDbWrite = Date.now();
       const longLot = pos.buyLeg.lotSize || 0;
       const shortLot = pos.sellLeg.lotSize || 1;
-      const exitLong = longBid ?? pos.entryBuyPrice;
-      const exitShort = shortAsk ?? pos.entrySellPrice;
+      // At EXPIRY Delta cash-settles each leg at its INTRINSIC value (call: max(0, spot−strike),
+      // put: max(0, strike−spot)), NOT the illiquid/wide bid-ask 2 min early — so book expiry
+      // exits at intrinsic to match Delta's settlement. Non-expiry full exits keep the live
+      // bid/ask (the price the market-close below actually hits).
+      const intrinsicAt = (strike) => pos.type === 'call'
+        ? Math.max(0, spotPrice - strike)
+        : Math.max(0, strike - spotPrice);
+      const exitLong = atExpiry ? intrinsicAt(pos.buyLeg.strike) : (longBid ?? pos.entryBuyPrice);
+      const exitShort = atExpiry ? intrinsicAt(pos.sellLeg.strike) : (shortAsk ?? pos.entrySellPrice);
       // Attached hedge leg (3rd long) rides the triplet and closes here with it.
       const hedge = (pos.hedgeLeg && (pos.hedgeLeg.lotSize || 0) > 0) ? pos.hedgeLeg : null;
       const tHedge = hedge ? tickerData[hedge.symbol] : null;
-      const exitHedge = hedge ? ((tHedge?.bid ?? tHedge?.markPrice ?? tHedge?.lastPrice) ?? hedge.entryPrice ?? 0) : 0;
+      const exitHedge = hedge
+        ? (atExpiry ? intrinsicAt(hedge.strike) : ((tHedge?.bid ?? tHedge?.markPrice ?? tHedge?.lastPrice) ?? hedge.entryPrice ?? 0))
+        : 0;
       // Market-close remaining legs unless expiry (Delta cash-settles expired options).
       if (!atExpiry) {
         // CAXS/CAXB tags (vs the strategy exit's XS/XB) so the Order History UI shows "Close All".
@@ -2207,9 +2264,14 @@ async function startSingleAccountEngine(account) {
       const grossHedge = hedge ? (exitHedge - (hedge.entryPrice || 0)) * hedge.lotSize : 0;
       const gross = grossLong + grossShort + grossHedge;
       const entryFee = (pos.entryFee || 0) + (hedge ? (hedge.entryFee || 0) : 0);
-      const exitFee = calculateFee(exitLong, spotPrice, longLot, pos.buyLeg.originalLotSize || 1)
+      // At expiry Delta cash-settles automatically — no close ORDER is sent (see the
+      // `if (!atExpiry)` guard above), so there is no taker exit fee. Charging one would
+      // overstate the loss vs Delta. Non-expiry exits keep the real close fee.
+      const exitFee = atExpiry ? 0 : (
+        calculateFee(exitLong, spotPrice, longLot, pos.buyLeg.originalLotSize || 1)
         + (pos.sellQty > 0 ? calculateFee(exitShort, spotPrice, pos.sellQty, shortLot) : 0)
-        + (hedge ? calculateFee(exitHedge, spotPrice, hedge.lotSize, hedge.originalLotSize || 1) : 0);
+        + (hedge ? calculateFee(exitHedge, spotPrice, hedge.lotSize, hedge.originalLotSize || 1) : 0)
+      );
       const net = gross - (entryFee + exitFee);
       const reason = atExpiry ? 'Expiry Reached (2min Early)' : `Full Exit (${eff.exitType || 'ATM'} spot ${Math.round(spotPrice)})`;
       try {
@@ -2400,8 +2462,14 @@ async function startSingleAccountEngine(account) {
           accumulated_sell_pnl: pos.accumulatedSellPnl,
         }).eq('id', pos.id);
       } catch (e) { logError(`[${accountState.name}] Resting ladder persist failed for ${pos.id}:`, e); }
-      log(`[${accountState.name}] 🪜 LONG SLICE EXIT (resting): ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | ${newlyFilled.length} slice(s) | remaining lot ${pos.buyLeg.lotSize}`);
-      notifyTrade({ title: '🪜 LONG SLICE EXIT', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike} · ${newlyFilled.length} slice(s) · remaining lot ${pos.buyLeg.lotSize}`, pnl: pos.accumulatedSellPnl });
+      // Show "remaining" in the same units the rest of the live flow uses: a live leg's
+      // buyLeg.lotSize is a NOTIONAL lot (contractValue × contracts), so display it as
+      // round(lotSize / contractValue) = contracts. Paper legs (no contractValue) keep the lot.
+      const remainingDisplay = pos.buyLeg.contractValue
+        ? `${longContracts(pos.buyLeg)} contract(s)`
+        : `lot ${pos.buyLeg.lotSize}`;
+      log(`[${accountState.name}] 🪜 LONG SLICE EXIT (resting): ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | ${newlyFilled.length} slice(s) | remaining ${remainingDisplay}`);
+      notifyTrade({ title: '🪜 LONG SLICE EXIT', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike} · ${newlyFilled.length} slice(s) · remaining ${remainingDisplay}`, pnl: pos.accumulatedSellPnl });
     }
     remaining.push(pos);
   }
@@ -3068,7 +3136,14 @@ async function startSingleAccountEngine(account) {
                 // market-close fill/rounding) as engine drift, not a manual reduction.
                 markEngineReduce(pos.buyLeg.symbol);
                 const batchNet = partialExitsToRecord.reduce((s, r) => s + (r.realized_net_pnl || 0), 0);
-                notifyTrade({ title: '🔻 PARTIAL SCALE-DOWN', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike} · sold ${contractsToSell} contract(s) · remaining lot ${pos.buyLeg.lotSize}`, pnl: batchNet });
+                // Show "remaining" in the SAME units as "sold N contract(s)": for a live leg
+                // buyLeg.lotSize is a NOTIONAL lot (= contractValue × contracts, e.g. 0.001 ×
+                // 400 = 0.4), so display round(lotSize / contractValue) = contracts. Paper legs
+                // (no contractValue) keep the fractional lot.
+                const remainingDisplay = pos.buyLeg.contractValue
+                  ? `${longContracts(pos.buyLeg)} contract(s)`
+                  : `lot ${pos.buyLeg.lotSize}`;
+                notifyTrade({ title: '🔻 PARTIAL SCALE-DOWN', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike} · sold ${contractsToSell} contract(s) · remaining ${remainingDisplay}`, pnl: batchNet });
               }
 
               // FIX B6: batched insert
@@ -3405,7 +3480,10 @@ async function startSingleAccountEngine(account) {
               } catch (e) {
                 logError(`Failed to persist long-leg laddered exit for position ${pos.id}:`, e);
               }
-              log(`[${accountState.name}] 🪜 LONG SLICE EXIT: ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | ${longExitSlices.length} slice(s) | remaining lot ${pos.buyLeg.lotSize} | stage ${stage}/5`);
+              const remainingDisplay = pos.buyLeg.contractValue
+                ? `${longContracts(pos.buyLeg)} contract(s)`
+                : `lot ${pos.buyLeg.lotSize}`;
+              log(`[${accountState.name}] 🪜 LONG SLICE EXIT: ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | ${longExitSlices.length} slice(s) | remaining ${remainingDisplay} | stage ${stage}/5`);
               }
             }
           }
@@ -4649,8 +4727,15 @@ async function startSingleAccountEngine(account) {
               persistedEntryIds.add(t.id);
               const originalLotSize = t.sellLeg.lotSize || 1;
               const ratioLong = t.buyLeg.lotSize / originalLotSize;
-              log(`[${accountState.name}] 📥 ENTRY: ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} | Qty: ${ratioLong.toFixed(2)}:${t.sellQty} | Net: $${(t.sellQty * t.entrySellPrice - t.entryBuyPrice * ratioLong).toFixed(2)}`);
-              notifyTrade({ title: '📥 LIVE ENTRY', detail: `${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} · qty ${ratioLong.toFixed(2)}:${t.sellQty} · net $${(t.sellQty * t.entrySellPrice - t.entryBuyPrice * ratioLong).toFixed(2)} · spot ${Math.round(t.entrySpotPrice)}` });
+              // Net premium in USD. The premium P&L is scaled by lotSize (= contractValue ×
+              // contracts) everywhere else in the live math, so the raw premium×contracts term
+              // must be multiplied by the leg's contractValue for a live account (e.g. 0.001
+              // BTC) — without it the "net" reads ~1000× too large. Paper legs (no
+              // contractValue) keep the notional-lot basis unchanged.
+              const rawNet = t.sellQty * t.entrySellPrice - t.entryBuyPrice * ratioLong;
+              const netUsd = t.buyLeg.contractValue ? rawNet * t.buyLeg.contractValue : rawNet;
+              log(`[${accountState.name}] 📥 ENTRY: ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} | Qty: ${ratioLong.toFixed(2)}:${t.sellQty} | Net: $${netUsd.toFixed(2)}`);
+              notifyTrade({ title: '📥 LIVE ENTRY', detail: `${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} · qty ${ratioLong.toFixed(2)}:${t.sellQty} · net $${netUsd.toFixed(2)} · spot ${Math.round(t.entrySpotPrice)}` });
             }
           } catch (err) { logError(`[${accountState.name}] Entry persistence error:`, err); }
         }
