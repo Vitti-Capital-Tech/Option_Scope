@@ -656,20 +656,29 @@ function LiveOrderHistoryTab({ orderHistory }) {
 }
 
 // Live unrealized P&L + mark for one Delta position leg. The engine's snapshot suppresses
-// mark/unrealized updates to keep egress flat (~60s stale), so prefer the live WS mark
-// (~1s fresh) and recompute exactly as Delta does: size × contract_value × (mark − entry) —
-// signed size makes shorts profit on decay. Falls back to the snapshot's own unrealized_pnl /
-// mark_price when no live mark is available (symbol not on the WS feed / cross-expiry / orphan).
+// mark/unrealized updates to keep egress flat (~60s stale), so recompute from the live WS
+// quote (~1s fresh) using the REALIZABLE CLOSE price — the side you'd hit to flatten: a
+// LONG (size > 0) closes by SELLING into the BID, a SHORT (size < 0) closes by BUYING at
+// the ASK. PnL = size × contract_value × (closePx − entry); signed size makes shorts profit
+// on decay. Bid/ask (not mark) values the leg at what you'd realize by exiting now, so it
+// matches Delta's own PnL. The returned `mark` stays the true mark (for the Mark column).
+// Falls back to last/mark for the close price, then the snapshot's unrealized_pnl / mark_price,
+// when no live quote is available (symbol not on the WS feed / cross-expiry / orphan).
 function livePnlOf(p, liveMarks) {
   const n = (v) => (v == null || v === '' || Number.isNaN(Number(v)) ? null : Number(v));
   const size = n(p.size) || 0;
   const cv = n(p.product?.contract_value) ?? 0.001;
   const entry = n(p.entry_price);
-  const liveMark = n(liveMarks?.[p.product_symbol]?.markPrice);
-  if (liveMark != null && entry != null) {
-    return { pnl: size * cv * (liveMark - entry), mark: liveMark };
+  const tk = liveMarks?.[p.product_symbol];
+  const liveMark = n(tk?.markPrice);
+  // Close price: long → bid (sell to close), short → ask (buy to close).
+  const closePx = size > 0
+    ? (n(tk?.bid) ?? n(tk?.lastPrice) ?? liveMark)
+    : (n(tk?.ask) ?? n(tk?.lastPrice) ?? liveMark);
+  if (closePx != null && entry != null) {
+    return { pnl: size * cv * (closePx - entry), mark: liveMark ?? closePx };
   }
-  return { pnl: n(p.unrealized_pnl ?? p.unrealised_pnl) ?? 0, mark: n(p.mark_price) };
+  return { pnl: n(p.unrealized_pnl ?? p.unrealised_pnl) ?? 0, mark: liveMark ?? n(p.mark_price) };
 }
 
 // ── Risk & Margin (live) — real margin/liquidation from Delta ──────────────

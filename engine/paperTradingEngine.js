@@ -4467,6 +4467,34 @@ async function startSingleAccountEngine(account) {
             // decoy == real (current behaviour). Both levels are recorded on the row below.
             const realExitLvl = computeIndexTriggerLevel(t.type, t.buyLeg.strike, effectiveConfig);
             const bracketLevel = computeDecoyExitLevel(t.type, realExitLvl, effectiveConfig.slTpDecoyDiff ?? 0);
+
+            // ── Top-of-book depth guard (armed-live only) ──────────────────────────────
+            // Enter ONLY if every leg's intended quantity is LESS THAN the size resting at
+            // the price we'd hit: a BUY (long + hedge) takes the ASK, a SELL (short) takes
+            // the BID. If a leg is >= that top-of-book size, the marketable order walks the
+            // book / partially fills and the legs end up filled at UNEVEN quantities — so we
+            // skip the WHOLE entry rather than carry a lopsided spread. Sizes are Delta's own
+            // quotes (bid_size/ask_size, in contracts). When a size is unknown (leg not on the
+            // feed yet) we can't prove a shortfall, so we DON'T block — openSpread's
+            // all-or-nothing chase-fill remains the backstop there.
+            if (liveArmed) {
+              const finite = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+              const longC = longContracts(t.buyLeg);
+              const shortC = t.sellQty > 0 ? shortContracts(t.sellQty) : 0;
+              const hedgeC = (t.hedgeLeg && (t.hedgeLeg.lotSize || 0) > 0) ? longContracts(t.hedgeLeg) : 0;
+              const askSz = finite(tickerData[t.buyLeg.symbol]?.askSize);           // long buys the ask
+              const bidSz = shortC > 0 ? finite(tickerData[t.sellLeg.symbol]?.bidSize) : null; // short sells the bid
+              const hedgeAskSz = hedgeC > 0 ? finite(tickerData[t.hedgeLeg.symbol]?.askSize) : null;
+              const thin = [];
+              if (askSz != null && longC > askSz) thin.push(`long ${longC} ≥ ask depth ${askSz} @ ${t.buyLeg.symbol}`);
+              if (bidSz != null && shortC > bidSz) thin.push(`short ${shortC} ≥ bid depth ${bidSz} @ ${t.sellLeg.symbol}`);
+              if (hedgeAskSz != null && hedgeC > hedgeAskSz) thin.push(`hedge ${hedgeC} ≥ ask depth ${hedgeAskSz} @ ${t.hedgeLeg.symbol}`);
+              if (thin.length > 0) {
+                logWarn(`[${accountState.name}] LIVE entry ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} skipped: top-of-book depth too thin — ${thin.join('; ')}. Holding for more size to avoid an uneven fill.`);
+                continue;
+              }
+            }
+
             const liveEntry = await live.openSpread(t, {
               long: longContracts(t.buyLeg),
               short: shortContracts(t.sellQty),

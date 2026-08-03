@@ -144,7 +144,7 @@ logic is byte-for-byte unchanged when paper/disarmed:
 
 | Point | Live order |
 | --- | --- |
-| Entry (before `active_positions` insert) | Buy long @ ask + sell short @ bid (limit, `+entryBuyOffset`/`−entrySellOffset`). Each leg carries a **spot-triggered bracket** at the exit level (long → TP, short → SL). Each leg is **chased to a full fill** (re-priced in place until filled — see [Entry chase-fill](#entry-chase-fill)). **All-or-nothing:** a failed send OR a leg that can't fully fill after the chase **unwinds any partial and aborts the insert** (account left flat). |
+| Entry (before `active_positions` insert) | Buy long @ ask + sell short @ bid (limit, `+entryBuyOffset`/`−entrySellOffset`). Each leg carries a **spot-triggered bracket** at the exit level (long → TP, short → SL). Each leg is **chased to a full fill** (re-priced in place until filled — see [Entry chase-fill](#entry-chase-fill)). **All-or-nothing:** a failed send OR a leg that can't fully fill after the chase **unwinds any partial and aborts the insert** (account left flat). A pre-order **[top-of-book depth guard](#top-of-book-depth-guard-uneven-fill-prevention)** skips the entry entirely if any leg's qty isn't below the size resting at the price it would hit (avoids uneven fills). |
 | Entry (resting short-exit, armed real) | Resting reduce-only **limit BUY** on the short @ `shortExitPrice` (`${id}-SEX`) — the short buy-back (profit), sitting in Open Orders |
 | Short-leg exit | Active model: buy-to-close @ ask. Resting model: the `-SEX` limit fills **fully** (order-id in fills **and** short position size 0) → book + place ladder (short SL bracket auto-cancels) |
 | Long laddered exit | Active model: sell reduce_only @ bid per level. Resting model: fixed-ladder resting **limit SELLs** fill on their own |
@@ -754,6 +754,30 @@ the account is left flat (no manual reconciliation):
 
 **Dry-run / paper / disarmed:** chase is skipped entirely — a single submit is
 assumed filled, so behaviour on every non-armed-real path is byte-for-byte unchanged.
+
+### Top-of-book depth guard (uneven-fill prevention)
+
+Runs **once, right before `openSpread`** (armed-real only). Even with the all-or-nothing
+chase, an order **larger than the size resting at the price it hits** walks the book /
+partial-fills, and the two legs can end up filled at **uneven quantities** (a lopsided
+spread). This guard blocks that at source: it enters **only if every leg's intended
+quantity is LESS THAN the top-of-book size on the side it would take**:
+
+| Leg | Side it hits | Size checked |
+| --- | --- | --- |
+| Long (buy) | ASK | `askSize` |
+| Short (sell) | BID | `bidSize` |
+| Hedge (buy) | ASK | `askSize` |
+
+- **Source:** Delta's own L1 quote sizes — `quotes.bid_size` / `quotes.ask_size` (contracts),
+  captured into the ticker as `bidSize` / `askSize` (`processTickerMessage` + `backfillTickers`,
+  with a `best_bid_size` / `best_ask_size` fallback).
+- **Rule:** `qty >= depth` on **any** leg → **skip the WHOLE entry** (never a partial/naked
+  leg), with a `top-of-book depth too thin — …` warning. The comparison is strict (`>=`):
+  the quantity must be *less than* the resting size, leaving a margin.
+- **Fail-open:** if a leg's size is unknown (not on the WS feed yet) it is **not** blocked —
+  a shortfall can't be proven, and the all-or-nothing chase-fill remains the backstop.
+- **Paper / dry-run / disarmed:** no-op (no real order is placed).
 
 ### Same-product collision guard & stuck-leg recovery
 

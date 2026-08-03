@@ -292,6 +292,10 @@ export function processTickerMessage(msg, symbolMeta, prevData) {
   const lastPrice = toFiniteNumber(msg.last_price ?? msg.close);
   const bid = toFiniteNumber(msg.quotes?.best_bid);
   const ask = toFiniteNumber(msg.quotes?.best_ask);
+  // Top-of-book size (contracts) resting AT the best bid/ask — used by the entry depth
+  // guard so an order never exceeds the size available at the price it would hit.
+  const bidSize = toFiniteNumber(msg.quotes?.bid_size ?? msg.quotes?.best_bid_size);
+  const askSize = toFiniteNumber(msg.quotes?.ask_size ?? msg.quotes?.best_ask_size);
   const bidIv = normalizeIv(toFiniteNumber(msg.quotes?.bid_iv));
   const askIv = normalizeIv(toFiniteNumber(msg.quotes?.ask_iv));
   const iv = normalizeIv(toFiniteNumber(msg.mark_vol ?? msg.quotes?.mark_iv ?? msg.greeks?.iv));
@@ -309,6 +313,8 @@ export function processTickerMessage(msg, symbolMeta, prevData) {
     lastPrice: lastPrice ?? prev?.lastPrice ?? null,
     bid: bid ?? prev?.bid ?? null,
     ask: ask ?? prev?.ask ?? null,
+    bidSize: bidSize ?? prev?.bidSize ?? null,
+    askSize: askSize ?? prev?.askSize ?? null,
     bidUpdatedAt: bid != null ? Date.now() : (prev?.bidUpdatedAt ?? 0),
     askUpdatedAt: ask != null ? Date.now() : (prev?.askUpdatedAt ?? 0),
     bidIv: bidIv ?? prev?.bidIv ?? null,
@@ -342,6 +348,8 @@ export async function backfillTickers(underlying, symbolMeta, existingData = {})
       const iv = normalizeIv(toFiniteNumber(t.mark_vol ?? t.quotes?.mark_iv ?? t.greeks?.iv));
       const bid = toFiniteNumber(t.quotes?.best_bid);
       const ask = toFiniteNumber(t.quotes?.best_ask);
+      const bidSize = toFiniteNumber(t.quotes?.bid_size ?? t.quotes?.best_bid_size);
+      const askSize = toFiniteNumber(t.quotes?.ask_size ?? t.quotes?.best_ask_size);
       const bidIv = normalizeIv(toFiniteNumber(t.quotes?.bid_iv));
       const askIv = normalizeIv(toFiniteNumber(t.quotes?.ask_iv));
 
@@ -359,6 +367,8 @@ export async function backfillTickers(underlying, symbolMeta, existingData = {})
         lastPrice: (lastPrice && lastPrice > 0) ? lastPrice : (prev?.lastPrice ?? null),
         bid: resolvedBid,
         ask: resolvedAsk,
+        bidSize: bidSize ?? (prev?.bidSize ?? null),
+        askSize: askSize ?? (prev?.askSize ?? null),
         // Set timestamps to now if bid/ask exist, so backfill quotes are treated as
         // fresh on the first entry scan after startup. WS live quotes overwrite these.
         bidUpdatedAt: resolvedBid != null ? now : 0,

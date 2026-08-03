@@ -2613,10 +2613,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   // LIVE unrealized P&L. The engine's snapshot deliberately suppresses mark/unrealized
   // updates (to keep egress flat), so the snapshot's own `unrealized_pnl` is stale by up
   // to the 60s keepalive — which made Daily P&L (= today realized + unrealized) lag/read
-  // wrong. Recompute it here from the LIVE WS mark (~1s fresh), exactly as Delta does:
-  // size × contract_value × (mark − entry) — signed size makes shorts profit on decay.
-  // Fall back to the snapshot's unrealized_pnl only when no live mark is available yet
-  // (symbol not on the WS feed / cross-expiry / orphan leg). Zero extra Supabase egress.
+  // wrong. Recompute it here from the LIVE WS quote (~1s fresh) using the REALIZABLE CLOSE
+  // price — the side you'd actually hit to flatten: a LONG (size > 0) closes by SELLING
+  // into the BID, a SHORT (size < 0) closes by BUYING at the ASK. PnL = size ×
+  // contract_value × (closePx − entry); signed size makes shorts profit on decay. Bid/ask
+  // (not mark) values each leg at what you'd realize by exiting now, so it matches Delta's
+  // own PnL. Fall back to last/mark, then the snapshot's unrealized_pnl, when no live quote
+  // is available yet (symbol not on the WS feed / cross-expiry / orphan leg). Zero extra
+  // Supabase egress.
   const totalUnrealizedPnl = useLive
     ? (liveExchangeState?.positions || [])
         .filter(p => Number(p.size) !== 0 && liveBelongsToUnderlying(p.product_symbol))
@@ -2624,9 +2628,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           const size = Number(p.size) || 0;
           const cv = Number(p.product?.contract_value) || 0.001;
           const entry = Number(p.entry_price);
-          const markNow = Number(latestTickerDataRef.current?.[p.product_symbol]?.markPrice);
-          if (Number.isFinite(markNow) && Number.isFinite(entry)) {
-            return s + size * cv * (markNow - entry);
+          const tk = latestTickerDataRef.current?.[p.product_symbol];
+          // Close price: long → bid (sell to close), short → ask (buy to close).
+          const closePx = size > 0
+            ? Number(tk?.bid ?? tk?.lastPrice ?? tk?.markPrice)
+            : Number(tk?.ask ?? tk?.lastPrice ?? tk?.markPrice);
+          if (Number.isFinite(closePx) && Number.isFinite(entry)) {
+            return s + size * cv * (closePx - entry);
           }
           return s + (Number(p.unrealized_pnl ?? p.unrealised_pnl) || 0);
         }, 0)
