@@ -3961,7 +3961,7 @@ async function startSingleAccountEngine(account) {
           // model, promoted to live; numberOfCalls/numberOfPuts are no longer the live caps).
           const typeCap = derivedTypeCap(effectiveConfig);
           if (count >= typeCap) {
-            const dlo = isPaperAccount && remaining.find(p => p.expiry === config.expiry && p.underlying === underlying && p.type === spreadType && p.sellQty === 0 && (p.buyLeg?.lotSize ?? 0) > 0 && (Number(p.buyLeg?.strike) === bStrike || Number(p.buyLeg?.strike) === sStrike));
+            const dlo = remaining.find(p => p.expiry === config.expiry && p.underlying === underlying && p.type === spreadType && p.sellQty === 0 && (p.buyLeg?.lotSize ?? 0) > 0 && p.sellLeg?.strike != null && (Number(p.buyLeg?.strike) === bStrike || Number(p.buyLeg?.strike) === sStrike));
             logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Portfolio cap of ${typeCap} reached for type ${spreadType}${dlo ? ` — 🔎 REPLACE-DIAG: long-only ${dlo.id} at strike ${Number(dlo.buyLeg?.strike)} could have been REPLACED but the per-type cap blocks the new full spread` : ''}`);
             continue;
           }
@@ -3974,7 +3974,7 @@ async function startSingleAccountEngine(account) {
           const combinedCount = remaining.filter(p => p.underlying === underlying && p.sellQty > 0).length +
             newEntries.filter(p => p.underlying === underlying).length;
           if (combinedCount >= combinedCap) {
-            const dlo = isPaperAccount && remaining.find(p => p.expiry === config.expiry && p.underlying === underlying && p.type === spreadType && p.sellQty === 0 && (p.buyLeg?.lotSize ?? 0) > 0 && (Number(p.buyLeg?.strike) === bStrike || Number(p.buyLeg?.strike) === sStrike));
+            const dlo = remaining.find(p => p.expiry === config.expiry && p.underlying === underlying && p.type === spreadType && p.sellQty === 0 && (p.buyLeg?.lotSize ?? 0) > 0 && p.sellLeg?.strike != null && (Number(p.buyLeg?.strike) === bStrike || Number(p.buyLeg?.strike) === sStrike));
             logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: combined position cap of ${combinedCap} reached (${combinedCount} open)${dlo ? ` — 🔎 REPLACE-DIAG: long-only ${dlo.id} at strike ${Number(dlo.buyLeg?.strike)} could have been REPLACED but the combined cap blocks the new full spread` : ''}.`);
             continue;
           }
@@ -4018,8 +4018,9 @@ async function startSingleAccountEngine(account) {
             const extraClashes = conflictClashes
               .filter(p => p.id !== sameStrikeLongOnly.id)
               .map(p => `${p.id}[${strikesOccupiedBy(p).join('&')}]`);
-            const reason = !isPaperAccount
-              ? 'BLOCKED — account is LIVE (replacement is paper-only)'
+            const isShortExitOrigin = sameStrikeLongOnly.sellLeg?.strike != null && !sameStrikeLongOnly.buyLeg?.isHedge;
+            const reason = !isShortExitOrigin
+              ? 'BLOCKED — long-only is adopted/manual (sellLeg.strike null); only short-exit long-onlys are replaceable'
               : conflictClashes.length !== 1
                 ? `BLOCKED — needs exactly 1 clash but has ${conflictClashes.length} (extra clash(es): ${extraClashes.join(', ') || 'none'})`
                 : otherBlockers.length > 0
@@ -4030,20 +4031,26 @@ async function startSingleAccountEngine(account) {
 
           if (conflictClashes.length > 0) {
             let canReplace = false;
-            if (isPaperAccount && conflictClashes.length === 1) {
+            if (conflictClashes.length === 1) {
               const clash = conflictClashes[0];
-              const isLongOnly = clash.sellQty === 0 && (clash.buyLeg?.lotSize ?? 0) > 0;
+              // Replaceable ONLY if it's a SHORT-EXIT-origin long-only — it retains its old
+              // short strike (sellLeg.strike != null). Adopted/manual longs (sellLeg.strike ===
+              // null) are never replaced. Paper never has adopted longs, so paper behaviour is
+              // unchanged; dropping the isPaperAccount gate promotes the swap to LIVE too (the
+              // live exit path flattens the old long on Delta before the new pair opens).
+              const isShortExitLongOnly = clash.sellQty === 0 && (clash.buyLeg?.lotSize ?? 0) > 0
+                && clash.sellLeg?.strike != null && !clash.buyLeg?.isHedge;
               const loStrike = Number(clash.buyLeg?.strike);
               const isEitherStrikeMatch = loStrike === bStrike || loStrike === sStrike;
 
-              if (isLongOnly && isEitherStrikeMatch) {
+              if (isShortExitLongOnly && isEitherStrikeMatch) {
                 const otherStrike = loStrike === sStrike ? bStrike : sStrike;
                 const otherOccupied = conflictScope.some(p => p.id !== clash.id && strikesOccupiedBy(p).includes(otherStrike));
                 if (!otherOccupied) {
                   canReplace = true;
                   replaceableLongOnlyPos = clash;
                   const roleDesc = loStrike === sStrike ? `long ${loStrike} becomes short leg` : `upgrading long ${loStrike} to full spread with short ${sStrike}`;
-                  log(`[${accountState.name}] 💡 PAPER replacement candidate: Active long-only ${clash.id} (${spreadType.toUpperCase()} ${loStrike}) will be exited to enter better long/short pair ${bStrike}/${sStrike} (${roleDesc}).`);
+                  log(`[${accountState.name}] 💡 ${isPaperAccount ? 'PAPER' : 'LIVE'} replacement candidate: Active long-only ${clash.id} (${spreadType.toUpperCase()} ${loStrike}) will be exited to enter better long/short pair ${bStrike}/${sStrike} (${roleDesc}).`);
                 }
               }
             }
@@ -4376,11 +4383,35 @@ async function startSingleAccountEngine(account) {
       if (!onlyExits) {
         for (const t of newEntries) {
           try {
-            if (isPaperAccount && t._replaceableLongOnlyPos) {
+            if (t._replaceableLongOnlyPos) {
+              const posToExit = t._replaceableLongOnlyPos;
+              // LIVE: flatten the old long-only on Delta BEFORE opening the new pair — the new
+              // long is often the SAME symbol (loStrike === bStrike), so an un-closed old long
+              // would net with it. Cancel its resting orders + bracket, reduce-only MARKET close,
+              // then sweep any residual. On close FAILURE, ABORT: keep the old long-only intact
+              // and skip this entry (retry next cycle) — never open a pair on top of an un-flat
+              // leg. Paper / dry-run: no real close, books + deletes as before.
+              if (liveArmed) {
+                let closeOk = false;
+                try {
+                  await cancelRestingOrders(posToExit);
+                  const c = await live.closeSymbol({ symbol: posToExit.buyLeg.symbol, side: 'sell', contracts: longContracts(posToExit.buyLeg), tag: `${posToExit.id}-REPX` });
+                  closeOk = !!(c.ok || c.alreadyClosed || c.dryRun || c.skipped);
+                  if (closeOk) await sweepResidualLegs(posToExit, [posToExit.buyLeg.symbol], 'REPX');
+                } catch (e) {
+                  logError(`[${accountState.name}] Replacement close error for long-only ${posToExit.id}:`, e);
+                }
+                if (!closeOk) {
+                  logWarn(`[${accountState.name}] 🔄 Replacement ABORTED: could not flatten long-only ${posToExit.id} (${posToExit.type.toUpperCase()} ${posToExit.buyLeg.strike}) on Delta — keeping it, skipping new pair ${t.buyLeg.strike}/${t.sellLeg.strike} this cycle.`);
+                  continue;
+                }
+              }
               try {
-                const posToExit = t._replaceableLongOnlyPos;
                 const tickerBuyExit = tickerData[posToExit.buyLeg.symbol];
-                const exitPrice = tickerBuyExit?.bid ?? tickerBuyExit?.lastPrice ?? posToExit.entryBuyPrice ?? 0;
+                // Book the replaced long at Delta's ACTUAL close-fill (live) / current bid (paper).
+                const repFills = liveArmed ? await live.fills().catch(() => []) : [];
+                const fillPx = closingFillPriceFrom(repFills, posToExit.buyLeg.symbol, 'sell', longContracts(posToExit.buyLeg));
+                const exitPrice = fillPx ?? tickerBuyExit?.bid ?? tickerBuyExit?.lastPrice ?? posToExit.entryBuyPrice ?? 0;
                 const exitLotSize = posToExit.buyLeg.lotSize || 0;
                 const exitFee = calculateFee(exitPrice, spotPrice, exitLotSize, posToExit.buyLeg.originalLotSize || 1);
                 const entryFee = posToExit.entryFee || 0;
@@ -4434,7 +4465,8 @@ async function startSingleAccountEngine(account) {
                 });
 
                 await refreshRealizedPnl(true);
-                log(`[${accountState.name}] 🔄 PAPER: Exited active long-only ${posToExit.id} (${posToExit.type.toUpperCase()} ${posToExit.buyLeg.strike} @ $${exitPrice.toFixed(2)} | PnL $${netPnl.toFixed(2)}) to enter new long/short pair.`);
+                log(`[${accountState.name}] 🔄 ${isPaperAccount ? 'PAPER' : 'LIVE'}: Exited active long-only ${posToExit.id} (${posToExit.type.toUpperCase()} ${posToExit.buyLeg.strike} @ $${exitPrice.toFixed(2)} | PnL $${netPnl.toFixed(2)}) to enter new long/short pair ${t.buyLeg.strike}/${t.sellLeg.strike}.`);
+                notifyTrade({ title: '🔄 REPLACED (long → pair)', detail: `${posToExit.type.toUpperCase()} long-only ${posToExit.buyLeg.strike} exited → better pair ${t.buyLeg.strike}/${t.sellLeg.strike}`, pnl: netPnl + (posToExit.accumulatedSellPnl || 0) });
               } catch (e) {
                 logError(`[${accountState.name}] Failed to exit long-only position for replacement:`, e);
               }
