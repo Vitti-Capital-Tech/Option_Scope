@@ -122,8 +122,10 @@ export function extractBalance(balances) {
 }
 
 /**
- * @param getCtx () => ({ accountName, mode, liveEnabled, creds })
+ * @param getCtx () => ({ accountName, mode, liveEnabled, creds, telegramChatId })
  *   `creds` = { apiKey, apiSecret } or null.
+ *   `telegramChatId` = the account's own Telegram chat id for per-account failure
+ *   routing (falls back to the global default when unset).
  */
 export function createLiveExecutor(getCtx) {
   let warnedNoCreds = false;
@@ -134,7 +136,7 @@ export function createLiveExecutor(getCtx) {
   }
 
   async function submit({ symbol, side, contracts, price, reduceOnly = false, tag, bracket = null }) {
-    const { accountName, creds } = getCtx();
+    const { accountName, creds, telegramChatId } = getCtx();
     const size = Math.max(1, Math.round(contracts || 0));
     const priceStr = cleanLimitPrice(price);
     const brkStr = bracket
@@ -150,7 +152,7 @@ export function createLiveExecutor(getCtx) {
     if (!creds?.apiKey || !creds?.apiSecret) {
       if (!warnedNoCreds) {
         logError(`[${accountName}] LIVE armed but no decrypted credentials available — cannot place orders. (Is the engine using the service_role key?)`);
-        notifyLiveFailure({ account: accountName, context: 'Armed live but NO Delta credentials — orders cannot be placed', extra: 'Check the engine service_role key / stored credentials.' });
+        notifyLiveFailure({ account: accountName, context: 'Armed live but NO Delta credentials — orders cannot be placed', extra: 'Check the engine service_role key / stored credentials.', chatId: telegramChatId });
         warnedNoCreds = true;
       }
       return { ok: false, error: 'no-credentials' };
@@ -184,8 +186,19 @@ export function createLiveExecutor(getCtx) {
         log(`[${accountName}] ℹ️ Reduce-only order no-op (${side} ${symbol}) — already closed on Delta [${tag}].`);
         return { ok: true, alreadyClosed: true };
       }
+      // A `duplicate_client_order_id` rejection means an order with this exact
+      // deterministic tag was ALREADY placed on Delta — so the intended order is in
+      // fact resting. This is the idempotency guard working as designed: two reconcilers
+      // can react to one short-flat event and both try to place the same `-LE-*` ladder
+      // slice (a known, benign race — see docs/LLD.md). The second placement is rejected,
+      // which PREVENTS a double ladder. Nothing is wrong on the exchange, so log calmly
+      // and treat as success — never fire the "FAILED" alarm.
+      if (/duplicate_client_order_id/i.test(msg)) {
+        log(`[${accountName}] ℹ️ Duplicate order no-op (${side} ${symbol}) — already placed on Delta [${tag}] (idempotent re-attempt).`);
+        return { ok: true, duplicate: true };
+      }
       logError(`[${accountName}] ✖ LIVE order FAILED: ${summary}:`, e.message);
-      notifyLiveFailure({ account: accountName, context: `Order send FAILED (${side} ${symbol})`, error: e, extra: `[${tag}]` });
+      notifyLiveFailure({ account: accountName, context: `Order send FAILED (${side} ${symbol})`, error: e, extra: `[${tag}]`, chatId: telegramChatId });
       return { ok: false, error: e.message };
     }
   }
@@ -194,7 +207,7 @@ export function createLiveExecutor(getCtx) {
   // closeSymbol() action and openSpread's abort/unwind paths.
   async function marketClose({ symbol, side, contracts, tag }) {
     if (!armed()) return { ok: true, skipped: true };
-    const { accountName, creds } = getCtx();
+    const { accountName, creds, telegramChatId } = getCtx();
     const size = Math.max(1, Math.round(Math.abs(contracts || 0)));
     const summary = `CLOSE ${side.toUpperCase()} ${size}x ${symbol} reduceOnly [${tag}]`;
     if (DRY_RUN) { log(`[${accountName}] 🧪 DRY-RUN close-symbol (not sent): ${summary}`); return { ok: true, dryRun: true }; }
@@ -217,7 +230,7 @@ export function createLiveExecutor(getCtx) {
         return { ok: true, alreadyClosed: true };
       }
       logError(`[${accountName}] ✖ LIVE close-symbol FAILED: ${summary}:`, e.message);
-      notifyLiveFailure({ account: accountName, context: `Reduce-only CLOSE FAILED (${side} ${symbol}) — leg may still be OPEN on Delta`, error: e, extra: `[${tag}]` });
+      notifyLiveFailure({ account: accountName, context: `Reduce-only CLOSE FAILED (${side} ${symbol}) — leg may still be OPEN on Delta`, error: e, extra: `[${tag}]`, chatId: telegramChatId });
       return { ok: false, error: e.message };
     }
   }
@@ -445,7 +458,7 @@ export function createLiveExecutor(getCtx) {
      */
     async changePositionBracket({ productId = null, symbol, side, stopPrice, triggerMethod = 'spot_price', tag }) {
       if (!armed()) return { ok: true, skipped: true };
-      const { accountName, creds } = getCtx();
+      const { accountName, creds, telegramChatId } = getCtx();
       const stopStr = cleanLimitPrice(stopPrice);
       const legObj = { order_type: 'market_order', stop_price: stopStr };
       const summary = `BRACKET ${String(side).toUpperCase()} ${symbol}${productId != null ? ` (pid ${productId})` : ''} @stop ${stopStr ?? '—'} via ${triggerMethod} [${tag}]`;
@@ -487,7 +500,7 @@ export function createLiveExecutor(getCtx) {
           : 'other';
         if (code === 'other') {
           logError(`[${accountName}] ✖ LIVE bracket set FAILED: ${summary}: ${e.message}`);
-          notifyLiveFailure({ account: accountName, context: `Exit bracket (${String(side).toUpperCase()}) set FAILED on ${symbol} — risk exit may be unprotected`, error: e, extra: `[${tag}]` });
+          notifyLiveFailure({ account: accountName, context: `Exit bracket (${String(side).toUpperCase()}) set FAILED on ${symbol} — risk exit may be unprotected`, error: e, extra: `[${tag}]`, chatId: telegramChatId });
         } else {
           // Expected/benign (leg already protected, already closed, or level breached) —
           // log calmly, no "FAILED" and no alarm.
@@ -504,7 +517,7 @@ export function createLiveExecutor(getCtx) {
      */
     async placeStop({ symbol, side, contracts, stopPrice, tag, triggerMethod = 'spot_price' }) {
       if (!armed()) return { ok: true, skipped: true };
-      const { accountName, creds } = getCtx();
+      const { accountName, creds, telegramChatId } = getCtx();
       const size = Math.max(1, Math.round(contracts || 0));
       const stopStr = cleanLimitPrice(stopPrice);
       const summary = `STOP ${side.toUpperCase()} ${size}x ${symbol} trigger@${triggerMethod} ${stopStr ?? '—'} reduceOnly [${tag}]`;
@@ -537,7 +550,7 @@ export function createLiveExecutor(getCtx) {
         return { ok: true, order };
       } catch (e) {
         logError(`[${accountName}] ✖ LIVE stop FAILED: ${summary}:`, e.message);
-        notifyLiveFailure({ account: accountName, context: `Reduce-only STOP placement FAILED (${side} ${symbol}) — exit stop not resting`, error: e, extra: `[${tag}]` });
+        notifyLiveFailure({ account: accountName, context: `Reduce-only STOP placement FAILED (${side} ${symbol}) — exit stop not resting`, error: e, extra: `[${tag}]`, chatId: telegramChatId });
         return { ok: false, error: e.message };
       }
     },

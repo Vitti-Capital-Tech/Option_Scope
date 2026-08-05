@@ -227,6 +227,7 @@ async function startSingleAccountEngine(account) {
     mode: accountState.mode,
     liveEnabled: accountState.live_enabled,
     creds: liveCreds,
+    telegramChatId: accountState.telegram_chat_id,
   }));
 
   // Push a live trade event (entry/exit) to Telegram. Gated on armed REAL live
