@@ -1151,3 +1151,50 @@ ALTER TABLE public.paper_trading_config    DROP COLUMN IF EXISTS number_of_puts;
 ALTER TABLE public.paper_trading_schedules DROP COLUMN IF EXISTS number_of_calls;
 ALTER TABLE public.paper_trading_schedules DROP COLUMN IF EXISTS number_of_puts;
 
+
+
+-- ─── 035_entry_block_notifications.sql ───
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Migration 035 — Entry-block notifications (cross-account entry governor)
+-- ─────────────────────────────────────────────────────────────────────────────
+-- When several accounts try to enter the SAME spread in one entry wave, their
+-- combined contract size can exceed the real top-of-book depth on Delta. The engine's
+-- cross-account entry governor (engine/lib/entryGovernor.js) fills accounts first-come
+-- first-serve at FULL qty and BLOCKS the rest (all-or-nothing per spread). Each block
+-- is recorded here so the dashboard can surface a persisted notification.
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS public.entry_block_notifications (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    account_id  UUID NOT NULL REFERENCES public.paper_trading_accounts(id) ON DELETE CASCADE,
+    created_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    type        TEXT NOT NULL DEFAULT 'entry_blocked',
+    message     TEXT NOT NULL,
+    details     JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS entry_block_notifications_account_created_idx
+    ON public.entry_block_notifications (account_id, created_at DESC);
+
+ALTER TABLE public.entry_block_notifications ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "All authenticated users can read entry block notifications"
+    ON public.entry_block_notifications FOR SELECT
+    USING (auth.role() = 'authenticated');
+
+CREATE POLICY "Service role full access on entry_block_notifications"
+    ON public.entry_block_notifications FOR ALL
+    TO service_role
+    USING (true)
+    WITH CHECK (true);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables
+    WHERE pubname = 'supabase_realtime' AND schemaname = 'public'
+      AND tablename = 'entry_block_notifications'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.entry_block_notifications;
+  END IF;
+END $$;

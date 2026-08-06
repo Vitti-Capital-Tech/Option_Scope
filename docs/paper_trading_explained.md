@@ -15,17 +15,18 @@ This document explains **every** logic and condition in the Paper Trading engine
 7. [Entry Filters (What Makes a Good Spread)](#entry-filters)
 8. [How Entries Are Placed](#how-entries-are-placed)
 9. [Paper Balance & Combined-Position Sizing (Paper Only)](#paper-balance--combined-position-sizing-paper-only)
-10. [Exit Priority Tree](#exit-priority-tree)
-11. [Partial Exit / Scaling Logic](#partial-exit--scaling-logic)
-12. [Short-Leg-Only Exit ($1.1)](#short-leg-only-exit)
-13. [Long-Only Laddered Exit](#long-only-laddered-exit)
-14. [Manual Exit (Liquidation)](#manual-exit-liquidation)
-15. [Duplicate Exit Prevention (Idempotent Writes)](#duplicate-exit-prevention-idempotent-writes)
-16. [Safety Guards Summary](#safety-guards-summary)
-17. [Diagnostic Logging (0 Candidates)](#diagnostic-logging-0-candidates)
-18. [Config Synchronization](#config-synchronization)
-19. [Time-Based Filter Schedules](#time-based-filter-schedules)
-20. [Frontend Dashboard Architecture](#frontend-dashboard-architecture)
+10. [Cross-Account Entry Governor (Paper Only)](#cross-account-entry-governor-paper-only)
+11. [Exit Priority Tree](#exit-priority-tree)
+12. [Partial Exit / Scaling Logic](#partial-exit--scaling-logic)
+13. [Short-Leg-Only Exit ($1.1)](#short-leg-only-exit)
+14. [Long-Only Laddered Exit](#long-only-laddered-exit)
+15. [Manual Exit (Liquidation)](#manual-exit-liquidation)
+16. [Duplicate Exit Prevention (Idempotent Writes)](#duplicate-exit-prevention-idempotent-writes)
+17. [Safety Guards Summary](#safety-guards-summary)
+18. [Diagnostic Logging (0 Candidates)](#diagnostic-logging-0-candidates)
+19. [Config Synchronization](#config-synchronization)
+20. [Time-Based Filter Schedules](#time-based-filter-schedules)
+21. [Frontend Dashboard Architecture](#frontend-dashboard-architecture)
 
 ---
 
@@ -528,6 +529,39 @@ Normal sizing **reserves** budget for every empty combined slot (`partMargin = r
 
 ---
 
+## Cross-Account Entry Governor (Paper Only)
+
+**Files**: [entryGovernor.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/lib/entryGovernor.js) · [paperTradingEngine.js:L4306](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L4306)
+
+Every account's engine runs inside **one Node process** (see [Multi-Account Supervisor](#multi-account-supervisor)). When several paper accounts pick the **same spread** in the same ~1s entry wave, their **combined** contract size can exceed the **real top-of-book depth** resting on Delta. Without coordination each account would independently "fill" the spread in paper — a fill the live market could never have handed all of them at once. The governor gates paper entries against a **shared, first-come-first-serve depth budget** so the simulated book is never over-consumed. It's the **last gate before a paper entry is committed** (runs right before `newEntries.push`).
+
+### The rule
+
+- **First-come-first-serve** — the first accounts to reach the entry point fill at **FULL qty**; once the shared depth can't cover an account's full qty, that account is **blocked**. A blocked account isn't given a smaller size — it simply retries next wave (fresh depth) or takes a different entry.
+- **All-or-nothing per spread** — both legs must have room for the account's full qty (BUY leg against the **ask** size, SELL leg against the **bid** size), or **neither** pool is consumed and the **whole spread** is blocked. Never a partial / lopsided fill.
+- **8-second window** — each leg's depth is snapshotted from the live feed and **frozen** for `ENTRY_GOVERNOR_WINDOW_MS` (default `8000`). One per-minute entry wave fits comfortably inside it; the window resets before the next minute so each wave contends against **fresh** depth.
+- **Unknown depth never blocks** — if the feed hasn't delivered a size for a leg, its pool is treated as **unlimited** (mirrors the live top-of-book depth guard: we can't prove a shortfall, so we don't manufacture one).
+
+> [!NOTE]
+> **Single-threaded = atomic.** Node is single-threaded and `reserveSpread()` is synchronous, so "first come" is literally "first account to call it this window" — no locking needed. The governor is a **module-level singleton** shared by every account engine in the process; pools are keyed by `symbol|side` so a symbol's ask and bid budgets are tracked independently.
+
+### Contract-qty basis
+
+The paper account's qty is sized **exactly like a LIVE account** — `part budget ÷ unit margin`, using the real per-contract `contractValue` and the `$195k` short-notional cap — so paper contends against depth the way a live account would. This contract count is used **only for the depth check**; the paper position's own P&L sizing (fractional notional lots) is **unchanged**. If `contractValue` or a per-position margin part is unavailable, the governor is a **no-op** for that candidate (the entry is allowed rather than a block being manufactured).
+
+### Website notification (not Telegram)
+
+When an account is blocked, the engine appends a row to **`entry_block_notifications`** (migration `035`). The dashboard subscribes via Realtime (account-scoped) and shows a **toast** plus a persisted **🚦 bell panel** (last 50 blocks, each with the strikes, blocking leg, and needed-vs-available qty). This is deliberately a **website** notification — Telegram alerts stay reserved for armed-live failures.
+
+> [!NOTE]
+> **Log line**: `🚦 Entry blocked: PUT 62800/61800 — top-of-book depth exhausted on buy leg (needed 3, had 1 on P-BTC-62800-…). Another account took the available size first.`
+
+### Scope
+
+**Paper only.** Live accounts (`mode === 'live'`, armed or dry-run) are **untouched** — they keep their existing per-account top-of-book depth guard and never write block notifications. The governor module is **mode-agnostic**, so a future phase can enroll live accounts into the same shared budget by flipping the `isPaperAccount` gate — no change to the module itself.
+
+---
+
 ## Exit Priority Tree
 
 **File**: [paperTradingEngine.js:L420-L1022](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L420-L1022)
@@ -870,6 +904,7 @@ Here's every safety guard in one table:
 | Days to Expiry | `paperTradingEngine.js` | Rejects candidates whose expiry is fewer than `daysToExpiry` days away |
 | Portfolio cap | `paperTradingEngine.js` | **All accounts** (migration `027` combined model, promoted to live): derived per-type cap `ceil(split% × maxCombined)` (both calls and puts) + a combined-total cap of `max_combined_positions`. Held long-only positions (`sellQty = 0`) excluded. |
 | Combined-position cap (paper) | `paperTradingEngine.js` | **Paper only**: total open full spreads (calls + puts) may not exceed the active window's `max_combined_positions` |
+| Entry governor (paper) | `entryGovernor.js` / `paperTradingEngine.js` | **Paper only**: cross-account, first-come-first-serve top-of-book depth budget. Accounts sharing one process can't collectively exceed real resting depth (BUY→ask, SELL→bid); a spread is all-or-nothing (both legs or neither) within an 8s window. Blocked accounts get a **website** notification (`entry_block_notifications`, migration `035`). See [Cross-Account Entry Governor](#cross-account-entry-governor-paper-only) |
 | $195K short value cap | `paperTradingEngine.js` | Scales down lot sizes if short notional ≥ $195K. **Paper**: applied after scaling the spread to the per-position margin part |
 | DB count guard | `paperTradingEngine.js` | Database-level check (all accounts): derived per-type cap AND combined-total cap on **full spreads** (`.gt('sell_qty', 0)`), fail-closed |
 | Paper balance / allocation (paper) | `paperTradingEngine.js` | **Paper only (migration `027`)**: per-position margin = (equity × allocation%) ÷ active window's `max_combined_positions`; entries self-skip when the allocated pool is exhausted |

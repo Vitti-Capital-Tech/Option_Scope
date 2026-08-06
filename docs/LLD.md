@@ -449,6 +449,18 @@ Per-candidate guards (when `wantEntries` is true):
    - Sell strike free (`sellConflict`): abort if `buy_strike = Y` **OR** (`sell_strike = Y` AND `sell_qty > 0`) — the cross-role half blocks shorting a strike an open long (incl. a long-only remnant) already holds.
    - Unique constraint `23505` is the final net (same-role only; cross-role has no index, so the reads above are the enforcement).
 
+### G2. Cross-Account Entry Governor (Paper Only)
+
+**Files**: `engine/lib/entryGovernor.js` (singleton) · `paperTradingEngine.js` (integration, immediately before `newEntries.push`).
+
+All account engines share **one Node process** (§7 Multi-Account Supervisor). When several **paper** accounts pick the same spread in one entry wave, their combined contract size can exceed the real **top-of-book depth** on Delta; independently "filling" all of them in paper is unrealistic. The governor is a module-level singleton that gates paper entries against a **shared, first-come-first-serve depth budget**.
+
+- **Pools**: `Map<"symbol|side", { remaining, expiresAt }>`. On first touch in a window a pool is snapshotted from the live feed — `askSize` for a BUY leg, `bidSize` for a SELL leg — and **frozen** for `ENTRY_GOVERNOR_WINDOW_MS` (default `8000`, env-overridable). `null`/non-finite depth → `remaining = Infinity` (unknown never blocks; NB `Number(null) === 0`, so the nullish case is guarded explicitly before coercion). An expired pool re-snapshots fresh depth on the next wave.
+- **`reserveSpread(legs, now)`** — two-pass, all-or-nothing. **Pass 1** resolves every leg's pool and checks `remaining >= qty` for **all** legs; if any is short it returns `{ ok:false, blockedLeg:{symbol,side,qty,available} }` **without consuming anything** (freed depth stays for the next account). **Pass 2** (all fit) decrements every pool by its qty and returns `{ ok:true }`. Single-threaded JS makes the body atomic → "first come" is the first caller this window; no locks.
+- **Contract qty**: mirrors the live sizing block — `scale = partMargin / baseMargin`, `longC = round(scale)`, `shortC = round(longC × ratioToUse)`, clamped by the `$195k` short-notional cap via `contractValue`. Used **only** for the depth check; the paper position's fractional-lot P&L sizing is unchanged. Missing `contractValue`/`partMargin` → governor is a **no-op** (entry allowed rather than a manufactured block).
+- **On block**: `continue` — the candidate is never pushed to `newEntries`, so nothing persists and the account stays flat for this spread — plus a fire-and-forget INSERT into `entry_block_notifications` (migration `035`) driving the **website** toast + 🚦 panel. Not Telegram.
+- **Scope**: gated on `isPaperAccount` (`mode !== 'live'`); live (armed or dry-run) keeps its own per-account top-of-book depth guard and is untouched. The module is mode-agnostic for a future live phase.
+
 ### H. State Update Strategy
 
 - **Structural changes** (exits or entries): `setPositions(finalPositions)` — full array replacement.

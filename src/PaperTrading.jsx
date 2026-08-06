@@ -318,6 +318,24 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     setToasts(t => [...t, { id, msg, type }]);
     setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4000);
   }, []);
+
+  // Entry-block notifications (cross-account entry governor). Persisted per account:
+  // the engine INSERTs a row when this account is blocked from an entry because another
+  // account took the available top-of-book depth first. We show a toast on arrival and
+  // keep a list in a bell panel; unread resets when the panel is opened.
+  const [blockNotifications, setBlockNotifications] = useState([]);
+  const [notifPanelOpen, setNotifPanelOpen] = useState(false);
+  const [notifUnread, setNotifUnread] = useState(0);
+  const fetchBlockNotifications = useCallback(async () => {
+    if (!activeAccountId) { setBlockNotifications([]); return; }
+    const { data, error } = await supabase
+      .from('entry_block_notifications')
+      .select('id, created_at, type, message, details')
+      .eq('account_id', activeAccountId)
+      .order('created_at', { ascending: false })
+      .limit(50);
+    if (!error && data) setBlockNotifications(data);
+  }, [activeAccountId]);
   // In-app confirmation (toast-styled, no browser alert): { message, confirmLabel, onConfirm }.
   const [confirmDialog, setConfirmDialog] = useState(null);
   // Session-open spot per underlying → drives the % change on the spot bar shown
@@ -1985,6 +2003,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
 
     fetchSupabaseActivePositions();
     fetchHistoryStats();
+    fetchBlockNotifications();
+    setNotifUnread(0); // switching accounts starts with a clean unread count
     // Load config FIRST, then seed schedules from it — so a new account's Window 1 is
     // seeded from its own freshly-loaded config, not a stale configRef (see fetchSupabaseConfig).
     (async () => {
@@ -2041,6 +2061,24 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       )
       .subscribe();
 
+    // Entry-block notifications (cross-account governor). INSERT-only: engine appends a
+    // row when this account misses an entry because the shared top-of-book depth was
+    // taken by another account first. Toast on arrival + prepend to the bell panel list.
+    const blockNotifChannel = supabase
+      .channel(`entry_block_notifications_${activeAccountId}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'entry_block_notifications', filter: `account_id=eq.${activeAccountId}` },
+        (payload) => {
+          const n = payload.new;
+          if (!n) return;
+          setBlockNotifications(prev => [n, ...prev].slice(0, 50));
+          setNotifUnread(c => c + 1);
+          pushToast(n.message || 'Entry blocked', 'error');
+        }
+      )
+      .subscribe();
+
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
         fetchSupabaseActivePositions();
@@ -2054,9 +2092,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     return () => {
       supabase.removeChannel(realtimeChannel);
       supabase.removeChannel(historyChannel);
+      supabase.removeChannel(blockNotifChannel);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [fetchSupabaseActivePositions, fetchSupabaseTradeHistory, fetchHistoryStats, fetchSupabaseConfig, applyPositionRealtimeChange, activeAccountId]);
+  }, [fetchSupabaseActivePositions, fetchSupabaseTradeHistory, fetchHistoryStats, fetchSupabaseConfig, applyPositionRealtimeChange, fetchBlockNotifications, pushToast, activeAccountId]);
 
   // ── Engine heartbeat ──────────────────────────────────────────────────
   const fetchHeartbeat = useCallback(async () => {
@@ -3079,6 +3118,55 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
             </div>
           );
         })}
+      </div>
+
+      {/* Entry-block notifications — bell + persisted panel (bottom-right). Fed by the
+          cross-account entry governor: when another account takes the available top-of-book
+          depth first, this account's missed entry is logged and surfaced here. */}
+      <div style={{ position: 'fixed', bottom: 20, right: 20, zIndex: 9998, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 10 }}>
+        {notifPanelOpen && (
+          <div style={{
+            width: 360, maxHeight: 420, overflowY: 'auto',
+            background: 'rgba(10, 13, 18, 0.98)', border: '1px solid var(--border)',
+            borderRadius: 10, boxShadow: '0 12px 32px rgba(0,0,0,0.6)',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px', borderBottom: '1px solid var(--border)', position: 'sticky', top: 0, background: 'rgba(10,13,18,0.98)' }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>🚦 Entry Blocks</span>
+              <button onClick={() => setNotifPanelOpen(false)} style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 18, lineHeight: 1 }}>×</button>
+            </div>
+            {blockNotifications.length === 0 ? (
+              <div style={{ padding: '18px 14px', color: 'var(--text-dim)', fontSize: 12.5, lineHeight: 1.5 }}>
+                No entry blocks yet. When another account takes the available depth first, the missed entry shows up here.
+              </div>
+            ) : (
+              blockNotifications.map(n => (
+                <div key={n.id} style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', borderLeft: '3px solid var(--put)' }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)', lineHeight: 1.45 }}>{n.message}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 4 }}>{new Date(n.created_at).toLocaleString()}</div>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+        <button
+          onClick={() => setNotifPanelOpen(o => { const next = !o; if (next) setNotifUnread(0); return next; })}
+          title="Entry-block notifications"
+          style={{
+            position: 'relative', width: 46, height: 46, borderRadius: '50%',
+            background: 'rgba(10,13,18,0.98)', border: '1px solid var(--border)',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.5)', cursor: 'pointer', fontSize: 20,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}
+        >
+          🚦
+          {notifUnread > 0 && (
+            <span style={{
+              position: 'absolute', top: -4, right: -4, minWidth: 18, height: 18, padding: '0 4px',
+              borderRadius: 9, background: 'var(--put)', color: '#fff', fontSize: 11, fontWeight: 700,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>{notifUnread > 99 ? '99+' : notifUnread}</span>
+          )}
+        </button>
       </div>
     </div>
   );

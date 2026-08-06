@@ -16,6 +16,7 @@
 import { supabase, hasServiceRole } from './lib/supabase.js';
 import { createHeartbeat } from './lib/heartbeat.js';
 import { createLiveExecutor, isLiveDryRun, longContracts, shortContracts, extractBalance } from './lib/liveExecution.js';
+import { reserveSpread as governorReserveSpread } from './lib/entryGovernor.js';
 import { notifyLiveFailure, notifyLiveTrade, sendTelegramMessage } from './lib/telegram.js';
 import { getBalance } from './lib/deltaTradeApi.js';
 import {
@@ -4302,6 +4303,69 @@ async function startSingleAccountEngine(account) {
             margin: candidateMargin + hedgeMargin,
             _replaceableLongOnlyPos: replaceableLongOnlyPos,
           };
+          // ── Cross-account ENTRY GOVERNOR (paper, phase 1) ─────────────────────────
+          // Several paper accounts (all in THIS one process) can pick the SAME spread in
+          // the same ~1s entry wave; their COMBINED contract size may exceed the real
+          // top-of-book depth resting on Delta. Gate the entry against a shared,
+          // first-come-first-serve depth budget so the book isn't over-consumed: the
+          // first accounts to tick fill at FULL qty, the rest are BLOCKED (all-or-nothing
+          // — both legs or neither) and told WHY via a website notification. Paper only
+          // for now; live accounts keep their existing per-account depth guard. The
+          // contract qty is sized like LIVE (part budget ÷ unit margin, via
+          // contractValue) so paper contends against depth exactly as a live account would.
+          if (isPaperAccount) {
+            const gLongCV = symbolMeta[spread.buyLeg.symbol]?.contractValue ?? null;
+            const gShortCV = symbolMeta[spread.sellLeg.symbol]?.contractValue ?? null;
+            // Without the per-contract underlying amount or a per-position margin part we
+            // can't size in contracts → don't manufacture a block; let the entry through.
+            if (gLongCV != null && gShortCV != null && partMargin != null && partMargin > 0) {
+              // Mirror of the LIVE contract-sizing block (the `if (liveArmed)` branch above):
+              // scale the 1:ratio unit by (part ÷ unit margin), round the long to a whole
+              // contract, derive the short from long × ratio, and clamp both by the $195k
+              // short-notional cap so a large part can't size past the spread's max qty.
+              const gBaseMargin = calcMargin(entryBuyPrice, gLongCV, spotPrice, ratioToUse, gShortCV);
+              let gScale = gBaseMargin > 0 ? (partMargin / gBaseMargin) : 1;
+              if (gScale < 1) gScale = 1;
+              let gLongC = Math.max(1, Math.round(gScale));
+              const G_NOTIONAL_CAP = 195000;
+              const gShortNotionalPerContract = spotPrice * gShortCV;
+              const gMaxShortByNotional = gShortNotionalPerContract > 0 ? Math.floor(G_NOTIONAL_CAP / gShortNotionalPerContract) : Infinity;
+              const gMaxLongByNotional = ratioToUse > 0 ? Math.floor(gMaxShortByNotional / ratioToUse) : Infinity;
+              if (gLongC > gMaxLongByNotional) gLongC = Math.max(1, gMaxLongByNotional);
+              let gShortC = Math.max(1, Math.round(gLongC * ratioToUse));
+              if (Number.isFinite(gMaxShortByNotional) && gMaxShortByNotional >= 1 && gShortC > gMaxShortByNotional) gShortC = gMaxShortByNotional;
+
+              // Top-of-book sizes from the feed: a BUY leg takes the ASK, a SELL leg the BID.
+              const gAskSz = tickerData[spread.buyLeg.symbol]?.askSize;
+              const gBidSz = adjustedSellQty > 0 ? tickerData[spread.sellLeg.symbol]?.bidSize : null;
+              const gLegs = [{ symbol: spread.buyLeg.symbol, side: 'buy', qty: gLongC, depth: gAskSz }];
+              if (adjustedSellQty > 0) gLegs.push({ symbol: spread.sellLeg.symbol, side: 'sell', qty: gShortC, depth: gBidSz });
+
+              const gRes = governorReserveSpread(gLegs, Date.now());
+              if (!gRes.ok) {
+                const bl = gRes.blockedLeg;
+                const hadTxt = Number.isFinite(bl.available) ? bl.available : '∞';
+                const msg = `Entry blocked: ${spreadType.toUpperCase()} ${bStrike}/${sStrike} — top-of-book depth exhausted on ${bl.side} leg (needed ${bl.qty}, had ${hadTxt} on ${bl.symbol}). Another account took the available size first.`;
+                logWarn(`[${accountState.name}] 🚦 ${msg}`);
+                // Website notification (persisted; NOT Telegram). Fire-and-forget so a
+                // slow/failed insert never blocks the eval loop.
+                supabase.from('entry_block_notifications').insert([{
+                  account_id: accountState.id,
+                  type: 'entry_blocked',
+                  message: msg,
+                  details: {
+                    underlying, type: spreadType, buy_strike: bStrike, sell_strike: sStrike,
+                    blocked_side: bl.side, blocked_symbol: bl.symbol,
+                    needed: bl.qty, available: Number.isFinite(bl.available) ? bl.available : null,
+                    long_qty: gLongC, short_qty: gShortC,
+                  },
+                }]).then(({ error }) => { if (error) logWarn(`[${accountState.name}] entry_block_notifications insert failed: ${error.message}`); })
+                  .catch(() => {});
+                continue; // do NOT persist — this account stays flat for this spread
+              }
+            }
+          }
+
           newEntries.push(newPos);
           // Track pool consumed this cycle so the paper running-pool clamp (and the 4:30
           // concentrate fill) never collectively deploy more than the remaining pool.
