@@ -218,6 +218,17 @@ export default function ActivePositionsTable({
                 const hasHedge = hasHedgeLeg(p);
                 const isHedgeOnly = isLongOnly && (p.buyLeg.lotSize || 0) <= 0 && hasHedge;
 
+                // ── Real tradeable contract count ──
+                // The lots above (`lotSize`/`sellQty`) are contract_value-scaled notional lots.
+                // Convert to whole CONTRACTS the same way the engine does for live orders and the
+                // cross-account entry governor: long = lotSize ÷ originalLotSize (mirror of
+                // `longContracts`), short = sellQty (mirror of `shortContracts`). This is the
+                // number that maps to real exchange depth (e.g. the governor's "needed N").
+                const toContracts = (lot, origLot) => Math.max(0, Math.round((lot || 0) / (origLot || lot || 1)));
+                const buyContracts = toContracts(p.buyLeg?.lotSize, p.buyLeg?.originalLotSize);
+                const sellContracts = Math.max(0, Math.round(p.sellQty || 0));
+                const hedgeContracts = hasHedge ? toContracts(p.hedgeLeg?.lotSize, p.hedgeLeg?.originalLotSize) : 0;
+
                 // ── Original & initial-scaled ratios ──
                 const origLot = p.buyLeg?.originalLotSize || p.buyLeg?.lotSize || 1;
                 const rawOrigSellQty = p.buyLeg?.originalSellQty !== undefined ? p.buyLeg.originalSellQty : p.sellQty;
@@ -262,6 +273,9 @@ export default function ActivePositionsTable({
                           </span>
                           <span className="pt-cell-sub">
                             ratio <b>{displayBuyQty.toFixed(2)}:{displaySellQty.toFixed(2)}</b> · orig 1:{displayOrigSellQty.toFixed(2)} · init {initBuyQty.toFixed(2)}L/{initSellQty.toFixed(2)}S
+                          </span>
+                          <span className="pt-cell-sub" title="Real tradeable contracts (maps to exchange depth): long = lotSize ÷ originalLotSize, short = sellQty">
+                            contracts <b>{buyContracts.toLocaleString()}{isLongOnly ? '' : `/${sellContracts.toLocaleString()}`}</b>{hasHedge ? ` · +${hedgeContracts.toLocaleString()}H` : ''}
                           </span>
                         </div>
                       </div>
