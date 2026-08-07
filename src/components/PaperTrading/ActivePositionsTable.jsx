@@ -18,6 +18,7 @@ export default function ActivePositionsTable({
   engineStatusColor,
   engineStatusLabel,
   calculatePositionMargin,
+  contractValue = 0.001,      // per-contract underlying (e.g. 0.001 BTC) — converts notional lots → real contracts
   exitType = 'ATM',
   exitPoints = 0,
   onExitPosition,
@@ -219,15 +220,16 @@ export default function ActivePositionsTable({
                 const isHedgeOnly = isLongOnly && (p.buyLeg.lotSize || 0) <= 0 && hasHedge;
 
                 // ── Real tradeable contract count ──
-                // The lots above (`lotSize`/`sellQty`) are contract_value-scaled notional lots.
-                // Convert to whole CONTRACTS the same way the engine does for live orders and the
-                // cross-account entry governor: long = lotSize ÷ originalLotSize (mirror of
-                // `longContracts`), short = sellQty (mirror of `shortContracts`). This is the
-                // number that maps to real exchange depth (e.g. the governor's "needed N").
-                const toContracts = (lot, origLot) => Math.max(0, Math.round((lot || 0) / (origLot || lot || 1)));
-                const buyContracts = toContracts(p.buyLeg?.lotSize, p.buyLeg?.originalLotSize);
-                const sellContracts = Math.max(0, Math.round(p.sellQty || 0));
-                const hedgeContracts = hasHedge ? toContracts(p.hedgeLeg?.lotSize, p.hedgeLeg?.originalLotSize) : 0;
+                // Paper sizes positions as contract_value-scaled NOTIONAL lots: the P&L uses
+                // (priceChange × notional), and notional = contracts × contractValue. So real
+                // whole CONTRACTS (what maps to exchange depth — e.g. the governor's "needed N")
+                // = notional ÷ contractValue. Long notional = buyLeg.lotSize; short notional =
+                // sellQty × sellLeg.lotSize. (For a live-basis leg lotSize already carries the
+                // contractValue factor, so the same division still yields the true contract count.)
+                const cv = Number(contractValue) > 0 ? Number(contractValue) : 0.001;
+                const buyContracts = Math.max(0, Math.round((p.buyLeg?.lotSize || 0) / cv));
+                const sellContracts = Math.max(0, Math.round(((p.sellQty || 0) * (p.sellLeg?.lotSize || 1)) / cv));
+                const hedgeContracts = hasHedge ? Math.max(0, Math.round((p.hedgeLeg?.lotSize || 0) / cv)) : 0;
 
                 // ── Original & initial-scaled ratios ──
                 const origLot = p.buyLeg?.originalLotSize || p.buyLeg?.lotSize || 1;

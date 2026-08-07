@@ -270,6 +270,15 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   configRef.current = config;
 
   const [products, setProducts] = useState([]);
+  // Per-contract underlying value (e.g. 0.001 BTC), constant per underlying on Delta.
+  // Converts paper notional-lot sizes into real tradeable contract counts for display.
+  const contractValue = useMemo(() => {
+    for (const p of products) {
+      const cv = Number(p?.contract_value);
+      if (Number.isFinite(cv) && cv > 0) return cv;
+    }
+    return 0.001; // BTC default (matches the live P&L fallback)
+  }, [products]);
   const [expiries, setExpiries] = useState([]);
   const [spotPrice, setSpotPrice] = useState(null);
 
@@ -2982,6 +2991,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
               engineStatusColor={engineStatusColor}
               engineStatusLabel={engineStatusLabel}
               calculatePositionMargin={calculatePositionMargin}
+              contractValue={contractValue}
               totalMargin={totalMargin}
               exitType={findActiveSchedule(schedules, now)?.exitType ?? config.exitType}
               exitPoints={findActiveSchedule(schedules, now)?.exitPoints ?? config.exitPoints}

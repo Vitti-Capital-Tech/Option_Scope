@@ -1124,6 +1124,7 @@ export default function TradingWorkspace(props) {
                 engineStatusColor={props.engineStatusColor}
                 engineStatusLabel={props.engineStatusLabel}
                 calculatePositionMargin={props.calculatePositionMargin}
+                contractValue={props.contractValue}
                 totalMargin={props.totalMargin}
                 exitType={props.exitType}
                 exitPoints={props.exitPoints}
@@ -1156,6 +1157,7 @@ export default function TradingWorkspace(props) {
                 engineStatusColor={props.engineStatusColor}
                 engineStatusLabel={props.engineStatusLabel}
                 calculatePositionMargin={props.calculatePositionMargin}
+                contractValue={props.contractValue}
                 totalMargin={props.totalMargin}
                 exitType={props.exitType}
                 exitPoints={props.exitPoints}
