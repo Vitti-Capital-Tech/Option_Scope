@@ -153,10 +153,26 @@ export function createTickerStream(symbols, onTicker, onStatus, opts = {}) {
   let watchdogTimer = null;
   let lastMsgAt = 0;
 
-  const scheduleReconnect = () => {
+  // Exponential backoff WITH jitter. Every account runs its own stream but they share one
+  // VPS IP, so a simultaneous drop (or a synchronized WS restart on the shared product-
+  // refresh timer) makes them all re-handshake on the SAME tick — Delta rejects the burst
+  // with HTTP 429 and they retry in lockstep, a self-sustaining reconnect storm. Backoff
+  // slows repeated failures; the random jitter SPREADS each stream's retry so N accounts
+  // don't hammer the handshake endpoint together. Resets to 0 once a socket actually opens.
+  const RECONNECT_BASE_MS = opts.reconnectBaseMs ?? 3000;
+  const RECONNECT_MAX_MS = opts.reconnectMaxMs ?? 30000;
+  let reconnectAttempts = 0;
+
+  const nextDelay = () => {
+    const base = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * Math.pow(2, reconnectAttempts));
+    reconnectAttempts++;
+    return Math.round(base + Math.random() * base); // up to +100% jitter → de-syncs accounts
+  };
+
+  const scheduleReconnect = (delayMs = nextDelay()) => {
     if (!alive) return;
     clearTimeout(reconnectTimer);
-    reconnectTimer = setTimeout(connect, 3000);
+    reconnectTimer = setTimeout(connect, delayMs);
   };
 
   const connect = () => {
@@ -166,6 +182,7 @@ export function createTickerStream(symbols, onTicker, onStatus, opts = {}) {
       lastMsgAt = Date.now(); // grace period: don't let the watchdog fire before the handshake
 
       ws.on('open', () => {
+        reconnectAttempts = 0; // healthy handshake — reset the backoff ladder
         onStatus?.('live');
         lastMsgAt = Date.now();
         ws.send(JSON.stringify({
@@ -197,15 +214,20 @@ export function createTickerStream(symbols, onTicker, onStatus, opts = {}) {
       ws.on('close', (code, reason) => {
         // Close code tells apart a server/rate-limit drop (1006/1013/1008) from a clean
         // close (1000/1001) — key for diagnosing a reconnect storm.
-        onStatus?.('disconnected', { code, reason: reason ? reason.toString() : '' });
-        scheduleReconnect();
+        const delayMs = nextDelay();
+        onStatus?.('disconnected', { code, reason: reason ? reason.toString() : '', retryMs: delayMs });
+        scheduleReconnect(delayMs);
       });
     } catch (e) {
       scheduleReconnect();
     }
   };
 
-  connect();
+  // Stagger the FIRST handshake by a small random delay so N account streams starting up
+  // (or restarting together on the shared product-refresh timer) don't all hit the endpoint
+  // on the same tick and trip the per-IP 429 rate limit.
+  const INITIAL_JITTER_MS = opts.initialJitterMs ?? 2000;
+  reconnectTimer = setTimeout(connect, Math.round(Math.random() * INITIAL_JITTER_MS));
 
   watchdogTimer = setInterval(() => {
     if (!alive || !ws || lastMsgAt === 0) return;

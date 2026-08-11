@@ -709,7 +709,8 @@ async function startSingleAccountEngine(account) {
         } else if (status === 'disconnected') {
           const codeStr = info?.code != null ? ` code ${info.code}` : '';
           const reasonStr = info?.reason ? ` "${info.reason}"` : '';
-          logWarn(`[${accountState.name}] WebSocket disconnected${codeStr}${reasonStr} — auto-reconnecting in 3s...`);
+          const retryStr = info?.retryMs != null ? `${(info.retryMs / 1000).toFixed(1)}s` : 'shortly';
+          logWarn(`[${accountState.name}] WebSocket disconnected${codeStr}${reasonStr} — auto-reconnecting in ${retryStr}...`);
         }
       }
     );
