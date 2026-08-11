@@ -189,11 +189,15 @@ export function createTickerStream(symbols, onTicker, onStatus, opts = {}) {
       });
 
       ws.on('error', (err) => {
-        onStatus?.('error');
+        // Surface the reason (e.g. ECONNRESET, 429/1013 rate-limit, DNS) — otherwise the
+        // subsequent 'close' looks unexplained. Pass it through for the caller to log.
+        onStatus?.('error', { message: err?.message || String(err), code: err?.code });
       });
 
-      ws.on('close', () => {
-        onStatus?.('disconnected');
+      ws.on('close', (code, reason) => {
+        // Close code tells apart a server/rate-limit drop (1006/1013/1008) from a clean
+        // close (1000/1001) — key for diagnosing a reconnect storm.
+        onStatus?.('disconnected', { code, reason: reason ? reason.toString() : '' });
         scheduleReconnect();
       });
     } catch (e) {

@@ -677,7 +677,7 @@ async function startSingleAccountEngine(account) {
       wsHandle = null;
     }
 
-    log(`Starting WS: ${allSymbols.length} symbols for ${config.underlying} / ${config.expiry}`);
+    log(`[${accountState.name}] Starting WS: ${allSymbols.length} symbols for ${config.underlying} / ${config.expiry}`);
 
     wsHandle = createTickerStream(
       allSymbols,
@@ -696,15 +696,20 @@ async function startSingleAccountEngine(account) {
           lastOptionTickAt = Date.now(); // an option quote just moved — feed is live
         }
       },
-      (status) => {
+      (status, info) => {
         const mappedWsStatus = status === 'live' ? 'live' : 'reconnecting';
         heartbeat.update({ ws_status: mappedWsStatus });
         if (status === 'live') {
-          log('WebSocket connected');
+          log(`[${accountState.name}] WebSocket connected`);
         } else if (status === 'stale') {
-          logWarn('WebSocket silent (no data past keepalive window) — terminating to force reconnect.');
+          logWarn(`[${accountState.name}] WebSocket silent (no data past keepalive window) — terminating to force reconnect.`);
+        } else if (status === 'error') {
+          // Previously swallowed — log the underlying reason so a drop isn't unexplained.
+          logWarn(`[${accountState.name}] WebSocket error: ${info?.message || 'unknown'}${info?.code ? ` (${info.code})` : ''}`);
         } else if (status === 'disconnected') {
-          logWarn('WebSocket disconnected — auto-reconnecting in 3s...');
+          const codeStr = info?.code != null ? ` code ${info.code}` : '';
+          const reasonStr = info?.reason ? ` "${info.reason}"` : '';
+          logWarn(`[${accountState.name}] WebSocket disconnected${codeStr}${reasonStr} — auto-reconnecting in 3s...`);
         }
       }
     );
