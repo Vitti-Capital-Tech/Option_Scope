@@ -21,9 +21,13 @@ import { notifyLiveFailure, notifyLiveTrade, sendTelegramMessage } from './lib/t
 import { getBalance } from './lib/deltaTradeApi.js';
 import {
   loadProducts, getExpiries, getSpotPrice,
-  createTickerStream, buildSymbolMeta, processTickerMessage,
+  buildSymbolMeta, processTickerMessage,
   backfillTickers, getOptionHigh
 } from './lib/deltaApi.js';
+// Shared per-underlying upstream WS (see tickerHub.js): all account engines in this process
+// share ONE Delta market-data connection per underlying instead of opening one each — the
+// per-IP connection cap (HTTP 429) makes N-per-account unscalable.
+import { subscribeTickers } from './lib/tickerHub.js';
 import {
   safeParseLeg, calculateFee, calcMargin, scanTickers,
   computeEntryAtmRatio, computeScaledSellQty,
@@ -677,9 +681,10 @@ async function startSingleAccountEngine(account) {
       wsHandle = null;
     }
 
-    log(`[${accountState.name}] Starting WS: ${allSymbols.length} symbols for ${config.underlying} / ${config.expiry}`);
+    log(`[${accountState.name}] Joining shared WS feed: ${allSymbols.length} symbols for ${config.underlying} / ${config.expiry}`);
 
-    wsHandle = createTickerStream(
+    wsHandle = subscribeTickers(
+      config.underlying,
       allSymbols,
       (msg) => {
         if (msg.symbol === perpSymbol) {

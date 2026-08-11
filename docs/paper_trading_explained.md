@@ -86,7 +86,7 @@ The entry point is `startPaperTradingEngine()`. It acts like a **manager** that:
    - **Account deactivated** → stops its engine
    - **Account updated** (e.g. name or status changes) → updates the running engine's state
 
-Each account runs in complete isolation — its own WebSocket, its own positions, its own config.
+Each account runs its own positions, config, and evaluation loop in isolation — **but they share one upstream market-data WebSocket per underlying** (`engine/lib/tickerHub.js`) instead of each opening its own. Delta caps WebSocket connections per IP, so N accounts each opening a connection would trip a `429` reconnect storm; the hub subscribes once to the union of everyone's symbols and fans each tick out to the accounts that want it (each still filters through its own `symbolMeta`). See the LLD's *Shared Ticker Hub* section for the mechanics.
 
 > [!TIP]
 > **Parallel Startup**: All accounts start simultaneously via `Promise.allSettled`. With 10 accounts, startup time is ~3 seconds (previously ~30 seconds with sequential `for...await`). `allSettled` is used instead of `Promise.all` so that one account's startup failure does not block the others.
@@ -139,7 +139,7 @@ When an engine starts for an account, it runs these steps in order:
 | 4 | **Fetch spot price** | Gets current BTC/ETH price |
 | 5 | **Load active positions** from Supabase | Restores any positions from a previous run |
 | 6 | **Backfill tickers** via REST API | Pre-loads option prices so we don't start with empty data. If a ticker has a valid bid/ask price, its `bidUpdatedAt`/`askUpdatedAt` is set to `Date.now()` so it is treated as fresh for the first scan. WS live quotes overwrite these timestamps as they arrive. |
-| 7 | **Start WebSocket** | Connects to Delta Exchange for real-time price streaming |
+| 7 | **Join shared WS feed** | Subscribes to the shared per-underlying upstream WebSocket (`tickerHub.js`) for real-time price streaming — opening the upstream connection if this is the first account on that underlying, else just attaching to the existing one |
 | 8 | **Start heartbeat** | Writes a "I'm alive" signal to the DB every few seconds |
 | 9 | **Subscribe to config changes** | Listens for when you change filters in the UI |
 
