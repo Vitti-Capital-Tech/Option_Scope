@@ -149,11 +149,18 @@ logic is byte-for-byte unchanged when paper/disarmed:
 | Short-leg exit | Active model: buy-to-close @ ask. Resting model: the `-SEX` limit fills **fully** (order-id in fills **and** short position size 0) → book + place ladder (short SL bracket auto-cancels) |
 | Long laddered exit | Active model: sell reduce_only @ bid per level. Resting model: fixed-ladder resting **limit SELLs** fill on their own |
 | Partial ratio scale-down | Reduce-only **MARKET close** of the reduced buy lot (`live.closeSymbol`, IOC — immediate fill; `${id}-PEX-…`). Runs in **both** models: the active model fires it inline, and the armed-real resting model runs the **same** `applyAtmRatioScaling` helper on the long leg each cycle while the spread is full (the trigger is dynamic, so it market-closes rather than resting a limit) |
-| Risk exit (spot hits exit level) | **Brackets** close the whole spread exchange-side; engine's spot-cross catch-all (if up) also market-closes + books (reduce-only guards double-close) |
+| Risk exit — **Full Exit** (spot hits exit level) | **Brackets** close the whole spread exchange-side; the engine's spot-cross catch-all (if up) flattens **every leg with a reduce-only MARKET order** (`live.closeSymbol`, IOC — `${id}-CAXS`/`-CAXB`/`-HX`) for an **immediate fill**, then books one full exit + sweeps any residual. Market (not a marketable limit) because a limit that rests even ~1s can slip **$10–15** on a moving option. Reduce-only guards prevent a double-close against the bracket. |
+| **Manual exit** (UI-triggered) | Cancel resting orders, then flatten **every leg with a reduce-only MARKET order** (`live.closeSymbol` — `${id}-MXS`/`-MXB`/`-MXH`) + residual sweep, before the row is deleted. Market so the close is immediate and can't orphan a leg while the engine stops tracking it. |
 | **Expiry / zombie exit** | **No leg order** — Delta cash-settles expired options; brackets auto-cancel, resting orders cancelled. Booked at each leg's **intrinsic value** at settlement (call: `max(0, spot−strike)`, put: `max(0, strike−spot)`) — not the illiquid bid/ask 2 min early — and with **zero exit fee** (no close order is placed), so the PnL matches Delta's cash settlement |
 
-All orders use limit orders at the engine's computed price and carry a
-`client_order_id` derived from the position id + leg + stage (idempotency).
+Most orders are **limit** at the engine's computed price — entry, the resting short
+buy-back (`-SEX`), and the long ladder (`-LE`). The **full-position flattens (Full Exit
+catch-all `-CAXS`/`-CAXB`/`-HX`, and manual exit `-MXS`/`-MXB`/`-MXH`) and the partial
+ratio scale-down (`-PEX`) use reduce-only MARKET orders** (IOC, immediate fill): these
+are risk / dynamic exits where getting flat *now* beats price protection (a resting
+limit slips ~$10–15/sec on a moving option, and a full flatten deletes the tracked row
+right after). Every order carries a `client_order_id` derived from the position id +
+leg + stage (idempotency).
 
 > [!NOTE]
 > **Price sanitization (`cleanLimitPrice`).** Every limit/stop price is rounded to 4

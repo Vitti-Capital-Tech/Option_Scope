@@ -1952,15 +1952,23 @@ async function startSingleAccountEngine(account) {
     const exitHedge = hedge ? (tHedge?.bid ?? tHedge?.markPrice ?? tHedge?.lastPrice ?? hedge.entryPrice ?? 0) : 0;
     try { await cancelRestingOrders(pos); } catch (e) { /* best-effort */ }
     if (!skipExchangeClose) {
+      // Manual exit is a full-position flatten — fill IMMEDIATELY with reduce-only MARKET
+      // orders. A resting marketable limit could slip (~$10-15/sec on a moving option) AND
+      // the position row is deleted right below whether it filled or not, so a limit that
+      // rests would orphan the leg. The exitLong/exitShort/exitHedge touch prices above are
+      // kept only to BOOK the P&L estimate, not sent as order prices.
       if (pos.sellQty > 0) {
-        await live.closeLeg({ symbol: pos.sellLeg.symbol, side: 'buy', contracts: shortContracts(pos.sellQty), price: exitShort, tag: `${pos.id}-MXS` });
+        await live.closeSymbol({ symbol: pos.sellLeg.symbol, side: 'buy', contracts: shortContracts(pos.sellQty), tag: `${pos.id}-MXS` });
       }
       if ((pos.buyLeg.lotSize || 0) > 0) {
-        await live.closeLeg({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: longContracts(pos.buyLeg), price: exitLong, tag: `${pos.id}-MXB` });
+        await live.closeSymbol({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: longContracts(pos.buyLeg), tag: `${pos.id}-MXB` });
       }
       if (hedge) {
-        await live.closeLeg({ symbol: hedge.symbol, side: 'sell', contracts: longContracts(hedge), price: exitHedge, tag: `${pos.id}-MXH` });
+        await live.closeSymbol({ symbol: hedge.symbol, side: 'sell', contracts: longContracts(hedge), tag: `${pos.id}-MXH` });
       }
+      // Sweep any residual (thin-book partial fill / integer drift) before the row is deleted,
+      // else reconcileOrphans can't see it and the remainder orphans.
+      await sweepResidualLegs(pos, [pos.sellLeg.symbol, pos.buyLeg.symbol, hedge?.symbol], 'MXSWEEP');
     }
     const longLot = pos.buyLeg.lotSize || 0;
     const shortLot = pos.sellLeg.lotSize || 1;
@@ -2255,21 +2263,25 @@ async function startSingleAccountEngine(account) {
         : 0;
       // Market-close remaining legs unless expiry (Delta cash-settles expired options).
       if (!atExpiry) {
+        // FULL EXIT is a RISK exit (spot crossed the level) — speed beats price protection:
+        // a marketable LIMIT that rests even ~1s can cost $10-15 as the option moves, so each
+        // leg is flattened with a reduce-only MARKET order (IOC) for an immediate fill. The
+        // exitLong/exitShort/exitHedge (bid/ask touch) computed above are still used only to
+        // BOOK the P&L estimate below — they are no longer sent as order prices.
         // CAXS/CAXB tags (vs the strategy exit's XS/XB) so the Order History UI shows "Close All".
         if (pos.sellQty > 0) {
-          await live.closeLeg({ symbol: pos.sellLeg.symbol, side: 'buy', contracts: shortContracts(pos.sellQty), price: exitShort, tag: `${pos.id}-CAXS` });
+          await live.closeSymbol({ symbol: pos.sellLeg.symbol, side: 'buy', contracts: shortContracts(pos.sellQty), tag: `${pos.id}-CAXS` });
         }
         if (longLot > 0) {
-          await live.closeLeg({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: longContracts(pos.buyLeg), price: exitLong, tag: `${pos.id}-CAXB` });
+          await live.closeSymbol({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: longContracts(pos.buyLeg), tag: `${pos.id}-CAXB` });
         }
         if (hedge) {
-          await live.closeLeg({ symbol: hedge.symbol, side: 'sell', contracts: longContracts(hedge), price: exitHedge, tag: `${pos.id}-HX` });
+          await live.closeSymbol({ symbol: hedge.symbol, side: 'sell', contracts: longContracts(hedge), tag: `${pos.id}-HX` });
         }
-        // The reduce-only closes above are limits sized from the engine's tracked lot, so a
-        // partial fill or integer drift after ATM-ratio scale steps can leave a few contracts
-        // open. Sweep the true residual on every closed leg with a reduce-only MARKET close
-        // BEFORE the row is deleted below — otherwise reconcileOrphans can't see the remainder
-        // and it orphans (orphan-unprotected-unknown). Mirrors the ladder-exit sweep.
+        // Safety net: a market IOC on a thin book can leave a few contracts (partial fill) or
+        // integer drift after ATM-ratio scale steps. Sweep the true residual on every closed
+        // leg with another reduce-only MARKET close BEFORE the row is deleted below — otherwise
+        // reconcileOrphans can't see the remainder and it orphans. Mirrors the ladder-exit sweep.
         await sweepResidualLegs(pos, [pos.sellLeg.symbol, pos.buyLeg.symbol, hedge?.symbol], 'CASWEEP');
       }
       const grossLong = (exitLong - pos.entryBuyPrice) * longLot;
