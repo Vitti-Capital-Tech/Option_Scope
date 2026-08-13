@@ -2923,15 +2923,42 @@ async function startSingleAccountEngine(account) {
       async function applyAtmRatioScaling(pos, { liveExitBuy, liveExitSell, tickerBuy }) {
         // Dynamic ATM ratio-based scaling (full spreads only — skipped once long-only)
         if (atmStrike !== null && pos.sellQty > 0) {
-          // Initialize missing fields for older positions
-          if (pos.buyLeg && (pos.buyLeg.originalLotSize === undefined || pos.buyLeg.originalSellQty === undefined || pos.buyLeg.initialScaledLotSize === undefined)) {
+          // LOT PRECISION. Every lot quantity below is rounded before it is compared, so
+          // the fractional 10% steps stay stable across cycles. A PAPER leg carries a
+          // notional lotSize of ~1-10, where 2 dp is ample. A LIVE leg is sized on the
+          // CONTRACT-VALUE basis (lotSize = contractValue × contracts, e.g. 0.001 × 5 =
+          // 0.005), where 2 dp breaks the step math SIZE-DEPENDENTLY — which is why this
+          // failed intermittently rather than outright:
+          //   BTC ≥100 / ETH ≥10 contracts → round2(lot×0.1) ≈ the true 10%, scales fine;
+          //   BTC 50-99 / ETH 5-9          → quantised to 0.01, so the step is WRONG
+          //                                  (50 BTC contracts → 20%/step, 75 → 13%);
+          //   BTC <50 / ETH <5 (lot<0.05)  → 0.00, and the 50% floor is 0.00 too, so every
+          //                                  hypothetical lot collapses to 0 →
+          //                                  recalculatedRatio = Infinity → the
+          //                                  `liveAtmRatio >= recalculatedRatio + 1` gate is
+          //                                  unsatisfiable → the loop is NEVER entered. No
+          //                                  slice, no -PEX order, NO LOG LINE: an account
+          //                                  just stops scaling when its per-position size
+          //                                  falls under the threshold.
+          // Live lots therefore round to 8 dp (the same precision normalizeLiveBasis
+          // persists). Gated on the position's OWN stored contractValue, so paper stays
+          // byte-for-byte identical.
+          const LOT_DP = pos.buyLeg?.contractValue != null ? 8 : 2;
+          const roundLot = (v) => Number(Number(v).toFixed(LOT_DP));
+          // Initialize missing fields for older positions. `initialScaledLotSize` is treated
+          // as missing when it is NOT a positive number, not merely when it is undefined: a
+          // live position initialised by an older build stored it through a 2-dp round, which
+          // persisted a hard 0 on the contract-value basis (0.005 → "0.00"). Left as 0 it
+          // pins deltaBuyQty at 0 forever, so the position could never scale even after the
+          // precision fix — recompute and re-persist it instead.
+          if (pos.buyLeg && (pos.buyLeg.originalLotSize === undefined || pos.buyLeg.originalSellQty === undefined || !(pos.buyLeg.initialScaledLotSize > 0))) {
             pos.buyLeg.originalLotSize = pos.buyLeg.originalLotSize ?? (pos.buyLeg.lotSize || 1);
             pos.buyLeg.originalSellQty = pos.buyLeg.originalSellQty ?? (pos.sellQty || 0);
-            if (pos.buyLeg.initialScaledLotSize === undefined) {
+            if (!(pos.buyLeg.initialScaledLotSize > 0)) {
               const origLot = pos.buyLeg.originalLotSize;
               const origSell = pos.buyLeg.originalSellQty;
               if (origSell > 0 && pos.sellQty > 0) {
-                pos.buyLeg.initialScaledLotSize = Number((pos.sellQty * (origLot / origSell)).toFixed(2));
+                pos.buyLeg.initialScaledLotSize = roundLot(pos.sellQty * (origLot / origSell));
               } else {
                 pos.buyLeg.initialScaledLotSize = pos.buyLeg.lotSize || origLot;
               }
@@ -2952,15 +2979,18 @@ async function startSingleAccountEngine(account) {
           if (pos.buyLeg && pos.buyLeg.originalLotSize !== undefined && buyIntrinsic != null && sellIntrinsic != null && sellIntrinsic > 0) {
             const liveAtmRatio = parseFloat((Math.round((buyIntrinsic / sellIntrinsic) / 0.25) * 0.25).toFixed(2));
             const originalLotSize = pos.buyLeg.originalLotSize || pos.buyLeg.lotSize || 1;
-            const initialScaledLotSize = pos.buyLeg.initialScaledLotSize !== undefined
+            const initialScaledLotSize = pos.buyLeg.initialScaledLotSize > 0
               ? pos.buyLeg.initialScaledLotSize
               : (pos.buyLeg.originalSellQty && pos.buyLeg.originalSellQty > 0
-                ? Number((pos.sellQty * (originalLotSize / pos.buyLeg.originalSellQty)).toFixed(2))
+                ? roundLot(pos.sellQty * (originalLotSize / pos.buyLeg.originalSellQty))
                 : originalLotSize);
-            const deltaBuyQty = Number((initialScaledLotSize * 0.10).toFixed(2));
-            const floorLimit = Number((initialScaledLotSize * 0.5).toFixed(2));
+            const deltaBuyQty = roundLot(initialScaledLotSize * 0.10);
+            const floorLimit = roundLot(initialScaledLotSize * 0.5);
+            // A zero step can never reduce the lot: the loop below would spin on an
+            // unchanged lot and emit duplicate slice rows. Nothing to scale — bail.
+            if (!(deltaBuyQty > 0)) return;
             let currentLotSize = pos.buyLeg.lotSize;
-            let hypotheticalLotSize = Number((currentLotSize - deltaBuyQty).toFixed(2));
+            let hypotheticalLotSize = roundLot(currentLotSize - deltaBuyQty);
             const shortCV = pos.sellLeg?.contractValue ?? pos.buyLeg?.contractValue ?? null;
             const shortExposure = shortCV != null ? (pos.sellQty * shortCV) : pos.sellQty;
             let recalculatedRatio = hypotheticalLotSize > 0
@@ -3016,7 +3046,10 @@ async function startSingleAccountEngine(account) {
               // strictly decreases across the position's life, so it never collides
               // across cycles AND is identical if two evaluators race the same step —
               // letting the trade_id UNIQUE constraint reject the duplicate.
-              const partialTradeId = `${pos.id}-PE-${hypotheticalLotSize.toFixed(2)}`;
+              // Stamped at LOT_DP so a live (contract-value) lot keeps its distinguishing
+              // digits — at 2 dp every live step reads "0.00", collapsing all of a
+              // position's slices onto ONE id that the upsert then silently drops.
+              const partialTradeId = `${pos.id}-PE-${hypotheticalLotSize.toFixed(LOT_DP)}`;
 
               const historyBuyLeg = {
                 ...pos.buyLeg,
@@ -3112,7 +3145,7 @@ async function startSingleAccountEngine(account) {
 
               hasScaled = true;
 
-              hypotheticalLotSize = Number((currentLotSize - deltaBuyQty).toFixed(2));
+              hypotheticalLotSize = roundLot(currentLotSize - deltaBuyQty);
               recalculatedRatio = hypotheticalLotSize > 0
                 ? Number((shortExposure / hypotheticalLotSize).toFixed(2))
                 : Infinity;

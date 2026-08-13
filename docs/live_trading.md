@@ -332,6 +332,40 @@ Two mechanisms run together — **resting profit exits** (engine-detected) and
   Order History where the UI derives "Partial Exit". It touches only the long leg (the short's resting buy-back and SL bracket are
   untouched) and leaves `sellQty` unchanged, so the short-fill sequence above is unaffected.
   Once the short exits and the position is long-only, scaling stops and the ladder takes over.
+  - **Lot precision follows the position's basis — and it is SIZE-DEPENDENT.** Every lot
+    quantity in the step math (`deltaBuyQty`, `floorLimit`, `hypotheticalLotSize`,
+    `initialScaledLotSize`) is rounded before it is compared, so the fractional 10% steps stay
+    stable across cycles. A **paper** leg carries a notional `lotSize` of ~1–10, where 2 dp is
+    ample. A **live** leg is sized on the **contract-value basis** (`lotSize = contractValue ×
+    contracts`, e.g. `0.001 × 5 = 0.005`), where 2 dp breaks the step math in a way that
+    depends on position size — which is why this failed *intermittently* rather than outright:
+
+    | Live long size | `round2(lot × 0.10)` | Effect |
+    | --- | --- | --- |
+    | BTC ≥ 100 / ETH ≥ 10 contracts | ≈ the true 10% | scales roughly correctly |
+    | BTC 50–99 / ETH 5–9 contracts | quantised to `0.01` | scales at the **wrong step** (50 BTC contracts → 20%/step, 75 → 13%, 150 → 7%) |
+    | **BTC < 50 / ETH < 5 contracts** | **`0.00`** | **silently dead** |
+
+    Below the threshold (`lotSize × 0.10 < 0.005`, i.e. `lotSize < 0.05`) `deltaBuyQty` is
+    `0`, the 50% floor is `0`, every hypothetical lot collapses to `0`, `recalculatedRatio`
+    becomes `Infinity`, and `liveAtmRatio >= recalculatedRatio + 1` can never be satisfied —
+    the loop is **never entered**: no slice booked, no `-PEX` order, **no log line**. An
+    account therefore scales normally while it trades large and then stops scaling with no
+    error the moment per-position allocation falls under the threshold (smaller balance, more
+    concurrent positions, a tighter `combinedSplitPct`). Live lots therefore round to **8 dp**
+    (the precision `normalizeLiveBasis` persists) and paper stays at 2 dp; the gate is the
+    position's **own** stored `buyLeg.contractValue`, so paper is byte-for-byte unchanged.
+    The same precision stamps the slice `trade_id` (`${id}-PE-<lots>`) — at 2 dp a sub-`0.005`
+    live lot reads `-PE-0.00` on every step, collapsing a position's slices onto one id that
+    the `ignoreDuplicates` upsert then drops. Two guards back it up: a `deltaBuyQty <= 0` step
+    **bails** (a zero step can't reduce the lot and would spin the loop emitting duplicate
+    rows), and a persisted `initialScaledLotSize` that is not `> 0` is treated as **missing**
+    and recomputed — positions opened by the older build stored a hard `0` there, which would
+    pin `deltaBuyQty` at zero forever even after the precision fix.
+    > **Regression window:** the threshold appeared with the live PnL / contract-value basis
+    > change (`lotSize` 5 → 0.005), but the symptom surfaces only when live position size
+    > drops below it. It is **not** caused by the limit→market conversion of the `-PEX` order,
+    > which only changed the order type of an order the loop had already stopped requesting.
   - **Whole-contract sizing.** The engine's `lotSize` is a fractional notional lot but
     Delta trades **whole contracts**, so the real order is sized by the change in the
     *rounded* contract count — `round(lotBefore/base) − round(lotAfter/base)` — **not** by
