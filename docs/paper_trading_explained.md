@@ -15,7 +15,7 @@ This document explains **every** logic and condition in the Paper Trading engine
 7. [Entry Filters (What Makes a Good Spread)](#entry-filters)
 8. [How Entries Are Placed](#how-entries-are-placed)
 9. [Paper Balance & Combined-Position Sizing (Paper Only)](#paper-balance--combined-position-sizing-paper-only)
-10. [Cross-Account Entry Governor (Paper Only)](#cross-account-entry-governor-paper-only)
+10. [Cross-Account Entry Governor (Paper + Live)](#cross-account-entry-governor-paper--live)
 11. [Exit Priority Tree](#exit-priority-tree)
 12. [Partial Exit / Scaling Logic](#partial-exit--scaling-logic)
 13. [Short-Leg-Only Exit ($1.1)](#short-leg-only-exit)
@@ -529,11 +529,13 @@ Normal sizing **reserves** budget for every empty combined slot (`partMargin = r
 
 ---
 
-## Cross-Account Entry Governor (Paper Only)
+## Cross-Account Entry Governor (Paper + Live)
 
 **Files**: [entryGovernor.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/lib/entryGovernor.js) · [paperTradingEngine.js:L4306](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L4306)
 
-Every account's engine runs inside **one Node process** (see [Multi-Account Supervisor](#multi-account-supervisor)). When several paper accounts pick the **same spread** in the same ~1s entry wave, their **combined** contract size can exceed the **real top-of-book depth** resting on Delta. Without coordination each account would independently "fill" the spread in paper — a fill the live market could never have handed all of them at once. The governor gates paper entries against a **shared, first-come-first-serve depth budget** so the simulated book is never over-consumed. It's the **last gate before a paper entry is committed** (runs right before `newEntries.push`).
+Every account's engine runs inside **one Node process** (see [Multi-Account Supervisor](#multi-account-supervisor)). When several accounts pick the **same spread** in the same ~1s entry wave, their **combined** contract size can exceed the **real top-of-book depth** resting on Delta. Without coordination each account would independently "fill" the spread in paper — a fill the live market could never have handed all of them at once. The governor gates entries against a **shared, first-come-first-serve depth budget** so the book is never over-consumed. It's the **last gate before an entry is committed** (runs right before `newEntries.push`).
+
+Paper **and** live accounts draw from the **same** budget, so a live account and a paper account chasing the same book contend with each other — that is what makes the paper result mirror what live could actually have got, rather than both being handed the same size.
 
 ### The rule
 
@@ -547,18 +549,31 @@ Every account's engine runs inside **one Node process** (see [Multi-Account Supe
 
 ### Contract-qty basis
 
-The paper account's qty is sized **exactly like a LIVE account** — `part budget ÷ unit margin`, using the real per-contract `contractValue` and the `$195k` short-notional cap — so paper contends against depth the way a live account would. This contract count is used **only for the depth check**; the paper position's own P&L sizing (fractional notional lots) is **unchanged**. If `contractValue` or a per-position margin part is unavailable, the governor is a **no-op** for that candidate (the entry is allowed rather than a block being manufactured).
+This is the **only** place the two modes differ:
+
+- **Live** — the governor reuses the contract counts the live sizing block has *already* decided (`longC = round(adjustedLotSize / contractValue)`, `shortC = adjustedSellQty`). It is deliberately **not** recomputed, so what the governor reserves is exactly what the order will request.
+- **Paper** — has no contract count of its own, so it **mirrors** that live math: `part budget ÷ unit margin`, using the real per-contract `contractValue` and the `$195k` short-notional cap. This count is used **only for the depth check**; the paper position's own P&L sizing (fractional notional lots) is **unchanged**. If `contractValue` or a per-position margin part is unavailable, the governor is a **no-op** for that candidate (the entry is allowed rather than a block being manufactured).
 
 ### Website notification (not Telegram)
 
 When an account is blocked, the engine appends a row to **`entry_block_notifications`** (migration `035`). The dashboard subscribes via Realtime (account-scoped) and shows a **toast** plus a persisted **🚦 bell panel** (last 50 blocks, each with the strikes, blocking leg, and needed-vs-available qty). This is deliberately a **website** notification — Telegram alerts stay reserved for armed-live failures.
+
+**Live accounts get the identical bell + toast** with no UI change: `main.jsx` renders the *same* `PaperTrading` component for `mode="paper"` and `mode="live"`, and the panel, badge, toast and Realtime subscription are all scoped by `activeAccountId` alone — never by mode. Live accounts are rows in the same `paper_trading_accounts` table (`mode` column, `CHECK IN ('paper','live')`), so migration `035`'s foreign key and Realtime publication already cover them.
 
 > [!NOTE]
 > **Log line**: `🚦 Entry blocked: PUT 62800/61800 — top-of-book depth exhausted on buy leg (needed 3, had 1 on P-BTC-62800-…). Another account took the available size first.`
 
 ### Scope
 
-**Paper only.** Live accounts (`mode === 'live'`, armed or dry-run) are **untouched** — they keep their existing per-account top-of-book depth guard and never write block notifications. The governor module is **mode-agnostic**, so a future phase can enroll live accounts into the same shared budget by flipping the `isPaperAccount` gate — no change to the module itself.
+**Paper + armed live**, sharing one budget. Enrolment is by account state:
+
+| Account | Governed? | Why |
+| --- | --- | --- |
+| Paper (`mode !== 'live'`) | ✅ | mirrors the live sizing math to get a contract count |
+| Live, `live_enabled` (armed **or** dry-run) | ✅ | `liveArmed` doesn't depend on `DELTA_LIVE_DRYRUN`, so the whole path is testable before arming |
+| Live, `live_enabled = false` | ❌ | sized through the unarmed notional-cap branch with no `contractValue`, so there's no reliable contract count to reserve — and it places no real orders |
+
+Live additionally keeps its **per-account thin-book guard** at execute time (`longC > askSize` → skip). The governor runs first and is the stricter of the two, so it doesn't replace that guard — it just stops accounts from collectively over-drawing the same book before any order is sent.
 
 ---
 
@@ -904,7 +919,7 @@ Here's every safety guard in one table:
 | Days to Expiry | `paperTradingEngine.js` | Rejects candidates whose expiry is fewer than `daysToExpiry` days away |
 | Portfolio cap | `paperTradingEngine.js` | **All accounts** (migration `027` combined model, promoted to live): derived per-type cap `ceil(split% × maxCombined)` (both calls and puts) + a combined-total cap of `max_combined_positions`. Held long-only positions (`sellQty = 0`) excluded. |
 | Combined-position cap (paper) | `paperTradingEngine.js` | **Paper only**: total open full spreads (calls + puts) may not exceed the active window's `max_combined_positions` |
-| Entry governor (paper) | `entryGovernor.js` / `paperTradingEngine.js` | **Paper only**: cross-account, first-come-first-serve top-of-book depth budget. Accounts sharing one process can't collectively exceed real resting depth (BUY→ask, SELL→bid); a spread is all-or-nothing (both legs or neither) within an 8s window. Blocked accounts get a **website** notification (`entry_block_notifications`, migration `035`). See [Cross-Account Entry Governor](#cross-account-entry-governor-paper-only) |
+| Entry governor (paper + live) | `entryGovernor.js` / `paperTradingEngine.js` | **Paper and armed-live**, one shared budget: cross-account, first-come-first-serve top-of-book depth. Accounts sharing one process can't collectively exceed real resting depth (BUY→ask, SELL→bid); a spread is all-or-nothing (both legs or neither) within an 8s window. Blocked accounts get a **website** notification (`entry_block_notifications`, migration `035`) — same 🚦 bell + toast in both modes. See [Cross-Account Entry Governor](#cross-account-entry-governor-paper--live) |
 | $195K short value cap | `paperTradingEngine.js` | Scales down lot sizes if short notional ≥ $195K. **Paper**: applied after scaling the spread to the per-position margin part |
 | DB count guard | `paperTradingEngine.js` | Database-level check (all accounts): derived per-type cap AND combined-total cap on **full spreads** (`.gt('sell_qty', 0)`), fail-closed |
 | Paper balance / allocation (paper) | `paperTradingEngine.js` | **Paper only (migration `027`)**: per-position margin = (equity × allocation%) ÷ active window's `max_combined_positions`; entries self-skip when the allocated pool is exhausted |

@@ -1,11 +1,12 @@
 /**
  * Cross-account ENTRY GOVERNOR (in-process singleton).
  *
- * Every per-account paper-trading engine runs inside ONE Node process (see
+ * Every per-account engine — paper AND live — runs inside ONE Node process (see
  * startPaperTradingEngine → runningEngines). When several accounts try to enter the
  * SAME spread in the same ~1s entry wave, their COMBINED contract size can exceed the
  * real top-of-book depth resting on Delta. Without coordination each account would
- * independently "fill" in paper, painting a picture the live market could never give.
+ * independently "fill" in paper, painting a picture the live market could never give —
+ * and in live each would spend a real order round-trip discovering the book is gone.
  *
  * This governor gates those entries against a SHARED, first-come-first-serve depth
  * budget:
@@ -27,8 +28,10 @@
  * Single-threaded JS makes the reserve body atomic — "first come" is literally "first
  * to call reserveSpread() this window", so no locking is needed.
  *
- * Phase 1 scope: consulted for PAPER accounts only. The API is mode-agnostic so the
- * live entry path can join the same budget later without changing this module.
+ * Scope: consulted for PAPER accounts and for ARMED LIVE accounts (`live_enabled`,
+ * including dry-run), which share ONE budget so the two modes contend against each
+ * other. This module stayed mode-agnostic through that promotion — the caller decides
+ * enrolment and supplies the contract counts; nothing here changed.
  */
 
 // One entry wave (per-minute eval, all accounts tick within ~1s of the minute

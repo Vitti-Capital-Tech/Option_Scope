@@ -820,6 +820,46 @@ quantity is LESS THAN the top-of-book size on the side it would take**:
   a shortfall can't be proven, and the all-or-nothing chase-fill remains the backstop.
 - **Paper / dry-run / disarmed:** no-op (no real order is placed).
 
+### Cross-account entry governor (shared depth budget)
+
+The depth guard above is **per account** — it asks "is the book deep enough for *me*?" It
+cannot see that three other accounts in the same process are about to take the same size
+from the same book in the same ~1s entry wave. The **entry governor**
+(`engine/lib/entryGovernor.js`) closes that gap with a **shared, first-come-first-serve**
+depth budget, and now runs for **armed-live accounts as well as paper** — one budget, so a
+live and a paper account chasing the same book contend with each other.
+
+- **Where:** at candidate time, immediately before `newEntries.push` — *earlier* than the
+  depth guard, so a blocked entry never reaches `openSpread` and costs no order round-trip.
+- **Pools:** per `symbol|side`, snapshotted from the same L1 sizes the depth guard uses
+  (BUY→`askSize`, SELL→`bidSize`) and **frozen** for `ENTRY_GOVERNOR_WINDOW_MS` (default
+  `8000`). Unknown depth → unlimited (never blocks), matching the guard's fail-open policy.
+- **Rule:** first come, first served at **FULL qty**; **all-or-nothing per spread** (both
+  legs have room, or neither pool is touched and the whole spread is blocked). A blocked
+  account is never handed a smaller size — it retries next wave against fresh depth.
+- **Contract qty (live):** reuses the counts the sizing block already decided —
+  `longC = round(adjustedLotSize / contractValue)`, `shortC = adjustedSellQty` — deliberately
+  **not** re-derived, so the reservation equals what the order would actually request.
+- **Enrolment:** armed live **and** dry-run live (`liveArmed` doesn't depend on
+  `DELTA_LIVE_DRYRUN`, so the path is testable before arming). A live account with
+  `live_enabled = false` is skipped — it is sized through the unarmed notional-cap branch
+  with no `contractValue`, so there's no reliable contract count to reserve.
+- **Notification:** a blocked entry INSERTs into `entry_block_notifications` (migration
+  `035`) → the dashboard's **🚦 bell panel + toast**, *identical to paper*. No UI change was
+  needed: `main.jsx` renders the same component for `mode="live"`, and the panel/badge/toast
+  and its Realtime subscription are scoped by `activeAccountId` only, never by mode. Live
+  accounts are rows in the same `paper_trading_accounts` table, so `035`'s FK and Realtime
+  publication already cover them. This stays a **website** notification — Telegram remains
+  reserved for armed-live *failures*.
+- **Relationship to the depth guard:** the governor runs first and is the stricter of the
+  two (for the first account in a window the pool equals `askSize`, so governor-pass implies
+  guard-pass). The guard is **kept** as the execute-time backstop for depth that thinned
+  between the two checks.
+  > **Known interaction:** the checks read the feed at different moments and the governor
+  > freezes its pool for the window. If the governor reserves and the guard then skips the
+  > entry, that reservation stays consumed until the window expires (≤8s). Conservative and
+  > self-healing — it can only cause an *extra* block, never an over-fill.
+
 ### Same-product collision guard & stuck-leg recovery
 
 Delta treats **each option contract as one product**: an account holds a single net position

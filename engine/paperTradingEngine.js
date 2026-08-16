@@ -4359,17 +4359,34 @@ async function startSingleAccountEngine(account) {
             margin: candidateMargin + hedgeMargin,
             _replaceableLongOnlyPos: replaceableLongOnlyPos,
           };
-          // ── Cross-account ENTRY GOVERNOR (paper, phase 1) ─────────────────────────
-          // Several paper accounts (all in THIS one process) can pick the SAME spread in
-          // the same ~1s entry wave; their COMBINED contract size may exceed the real
+          // ── Cross-account ENTRY GOVERNOR (paper + live) ───────────────────────────
+          // Several accounts (all in THIS one process) can pick the SAME spread in the
+          // same ~1s entry wave; their COMBINED contract size may exceed the real
           // top-of-book depth resting on Delta. Gate the entry against a shared,
           // first-come-first-serve depth budget so the book isn't over-consumed: the
           // first accounts to tick fill at FULL qty, the rest are BLOCKED (all-or-nothing
-          // — both legs or neither) and told WHY via a website notification. Paper only
-          // for now; live accounts keep their existing per-account depth guard. The
-          // contract qty is sized like LIVE (part budget ÷ unit margin, via
-          // contractValue) so paper contends against depth exactly as a live account would.
-          if (isPaperAccount) {
+          // — both legs or neither) and told WHY via a website notification.
+          //
+          // Runs for BOTH modes so one shared budget covers every account in the process
+          // — a live and a paper account competing for the same book contend against each
+          // other, which is the only way the paper result mirrors what live could get.
+          // The two modes differ ONLY in how the contract count is obtained:
+          //   • LIVE  — reuse the counts the sizing block above already decided, so the
+          //     governor reserves EXACTLY what the order will request (no re-derivation
+          //     that could drift from the real order).
+          //   • PAPER — mirror the live sizing math (part budget ÷ unit margin, via
+          //     contractValue), since paper has no contract count of its own.
+          // Live keeps its per-account thin-book guard at execute time as a backstop.
+          let gLongC = null;
+          let gShortC = 0;
+          if (liveArmed) {
+            // adjustedLotSize = liveLongCV × longC and adjustedSellQty IS the short
+            // contract count (see the `if (liveArmed)` sizing block above).
+            if (liveLongCV != null && liveLongCV > 0) {
+              gLongC = Math.max(1, Math.round(adjustedLotSize / liveLongCV));
+              gShortC = adjustedSellQty > 0 ? Math.max(1, Math.round(adjustedSellQty)) : 0;
+            }
+          } else if (isPaperAccount) {
             const gLongCV = symbolMeta[spread.buyLeg.symbol]?.contractValue ?? null;
             const gShortCV = symbolMeta[spread.sellLeg.symbol]?.contractValue ?? null;
             // Without the per-contract underlying amount or a per-position margin part we
@@ -4382,43 +4399,49 @@ async function startSingleAccountEngine(account) {
               const gBaseMargin = calcMargin(entryBuyPrice, gLongCV, spotPrice, ratioToUse, gShortCV);
               let gScale = gBaseMargin > 0 ? (partMargin / gBaseMargin) : 1;
               if (gScale < 1) gScale = 1;
-              let gLongC = Math.max(1, Math.round(gScale));
+              gLongC = Math.max(1, Math.round(gScale));
               const G_NOTIONAL_CAP = 195000;
               const gShortNotionalPerContract = spotPrice * gShortCV;
               const gMaxShortByNotional = gShortNotionalPerContract > 0 ? Math.floor(G_NOTIONAL_CAP / gShortNotionalPerContract) : Infinity;
               const gMaxLongByNotional = ratioToUse > 0 ? Math.floor(gMaxShortByNotional / ratioToUse) : Infinity;
               if (gLongC > gMaxLongByNotional) gLongC = Math.max(1, gMaxLongByNotional);
-              let gShortC = Math.max(1, Math.round(gLongC * ratioToUse));
+              gShortC = Math.max(1, Math.round(gLongC * ratioToUse));
               if (Number.isFinite(gMaxShortByNotional) && gMaxShortByNotional >= 1 && gShortC > gMaxShortByNotional) gShortC = gMaxShortByNotional;
+            }
+          }
 
-              // Top-of-book sizes from the feed: a BUY leg takes the ASK, a SELL leg the BID.
-              const gAskSz = tickerData[spread.buyLeg.symbol]?.askSize;
-              const gBidSz = adjustedSellQty > 0 ? tickerData[spread.sellLeg.symbol]?.bidSize : null;
-              const gLegs = [{ symbol: spread.buyLeg.symbol, side: 'buy', qty: gLongC, depth: gAskSz }];
-              if (adjustedSellQty > 0) gLegs.push({ symbol: spread.sellLeg.symbol, side: 'sell', qty: gShortC, depth: gBidSz });
+          if (gLongC != null && gLongC > 0) {
+            // Top-of-book sizes from the feed: a BUY leg takes the ASK, a SELL leg the BID.
+            const gAskSz = tickerData[spread.buyLeg.symbol]?.askSize;
+            const gBidSz = adjustedSellQty > 0 ? tickerData[spread.sellLeg.symbol]?.bidSize : null;
+            const gLegs = [{ symbol: spread.buyLeg.symbol, side: 'buy', qty: gLongC, depth: gAskSz }];
+            if (adjustedSellQty > 0) gLegs.push({ symbol: spread.sellLeg.symbol, side: 'sell', qty: gShortC, depth: gBidSz });
 
-              const gRes = governorReserveSpread(gLegs, Date.now());
-              if (!gRes.ok) {
-                const bl = gRes.blockedLeg;
-                const hadTxt = Number.isFinite(bl.available) ? bl.available : '∞';
-                const msg = `Entry blocked: ${spreadType.toUpperCase()} ${bStrike}/${sStrike} — top-of-book depth exhausted on ${bl.side} leg (needed ${bl.qty}, had ${hadTxt} on ${bl.symbol}). Another account took the available size first.`;
-                logWarn(`[${accountState.name}] 🚦 ${msg}`);
-                // Website notification (persisted; NOT Telegram). Fire-and-forget so a
-                // slow/failed insert never blocks the eval loop.
-                supabase.from('entry_block_notifications').insert([{
-                  account_id: accountState.id,
-                  type: 'entry_blocked',
-                  message: msg,
-                  details: {
-                    underlying, type: spreadType, buy_strike: bStrike, sell_strike: sStrike,
-                    blocked_side: bl.side, blocked_symbol: bl.symbol,
-                    needed: bl.qty, available: Number.isFinite(bl.available) ? bl.available : null,
-                    long_qty: gLongC, short_qty: gShortC,
-                  },
-                }]).then(({ error }) => { if (error) logWarn(`[${accountState.name}] entry_block_notifications insert failed: ${error.message}`); })
-                  .catch(() => {});
-                continue; // do NOT persist — this account stays flat for this spread
-              }
+            const gRes = governorReserveSpread(gLegs, Date.now());
+            if (!gRes.ok) {
+              const bl = gRes.blockedLeg;
+              const hadTxt = Number.isFinite(bl.available) ? bl.available : '∞';
+              const msg = `Entry blocked: ${spreadType.toUpperCase()} ${bStrike}/${sStrike} — top-of-book depth exhausted on ${bl.side} leg (needed ${bl.qty}, had ${hadTxt} on ${bl.symbol}). Another account took the available size first.`;
+              logWarn(`[${accountState.name}] 🚦 ${msg}`);
+              // Website notification (persisted; NOT Telegram). Fire-and-forget so a
+              // slow/failed insert never blocks the eval loop. Identical shape for both
+              // modes — the UI (one component for paper AND live, scoped by account_id)
+              // renders the same 🚦 bell + toast either way; `mode` is carried in details
+              // only so a block can be attributed when reading the log.
+              supabase.from('entry_block_notifications').insert([{
+                account_id: accountState.id,
+                type: 'entry_blocked',
+                message: msg,
+                details: {
+                  underlying, type: spreadType, buy_strike: bStrike, sell_strike: sStrike,
+                  blocked_side: bl.side, blocked_symbol: bl.symbol,
+                  needed: bl.qty, available: Number.isFinite(bl.available) ? bl.available : null,
+                  long_qty: gLongC, short_qty: gShortC,
+                  mode: accountState.mode === 'live' ? 'live' : 'paper',
+                },
+              }]).then(({ error }) => { if (error) logWarn(`[${accountState.name}] entry_block_notifications insert failed: ${error.message}`); })
+                .catch(() => {});
+              continue; // do NOT persist — this account stays flat for this spread
             }
           }
 
