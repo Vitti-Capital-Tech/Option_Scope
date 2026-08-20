@@ -228,7 +228,7 @@ After every scan, `publishTopSpreads` packages the top-3 calls and puts into a p
 
 **Deterministic `trade_id` formats** (never `Date.now()`): full exit `${pos.id}`; short-leg `${pos.id}-SE`; partial/scaling `${pos.id}-PE-${lotsRemaining}`; long ladder slice `${pos.id}-LE-${stage}`; hedge `${pos.id}-HX`. Position id format `T<timestamp36><random>` is effectively unique, so a `23505` is always a strike collision, never an id collision.
 
-**Migration index (selected):** `004` verify requests · `009` live_exchange_state · `012` per-window max-debit/exit-type · `016` admin RLS bypass · `018`–`020` strategy_version · `019`/`023` per-window min DTE · `021` trade_days · `022`/`023` hedge leg.
+**Migration index (selected):** `004` verify requests · `009` live_exchange_state · `012` per-window max-debit/exit-type · `016` admin RLS bypass · `036` owner-scoped reads · `018`–`020` strategy_version · `019`/`023` per-window min DTE · `021` trade_days · `022`/`023` hedge leg.
 
 
 ### Concurrency Safety Guards
@@ -857,6 +857,24 @@ All four are dispatched by the manager-level `pollAllRequests` (see §7); migrat
 - **Email-only login**: the dashboard derives the Supabase password deterministically (`OptionScope_${cleanEmail}_Secure123!`); first login auto-creates a `profiles` row with `role:'client'`.
 - **Roles**: `client` sees only its own `user_id` accounts; `admin` sees all accounts and can assign an owner at creation and write to any account.
 - **Migration `016`** (`016_admin_manage_accounts.sql`) adds an admin bypass (`OR EXISTS (SELECT 1 FROM profiles WHERE id=auth.uid() AND role='admin')`) to the RLS policies on `paper_trading_accounts`, `paper_trading_config`, `paper_trading_schedules`, `active_positions`, `trade_history`, `delta_close_requests`, and `delta_cancel_requests` — previously admin writes silently no-op'd (an RLS-filtered UPDATE affects 0 rows with no error).
+- **Migration `036`** (`036_scope_reads_to_account_owner.sql`) closes the three READ policies `016` left open, so per-account isolation holds at the **API**, not just in the UI's `user_id` filter:
+  | Table | Was | Now |
+  | --- | --- | --- |
+  | `paper_trading_schedules` | `USING (true)` — readable by **anon** | policy dropped; `016`'s owner-or-admin `FOR ALL` already covers SELECT |
+  | `live_exchange_state` | any authenticated user | owner-or-admin (`account_id IN …`) |
+  | `entry_block_notifications` | any authenticated user | owner-or-admin (`account_id IN …`) |
+
+  Before `036`, a `client` could read **every** account's positions, orders, fills, balances and wallet straight from the browser console — the dashboard filter was cosmetic. Unchanged: `delta_credentials` (already service_role + `SECURITY DEFINER` RPCs), `engine_heartbeat` (process-wide, nothing account-scoped), and every `service_role` policy. Supabase applies RLS to `postgres_changes`, so Realtime keeps delivering the owner's own rows and stops delivering others'.
+
+### Granting one email access to exactly one account
+
+No code change — this is the ownership model working as designed:
+
+1. The email logs in once (email-only login auto-creates `profiles` with `role='client'`).
+2. Point the account at them: `UPDATE public.paper_trading_accounts SET user_id = '<profile-id>' WHERE id = '<account-id>';` (run as service role / SQL editor, or from an admin session).
+3. Done — RLS and the UI both scope a `client` to their own `user_id`, so they see that account and nothing else.
+
+An `admin` still sees every account, so transferring ownership doesn't lock the operator out. **`036` is a prerequisite**: without it step 3 is UI-deep only.
 
 ### UI details (heartbeat / capacity / date filter)
 
