@@ -184,12 +184,12 @@ export default function SchedulePanel({
     return equity * (allocPct / 100);
   }, [isPaper, walletBalance, paperEquity, initialBalance, totalRealizedPnl, balanceAllocationPct]);
 
-  // Paper derived per-type cap:
-  // If isPaper and allSameType is true: all combined positions are allocated to the selected sameType ('call' -> combined/0, 'put' -> 0/combined).
+  // Derived per-type cap:
+  // If allSameType is true: all combined positions are allocated to the selected sameType ('call' -> combined/0, 'put' -> 0/combined).
   // Otherwise: ceil(split% × combined), same for calls and puts, clamped to the combined total.
   const derivePaperTypeCap = (s) => {
     const combined = Math.max(0, Math.floor(s.maxCombinedPositions ?? 4));
-    if (isPaper && s.allSameType) {
+    if (s.allSameType) {
       const type = (s.sameType || 'call').toLowerCase();
       const call = type === 'call' ? combined : 0;
       const put = type === 'put' ? combined : 0;
@@ -419,11 +419,10 @@ export default function SchedulePanel({
             const isSplit = startShifted > endShifted;
 
             const capInfo = derivePaperTypeCap(s);
-            const capLine = isPaper && s.allSameType
+            const capLine = s.allSameType
               ? `Combined: ${Math.max(1, Math.floor(s.maxCombinedPositions ?? 4))} (${capInfo.text} [All ${(s.sameType || 'call').toUpperCase()}])`
               : `Combined: ${Math.max(1, Math.floor(s.maxCombinedPositions ?? 4))} (${capInfo.text} @ ${s.combinedSplitPct ?? 70}%)`;
-            const ivEdgeStr = isPaper ? ` | Min IV: ${s.minIvDiff ?? 5}%` : '';
-            const tooltip = `${s.label || 'Window'} (${cleanTime(s.startTime)} - ${cleanTime(s.endTime)})\n${capLine}\nStrike Diff: ${s.minStrikeDiff} | Long Dist: ${s.minLongDist}${ivEdgeStr}\nScaling: ${(s.atmRatioScaling ?? true) ? 'ON' : 'OFF'} (C: ${s.atmRatioPctCall ?? 50}%, P: ${s.atmRatioPctPut ?? 25}%)`;
+            const tooltip = `${s.label || 'Window'} (${cleanTime(s.startTime)} - ${cleanTime(s.endTime)})\n${capLine}\nStrike Diff: ${s.minStrikeDiff} | Long Dist: ${s.minLongDist} | Min IV: ${s.minIvDiff ?? 5}%\nScaling: ${(s.atmRatioScaling ?? true) ? 'ON' : 'OFF'} (C: ${s.atmRatioPctCall ?? 50}%, P: ${s.atmRatioPctPut ?? 25}%)`;
 
             if (isSplit) {
               return (
@@ -631,23 +630,21 @@ export default function SchedulePanel({
                   <CustomInput type="number" min="1" max="40" value={s.maxCombinedPositions ?? 4} onChange={e => handleChange(s.id, 'maxCombinedPositions', Number(e.target.value))} />
                 </div>
 
-                {isPaper && (
-                  <div className="schedule-item-block schedule-item-num-block">
-                    <span className="schedule-item-label" title="Force all positions in this window to be of a single type (Call or Put), bypassing Split %">All Same Type</span>
-                    <div style={{ height: '36px', display: 'flex', alignItems: 'center' }}>
-                      <label className="pt-switch" title="Toggle single position type (Call or Put) for this window">
-                        <input
-                          type="checkbox"
-                          checked={s.allSameType ?? false}
-                          onChange={e => handleChange(s.id, 'allSameType', e.target.checked)}
-                        />
-                        <span className="pt-slider"></span>
-                      </label>
-                    </div>
+                <div className="schedule-item-block schedule-item-num-block">
+                  <span className="schedule-item-label" title="Force all positions in this window to be of a single type (Call or Put), bypassing Split %">All Same Type</span>
+                  <div style={{ height: '36px', display: 'flex', alignItems: 'center' }}>
+                    <label className="pt-switch" title="Toggle single position type (Call or Put) for this window">
+                      <input
+                        type="checkbox"
+                        checked={s.allSameType ?? false}
+                        onChange={e => handleChange(s.id, 'allSameType', e.target.checked)}
+                      />
+                      <span className="pt-slider"></span>
+                    </label>
                   </div>
-                )}
+                </div>
 
-                {isPaper && s.allSameType && (
+                {s.allSameType && (
                   <div className="schedule-item-block schedule-item-num-block">
                     <span className="schedule-item-label">Position Type</span>
                     <CustomSelect
@@ -663,18 +660,18 @@ export default function SchedulePanel({
                 )}
 
                 <div className="schedule-item-block schedule-item-num-block">
-                  <span className="schedule-item-label" title={isPaper && s.allSameType ? "Bypassed: All positions in this window are forced to single type" : "Split percentage for deriving per-type caps"}>Split %</span>
-                  <CustomInput type="number" min="1" max="100" suffix="%" step="5" disabled={isPaper && (s.allSameType ?? false)} value={s.combinedSplitPct ?? 70} onChange={e => handleChange(s.id, 'combinedSplitPct', Number(e.target.value))} />
+                  <span className="schedule-item-label" title={s.allSameType ? "Bypassed: All positions in this window are forced to single type" : "Split percentage for deriving per-type caps"}>Split %</span>
+                  <CustomInput type="number" min="1" max="100" suffix="%" step="5" disabled={s.allSameType ?? false} value={s.combinedSplitPct ?? 70} onChange={e => handleChange(s.id, 'combinedSplitPct', Number(e.target.value))} />
                 </div>
 
                 <div className="schedule-item-block schedule-item-num-block">
                   <span className="schedule-item-label">Derived Caps</span>
                   <div style={{
-                    fontSize: '11px', fontWeight: 700, color: (isPaper && s.allSameType) ? '#3b82f6' : 'var(--text-dim)', height: '36px',
+                    fontSize: '11px', fontWeight: 700, color: s.allSameType ? '#3b82f6' : 'var(--text-dim)', height: '36px',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                     background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: '5px',
                     padding: '0 10px', fontFamily: 'JetBrains Mono, monospace', boxSizing: 'border-box', whiteSpace: 'nowrap',
-                  }} title={isPaper && s.allSameType
+                  }} title={s.allSameType
                     ? `All positions forced to ${(s.sameType || 'call').toUpperCase()} (Max ${derivePaperTypeCap(s).call} calls, ${derivePaperTypeCap(s).put} puts, total combined cap ${Math.max(1, Math.floor(s.maxCombinedPositions ?? 4))}).`
                     : `Per-type cap = ceil(Split% × Max Combined). Max ${derivePaperTypeCap(s).call} calls and ${derivePaperTypeCap(s).put} puts, but no more than ${Math.max(1, Math.floor(s.maxCombinedPositions ?? 4))} open in total.`}>
                     {derivePaperTypeCap(s).text}
@@ -691,12 +688,10 @@ export default function SchedulePanel({
                   <CustomInput type="number" min="0" prefix="$" step="50" value={s.minLongDist} onChange={e => handleChange(s.id, 'minLongDist', Number(e.target.value))} />
                 </div>
 
-                {isPaper && (
-                  <div className="schedule-item-block schedule-item-num-block">
-                    <span className="schedule-item-label" title="Minimum implied volatility difference (%) between buy and sell legs">Min IV Edge</span>
-                    <CustomInput type="number" min="0" step="0.25" suffix="%" value={s.minIvDiff ?? 5} onChange={e => handleChange(s.id, 'minIvDiff', Number(e.target.value))} />
-                  </div>
-                )}
+                <div className="schedule-item-block schedule-item-num-block">
+                  <span className="schedule-item-label" title="Minimum implied volatility difference (%) between buy and sell legs">Min IV Edge</span>
+                  <CustomInput type="number" min="0" step="0.25" suffix="%" value={s.minIvDiff ?? 5} onChange={e => handleChange(s.id, 'minIvDiff', Number(e.target.value))} />
+                </div>
 
                 <div className="schedule-item-block schedule-item-num-block">
                   <span className="schedule-item-label">ATM Scaling</span>

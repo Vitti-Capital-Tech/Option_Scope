@@ -791,12 +791,12 @@ async function startSingleAccountEngine(account) {
 
   // ── Combined-cap model (migration 027, promoted to LIVE) ────────────────
   // Per-window derived type cap:
-  // In paper mode with allSameType active, allocates maxCombined to the selected
+  // With allSameType active, allocates maxCombined to the selected
   // position type ('call' or 'put') and 0 to the other type.
-  // Otherwise (or in live mode), applies ceil(split% × maxCombined) to BOTH calls and puts.
+  // Otherwise, applies ceil(split% × maxCombined) to BOTH calls and puts.
   function derivedTypeCap(effCfg, type = null) {
     const combined = Math.max(0, Math.floor(effCfg?.maxCombinedPositions ?? config.maxCombinedPositions ?? 4));
-    if (accountState.mode !== 'live' && effCfg?.allSameType) {
+    if (effCfg?.allSameType) {
       const targetType = (effCfg.sameType || 'call').toLowerCase();
       if (type) {
         return type.toLowerCase() === targetType ? combined : 0;
@@ -2573,20 +2573,15 @@ async function startSingleAccountEngine(account) {
 
       // ── Apply active time-schedule overrides ──────────────────────────
       const activeSchedule = getActiveSchedule();
-      const isPaper = accountState.mode !== 'live';
       const effectiveConfig = activeSchedule
         ? {
           ...config,
           // Paper combined-position sizing (migration 027) — take the ACTIVE window's
           // values, falling back to the account-level config for rows that predate it.
           maxCombinedPositions: activeSchedule.maxCombinedPositions ?? config.maxCombinedPositions,
-          ...(isPaper
-            ? {
-              allSameType: activeSchedule.allSameType ?? false,
-              sameType: activeSchedule.sameType ?? 'call',
-              minIvDiff: activeSchedule.minIvDiff ?? config.minIvDiff ?? 5,
-            }
-            : {}),
+          allSameType: activeSchedule.allSameType ?? false,
+          sameType: activeSchedule.sameType ?? 'call',
+          minIvDiff: activeSchedule.minIvDiff ?? config.minIvDiff ?? 5,
           combinedSplitPct: activeSchedule.combinedSplitPct ?? config.combinedSplitPct,
           minLongDist: activeSchedule.minLongDist,
           minStrikeDiff: activeSchedule.minStrikeDiff,
@@ -2875,12 +2870,11 @@ async function startSingleAccountEngine(account) {
 
       // Candidate pool size (not a cap — just how many to rank). Floored at 10, and at
       // least the derived per-type cap so the combined model always has enough to fill.
-      // If paper mode has allSameType active, the non-selected type gets 0 candidates.
-      const isPaperAcc = accountState.mode !== 'live';
-      const maxCallCandidates = (isPaperAcc && effectiveConfig.allSameType && effectiveConfig.sameType === 'put')
+      // When allSameType is active, the non-selected type gets 0 candidates.
+      const maxCallCandidates = (effectiveConfig.allSameType && effectiveConfig.sameType === 'put')
         ? 0
         : Math.max(10, derivedTypeCap(effectiveConfig, 'call'));
-      const maxPutCandidates = (isPaperAcc && effectiveConfig.allSameType && effectiveConfig.sameType === 'call')
+      const maxPutCandidates = (effectiveConfig.allSameType && effectiveConfig.sameType === 'call')
         ? 0
         : Math.max(10, derivedTypeCap(effectiveConfig, 'put'));
 
