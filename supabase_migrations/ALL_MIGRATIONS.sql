@@ -1257,3 +1257,25 @@ CREATE POLICY "Account owners can read entry block notifications"
         account_id IN (SELECT a.id FROM public.paper_trading_accounts a WHERE a.user_id = auth.uid())
         OR EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.role = 'admin')
     );
+
+-- ─── 037_schedule_min_iv_and_same_type.sql ───
+-- Migration 037 — per-window Min IV Edge + All Positions Same Type control
+ALTER TABLE public.paper_trading_schedules
+  ADD COLUMN IF NOT EXISTS min_iv_diff NUMERIC NOT NULL DEFAULT 5;
+
+ALTER TABLE public.paper_trading_schedules
+  ADD COLUMN IF NOT EXISTS all_same_type BOOLEAN NOT NULL DEFAULT false;
+
+ALTER TABLE public.paper_trading_schedules
+  ADD COLUMN IF NOT EXISTS same_type TEXT NOT NULL DEFAULT 'call';
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'paper_trading_schedules_same_type_check'
+  ) THEN
+    ALTER TABLE public.paper_trading_schedules
+      ADD CONSTRAINT paper_trading_schedules_same_type_check
+      CHECK (same_type IN ('call', 'put'));
+  END IF;
+END $$;

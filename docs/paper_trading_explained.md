@@ -232,15 +232,16 @@ Every candidate pair must pass **all** of these filters to be considered:
 |---|--------|-----------|---------------|
 | 1 | **Strike Difference** | `minStrikeDiff` (default: 800) | The two strikes must be at least 800 points apart |
 | 2 | **Fresh Quotes** | — (hardcoded 120s) | Both the buy Ask and sell Bid prices must have been updated within the last **120 seconds**. After startup, REST-backfill data now gets `Date.now()` timestamps if a valid price exists — allowing the first scan to use backfill data immediately. As WS live quotes arrive, they overwrite these timestamps. Tickers with no bid/ask price still get timestamp = 0 and are rejected. |
-| 3 | **IV Difference** | `minIvDiff` (default: 5) | The implied volatility difference between the two options must be ≥ 5% |
-| 4 | **Min Long Distance** | `minLongDist` (default: 500) | The buy leg's strike must be at least 500 points away from spot price |
+| 3 | **IV Difference** | `minIvDiff` (default: 5) | The implied volatility difference between the two options must be ≥ 5%. **Configured per schedule window in Paper Trading** (migration `037`), removing it from the global Control Panel filters for paper accounts; remains a Control Panel entry filter for Live accounts. |
+| 4 | **Min Long Distance** | `minLongDist` (default: 500) | The buy leg's strike must be at least 500 points away from spot price. Configured per schedule window. |
 | 5 | **Min Sell Premium** | `minSellPremium` (default: $10) | The sell leg's bid price must be at least $10 |
 | 6 | **Ratio Deviation** | `maxRatioDeviation` (default: 0.25) | The premium ratio and delta notional ratio must not deviate by more than 25% |
 | 7 | **Max Sell Qty** | `maxSellQty` (default: 10) | The sell quantity (ratio) must not exceed 10 |
 | 8 | **Max Net Premium** | `maxNetPremium` (default: $20) | The net premium debit cannot exceed $20. **ATM Ratio Scaling is applied first**, so this is checked against the *scaled* short quantity (i.e., `scaledSellQty × sellPrice - buyPrice ≥ -$20`). When scaling is disabled, `scaledSellQty` equals the natural `sellQty`. **Now configured per schedule window** (see [Time-Based Filter Schedules](#time-based-filter-schedules)); the account base value is the gap fallback. |
 | 9 | **Days to Expiry** | `daysToExpiry` (default: 0) | The option expiry date must be at least this many days away from the current time. Options closer to expiry are rejected. **Location depends on `strategy_version`** (migration `019`): on **v1 (live)** it is an account-level Control Panel field; on **v2 (experimental paper)** it moves **per schedule window** (see [Time-Based Filter Schedules](#time-based-filter-schedules)) — each window guards its own entries, and the account-global traded expiry **follows the active window** as **(current date + that window's DTE)**, re-selected in ~realtime as windows change (smallest DTE wins on overlap). See [Strategy Versioning](#strategy-versioning-paper-vs-live). |
 | 10 | **Max Combined Positions (#)** | `maxCombinedPositions` (default: 4) | Hard cap on TOTAL open **full-spread** positions (calls + puts) per underlying. Only positions with an active short leg (`sellQty > 0`) count — long-only held positions do **not** count. Governs entry caps for **ALL accounts** now — paper AND live (migration `027` combined model, promoted to live; migration `034` dropped the old `numberOfCalls`/`numberOfPuts`). Per schedule window. |
-| 11 | **Split % (#)** | `combinedSplitPct` (default: 70) | Derives the per-**type** cap = `ceil(split% × maxCombined)`, applied to both calls and puts (but the combined total still can't exceed Max Combined). E.g. 4 / 70% → max 3 calls **and** 3 puts, ≤ 4 together. Per schedule window. |
+| 11 | **Split % (#)** | `combinedSplitPct` (default: 70) | Derives the per-**type** cap = `ceil(split% × maxCombined)`, applied to both calls and puts (but the combined total still can't exceed Max Combined). E.g. 4 / 70% → max 3 calls **and** 3 puts, ≤ 4 together. Per schedule window. *(Bypassed in Paper mode when **All Positions Same Type** is enabled).* |
+| 11b | **All Positions Same Type** | `allSameType` / `sameType` (default: false, 'call') | **Paper accounts only** (migration `037`). Toggle switch in each schedule window. When checked, forces all positions in this window to be of a single selected type (**Call** or **Put**), dedicating 100% of `maxCombinedPositions` to that type (e.g. `4C / 0P` or `0C / 4P`) while disabling and bypassing `Split %`. |
 | 12 | **ATM Ratio Entry** | `atmRatioScaling` (default: true) | Checkbox toggle to enable scaling of entry sell quantities based on ATM strike option prices. |
 | 13 | **Call ATM Pct (%)** | `atmRatioPctCall` (default: 50) | The scaling percentage for ATM ratio adjustments on call spreads. |
 | 14 | **Put ATM Pct (%)** | `atmRatioPctPut` (default: 25) | The scaling percentage for ATM ratio adjustments on put spreads. |
@@ -457,20 +458,28 @@ buffer          = equity − allocated pool          # never used for margin
 
 The engine seeds cumulative realized P&L once at startup (a `SUM(realized_net_pnl)` over `trade_history`) and refreshes it on a short TTL (~45 s), so the 1-second eval loop never re-queries every cycle. (`getPaperEquity()` / `refreshRealizedPnl()`.)
 
-### 2. Per-window combined cap → derived per-type caps
+### 2. Per-window combined cap → derived per-type caps & single-type mode
 
-Two new per-window fields ([scheduled per window](#time-based-filter-schedules), account-level fallback in `paper_trading_config`):
+Per-window fields ([scheduled per window](#time-based-filter-schedules), account-level fallback in `paper_trading_config`):
 
 | Field | Column | Default | Meaning |
 |---|---|---|---|
 | **Max Combined Positions** | `max_combined_positions` | `4` | Hard cap on TOTAL open full spreads (calls **+** puts) for the underlying. |
-| **Split %** | `combined_split_pct` | `70` | Derives the per-type cap. |
+| **Split %** | `combined_split_pct` | `70` | Derives the per-type cap when `all_same_type` is false. |
+| **All Positions Same Type** | `all_same_type` | `false` | **Paper mode only** (migration `037`). Locks all window capacity to a single type, bypassing `combined_split_pct`. |
+| **Position Type** | `same_type` | `'call'` | **Paper mode only** (migration `037`). Selected option type (`call` or `put`) when `all_same_type` is active. |
 
 ```
-perTypeCap = ceil( (combined_split_pct / 100) × max_combined_positions )   # same for calls AND puts
+If all_same_type is active (paper mode):
+  perTypeCap(sameType) = max_combined_positions
+  perTypeCap(opposite) = 0
+Else:
+  perTypeCap = ceil( (combined_split_pct / 100) × max_combined_positions )   # same for calls AND puts
 ```
 
-Example: Max Combined `4`, Split `70%` → `ceil(0.70 × 4) = 3`. So **max 3 calls and max 3 puts**, but the **combined total never exceeds 4** (e.g. 3C+1P, 2C+2P, …). This is the entry cap for **all accounts** now — paper AND live (`derivedTypeCap()` + a separate combined-total guard); it fully replaced the old `numberOfCalls`/`numberOfPuts` (dropped in migration `034`).
+Example 1 (Normal Split): Max Combined `4`, Split `70%` → `ceil(0.70 × 4) = 3`. So **max 3 calls and max 3 puts**, but the **combined total never exceeds 4** (e.g. 3C+1P, 2C+2P, …). This is the standard entry cap across paper and live.
+
+Example 2 (All Same Type - Call): Max Combined `4`, All Same Type checked (`Call`) → **4 calls, 0 puts**, with total combined cap 4. `Split %` is disabled in the UI and bypassed by the engine.
 
 ### 3. Per-position margin & sizing
 
@@ -1032,26 +1041,28 @@ Time-Based Filter Schedules allow users to define multiple named time windows pe
 
 ### Overridden Parameters
 The following parameters are scheduled per window:
-1. **Max Combined Positions** (`maxCombinedPositions`)
-2. **Split %** (`combinedSplitPct`) — derives the per-type cap `ceil(split% × maxCombined)`
-3. **Min Strike Difference** (`minStrikeDiff`)
-4. **Min Long Distance** (`minLongDist`)
-5. **ATM Ratio Entry** (`atmRatioScaling`)
-6. **Call ATM Pct (%)** (`atmRatioPctCall`)
-7. **Put ATM Pct (%)** (`atmRatioPctPut`)
-8. **Spot Diff (%)** (`spotDiff`)
-9. **Max Net Debit** (`maxNetPremium`) — entry debit cap (migration `012`)
-10. **Exit Type** (`exitType`) — `ATM`/`ITM`/`OTM`; **active-window-governs** open positions (migration `012`)
-11. **Exit Points** (`exitPoints`) — offset for ITM/OTM exit (migration `012`)
-12. **Days to Expiry** (`daysToExpiry`) — **v2 (experimental paper) accounts only** (migration `019`). The window's value guards its own entries; the account-global traded expiry **follows the active window** as **(current date + that window's DTE)**, re-selected in ~realtime as windows change (smallest DTE wins on overlap). On v1 (live) this stays an account-level Control Panel field and is **not** shown per window. See [Strategy Versioning](#strategy-versioning-paper-vs-live).
-13. **Hedge Leg** (`hedgeStrikeType` + `hedgeCallPrice`/`hedgeCallPct`/`hedgePutPrice`/`hedgePutPct`) — **v2 (experimental paper) accounts only** (config migration `022`, leg column `023`). Adds a per-spread 3rd long-only leg (long/short/long triplet). See [Hedge Leg](#hedge-leg--per-spread-3rd-long-long--short--long-triplet).
-14. **Max Combined Positions** (`maxCombinedPositions`, default `4`) — **paper accounts only** (migration `027`). Hard cap on TOTAL open full spreads (calls + puts); also the divisor for per-position margin. See [Paper Balance & Combined-Position Sizing](#paper-balance--combined-position-sizing-paper-only).
-15. **Split %** (`combinedSplitPct`, default `70`) — **paper accounts only** (migration `027`). Derives the per-type cap `ceil(split% × combined)` for both calls and puts. On live accounts the **Max Open Calls / Max Open Puts** inputs (items 1–2) are shown instead.
+1. **Max Combined Positions** (`maxCombinedPositions`, default `4`) — hard cap on TOTAL open full spreads (calls + puts); also the divisor for per-position margin.
+2. **Split %** (`combinedSplitPct`, default `70`) — derives the per-type cap `ceil(split% × maxCombined)` for both calls and puts.
+3. **All Positions Same Type** (`allSameType` & `sameType`) — **paper accounts only** (migration `037`). Toggle and dropdown to force 100% capacity to Call or Put positions (e.g. `4C / 0P` or `0C / 4P`), bypassing Split %.
+4. **Min IV Edge** (`minIvDiff`, default `5%`) — **paper accounts only** (migration `037`). Minimum IV difference between buy ask IV and sell bid IV, configured per schedule window and removed from global filters for paper mode.
+5. **Min Strike Difference** (`minStrikeDiff`)
+6. **Min Long Distance** (`minLongDist`)
+7. **ATM Ratio Entry** (`atmRatioScaling`)
+8. **Call ATM Pct (%)** (`atmRatioPctCall`)
+9. **Put ATM Pct (%)** (`atmRatioPctPut`)
+10. **Spot Diff (%)** (`spotDiff`)
+11. **Max Net Debit** (`maxNetPremium`) — entry debit cap (migration `012`)
+12. **Exit Type** (`exitType`) — `ATM`/`ITM`/`OTM`; **active-window-governs** open positions (migration `012`)
+13. **Exit Points** (`exitPoints`) — offset for ITM/OTM exit (migration `012`)
+14. **SL/TP Diff (pts)** (`slTpDecoyDiff`) — per-window SL/TP decoy trigger offset (migration `031`)
+15. **Short Exit Price / Variable Ladder** (`shortExitPrice`, `variableExitSlices`, `longExitSlices`) — per-window exit ladder controls (migration `033`)
+16. **Days to Expiry** (`daysToExpiry`) — **v2 (experimental paper) accounts only** (migration `019`). The window's value guards its own entries; the account-global traded expiry **follows the active window** as **(current date + that window's DTE)**, re-selected in ~realtime as windows change (smallest DTE wins on overlap). On v1 (live) this stays an account-level Control Panel field and is **not** shown per window. See [Strategy Versioning](#strategy-versioning-paper-vs-live).
+17. **Hedge Leg** (`hedgeStrikeType` + `hedgeCallPrice`/`hedgeCallPct`/`hedgePutPrice`/`hedgePutPct`) — **v2 (experimental paper) accounts only** (config migration `022`, leg column `023`). Adds a per-spread 3rd long-only leg (long/short/long triplet). See [Hedge Leg](#hedge-leg--per-spread-3rd-long-long--short--long-triplet).
 
-All other filter settings (like `minIvDiff`, `minSellPremium`, etc.) default back to the base account config.
+All other filter settings (like `minSellPremium`, `maxRatioDeviation`, etc.) default back to the base account config.
 
 > [!NOTE]
-> **Max Net Debit, Exit Type and Exit Points moved out of the Control Panel** into each window (migration `012_schedule_max_debit_exit_type.sql`). The account-level values remain only as the **gap fallback**. Because Exit Type is active-window-governed: the engine's paper exit check and live spot-cross catch-all both read the currently-active window's exit type each cycle. **Live exchange SL/TP brackets are placed at entry from the then-active window and are NOT auto-moved when the window flips** (they stay as an engine-down backstop; the running engine's catch-all enforces the active window).
+> **Min IV Edge, Max Net Debit, Exit Type and Exit Points moved out of the Control Panel** into each window for paper accounts. The account-level values remain only as the **gap fallback**. Because Exit Type is active-window-governed: the engine's paper exit check and live spot-cross catch-all both read the currently-active window's exit type each cycle. **Live exchange SL/TP brackets are placed at entry from the then-active window and are NOT auto-moved when the window flips** (they stay as an engine-down backstop; the running engine's catch-all enforces the active window).
 
 > [!NOTE]
 > **These 8 fields are not shown in the Control Panel filter bar** — they are configured per time window in the Schedule Panel. Every account has a permanent **Window 1** that holds the account's initial values: it is **auto-created** (seeded from the account's `paper_trading_config` base values) for any account that has no windows yet, and it **cannot be deleted** (only Window 1 — Windows 2, 3, … are deletable). Window 1 is otherwise a normal window: its name, time range, and values are all editable, and it defaults to a full-day range (`17:30`→`17:29` IST). The base config still acts as the engine's gap fallback (see [Fallback Behavior](#execution-timezones--evaluation)); since Window 1 spans the full day by default, there are normally no gaps.

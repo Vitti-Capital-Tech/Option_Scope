@@ -144,7 +144,9 @@ export default function ControlPanel({
             <span className="pt-cluster-head">Entry Filters</span>
             <div className="pt-cluster-fields">
               {[
-                { label: 'Min IV Edge', key: 'minIvDiff', width: 100, step: '0.25', suffix: '%' },
+                // Min IV Edge lives per schedule window for Paper mode (migration 037).
+                // Kept in the Control Panel for Live accounts until promoted.
+                ...(accountIsLive ? [{ label: 'Min IV Edge', key: 'minIvDiff', width: 100, step: '0.25', suffix: '%' }] : []),
                 { label: 'Max Delta Deviation', key: 'maxRatioDeviation', width: 110, step: '0.01' },
                 { label: 'Min Short Premium', key: 'minSellPremium', width: 110, prefix: '$' },
                 { label: 'Max Short Ratio', key: 'maxSellQty', width: 110, step: '0.25', prefix: '1:' },

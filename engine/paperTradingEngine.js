@@ -446,9 +446,12 @@ async function startSingleAccountEngine(account) {
           // Paper combined-position sizing (migration 027). Fall back to the
           // account-level config value for windows that predate it.
           maxCombinedPositions: s.max_combined_positions ?? config.maxCombinedPositions ?? 4,
+          allSameType: s.all_same_type ?? false,
+          sameType: s.same_type ?? 'call',
           combinedSplitPct: s.combined_split_pct ?? config.combinedSplitPct ?? 70,
           minLongDist: s.min_long_dist ?? 500,
           minStrikeDiff: s.min_strike_diff ?? 800,
+          minIvDiff: s.min_iv_diff ?? config.minIvDiff ?? 5,
           atmRatioScaling: s.atm_ratio_scaling ?? true,
           atmRatioPctCall: s.atm_ratio_distance_call ?? 50,
           atmRatioPctPut: s.atm_ratio_distance_put ?? 25,
@@ -496,10 +499,10 @@ async function startSingleAccountEngine(account) {
               const oldWin = oldMap.get(newWin.id);
               const fieldDiffs = [];
               const fieldsToCompare = [
-                'label', 'startTime', 'endTime', 'maxCombinedPositions', 'combinedSplitPct',
-                'minLongDist', 'minStrikeDiff', 'atmRatioScaling', 'atmRatioPctCall',
-                'atmRatioPctPut', 'maxNetPremium', 'exitType', 'exitPoints', 'slTpDecoyDiff',
-                'shortExitPrice', 'variableExitSlices', 'longExitSlices', 'daysToExpiry',
+                'label', 'startTime', 'endTime', 'maxCombinedPositions', 'allSameType', 'sameType',
+                'combinedSplitPct', 'minLongDist', 'minStrikeDiff', 'minIvDiff', 'atmRatioScaling',
+                'atmRatioPctCall', 'atmRatioPctPut', 'maxNetPremium', 'exitType', 'exitPoints',
+                'slTpDecoyDiff', 'shortExitPrice', 'variableExitSlices', 'longExitSlices', 'daysToExpiry',
                 'hedgeStrikeType', 'hedgeCallPrice', 'hedgeCallPct', 'hedgePutPrice', 'hedgePutPct'
               ];
               fieldsToCompare.forEach(f => {
@@ -787,13 +790,19 @@ async function startSingleAccountEngine(account) {
   }
 
   // ── Combined-cap model (migration 027, promoted to LIVE) ────────────────
-  // Per-window derived type cap: ceil(split% × maxCombined), applied to BOTH calls
-  // and puts, clamped to [0, maxCombined]. The combined total is separately hard-
-  // capped at maxCombined by the portfolio-cap guard, so a 70/4 window yields 3 calls
-  // / 3 puts but never more than 4 open together. Used by ALL accounts now — paper AND
-  // live — replacing live's old explicit numberOfCalls/numberOfPuts per-type caps.
-  function derivedTypeCap(effCfg) {
+  // Per-window derived type cap:
+  // In paper mode with allSameType active, allocates maxCombined to the selected
+  // position type ('call' or 'put') and 0 to the other type.
+  // Otherwise (or in live mode), applies ceil(split% × maxCombined) to BOTH calls and puts.
+  function derivedTypeCap(effCfg, type = null) {
     const combined = Math.max(0, Math.floor(effCfg?.maxCombinedPositions ?? config.maxCombinedPositions ?? 4));
+    if (accountState.mode !== 'live' && effCfg?.allSameType) {
+      const targetType = (effCfg.sameType || 'call').toLowerCase();
+      if (type) {
+        return type.toLowerCase() === targetType ? combined : 0;
+      }
+      return combined;
+    }
     const pct = effCfg?.combinedSplitPct ?? config.combinedSplitPct ?? 70;
     return Math.min(combined, Math.ceil((pct / 100) * combined));
   }
@@ -2564,12 +2573,20 @@ async function startSingleAccountEngine(account) {
 
       // ── Apply active time-schedule overrides ──────────────────────────
       const activeSchedule = getActiveSchedule();
+      const isPaper = accountState.mode !== 'live';
       const effectiveConfig = activeSchedule
         ? {
           ...config,
           // Paper combined-position sizing (migration 027) — take the ACTIVE window's
           // values, falling back to the account-level config for rows that predate it.
           maxCombinedPositions: activeSchedule.maxCombinedPositions ?? config.maxCombinedPositions,
+          ...(isPaper
+            ? {
+              allSameType: activeSchedule.allSameType ?? false,
+              sameType: activeSchedule.sameType ?? 'call',
+              minIvDiff: activeSchedule.minIvDiff ?? config.minIvDiff ?? 5,
+            }
+            : {}),
           combinedSplitPct: activeSchedule.combinedSplitPct ?? config.combinedSplitPct,
           minLongDist: activeSchedule.minLongDist,
           minStrikeDiff: activeSchedule.minStrikeDiff,
@@ -2858,8 +2875,14 @@ async function startSingleAccountEngine(account) {
 
       // Candidate pool size (not a cap — just how many to rank). Floored at 10, and at
       // least the derived per-type cap so the combined model always has enough to fill.
-      const maxCallCandidates = Math.max(10, derivedTypeCap(effectiveConfig));
-      const maxPutCandidates = Math.max(10, derivedTypeCap(effectiveConfig));
+      // If paper mode has allSameType active, the non-selected type gets 0 candidates.
+      const isPaperAcc = accountState.mode !== 'live';
+      const maxCallCandidates = (isPaperAcc && effectiveConfig.allSameType && effectiveConfig.sameType === 'put')
+        ? 0
+        : Math.max(10, derivedTypeCap(effectiveConfig, 'call'));
+      const maxPutCandidates = (isPaperAcc && effectiveConfig.allSameType && effectiveConfig.sameType === 'call')
+        ? 0
+        : Math.max(10, derivedTypeCap(effectiveConfig, 'put'));
 
       const uniqueTopSpreads = [
         ...uniqueCalls.slice(0, maxCallCandidates),
@@ -3835,7 +3858,6 @@ async function startSingleAccountEngine(account) {
         // per-type derived cap, combined cap, and the ONE-LEG-PER-STRIKE cross-role conflict
         // rule (simulating acceptance in the same order the loop processes). No forced fills:
         // a slot with no qualifying candidate stays empty.
-        const typeCap430 = derivedTypeCap(effectiveConfig);
         const simCounts = { call: 0, put: 0 };
         let simCombined = 0;
         const occupied = { call: new Set(), put: new Set() };
@@ -3852,7 +3874,8 @@ async function startSingleAccountEngine(account) {
           const t = sp.buyLeg?.type;
           if (t !== 'call' && t !== 'put') continue;
           const b = Number(sp.buyLeg.strike), s = Number(sp.sellLeg.strike);
-          if (simCounts[t] >= typeCap430) continue;
+          const tCap = derivedTypeCap(effectiveConfig, t);
+          if (tCap === 0 || simCounts[t] >= tCap) continue;
           if (occupied[t].has(b) || occupied[t].has(s)) continue; // either leg on an occupied strike (cross-role)
           occupied[t].add(b); occupied[t].add(s);
           simCounts[t]++; simCombined++; openable++;
@@ -4014,13 +4037,15 @@ async function startSingleAccountEngine(account) {
           // Long-only held positions (sellQty === 0) free up a slot for new entries.
           let count = remaining.filter(p => p.underlying === underlying && p.type === spreadType && p.sellQty > 0).length +
             newEntries.filter(p => p.underlying === underlying && p.type === spreadType).length;
-          // Per-type cap is derived from the window's combined + split% (same value for
-          // calls and puts), for ALL accounts now — paper AND live (migration 027 combined
-          // model, promoted to live; numberOfCalls/numberOfPuts are no longer the live caps).
-          const typeCap = derivedTypeCap(effectiveConfig);
-          if (count >= typeCap) {
+          // Per-type cap is derived from the window's combined + split% (or 100% of maxCombined if allSameType is active)
+          const typeCap = derivedTypeCap(effectiveConfig, spreadType);
+          if (typeCap === 0 || count >= typeCap) {
             const dlo = remaining.find(p => p.expiry === config.expiry && p.underlying === underlying && p.type === spreadType && p.sellQty === 0 && (p.buyLeg?.lotSize ?? 0) > 0 && p.sellLeg?.strike != null && (Number(p.buyLeg?.strike) === bStrike || Number(p.buyLeg?.strike) === sStrike));
-            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Portfolio cap of ${typeCap} reached for type ${spreadType}${dlo ? ` — 🔎 REPLACE-DIAG: long-only ${dlo.id} at strike ${Number(dlo.buyLeg?.strike)} could have been REPLACED but the per-type cap blocks the new full spread` : ''}`);
+            if (typeCap === 0) {
+              logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: window allows only ${(effectiveConfig.sameType || 'call').toUpperCase()} positions`);
+            } else {
+              logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Portfolio cap of ${typeCap} reached for type ${spreadType}${dlo ? ` — 🔎 REPLACE-DIAG: long-only ${dlo.id} at strike ${Number(dlo.buyLeg?.strike)} could have been REPLACED but the per-type cap blocks the new full spread` : ''}`);
+            }
             continue;
           }
 
@@ -4625,7 +4650,7 @@ async function startSingleAccountEngine(account) {
               .eq('account_id', accountState.id)
               .eq('underlying', underlying).eq('type', t.type)
               .gt('sell_qty', 0);
-            const typeCap = derivedTypeCap(effectiveConfig);
+            const typeCap = derivedTypeCap(effectiveConfig, t.type);
             // FAIL-CLOSED: if the count query errored (DB throttled/unreachable) we cannot
             // trust the cap — skip rather than risk an over-cap entry we'd then have to
             // unwind. A missed entry is far cheaper than placing real orders we can't
@@ -4634,7 +4659,7 @@ async function startSingleAccountEngine(account) {
               logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} skipped — per-type count query failed (${countError.message}); failing safe.`);
               continue;
             }
-            if ((activeOfType?.length ?? 0) >= typeCap) {
+            if (typeCap === 0 || (activeOfType?.length ?? 0) >= typeCap) {
               logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} blocked. Per-type cap ${typeCap} reached (DB: ${activeOfType?.length ?? 0}).`);
               continue;
             }
