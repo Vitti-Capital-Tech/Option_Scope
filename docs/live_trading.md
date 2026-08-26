@@ -796,8 +796,52 @@ the account is left flat (no manual reconciliation):
 | Var | Default | Meaning |
 | --- | --- | --- |
 | `ENTRY_CHASE_ATTEMPTS` | `2` | Max in-place re-prices (retries) before abort |
-| `ENTRY_CHASE_BUMP` | `1` | Extra cross ($) added per attempt |
+| `ENTRY_CHASE_BUMP` | `1` | Flat extra cross ($) per attempt |
+| `ENTRY_CHASE_BUMP_PCT` | `3` | Extra cross as **% of premium** per attempt |
 | `ENTRY_CHASE_POLL_MS` | `1200` | Wait between fill checks (ms) |
+
+> [!IMPORTANT]
+> **The cross must scale with the premium.** `marketableChasePrice` takes
+> `max(flat $, premium × %)`, escalating both per attempt, then clamps the result to
+> **50% of premium**. A flat-only cross cannot fill an expensive leg: on a ~$200 call
+> `ENTRY_CHASE_BUMP=1` is 0.5%, and a real incident moved the limit `193 → 194 → 201`
+> across both attempts while the true book had already run past 210 — **zero contracts
+> filled**, the entry aborted and unwound, and the *same, larger* order filled instantly
+> a minute later at **221** (~25 pts/contract worse). At `BUMP_PCT=3` the same attempts
+> price at `198.5 → 210.3` and clear it.
+>
+> Raising `BUMP_PCT` is close to free: the value is a **limit price — a ceiling, not the
+> fill price**. Delta still fills against the resting book, so a higher limit buys
+> certainty of sweeping, not a worse fill. The 50% clamp exists for the *flat* term on
+> cheap legs — with `min_sell_premium` at 10 and a $2 flat bump, a short leg was being
+> re-priced from a bid of 10 down to 5.
+
+### Entry retry after an unfilled abort
+
+The entry minute is claimed when a cycle **starts** (see
+[Entry Cadence](./LLD.md)), which is correct for never skipping a minute — but it also
+meant a *failed* attempt burned the whole minute. In the incident above the abort landed
+at `13:34:08` and the retry waited until `13:35:00`; the premium ran ~25 pts/contract in
+between.
+
+A leg that could not **fill** is a transient market condition, so it now queues a
+short-cooldown retry inside the same minute:
+
+| Var | Default | Meaning |
+| --- | --- | --- |
+| `ENTRY_RETRY_DELAY_MS` | `10000` | Cooldown before the queued retry becomes eligible |
+| `ENTRY_RETRY_MAX_PER_MIN` | `2` | Max retries per wall-clock minute (`0` disables) |
+
+- Only **fill** failures retry. A submit-time **rejection** (`rejected: true` — bracket
+  conflict, bad schema) is structural and would repeat verbatim, so it never queues one.
+- **Capped on purpose**: every attempt places real orders and any partial fill is
+  market-unwound on abort, so retries cost real money. Worst case is 3 attempts in a
+  minute (the scheduled one + 2 retries), then the account waits for the next minute.
+- The counter is scoped to the minute and resets as the clock rolls. Starting any
+  entry-eligible cycle consumes a pending retry, so a retry and a minute-boundary scan
+  can never both fire for the same pass.
+- Log lines: `↻ Entry retry 1/2 queued in 10s (…)` and, once spent,
+  `↻ Entry retry budget for this minute is spent (2) — … waits for the next minute's scan.`
 
 > [!IMPORTANT]
 > **The chase sleeps inside the evaluation lock.** `attempts × pollMs × legs` is added

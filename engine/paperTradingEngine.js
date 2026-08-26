@@ -45,11 +45,31 @@ import {
 // cycle overran the 60s hang guard below (process.exit) and, short of that, pushed the
 // cycle past the minute boundary. 2 × 1200ms costs ~2.5s per leg (~5s per spread) and
 // still gives a widening quote two chances to fill before the all-or-nothing unwind.
+// `bump` is a FLAT dollar cross and `bumpPct` a PERCENT-OF-PREMIUM cross; the chase uses
+// whichever is larger at each attempt. The flat-only version could not fill expensive legs
+// at all — on a ~$200 call, `bump: 1` moved the limit 193 → 201 across both attempts while
+// the real book had run past 210, so ZERO contracts filled and the entry aborted; the same
+// (larger) order then filled instantly a minute later at 221, ~25 pts/contract worse. The
+// percentage term keeps the cross meaningful at every premium level.
 const ENTRY_CHASE = {
   attempts: Math.max(0, Number(process.env.ENTRY_CHASE_ATTEMPTS ?? 2)),
   pollMs: Math.max(200, Number(process.env.ENTRY_CHASE_POLL_MS ?? 1200)),
   bump: Math.max(0, Number(process.env.ENTRY_CHASE_BUMP ?? 1)),
+  bumpPct: Math.max(0, Number(process.env.ENTRY_CHASE_BUMP_PCT ?? 3)),
 };
+
+// Retry a same-minute entry attempt that ABORTED because a leg could not fill. The minute
+// is claimed when a cycle starts (see lastEntryMinute), which is right for never skipping a
+// minute — but it also meant a failed attempt burned the whole minute: an abort at :34:08
+// waited until :35:00 to retry, and by then the premium had run ~25 pts/contract against
+// the account. A short cooldown lets the retry go in while the quote is still close.
+//
+// Capped per minute ON PURPOSE: every attempt places real orders, and a partial fill is
+// market-unwound on abort, so retries cost real money. Only genuine FILL failures retry —
+// a submit-time rejection (bracket conflict, bad schema) is structural and would just
+// repeat, so it never triggers one.
+const ENTRY_RETRY_DELAY_MS = Math.max(1000, Number(process.env.ENTRY_RETRY_DELAY_MS ?? 10000));
+const ENTRY_RETRY_MAX_PER_MIN = Math.max(0, Number(process.env.ENTRY_RETRY_MAX_PER_MIN ?? 2));
 
 // Hard wall-clock ceiling on the ENTRY-PLACEMENT phase of a single cycle. Entries are
 // placed serially (each one a chase-fill + several Supabase guard reads), so a cycle
@@ -248,6 +268,12 @@ async function startSingleAccountEngine(account) {
   // skipping that whole minute's entries. Stamping on start makes every minute get
   // exactly one entry scan, however long the previous one took.
   let lastEntryMinute = -1;
+  // Pending same-minute entry retry (see ENTRY_RETRY_DELAY_MS). `entryRetryAt` is when the
+  // retry becomes eligible (0 = none pending); the counter is scoped to `entryRetryMinute`
+  // so the per-minute budget resets on its own as the clock rolls.
+  let entryRetryAt = 0;
+  let entryRetryMinute = -1;
+  let entryRetriesUsed = 0;
   let isEvaluating = false;
   let evaluationStart = 0;
   let lastWsReconnectTime = 0;
@@ -269,6 +295,23 @@ async function startSingleAccountEngine(account) {
     creds: liveCreds,
     telegramChatId: accountState.telegram_chat_id,
   }));
+
+  // Ask for another entry pass inside the CURRENT minute after an attempt aborted on a
+  // leg that could not fill. Called only for genuine fill failures — a submit-time
+  // rejection is structural and would just repeat, so it must not land here.
+  function requestEntryRetry(detail) {
+    if (ENTRY_RETRY_MAX_PER_MIN <= 0) return;
+    const now = Date.now();
+    const minute = Math.floor(now / 60000);
+    if (minute !== entryRetryMinute) { entryRetryMinute = minute; entryRetriesUsed = 0; }
+    if (entryRetriesUsed >= ENTRY_RETRY_MAX_PER_MIN) {
+      logWarn(`[${accountState.name}] ↻ Entry retry budget for this minute is spent (${ENTRY_RETRY_MAX_PER_MIN}) — ${detail} waits for the next minute's scan.`);
+      return;
+    }
+    entryRetriesUsed++;
+    entryRetryAt = now + ENTRY_RETRY_DELAY_MS;
+    log(`[${accountState.name}] ↻ Entry retry ${entryRetriesUsed}/${ENTRY_RETRY_MAX_PER_MIN} queued in ${Math.round(ENTRY_RETRY_DELAY_MS / 1000)}s (${detail}) — not waiting for the next minute.`);
+  }
 
   // ── Recent-fill order-id cache (armed REAL live) ────────────────────────
   // Refreshed off the evaluation lock so the exit loop never awaits a Delta round-trip.
@@ -2628,7 +2671,10 @@ async function startSingleAccountEngine(account) {
     // guards above are already past, so the scan really is going to run). A cycle that
     // overruns into the next minute therefore leaves that next minute unclaimed, and the
     // first tick after it finishes picks the minute up instead of skipping it.
-    if (!onlyExits) lastEntryMinute = Math.floor(evaluationStart / 60000);
+    if (!onlyExits) {
+      lastEntryMinute = Math.floor(evaluationStart / 60000);
+      entryRetryAt = 0; // this cycle IS the retry (if one was pending) — don't run it twice
+    }
     try {
       const allTickers = Object.values(tickerData);
       if (allTickers.length === 0) {
@@ -4876,6 +4922,7 @@ async function startSingleAccountEngine(account) {
                 attempts: ENTRY_CHASE.attempts,
                 pollMs: ENTRY_CHASE.pollMs,
                 bump: ENTRY_CHASE.bump,
+                bumpPct: ENTRY_CHASE.bumpPct,
                 buyOffset: buyOff,
                 sellOffset: sellOff,
                 quote: (sym) => tickerData[sym],
@@ -4890,6 +4937,13 @@ async function startSingleAccountEngine(account) {
                 : 'could not fill (chase exhausted)';
               logError(`[${accountState.name}] LIVE entry aborted (${liveEntry.legFailed} leg: ${liveEntry.error}) — not persisting ${t.buyLeg.strike}/${t.sellLeg.strike}`);
               notifyFailure({ account: accountState.name, context: `Entry ABORTED — ${liveEntry.legFailed} leg ${failMode}; position unwound, account left flat`, error: liveEntry.error, extra: `${t.type?.toUpperCase?.() || ''} ${t.buyLeg.strike}/${t.sellLeg.strike}` });
+              // A leg that couldn't FILL is a transient market condition — the same spread is
+              // usually fillable moments later, so queue a short-cooldown retry instead of
+              // burning the rest of the minute. A submit-time REJECTION is structural
+              // (bracket conflict, bad schema) and would repeat verbatim, so it never does.
+              if (!liveEntry.rejected) {
+                requestEntryRetry(`${t.type?.toUpperCase?.() || ''} ${t.buyLeg.strike}/${t.sellLeg.strike} ${liveEntry.legFailed} leg unfilled`);
+              }
               continue;
             }
             // Remember the exchange bracket level on each leg so a later
@@ -4911,7 +4965,8 @@ async function startSingleAccountEngine(account) {
                 price: t.hedgeLeg.entryPrice + buyOff,
                 chase: {
                   attempts: ENTRY_CHASE.attempts, pollMs: ENTRY_CHASE.pollMs,
-                  bump: ENTRY_CHASE.bump, buyOffset: buyOff, sellOffset: sellOff,
+                  bump: ENTRY_CHASE.bump, bumpPct: ENTRY_CHASE.bumpPct,
+                  buyOffset: buyOff, sellOffset: sellOff,
                   quote: (sym) => tickerData[sym],
                 },
               });
@@ -5418,9 +5473,13 @@ async function startSingleAccountEngine(account) {
 
       if (!spotPrice || !config.expiry) return;
 
-      const currentMinute = Math.floor(Date.now() / 60000);
+      const nowMs = Date.now();
+      const currentMinute = Math.floor(nowMs / 60000);
+      // A new minute, or a queued retry whose cooldown has elapsed (an entry aborted on an
+      // unfillable leg — retrying now beats waiting out the minute while the quote moves).
+      const retryDue = entryRetryAt > 0 && nowMs >= entryRetryAt;
 
-      if (currentMinute > lastEntryMinute) {
+      if (currentMinute > lastEntryMinute || retryDue) {
         await evaluateStrategy(false); // Full evaluation (exits + entries)
       } else {
         await evaluateStrategy(true);  // Exit-only evaluation

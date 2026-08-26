@@ -73,15 +73,28 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * fills. `quote` is the leg's latest ticker ({ bid, ask, markPrice, lastPrice }).
  * Returns null when no usable reference price is available (caller skips the edit).
  */
-export function marketableChasePrice(side, quote, offset = 0, bump = 0) {
+export function marketableChasePrice(side, quote, offset = 0, bump = 0, bumpPct = 0) {
   const q = quote || {};
   const ref = side === 'buy'
     ? (q.ask ?? q.lastPrice ?? q.markPrice)
     : (q.bid ?? q.lastPrice ?? q.markPrice);
   if (ref == null || !Number.isFinite(Number(ref))) return null;
+  const r = Number(ref);
+  // The cross must SCALE WITH THE PREMIUM, not be a flat dollar amount. A flat $1 bump is
+  // 0.5% of a $200 option and 5% of a $20 one, so on expensive legs the escalation was
+  // pure noise: an entry chase on a $200 call moved 193 → 201 while the real book had run
+  // past 210, filled ZERO contracts, and aborted — then the identical (larger) order filled
+  // instantly a minute later at 221. Take whichever cross is LARGER, so cheap legs keep the
+  // flat floor and expensive legs actually reach the market.
+  // Clamped to half the premium so the FLAT term can never eat a cheap leg alive: with
+  // min_sell_premium at 10 and a $2 flat bump, a short leg was being re-priced from a bid
+  // of 10 down to 5 — half the premium given away to chase a fill. Never binds on the case
+  // this exists for (50% of a $189 call is $94, far past any cross we'd ever need).
+  const raw = Math.max(Number(bump) || 0, Math.abs(r) * ((Number(bumpPct) || 0) / 100));
+  const cross = Math.min(raw, Math.abs(r) * 0.5);
   return side === 'buy'
-    ? Number(ref) + offset + bump
-    : Math.max(0.05, Number(ref) - offset - bump);
+    ? r + offset + cross
+    : Math.max(0.05, r - offset - cross);
 }
 
 /**
@@ -273,15 +286,18 @@ export function createLiveExecutor(getCtx) {
       if (u === 0) { unfilled = 0; break; }
       if (u == null) continue;                 // fetch hiccup — retry next loop
       unfilled = u;
-      // Re-price toward the market, escalating the cross a little each attempt.
+      // Re-price toward the market, escalating the cross each attempt. BOTH the flat and
+      // the percentage component scale with the attempt number; marketableChasePrice takes
+      // whichever is larger (see there).
       const bump = (chase.bump ?? 1) * a;
-      const newPx = cleanLimitPrice(marketableChasePrice(side, chase.quote?.(symbol), offset, bump));
+      const bumpPct = (chase.bumpPct ?? 0) * a;
+      const newPx = cleanLimitPrice(marketableChasePrice(side, chase.quote?.(symbol), offset, bump, bumpPct));
       if (!newPx) continue;
       try {
         // Send the ORIGINAL total size: Delta keeps the already-filled portion and
         // re-rests the remainder at the new price (a smaller size would be < filled).
         await editOrder(creds, { id, product_id: productId, limit_price: newPx, size: Math.max(1, Math.round(contracts)) });
-        log(`[${accountName}] 🏃 CHASE ${side} ${symbol}: ${unfilled} unfilled → reprice ${newPx} (attempt ${a}/${attempts}) [${tag}]`);
+        log(`[${accountName}] 🏃 CHASE ${side} ${symbol}: ${unfilled} unfilled → reprice ${newPx} (attempt ${a}/${attempts}, cross +${bumpPct ? Math.max(bump, 0).toFixed(2) + '/' + bumpPct.toFixed(2) + '%' : bump}) [${tag}]`);
       } catch (e) {
         logWarn(`[${accountName}] chase reprice failed for ${symbol} [${tag}]: ${e.message}`);
       }
