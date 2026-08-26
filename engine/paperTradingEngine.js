@@ -38,11 +38,39 @@ import {
 // market up to `attempts` times, waiting `pollMs` between checks, escalating the
 // cross by `bump` (premium $) each attempt so a widening quote still fills. If a
 // leg still can't fully fill, openSpread unwinds and aborts the entry. Env-overridable.
+//
+// TIMING MATTERS: the chase sleeps INSIDE the evaluation lock, so its total cost is
+// added straight onto the cycle that is also meant to open the NEXT minute's entries.
+// At the old 3 × 5000ms it cost ~15s per leg → ~30s per spread → two spreads in one
+// cycle overran the 60s hang guard below (process.exit) and, short of that, pushed the
+// cycle past the minute boundary. 2 × 1200ms costs ~2.5s per leg (~5s per spread) and
+// still gives a widening quote two chances to fill before the all-or-nothing unwind.
 const ENTRY_CHASE = {
-  attempts: Math.max(0, Number(process.env.ENTRY_CHASE_ATTEMPTS ?? 3)),
-  pollMs: Math.max(200, Number(process.env.ENTRY_CHASE_POLL_MS ?? 5000)),
+  attempts: Math.max(0, Number(process.env.ENTRY_CHASE_ATTEMPTS ?? 2)),
+  pollMs: Math.max(200, Number(process.env.ENTRY_CHASE_POLL_MS ?? 1200)),
   bump: Math.max(0, Number(process.env.ENTRY_CHASE_BUMP ?? 1)),
 };
+
+// Hard wall-clock ceiling on the ENTRY-PLACEMENT phase of a single cycle. Entries are
+// placed serially (each one a chase-fill + several Supabase guard reads), so a cycle
+// with many candidates could otherwise run long enough to trip the 60s hang guard —
+// which crashes the process and takes EVERY account's entries down with it. When the
+// budget is spent the remaining candidates are simply left for the next minute's scan:
+// a deferred entry is cheap, a process restart is not.
+const ENTRY_PHASE_BUDGET_MS = Math.max(5000, Number(process.env.ENTRY_PHASE_BUDGET_MS ?? 25000));
+
+// Recent-fills polling (armed REAL live only). The resting-exit model detects a fill by
+// order id, which used to mean a signed /v2/fills round-trip on EVERY ~1s exit tick,
+// AWAITED inside the evaluation lock. That put a network round-trip between the minute
+// boundary and the entry scan on every single account that held a position — and at 60
+// calls/min/account it was also the bulk of the engine's Delta egress.
+//
+// The fetch now runs OUTSIDE the lock and its result is cached: the eval loop reads the
+// cache and only *kicks off* a refresh when one is due, never waits for it. FILL_POLL_MS
+// is how often a refresh is due; FILL_STALE_MS is the age past which the cache stops
+// being trusted at all and the exit loop holds (same fail-safe as a failed fetch).
+const LIVE_FILL_POLL_MS = Math.max(500, Number(process.env.LIVE_FILL_POLL_MS ?? 3000));
+const LIVE_FILL_STALE_MS = Math.max(5000, Number(process.env.LIVE_FILL_STALE_MS ?? 30000));
 
 /**
  * ── STRATEGY VERSIONING ──────────────────────────────────────────────────────
@@ -212,7 +240,14 @@ async function startSingleAccountEngine(account) {
   let tickerData = {}; // Live ticker data from WS
   let wsHandle = null;
   let symbolMeta = {};
-  let lastEvaluated = 0;
+  // Entry cadence: entries run ONCE per wall-clock minute. `lastEntryMinute` is the
+  // minute index (epoch ms / 60000) of the last cycle that was ALLOWED to open entries,
+  // and it is stamped when that cycle STARTS — not when it ends. Stamping on completion
+  // meant a cycle that ran past a minute boundary (a slow chase-fill, a stalled Delta
+  // call) advanced the marker into the minute it had never actually scanned, silently
+  // skipping that whole minute's entries. Stamping on start makes every minute get
+  // exactly one entry scan, however long the previous one took.
+  let lastEntryMinute = -1;
   let isEvaluating = false;
   let evaluationStart = 0;
   let lastWsReconnectTime = 0;
@@ -234,6 +269,33 @@ async function startSingleAccountEngine(account) {
     creds: liveCreds,
     telegramChatId: accountState.telegram_chat_id,
   }));
+
+  // ── Recent-fill order-id cache (armed REAL live) ────────────────────────
+  // Refreshed off the evaluation lock so the exit loop never awaits a Delta round-trip.
+  // `fillIdsAt` is the time of the last SUCCESSFUL refresh; a failed fetch deliberately
+  // leaves the previous set in place and lets it age out via LIVE_FILL_STALE_MS, so a
+  // single blip doesn't immediately freeze fill detection.
+  let fillIdsCache = null;
+  let fillIdsAt = 0;
+  let fillIdsFetching = false;
+
+  function kickFillIdsRefresh() {
+    if (fillIdsFetching) return;                                   // one in flight is enough
+    if (Date.now() - fillIdsAt < LIVE_FILL_POLL_MS) return;        // not due yet
+    fillIdsFetching = true;
+    live.recentFillOrderIds()
+      .then(set => { if (set != null) { fillIdsCache = set; fillIdsAt = Date.now(); } })
+      .catch(() => { /* recentFillOrderIds already logs; keep the previous set to age out */ })
+      .finally(() => { fillIdsFetching = false; });
+  }
+
+  // The set the exit loop should act on, or null when it must NOT infer fills — never
+  // seeded, or too old to trust. Callers treat null exactly like the old failed fetch.
+  function currentFillIds() {
+    if (fillIdsCache == null) return null;
+    if (Date.now() - fillIdsAt > LIVE_FILL_STALE_MS) return null;
+    return fillIdsCache;
+  }
 
   // Push a live trade event (entry/exit) to Telegram. Gated on armed REAL live
   // (mode live + armed + NOT dry-run) so paper and dry-run validation never notify.
@@ -2562,6 +2624,11 @@ async function startSingleAccountEngine(account) {
 
     isEvaluating = true;
     evaluationStart = Date.now();
+    // Claim THIS minute for entries the moment the cycle actually begins (all early-return
+    // guards above are already past, so the scan really is going to run). A cycle that
+    // overruns into the next minute therefore leaves that next minute unclaimed, and the
+    // first tick after it finishes picks the minute up instead of skipping it.
+    if (!onlyExits) lastEntryMinute = Math.floor(evaluationStart / 60000);
     try {
       const allTickers = Object.values(tickerData);
       if (allTickers.length === 0) {
@@ -2678,13 +2745,28 @@ async function startSingleAccountEngine(account) {
         }
       }
 
-      const { pairs: localTopCalls, rejected: callRej } = scanTickers(callTickers, effectiveConfig, spotPrice, atmStrike, getTickerPrice);
-      const { pairs: localTopPuts, rejected: putRej } = scanTickers(putTickers, effectiveConfig, spotPrice, atmStrike, getTickerPrice);
-      const topSpreads = [...localTopCalls, ...localTopPuts];
+      // Entry eligibility, computed BEFORE the scan so an ineligible cycle can skip it:
+      //  • onlyExits        → exits-only cycle (59 of every 60 ticks), no entries
+      //  • accountState.paused → account paused, entries blocked (exits still run)
+      //  • !dayAllowsEntry  → day-of-week entry gate (see isTradingDayEnabled)
+      const dayAllowsEntry = isTradingDayEnabled();
+      const wantEntries = !onlyExits && !accountState.paused && dayAllowsEntry;
 
-      // Merge rejection counts from calls + puts
+      // scanTickers is an O(n²) pass over every strike pair, per type — tens of ms per
+      // account, and it holds the event loop the whole time (every account engine shares
+      // ONE process). Its output feeds the ENTRY path only, so running it on the ~59
+      // exit-only ticks of each minute was pure blocking waste that pushed every other
+      // account's timers — including their minute-boundary entry scan — later and later.
+      let topSpreads = [];
       const totalRejected = {};
-      for (const k of Object.keys(callRej)) totalRejected[k] = (callRej[k] || 0) + (putRej[k] || 0);
+      if (wantEntries) {
+        const { pairs: localTopCalls, rejected: callRej } = scanTickers(callTickers, effectiveConfig, spotPrice, atmStrike, getTickerPrice);
+        const { pairs: localTopPuts, rejected: putRej } = scanTickers(putTickers, effectiveConfig, spotPrice, atmStrike, getTickerPrice);
+        topSpreads = [...localTopCalls, ...localTopPuts];
+
+        // Merge rejection counts from calls + puts
+        for (const k of Object.keys(callRej)) totalRejected[k] = (callRej[k] || 0) + (putRej[k] || 0);
+      }
 
       function getTickerPrice(strike, optType, priceField, expiry) {
         const lowerType = optType.toLowerCase();
@@ -2767,8 +2849,7 @@ async function startSingleAccountEngine(account) {
       // no-op. Exit/position management runs regardless. dayAllowsEntry is reused at the gate.
       // (paused is re-read as `paused` below for the placement gates; reading it here too is
       // fine — same field, and each gate uses the current value at its own point in the cycle.)
-      const dayAllowsEntry = isTradingDayEnabled();
-      const wantEntries = !onlyExits && !accountState.paused && dayAllowsEntry;
+      // `dayAllowsEntry` / `wantEntries` are computed above the scan — see there.
       const processedSpreads = [];
       if (wantEntries) {
         log(`[${accountState.name}] Evaluating ${topSpreads.length} candidate spreads for entry (Spot: ${spotPrice}, ATM Strike: ${atmStrike})`);
@@ -2899,19 +2980,21 @@ async function startSingleAccountEngine(account) {
       //  • Armed REAL live → RESTING-order model (handleLiveRestingExit): the short
       //    buy-back @1.1 and the fixed long ladder rest in the exchange order book
       //    and fill on their own; the engine books fills (detected by order id) and
-      //    keeps spot-cross / expiry as engine-driven catch-alls. Fetch recent fill
-      //    order ids once per cycle; a failed fetch (null) → hold everything (no
-      //    fill inference) to avoid mis-booking.
+      //    keeps spot-cross / expiry as engine-driven catch-alls. Recent fill order ids
+      //    come from the off-lock cache (kickFillIdsRefresh); a null set — never seeded
+      //    or gone stale — → hold everything (no fill inference) to avoid mis-booking.
       const liveResting = accountState.mode === 'live' && !!accountState.live_enabled && !live.dryRun;
       let liveFillIds = null;
       let liveSizeBySymbol = null;
       // Only the resting-order model consumes fills, and only when this account actually
       // holds a position for the current underlying. With no open positions the exit loop
-      // below is a no-op anyway, so an idle account no longer polls Delta fills every ~1s
-      // for nothing. When positions DO exist we still fetch every cycle — the spot-cross /
-      // expiry catch-all and resting-fill detection depend on it.
+      // below is a no-op anyway, so an idle account never polls Delta fills at all. When
+      // positions DO exist the refresh is merely KICKED here and the cached set is read —
+      // the cycle never blocks on the round-trip, so a slow /v2/fills can no longer sit
+      // between the minute boundary and this account's entry scan.
       if (liveResting && positions.some(p => p.underlying === underlying)) {
-        liveFillIds = await live.recentFillOrderIds();
+        kickFillIdsRefresh();          // fire-and-forget — this cycle does NOT wait on it
+        liveFillIds = currentFillIds();
         // Per-symbol position sizes are needed ONLY to confirm a short buy-back has FULLY
         // closed — i.e. when a full-spread's resting exit order has already begun filling.
         // This exit loop runs ~once/second, so fetch the positions snapshot only in that
@@ -4545,7 +4628,19 @@ async function startSingleAccountEngine(account) {
 
       // Process entries
       if (!onlyExits) {
+        const entryPhaseStart = Date.now();
+        let entryBudgetSpent = false;
         for (const t of newEntries) {
+          // Stop placing once the phase budget is gone — the rest are retried next minute.
+          // Checked BEFORE each entry so an in-flight one always completes (never leaves a
+          // half-open spread); only not-yet-started entries are deferred.
+          if (Date.now() - entryPhaseStart > ENTRY_PHASE_BUDGET_MS) {
+            if (!entryBudgetSpent) {
+              entryBudgetSpent = true;
+              logWarn(`[${accountState.name}] ⏱ Entry phase budget (${Math.round(ENTRY_PHASE_BUDGET_MS / 1000)}s) spent — deferring the remaining candidate(s) to the next minute's scan to keep this cycle inside the minute.`);
+            }
+            continue;
+          }
           try {
             if (t._replaceableLongOnlyPos) {
               const posToExit = t._replaceableLongOnlyPos;
@@ -4956,9 +5051,8 @@ async function startSingleAccountEngine(account) {
     } finally {
       isEvaluating = false;
       evaluationStart = 0;
-      if (!onlyExits) {
-        lastEvaluated = Date.now();
-      }
+      // NB: no entry-minute stamp here — it is claimed on START (see above) so a long
+      // cycle can never consume the minute it never scanned.
     }
   }
 
@@ -5324,11 +5418,9 @@ async function startSingleAccountEngine(account) {
 
       if (!spotPrice || !config.expiry) return;
 
-      const now = Date.now();
-      const currentMinute = Math.floor(now / 60000);
-      const lastMinute = Math.floor(lastEvaluated / 60000);
+      const currentMinute = Math.floor(Date.now() / 60000);
 
-      if (currentMinute > lastMinute || lastEvaluated === 0) {
+      if (currentMinute > lastEntryMinute) {
         await evaluateStrategy(false); // Full evaluation (exits + entries)
       } else {
         await evaluateStrategy(true);  // Exit-only evaluation

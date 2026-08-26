@@ -19,6 +19,40 @@ function signPayload(secret, message) {
   return crypto.createHmac('sha256', secret).update(message).digest('hex');
 }
 
+// ── Request timeouts ────────────────────────────────────────────────────────
+// `fetch` has no default request timeout, so a half-open socket to Delta used to hang
+// a call indefinitely. Every one of these runs inside the engine's single evaluation
+// lock, so ONE stalled read froze that account's exits AND its next entry scan until
+// the OS TCP timeout eventually tripped — minutes later.
+//
+// Reads are bounded tightly: a stale answer is worthless and the caller retries on the
+// next ~1s tick anyway. WRITES get a much longer leash on purpose — aborting the client
+// side of an order that Delta already accepted creates an orphan on the exchange, so we
+// only give up when the request is beyond plausible. (Orphans that do slip through are
+// still caught by reconcileOrphans / protectOrphanExchangePositions.)
+const READ_TIMEOUT_MS = Math.max(1000, Number(process.env.DELTA_READ_TIMEOUT_MS ?? 6000));
+const WRITE_TIMEOUT_MS = Math.max(2000, Number(process.env.DELTA_WRITE_TIMEOUT_MS ?? 15000));
+
+function timeoutFor(method) {
+  return method === 'GET' ? READ_TIMEOUT_MS : WRITE_TIMEOUT_MS;
+}
+
+/**
+ * Run a fetch under an abort deadline, re-labelling the abort so callers log the real
+ * cause ("timed out after 6000ms") instead of a bare, opaque `AbortError`.
+ */
+async function fetchWithTimeout(url, init, method, path) {
+  const ms = timeoutFor(method);
+  try {
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(ms) });
+  } catch (e) {
+    if (e?.name === 'TimeoutError' || e?.name === 'AbortError') {
+      throw new Error(`Delta API ${method} ${path} timed out after ${ms}ms`);
+    }
+    throw e;
+  }
+}
+
 /**
  * Perform a signed request. `creds` = { apiKey, apiSecret }.
  * `query` (optional) must include the leading '?' and match exactly what is sent.
@@ -32,7 +66,7 @@ async function signedRequest(creds, method, path, { query = '', body = null } = 
   const message = method + timestamp + path + query + bodyStr;
   const signature = signPayload(creds.apiSecret, message);
 
-  const res = await fetch(BASE_URL + path + query, {
+  const res = await fetchWithTimeout(BASE_URL + path + query, {
     method,
     headers: {
       'api-key': creds.apiKey,
@@ -42,7 +76,7 @@ async function signedRequest(creds, method, path, { query = '', body = null } = 
       'User-Agent': 'optionscope-engine',
     },
     ...(bodyStr ? { body: bodyStr } : {}),
-  });
+  }, method, path);
 
   let json = null;
   try { json = await res.json(); } catch { /* non-JSON */ }
@@ -66,14 +100,14 @@ async function signedRequestFull(creds, method, path, { query = '', body = null 
   const bodyStr = body ? JSON.stringify(body) : '';
   const message = method + timestamp + path + query + bodyStr;
   const signature = signPayload(creds.apiSecret, message);
-  const res = await fetch(BASE_URL + path + query, {
+  const res = await fetchWithTimeout(BASE_URL + path + query, {
     method,
     headers: {
       'api-key': creds.apiKey, signature, timestamp,
       'Content-Type': 'application/json', 'User-Agent': 'optionscope-engine',
     },
     ...(bodyStr ? { body: bodyStr } : {}),
-  });
+  }, method, path);
   let json = null;
   try { json = await res.json(); } catch { /* non-JSON */ }
   if (!res.ok || json?.success === false) {

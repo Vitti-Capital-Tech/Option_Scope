@@ -791,16 +791,101 @@ the account is left flat (no manual reconciliation):
 > *"… rejected by Delta at submit (<error>)"* vs *"… could not fill (chase exhausted)"* —
 > instead of always blaming the chase, so a rejection isn't mistaken for a slow/wide market.
 
-**Tuning** (env, armed-real only; defaults are conservative):
+**Tuning** (env, armed-real only):
 
 | Var | Default | Meaning |
 | --- | --- | --- |
-| `ENTRY_CHASE_ATTEMPTS` | `3` | Max in-place re-prices (retries) before abort |
-| `ENTRY_CHASE_POLL_MS` | `5000` | Wait between fill checks (ms) — check after ~5s |
+| `ENTRY_CHASE_ATTEMPTS` | `2` | Max in-place re-prices (retries) before abort |
 | `ENTRY_CHASE_BUMP` | `1` | Extra cross ($) added per attempt |
+| `ENTRY_CHASE_POLL_MS` | `1200` | Wait between fill checks (ms) |
+
+> [!IMPORTANT]
+> **The chase sleeps inside the evaluation lock.** `attempts × pollMs × legs` is added
+> straight onto the cycle that also has to open the **next minute's** entries. The former
+> `3 × 5000` cost ~15s per leg → ~30s per spread; two spreads in one cycle ran past the
+> **60s hang guard**, which calls `process.exit(1)` for PM2 recovery and takes *every*
+> account's entries down with it — and short of that, pushed the cycle past the minute
+> boundary so the next minute's entry scan was skipped entirely. `2 × 1200` costs ~2.5s
+> per leg (~5s per spread) and still gives a widening quote two chances to fill before
+> the all-or-nothing unwind. Raise `pollMs` only if you are also confident the cycle
+> stays well inside a minute.
 
 **Dry-run / paper / disarmed:** chase is skipped entirely — a single submit is
 assumed filled, so behaviour on every non-armed-real path is byte-for-byte unchanged.
+
+### Entry-phase budget
+
+Entries are placed **serially** — each one a chase-fill plus several Supabase guard
+reads (per-type cap, combined cap, buy-strike and sell-strike uniqueness). A cycle with
+many qualifying candidates could therefore run long enough to trip the 60s hang guard
+even with a fast chase.
+
+`ENTRY_PHASE_BUDGET_MS` (default **25000**) is a hard wall-clock ceiling on the
+placement phase of one cycle. The elapsed time is checked **before each entry**, so an
+in-flight entry always completes — the guard never leaves a half-open spread. Once the
+budget is spent the remaining candidates are skipped with a single warning:
+
+```
+⏱ Entry phase budget (25s) spent — deferring the remaining candidate(s) to the next
+minute's scan to keep this cycle inside the minute.
+```
+
+Deferred candidates are simply not persisted (they never enter `persistedEntryIds`), so
+the in-memory book stays consistent and they are re-evaluated on the next minute's scan.
+A deferred entry is cheap; a process restart is not. If this line appears routinely, the
+account is producing more candidates per minute than it can place — raise the budget or
+lower the per-type caps.
+
+### Recent-fills cache (off the evaluation lock)
+
+The resting-exit model detects a fill by **order id**, which meant a signed `/v2/fills`
+round-trip **awaited inside the evaluation lock on every ~1s exit tick** for any account
+holding a position. That put a network round-trip between the minute boundary and the
+entry scan on every such account — and at 60 calls/min/account it was also the bulk of
+the engine's Delta egress.
+
+The fetch now runs **outside the lock**. `kickFillIdsRefresh()` starts a refresh when one
+is due and returns immediately; the eval loop reads whatever `currentFillIds()` has:
+
+| Var | Default | Meaning |
+| --- | --- | --- |
+| `LIVE_FILL_POLL_MS` | `3000` | How often an off-lock refresh becomes due |
+| `LIVE_FILL_STALE_MS` | `30000` | Age past which the cached set is no longer trusted |
+
+- A **failed** refresh deliberately leaves the previous set in place to age out, so a
+  single blip doesn't immediately freeze fill detection.
+- A **never-seeded or stale** cache returns `null`, and `null` is handled exactly as the
+  old failed fetch was: the exit loop **holds** every position rather than inferring a
+  fill from a missing snapshot.
+- Detection can lag a real fill by up to `LIVE_FILL_POLL_MS`. This is safe by
+  construction — a cached set can only ever **miss** a new fill, never invent one, and
+  the resting orders themselves live on the exchange, so nothing is left unprotected.
+- Idle accounts (no open position for the underlying) never poll fills at all.
+
+### Delta HTTP request deadlines
+
+`fetch` has no default request timeout, so a half-open socket to Delta hung the call
+until the OS TCP timeout eventually tripped — **minutes** later, with that account's
+exits *and* its next entry scan frozen behind the evaluation lock. Every Delta call now
+carries an `AbortSignal.timeout`:
+
+| Var | Default | Applies to |
+| --- | --- | --- |
+| `DELTA_READ_TIMEOUT_MS` | `6000` | Signed **GET** (`deltaTradeApi.js`) — positions, orders, fills, balance |
+| `DELTA_WRITE_TIMEOUT_MS` | `15000` | Signed **POST/PUT/DELETE** — place, edit, cancel, bracket, close |
+| `DELTA_PUBLIC_TIMEOUT_MS` | `10000` | Public market data (`deltaApi.js`) — spot, products, ticker backfill |
+
+> [!WARNING]
+> **Do not lower `DELTA_WRITE_TIMEOUT_MS`.** Reads are bounded tightly because a stale
+> answer is worthless and the caller retries on the next ~1s tick. Writes get a much
+> longer leash **on purpose**: aborting the client side of an order Delta has already
+> accepted leaves an **orphan position on the exchange**. (Orphans that do slip through
+> are still caught by `reconcileOrphans` / `protectOrphanExchangePositions`, but the
+> timeout should not be manufacturing them.)
+
+Aborts are re-labelled before they propagate — `Delta API POST /v2/orders timed out
+after 15000ms` — so the existing failure paths and Telegram alerts name the real cause
+instead of a bare, opaque `AbortError`.
 
 ### Top-of-book depth guard (uneven-fill prevention)
 

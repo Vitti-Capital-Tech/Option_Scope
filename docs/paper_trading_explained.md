@@ -188,12 +188,36 @@ This means:
 - **Exits** are checked every **1 second** (fast reaction to price moves)
 - **New entries** are checked every **1 minute** (no need to rush entries)
 
+### Why entries can't skip a minute
+
+"Once a minute" is only true if the marker that tracks *which* minute was scanned is
+honest. It used to be stamped when a cycle **finished** (`lastEvaluated`), so a cycle
+that overran its minute wrote a marker into a minute it had **never scanned** — and
+that minute's entry scan was silently skipped. No log line, no guard message; just a
+spread that qualified at 10:01 and opened at 10:02. A 65-second cycle produced entries
+on **alternate minutes only**:
+
+| Cycle length | Minutes actually scanned (out of 10) — old | New |
+|---|---|---|
+| 8s | 10 | 10 |
+| 35s | 10 | 10 |
+| **65s** | **5** | **10** |
+| 95s (+1.5s exit lag) | 5 | 7 |
+
+The marker (`lastEntryMinute`) is now claimed when the cycle **starts**, so a cycle
+that overruns leaves the next minute *unclaimed* and the first tick after it finishes
+picks that minute up. Three further changes keep cycles short enough that the question
+rarely arises: a **25s entry-phase budget**, a faster **entry chase** (2×1200ms instead
+of 3×5000ms), and moving the per-tick Delta fills fetch **off the evaluation lock**.
+Live-trading specifics are in [live_trading.md](./live_trading.md#entry-phase-budget).
+
 ### Pre-Flight Checks & Auto-Healing
 
 Before any evaluation runs, these guards must pass:
 
-1. **`isEvaluating` mutex check** — prevents overlapping evaluations. If the previous run is still active, it skips.
+1. **`isEvaluating` mutex check** — prevents overlapping evaluations. If the previous run is still active, it skips (and the tick retries a second later).
    - *Hang Timeout Guard*: If `isEvaluating` has been active for more than **60 seconds** (e.g. database query is hung indefinitely), the engine logs a fatal error and crashes the process (`process.exit(1)`). This allows PM2 to auto-restart the engine container cleanly.
+   - *Entry-minute claim*: once the guards below pass and a **full** (entry-eligible) cycle actually begins, it stamps `lastEntryMinute` with the **current** minute — on START, not on completion. See [Why entries can't skip a minute](#why-entries-cant-skip-a-minute).
 2. **Spot price exists** — can't evaluate without knowing the underlying price.
 3. **Spot not stale** — if the spot price hasn't been updated in **120 seconds**, the evaluation is skipped.
    - *Stale WebSocket Auto-Healing*: When the spot price remains stale for >120 seconds, the engine automatically forces a WebSocket reconnection (`startWebSocket()`) to heal silent TCP drops common on VPS nodes.
@@ -914,6 +938,10 @@ Here's every safety guard in one table:
 | Spot staleness (120s) | `paperTradingEngine.js` | Skips evaluation if spot price is stale |
 | WebSocket stale spot reconnect | `paperTradingEngine.js` | Automatically forces WebSocket reconnect (`startWebSocket()`) if spot remains stale > 120s |
 | Evaluation hang guard (60s) | `paperTradingEngine.js` | Logs fatal error and crashes process (`exit(1)`) if evaluation is hung > 60s, triggering PM2 container recovery |
+| Entry-phase budget (25s) | `paperTradingEngine.js` | Caps the serial entry-placement phase of one cycle so it can never reach the 60s hang guard; remaining candidates are deferred to the next minute's scan. Checked *before* each entry, so an in-flight one always completes |
+| Entry-minute claimed on start | `paperTradingEngine.js` | `lastEntryMinute` is stamped when a full cycle begins, so an overrunning cycle can't consume a minute it never scanned (no silently skipped entries) |
+| Fills-cache staleness (30s) | `paperTradingEngine.js` | The off-lock recent-fills cache returns `null` once older than 30s; the exit loop then holds every position rather than inferring a fill from a stale snapshot |
+| Delta request timeouts | `deltaTradeApi.js` / `deltaApi.js` | `AbortSignal.timeout` on every Delta call (reads 6s, writes 15s, public 10s) so a half-open socket can't freeze an account's exits and entry scan behind the evaluation lock |
 | Config fetch retry loop (10x) | `paperTradingEngine.js` | Retries config load up to 10 times with 500ms delay to prevent duplicate key database insert collisions |
 | Quote freshness (120s) | `utils.js` | Rejects spread candidates whose quotes are older than 120 seconds |
 | Backfill rejection (timestamp = 0) | `utils.js` | Rejects tickers with no bid/ask price that still have timestamp = 0. Tickers with a valid price from REST backfill are treated as fresh (timestamp = `Date.now()`) for the first scan, then overwritten by live WS quotes. |

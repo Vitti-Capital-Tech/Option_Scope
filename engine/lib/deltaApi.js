@@ -9,6 +9,13 @@ import { toFiniteNumber, normalizeIv, matchesOptionType, log, logWarn, logError 
 const BASE_URL = 'https://api.india.delta.exchange';
 const WS_URL = 'wss://socket.india.delta.exchange';
 
+// Public reads get the same abort deadline as the signed ones (deltaTradeApi.js):
+// `fetch` has no default request timeout, so a half-open socket to Delta would hang the
+// caller until the OS TCP timeout — and callers here (spot poll, product refresh, ticker
+// backfill) feed the evaluation loop. Product/backfill responses are large, so the
+// default is looser than the signed-read timeout.
+const PUBLIC_TIMEOUT_MS = Math.max(1000, Number(process.env.DELTA_PUBLIC_TIMEOUT_MS ?? 10000));
+
 /**
  * REST GET request to Delta Exchange API.
  */
@@ -17,7 +24,15 @@ export async function apiGet(path, params = {}) {
   Object.entries(params).forEach(([k, v]) => {
     if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, v);
   });
-  const res = await fetch(url.toString());
+  let res;
+  try {
+    res = await fetch(url.toString(), { signal: AbortSignal.timeout(PUBLIC_TIMEOUT_MS) });
+  } catch (e) {
+    if (e?.name === 'TimeoutError' || e?.name === 'AbortError') {
+      throw new Error(`Delta API GET ${path} timed out after ${PUBLIC_TIMEOUT_MS}ms`);
+    }
+    throw e;
+  }
   const json = await res.json();
   if (!json.success) {
     throw new Error(json.error?.message || `API error on ${path}`);
