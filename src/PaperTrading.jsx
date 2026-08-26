@@ -2986,12 +2986,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
                 // an uncovered gap use the engine's published value (authoritative — what it
                 // actually sized with); then any active window, then base config.
                 const win = findActiveSchedule(active, now);
-                if (win) return Math.max(1, Math.floor(win.maxCombinedPositions ?? 4));
+                if (win) return Math.max(0, Math.floor(win.maxCombinedPositions ?? 4));
                 if (activeAccount?.mode === 'live' && engineMaxPositions != null) {
-                  return Math.max(1, Math.floor(engineMaxPositions));
+                  return Math.max(0, Math.floor(engineMaxPositions));
                 }
-                if (active.length > 0) return Math.max(1, ...active.map(s => Math.floor(s.maxCombinedPositions || 4)));
-                return Math.max(1, Math.floor(config.maxCombinedPositions ?? activeAccount?.default_config?.maxCombinedPositions ?? 4));
+                if (active.length > 0) return Math.max(0, ...active.map(s => Math.floor(s.maxCombinedPositions ?? 4)));
+                return Math.max(0, Math.floor(config.maxCombinedPositions ?? activeAccount?.default_config?.maxCombinedPositions ?? 4));
               })()}
             />
 

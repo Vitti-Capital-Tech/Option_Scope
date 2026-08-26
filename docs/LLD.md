@@ -228,7 +228,7 @@ After every scan, `publishTopSpreads` packages the top-3 calls and puts into a p
 
 **Deterministic `trade_id` formats** (never `Date.now()`): full exit `${pos.id}`; short-leg `${pos.id}-SE`; partial/scaling `${pos.id}-PE-${lotsRemaining}`; long ladder slice `${pos.id}-LE-${stage}`; hedge `${pos.id}-HX`. Position id format `T<timestamp36><random>` is effectively unique, so a `23505` is always a strike collision, never an id collision.
 
-**Migration index (selected):** `004` verify requests · `009` live_exchange_state · `012` per-window max-debit/exit-type · `016` admin RLS bypass · `036` owner-scoped reads · `037` per-window min-iv & all-same-type (promoted to live) · `018`–`020` strategy_version · `019`/`023` per-window min DTE · `021` trade_days · `022`/`023` hedge leg.
+**Migration index (selected):** `004` verify requests · `009` live_exchange_state · `012` per-window max-debit/exit-type · `016` admin RLS bypass · `036` owner-scoped reads · `037` per-window min-iv & all-same-type (promoted to live) · `038` allow zero max_combined_positions · `018`–`020` strategy_version · `019`/`023` per-window min DTE · `021` trade_days · `022`/`023` hedge leg.
 
 
 ### Concurrency Safety Guards

@@ -180,7 +180,7 @@ export default function TradeHistoryTable({
               // Combined-cap model (migration 027, promoted to live): per-type cap is
               // derived = ceil(Split% × Max Combined), same for calls and puts; the total
               // is separately hard-capped at Max Combined.
-              const combined = Math.max(1, Math.floor(s.maxCombinedPositions ?? 4));
+              const combined = Math.max(0, Math.floor(s.maxCombinedPositions ?? 4));
               const typeCap = Math.min(combined, Math.ceil(((s.combinedSplitPct ?? 70) / 100) * combined));
               const cFull = fill.c >= typeCap;
               const pFull = fill.p >= typeCap;

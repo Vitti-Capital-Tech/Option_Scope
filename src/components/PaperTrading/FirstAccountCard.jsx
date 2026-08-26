@@ -230,7 +230,8 @@ export default function FirstAccountCard({
                   <label className="first-account-label">Max Combined Positions</label>
                   <CustomInput
                     type="number"
-                    {...register('maxCombinedPositions', { valueAsNumber: true })}
+                    min="0"
+                    {...register('maxCombinedPositions', { valueAsNumber: true, min: 0 })}
                     className="first-account-input"
                   />
                 </div>

@@ -293,7 +293,8 @@ export default function CreateAccountModal({
                 <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Max Combined Positions</label>
                 <CustomInput
                   type="number"
-                  {...register('maxCombinedPositions', { valueAsNumber: true })}
+                  min="0"
+                  {...register('maxCombinedPositions', { valueAsNumber: true, min: 0 })}
                   style={{
                     padding: '10px 14px',
                     borderRadius: 8,

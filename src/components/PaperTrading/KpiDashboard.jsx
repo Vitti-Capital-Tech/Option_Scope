@@ -28,7 +28,7 @@ export default function KpiDashboard({
   const money = (n) => n.toLocaleString(undefined, { maximumFractionDigits: 2 });
   const showBalance = isLive && walletBalance != null;
   const allocated = showBalance ? walletBalance * (allocationPct / 100) : 0;
-  const perPosition = showBalance ? allocated / Math.max(1, maxPositions) : 0;
+  const perPosition = showBalance && maxPositions > 0 ? allocated / maxPositions : 0;
 
   // Paper funded-account view: equity = initial + realized P&L. Allocated pool =
   // equity × allocation%; the remainder is an untouched buffer. Per-position margin =
@@ -36,7 +36,7 @@ export default function KpiDashboard({
   const showPaperBalance = isPaper && paperEquity != null;
   const paperAllocated = showPaperBalance ? paperEquity * (allocationPct / 100) : 0;
   const paperBuffer = showPaperBalance ? Math.max(0, paperEquity - paperAllocated) : 0;
-  const paperPerPosition = showPaperBalance ? paperAllocated / Math.max(1, maxPositions) : 0;
+  const paperPerPosition = showPaperBalance && maxPositions > 0 ? paperAllocated / maxPositions : 0;
 
   return (
     <div className="pt-kpi-grid">

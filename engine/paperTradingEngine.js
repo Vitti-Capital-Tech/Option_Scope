@@ -786,7 +786,7 @@ async function startSingleAccountEngine(account) {
   // still prevented by the remaining-budget guard at each sizing site (budget − usedMargin).
   function activeCombinedCap() {
     const active = getActiveSchedule();
-    return Math.max(1, Math.floor(active?.maxCombinedPositions ?? config.maxCombinedPositions ?? 4));
+    return Math.max(0, Math.floor(active?.maxCombinedPositions ?? config.maxCombinedPositions ?? 4));
   }
 
   // ── Combined-cap model (migration 027, promoted to LIVE) ────────────────
@@ -3845,7 +3845,8 @@ async function startSingleAccountEngine(account) {
           && lastFullDeployKey !== istDateKey;
         lastEntryIstMin = istMinNow;
         if (!fullDeployPass) {
-          return { partMargin: remainingBudget / remainingSlots, isFullDeploy: false };
+          const pm = remainingSlots > 0 ? remainingBudget / remainingSlots : 0;
+          return { partMargin: pm, isFullDeploy: false };
         }
         lastFullDeployKey = istDateKey;
         // Count spreads that would actually open now — mirrors the entry-loop guards:
@@ -3900,7 +3901,7 @@ async function startSingleAccountEngine(account) {
             const usedMargin = openHere.reduce((s, p) => s + (p.margin || 0), 0);
             const occupiedSlots = openHere.filter(p => p.sellQty > 0).length; // full spreads occupy cap slots
             const remainingBudget = Math.max(0, budget - usedMargin);
-            const remainingSlots = Math.max(1, maxPos - occupiedSlots);
+            const remainingSlots = Math.max(0, maxPos - occupiedSlots);
             // Normal: remaining ÷ free slots. Full-deploy pass: concentrate the whole
             // remaining pool across openable spreads (migration 030, now live too).
             const sized = sizePartMargin({ remainingBudget, remainingSlots, maxPos, openHere, label: 'LIVE' });
@@ -3929,12 +3930,12 @@ async function startSingleAccountEngine(account) {
         const equity = getPaperEquity();
         const allocPct = config.balanceAllocationPct ?? 90;
         const budget = Math.max(0, equity * (allocPct / 100));
-        const maxPos = Math.max(1, Math.floor(effectiveConfig.maxCombinedPositions ?? config.maxCombinedPositions ?? 4));
+        const maxPos = Math.max(0, Math.floor(effectiveConfig.maxCombinedPositions ?? config.maxCombinedPositions ?? 4));
         const openHere = remaining.filter(p => p.underlying === underlying);
         const usedMargin = openHere.reduce((s, p) => s + (p.margin || 0), 0);
         const occupiedSlots = openHere.filter(p => p.sellQty > 0).length; // full spreads occupy combined slots
         const remainingBudget = Math.max(0, budget - usedMargin);
-        const remainingSlots = Math.max(1, maxPos - occupiedSlots);
+        const remainingSlots = Math.max(0, maxPos - occupiedSlots);
         paperRemainingBudget = remainingBudget;
         paperRemainingSlots = remainingSlots;
 
@@ -4047,7 +4048,7 @@ async function startSingleAccountEngine(account) {
           // must never exceed the active window's maxCombinedPositions, even though each
           // per-type cap (ceil(split% × combined)) individually allows more. Applies to ALL
           // accounts now (paper AND live).
-          const combinedCap = Math.max(1, Math.floor(effectiveConfig.maxCombinedPositions ?? config.maxCombinedPositions ?? 4));
+          const combinedCap = Math.max(0, Math.floor(effectiveConfig.maxCombinedPositions ?? config.maxCombinedPositions ?? 4));
           const combinedCount = remaining.filter(p => p.underlying === underlying && p.sellQty > 0).length +
             newEntries.filter(p => p.underlying === underlying).length;
           if (combinedCount >= combinedCap) {
@@ -4662,7 +4663,7 @@ async function startSingleAccountEngine(account) {
             // total open full spreads (calls + puts, sell_qty > 0) for this underlying must not
             // exceed maxCombinedPositions. This is the DB-level twin of the in-memory combined
             // cap — the fail-closed net across cycles/restarts before any real order is placed.
-            const combinedCapDb = Math.max(1, Math.floor(effectiveConfig.maxCombinedPositions ?? config.maxCombinedPositions ?? 4));
+            const combinedCapDb = Math.max(0, Math.floor(effectiveConfig.maxCombinedPositions ?? config.maxCombinedPositions ?? 4));
             const { data: activeCombined, error: combinedCountError } = await supabase
               .from('active_positions').select('id')
               .eq('account_id', accountState.id)
@@ -5392,8 +5393,8 @@ async function startSingleAccountEngine(account) {
         await refreshRealizedPnl();
         const activeWindows = schedules.filter(s => s.isActive);
         const maxCombined = activeWindows.length > 0
-          ? Math.max(1, ...activeWindows.map(s => Math.floor(s.maxCombinedPositions || 0)))
-          : Math.max(1, Math.floor(config.maxCombinedPositions || 4));
+          ? Math.max(0, ...activeWindows.map(s => Math.floor(s.maxCombinedPositions ?? 0)))
+          : Math.max(0, Math.floor(config.maxCombinedPositions ?? 4));
         heartbeat.update({
           wallet_balance: getPaperEquity(),
           max_positions: maxCombined,
