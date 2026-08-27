@@ -39,8 +39,25 @@
 // each wave contends against fresh depth. Override with ENTRY_GOVERNOR_WINDOW_MS.
 const WINDOW_MS = Math.max(1000, Number(process.env.ENTRY_GOVERNOR_WINDOW_MS ?? 8000));
 
-// key (`${symbol}|${side}`) → { remaining, expiresAt }. `remaining` is Infinity when
-// the pool was seeded from an unknown depth (never blocks for that window).
+// key (`${symbol}|${side}`) → { remaining, shadow, expiresAt }. Both counters are
+// Infinity when the pool was seeded from an unknown depth (never blocks that window).
+//
+// TWO counters, because paper and live must NOT be symmetric:
+//   • `remaining` — the REAL book. Drawn down ONLY by accounts sending real orders.
+//   • `shadow`    — drawn down by everyone (real and simulated).
+// A real order checks `remaining`; a simulated one checks `shadow`. So a paper account
+// still contends against what live has already taken (its fill stays realistic — the
+// whole point of enrolling paper), but it can never DEPRIVE a live account of depth.
+//
+// Without this, a simulation could block real money: the draw order is decided by timer
+// registration order, which is fixed for the life of the process, so a paper account that
+// happens to tick first would reserve its full size ahead of every live account, every
+// minute. Observed 2026-08-27: a paper account contending for 2466 contracts on the exact
+// leg a live account's real order needed — it lost that race by 26 contracts, but nothing
+// in the design guaranteed that outcome.
+//
+// `shadow <= remaining` always holds (live decrements both, paper only shadow), so a live
+// reserve validated against `remaining` can overdraw `shadow`; it is clamped at 0.
 const pools = new Map();
 
 function poolKey(symbol, side) {
@@ -59,10 +76,8 @@ function getPool(symbol, side, depth, now) {
   // null/undefined → unknown depth → unlimited pool (never blocks). NB: Number(null)
   // is 0, not NaN, so guard the nullish case explicitly before coercing.
   const d = depth == null ? NaN : Number(depth);
-  const fresh = {
-    remaining: Number.isFinite(d) ? Math.max(0, d) : Infinity,
-    expiresAt: now + WINDOW_MS,
-  };
+  const cap = Number.isFinite(d) ? Math.max(0, d) : Infinity;
+  const fresh = { remaining: cap, shadow: cap, expiresAt: now + WINDOW_MS };
   pools.set(key, fresh);
   return fresh;
 }
@@ -74,29 +89,41 @@ function getPool(symbol, side, depth, now) {
  *   One entry per leg to govern (buy leg + sell leg; long-only entries pass just the
  *   buy leg). `qty` is the account's intended CONTRACT count for that leg.
  * @param {number} now  epoch ms (passed in so callers/tests control the clock)
+ * @param {{isLive?:boolean}} opts
+ *   `isLive` = this reservation backs REAL orders on the exchange. Real reservations are
+ *   measured against (and consume) the real book; simulated ones are measured against the
+ *   shadow counter and consume only that, so paper can never block live. Dry-run live
+ *   counts as simulated — it sends no orders. Defaults to false (the safe side: a caller
+ *   that forgets the flag cannot silently eat real depth).
  * @returns {{ok:true} | {ok:false, blockedLeg:{symbol,side,qty,available}}}
  *   On ok:false NOTHING is consumed, so the freed depth stays available to the next
  *   account. On ok:true every leg's pool is decremented by its qty.
  */
-export function reserveSpread(legs, now = Date.now()) {
+export function reserveSpread(legs, now = Date.now(), { isLive = false } = {}) {
   const active = (Array.isArray(legs) ? legs : []).filter(l => l && Number(l.qty) > 0);
   if (active.length === 0) return { ok: true };
 
-  // Pass 1 — resolve every pool and check ALL legs fit before touching any.
+  // Pass 1 — resolve every pool and check ALL legs fit before touching any. Real orders
+  // are measured against the real book; simulated ones against the shadow.
   const resolved = active.map(l => ({ leg: l, pool: getPool(l.symbol, l.side, l.depth, now) }));
   for (const { leg, pool } of resolved) {
     const need = Number(leg.qty);
-    if (Number.isFinite(pool.remaining) && pool.remaining < need) {
+    const have = isLive ? pool.remaining : pool.shadow;
+    if (Number.isFinite(have) && have < need) {
       return {
         ok: false,
-        blockedLeg: { symbol: leg.symbol, side: leg.side, qty: need, available: pool.remaining },
+        blockedLeg: { symbol: leg.symbol, side: leg.side, qty: need, available: have },
       };
     }
   }
 
-  // Pass 2 — all legs fit: consume every pool. (Infinity - n === Infinity, so an
-  // unknown-depth pool stays unlimited for the rest of the window.)
-  for (const { leg, pool } of resolved) pool.remaining -= Number(leg.qty);
+  // Pass 2 — all legs fit: consume. Everyone draws the shadow down; only REAL orders touch
+  // the real book. (Infinity - n === Infinity, so an unknown-depth pool stays unlimited.)
+  for (const { leg, pool } of resolved) {
+    const need = Number(leg.qty);
+    pool.shadow = Math.max(0, pool.shadow - need);
+    if (isLive) pool.remaining = Math.max(0, pool.remaining - need);
+  }
   return { ok: true };
 }
 
@@ -105,10 +132,15 @@ export function _resetGovernor() {
   pools.clear();
 }
 
-/** Introspection for logging/tests: current remaining for a leg (Infinity if unknown/unset). */
-export function _remaining(symbol, side) {
+/**
+ * Introspection for logging/tests: remaining depth for a leg (Infinity if unknown/unset).
+ * `which` selects the counter — 'real' (what a live order may still take) or 'shadow'
+ * (what a simulated order may still take).
+ */
+export function _remaining(symbol, side, which = 'real') {
   const p = pools.get(poolKey(symbol, side));
-  return p ? p.remaining : undefined;
+  if (!p) return undefined;
+  return which === 'shadow' ? p.shadow : p.remaining;
 }
 
 export const ENTRY_GOVERNOR_WINDOW_MS = WINDOW_MS;

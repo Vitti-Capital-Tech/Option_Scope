@@ -982,6 +982,25 @@ live and a paper account chasing the same book contend with each other.
 - **Rule:** first come, first served at **FULL qty**; **all-or-nothing per spread** (both
   legs have room, or neither pool is touched and the whole spread is blocked). A blocked
   account is never handed a smaller size — it retries next wave against fresh depth.
+
+> [!IMPORTANT]
+> **Paper can never deprive live of depth.** Each pool carries **two** counters:
+> `remaining` (the real book) and `shadow`. A reservation backing **real orders** checks
+> and consumes `remaining` *and* `shadow`; a **simulated** one (paper, and dry-run live —
+> it sends nothing to the exchange) checks and consumes **only** `shadow`. So paper still
+> contends against whatever live has already taken — its fill stays realistic, which is the
+> whole reason paper is enrolled — but it cannot block a real order.
+>
+> This matters because the draw order is **not random**: engines register their `setInterval`
+> at startup and Node fires equal-delay timers in registration order, so the same account
+> draws first every minute for the life of the process. Observed 2026-08-27: a paper account
+> contending for **2466** contracts on `P-BTC-75000-280826` — the exact leg a live account's
+> real order needed — and losing by **26** contracts. Nothing in the old design guaranteed
+> that outcome; had the paper engine registered first, it would have taken the depth and the
+> live entry would have been blocked by a simulation.
+>
+> `shadow <= remaining` always holds, so a live reserve validated against `remaining` can
+> overdraw `shadow`; it is clamped at `0`. Live-vs-live contention is unchanged.
 - **Contract qty (live):** reuses the counts the sizing block already decided —
   `longC = round(adjustedLotSize / contractValue)`, `shortC = adjustedSellQty` — deliberately
   **not** re-derived, so the reservation equals what the order would actually request.

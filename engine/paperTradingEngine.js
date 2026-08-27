@@ -4608,7 +4608,11 @@ async function startSingleAccountEngine(account) {
             const gLegs = [{ symbol: spread.buyLeg.symbol, side: 'buy', qty: gLongC, depth: gAskSz }];
             if (adjustedSellQty > 0) gLegs.push({ symbol: spread.sellLeg.symbol, side: 'sell', qty: gShortC, depth: gBidSz });
 
-            const gRes = governorReserveSpread(gLegs, Date.now());
+            // Real orders draw the real book; paper AND dry-run live draw only the shadow
+            // (dry-run sends nothing to the exchange, so it must not consume real depth).
+            // Same predicate the resting-exit model uses for "this account trades for real".
+            const gIsLive = accountState.mode === 'live' && !!accountState.live_enabled && !live.dryRun;
+            const gRes = governorReserveSpread(gLegs, Date.now(), { isLive: gIsLive });
             if (!gRes.ok) {
               const bl = gRes.blockedLeg;
               const hadTxt = Number.isFinite(bl.available) ? bl.available : '∞';
