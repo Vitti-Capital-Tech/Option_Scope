@@ -71,6 +71,12 @@ const ENTRY_CHASE = {
 const ENTRY_RETRY_DELAY_MS = Math.max(1000, Number(process.env.ENTRY_RETRY_DELAY_MS ?? 10000));
 const ENTRY_RETRY_MAX_PER_MIN = Math.max(0, Number(process.env.ENTRY_RETRY_MAX_PER_MIN ?? 2));
 
+// Shorter retry cooldown for the "feed still warming up" case (an expiry roll re-points the
+// chain and re-subscribes mid-cycle, so the scan that follows sees an empty pool). Nothing
+// is wrong here — the quotes are simply seconds away — so the wait is much shorter than the
+// post-abort cooldown. Shares the same per-minute retry budget.
+const ENTRY_WARMUP_RETRY_MS = Math.max(500, Number(process.env.ENTRY_WARMUP_RETRY_MS ?? 3000));
+
 // Hard wall-clock ceiling on the ENTRY-PLACEMENT phase of a single cycle. Entries are
 // placed serially (each one a chase-fill + several Supabase guard reads), so a cycle
 // with many candidates could otherwise run long enough to trip the 60s hang guard —
@@ -299,7 +305,7 @@ async function startSingleAccountEngine(account) {
   // Ask for another entry pass inside the CURRENT minute after an attempt aborted on a
   // leg that could not fill. Called only for genuine fill failures — a submit-time
   // rejection is structural and would just repeat, so it must not land here.
-  function requestEntryRetry(detail) {
+  function requestEntryRetry(detail, delayMs = ENTRY_RETRY_DELAY_MS) {
     if (ENTRY_RETRY_MAX_PER_MIN <= 0) return;
     const now = Date.now();
     const minute = Math.floor(now / 60000);
@@ -309,8 +315,8 @@ async function startSingleAccountEngine(account) {
       return;
     }
     entryRetriesUsed++;
-    entryRetryAt = now + ENTRY_RETRY_DELAY_MS;
-    log(`[${accountState.name}] ↻ Entry retry ${entryRetriesUsed}/${ENTRY_RETRY_MAX_PER_MIN} queued in ${Math.round(ENTRY_RETRY_DELAY_MS / 1000)}s (${detail}) — not waiting for the next minute.`);
+    entryRetryAt = now + delayMs;
+    log(`[${accountState.name}] ↻ Entry retry ${entryRetriesUsed}/${ENTRY_RETRY_MAX_PER_MIN} queued in ${(delayMs / 1000).toFixed(1)}s (${detail}) — not waiting for the next minute.`);
   }
 
   // ── Recent-fill order-id cache (armed REAL live) ────────────────────────
@@ -2680,6 +2686,9 @@ async function startSingleAccountEngine(account) {
       if (allTickers.length === 0) {
         if (!onlyExits) {
           logWarn('No tickers in cache — skipping entry scan.');
+          // Same reasoning as the 0-match-expiry case below: the minute is already claimed,
+          // so retry shortly rather than forfeiting this minute's entries to an empty cache.
+          requestEntryRetry('ticker cache is empty (feed warming up)', ENTRY_WARMUP_RETRY_MS);
         }
         return;
       }
@@ -2771,9 +2780,34 @@ async function startSingleAccountEngine(account) {
         if (diff < minDiff) { minDiff = diff; atmStrike = t.strike; }
       }
 
+      // ── Strikes this account cannot use, removed BEFORE the scan ──────────────
+      // A strike hosts at most one leg per account, and scanTickers returns only its top 50
+      // pairs (nearest-ATM first). Feeding it strikes we already hold therefore burns that
+      // budget on candidates the entry guard is guaranteed to reject — and because the same
+      // near-ATM strikes keep winning the ranking, an account could stall completely: with
+      // 77200/75000 and 76500/74500 open, EVERY top candidate wanted the 75000 short, so
+      // seven consecutive minutes produced nothing while 56% of the budget sat idle across
+      // 4 free slots. Excluding them up front makes all 50 slots enterable.
+      //
+      // Mirrors strikesOccupiedBy() in the entry loop — same expiry, same underlying, same
+      // type; hedge legs and zero-lot legs don't occupy. Deliberately limited to FULL
+      // spreads (sellQty > 0): a long-only remnant's strike is still reachable, because the
+      // entry path can exit and replace one to upgrade it into a full spread.
+      const occupiedStrikes = { call: new Set(), put: new Set() };
+      for (const p of positions) {
+        if (p.underlying !== underlying || p.expiry !== config.expiry) continue;
+        if (!(p.sellQty > 0)) continue;                       // long-only → replaceable, keep
+        const set = occupiedStrikes[p.type];
+        if (!set) continue;
+        if (!p.buyLeg?.isHedge && (p.buyLeg?.lotSize ?? 1) > 0 && p.buyLeg?.strike != null) {
+          set.add(Number(p.buyLeg.strike));
+        }
+        if (p.sellLeg?.strike != null) set.add(Number(p.sellLeg.strike));
+      }
+
       // A. Local Scan: top candidates per type
-      const callTickers = allTickers.filter(t => t.type === 'call' && t.expiry === config.expiry && (atmStrike === null || t.strike >= atmStrike));
-      const putTickers = allTickers.filter(t => t.type === 'put' && t.expiry === config.expiry && (atmStrike === null || t.strike <= atmStrike));
+      const callTickers = allTickers.filter(t => t.type === 'call' && t.expiry === config.expiry && (atmStrike === null || t.strike >= atmStrike) && !occupiedStrikes.call.has(Number(t.strike)));
+      const putTickers = allTickers.filter(t => t.type === 'put' && t.expiry === config.expiry && (atmStrike === null || t.strike <= atmStrike) && !occupiedStrikes.put.has(Number(t.strike)));
 
       if (!onlyExits) {
         const now = Date.now();
@@ -2784,6 +2818,14 @@ async function startSingleAccountEngine(account) {
         const staleCount = staleCallCount + stalePutCount;
         if (expiryMatchCount === 0) {
           logWarn(`[${accountState.name}] Ticker pool: ${totalTickers} total, 0 match expiry ${config.expiry} — WS may not have started yet.`);
+          // Almost always an expiry ROLL that just happened: a window whose days_to_expiry
+          // differs re-points config.expiry and re-subscribes the feed, and this scan runs
+          // in the very same cycle — before a single quote for the new chain has arrived.
+          // The minute is already claimed at cycle start, so without this the account
+          // spends its one entry scan on an empty pool and waits a FULL minute (observed:
+          // expiry rolled 06:00:00, pool empty 06:00:01, first entry only at 06:01:04).
+          // Retry in a few seconds instead — by then the WS has delivered the new chain.
+          requestEntryRetry(`ticker pool has 0 symbols for expiry ${config.expiry} (feed warming up)`, ENTRY_WARMUP_RETRY_MS);
         } else if (staleCount > 0) {
           // Informational only — recovery is handled proactively by the per-tick option-feed
           // watchdog near the spot-staleness guard (fires within ~30s), not here.

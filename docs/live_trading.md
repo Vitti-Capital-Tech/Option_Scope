@@ -829,8 +829,18 @@ short-cooldown retry inside the same minute:
 
 | Var | Default | Meaning |
 | --- | --- | --- |
-| `ENTRY_RETRY_DELAY_MS` | `10000` | Cooldown before the queued retry becomes eligible |
-| `ENTRY_RETRY_MAX_PER_MIN` | `2` | Max retries per wall-clock minute (`0` disables) |
+| `ENTRY_RETRY_DELAY_MS` | `10000` | Cooldown after an **unfilled abort** |
+| `ENTRY_WARMUP_RETRY_MS` | `3000` | Cooldown when the **feed is still warming up** (see below) |
+| `ENTRY_RETRY_MAX_PER_MIN` | `2` | Max retries per wall-clock minute, all causes (`0` disables) |
+
+A second, shorter-cooldown trigger covers the **expiry roll**. A window whose
+`days_to_expiry` differs re-points `config.expiry` and re-subscribes the feed, and the
+entry scan runs in that **same cycle** — before a single quote for the new chain has
+arrived, so the pool is empty and the minute (already claimed at cycle start) is
+forfeited. Observed 2026-08-27: expiry rolled at `06:00:00`, `Ticker pool: 75 total, 0
+match expiry 2026-08-28…` at `06:00:01`, and the first entry only landed at `06:01:04`.
+Both empty-pool cases — no tickers at all, and none matching the current expiry — now
+queue a short retry instead of forfeiting the minute.
 
 - Only **fill** failures retry. A submit-time **rejection** (`rejected: true` — bracket
   conflict, bad schema) is structural and would repeat verbatim, so it never queues one.
