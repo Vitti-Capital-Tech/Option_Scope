@@ -216,6 +216,24 @@ export function formatLog(msg) {
   return `[${ts}] ${msg}`;
 }
 
+/**
+ * ── LOG MARKER CONVENTION: BMP ONLY ─────────────────────────────────────────
+ * Prefix markers in log messages must be BASIC-MULTILINGUAL-PLANE characters
+ * (codepoint <= U+FFFF). This deployment's log pipeline mangles 4-byte "astral"
+ * emoji on the way to the PM2 files: they either vanish outright (a line logged
+ * with a running-figure emoji arrives as "[Acct]  CHASE buy ...", two spaces and
+ * no glyph) or decode into an unrelated CJK character. Either way `grep` for the
+ * emoji silently returns 0 even when the line is right there — which is exactly
+ * how a diagnostic gets mistaken for "never fired".
+ *
+ * BMP symbols (⚠ ✖ ✅ ↻ ⌛ …) survive intact, so every marker in the engine is one.
+ * Telegram titles are NOT affected and deliberately keep their emoji.
+ *
+ * Two rules when adding a log line:
+ *   1. Pick a BMP marker, and one not already carrying another meaning.
+ *   2. Never make the marker the only handle — keep a distinctive ASCII phrase
+ *      in the message, and grep on that.
+ */
 export function log(msg) {
   console.log(formatLog(msg));
 }

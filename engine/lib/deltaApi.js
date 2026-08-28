@@ -356,6 +356,13 @@ export function processTickerMessage(msg, symbolMeta, prevData) {
     ask: ask ?? prev?.ask ?? null,
     bidSize: bidSize ?? prev?.bidSize ?? null,
     askSize: askSize ?? prev?.askSize ?? null,
+    // Sizes carry forward when a tick omits them, exactly like prices — but unlike prices
+    // they had NO timestamp, so nothing downstream could tell a size delivered 200ms ago
+    // from one delivered an hour ago. Both the entry depth guard and the cross-account
+    // governor gate real orders on these numbers, so "how old is this?" has to be
+    // answerable. Stamped only when a size is actually present in the tick.
+    bidSizeAt: bidSize != null ? Date.now() : (prev?.bidSizeAt ?? 0),
+    askSizeAt: askSize != null ? Date.now() : (prev?.askSizeAt ?? 0),
     bidUpdatedAt: bid != null ? Date.now() : (prev?.bidUpdatedAt ?? 0),
     askUpdatedAt: ask != null ? Date.now() : (prev?.askUpdatedAt ?? 0),
     bidIv: bidIv ?? prev?.bidIv ?? null,
@@ -414,6 +421,10 @@ export async function backfillTickers(underlying, symbolMeta, existingData = {})
         // fresh on the first entry scan after startup. WS live quotes overwrite these.
         bidUpdatedAt: resolvedBid != null ? now : 0,
         askUpdatedAt: resolvedAsk != null ? now : 0,
+        // Size age (see processTickerMessage) — only a size actually present in this REST
+        // snapshot counts as fresh; a carried-forward one keeps whatever age it had.
+        bidSizeAt: bidSize != null ? now : (prev?.bidSizeAt ?? 0),
+        askSizeAt: askSize != null ? now : (prev?.askSizeAt ?? 0),
         bidIv: bidIv ?? (prev?.bidIv ?? null),
         askIv: askIv ?? (prev?.askIv ?? null),
         iv: iv ?? (prev?.iv ?? null),

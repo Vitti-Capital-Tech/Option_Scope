@@ -77,6 +77,12 @@ const ENTRY_RETRY_MAX_PER_MIN = Math.max(0, Number(process.env.ENTRY_RETRY_MAX_P
 // post-abort cooldown. Shares the same per-minute retry budget.
 const ENTRY_WARMUP_RETRY_MS = Math.max(500, Number(process.env.ENTRY_WARMUP_RETRY_MS ?? 3000));
 
+// Age past which a top-of-book SIZE is reported as stale by the entry depth guard.
+// Purely diagnostic today: the guard still trusts the number and lets the entry through
+// (fail-open, unchanged) — this only makes the age visible so we can find out how old
+// these values actually run before deciding whether they should gate anything.
+const DEPTH_SIZE_STALE_MS = Math.max(1000, Number(process.env.DEPTH_SIZE_STALE_MS ?? 10000));
+
 // Hard wall-clock ceiling on the ENTRY-PLACEMENT phase of a single cycle. Entries are
 // placed serially (each one a chase-fill + several Supabase guard reads), so a cycle
 // with many candidates could otherwise run long enough to trip the 60s hang guard —
@@ -628,7 +634,7 @@ async function startSingleAccountEngine(account) {
           });
 
           if (diffs.length > 0) {
-            log(`[${accountState.name}] 📅 Schedule changed: ${diffs.join(' | ')}`);
+            log(`[${accountState.name}] ⌚ Schedule changed: ${diffs.join(' | ')}`);
           }
         }
 
@@ -1016,7 +1022,7 @@ async function startSingleAccountEngine(account) {
         entry_fee: pos.entryFee,
         margin: pos.margin,
       }).eq('id', pos.id);
-      log(`[${accountState.name}] 🔧 Live PnL basis normalised ${pos.id}: ${pos.type.toUpperCase()} ${pos.buyLeg.strike} → contract-value basis (cv ${longCV}) · ${longContracts(pos.buyLeg)} long contract(s) · lot ${pos.buyLeg.lotSize}`);
+      log(`[${accountState.name}] ⚒ Live PnL basis normalised ${pos.id}: ${pos.type.toUpperCase()} ${pos.buyLeg.strike} → contract-value basis (cv ${longCV}) · ${longContracts(pos.buyLeg)} long contract(s) · lot ${pos.buyLeg.lotSize}`);
     } catch (e) { logError(`[${accountState.name}] normalizeLiveBasis persist failed for ${pos.id}:`, e); }
     return true;
   }
@@ -1067,7 +1073,7 @@ async function startSingleAccountEngine(account) {
       const suspicious = (pos.sellQty > 0 && shortSize === 0 && !pos._shortConfirmedOpen)
         || (pos.sellQty === 0 && longSize === 0 && !pos._longConfirmedOpen);
       if (shortFilled || longFilled || suspicious) {
-        log(`[${accountState.name}] 🔎 Live fill-check ${pos.id} (${pos.type} ${pos.buyLeg.strike}/${pos.sellLeg.strike}): ` +
+        log(`[${accountState.name}] ⊙ Live fill-check ${pos.id} (${pos.type} ${pos.buyLeg.strike}/${pos.sellLeg.strike}): ` +
           `short ${pos.sellLeg.symbol}=${shortRaw ?? 'ABSENT'}${pos._shortConfirmedOpen ? '' : ' (never-confirmed)'} · ` +
           `long ${pos.buyLeg.symbol}=${longRaw ?? 'ABSENT'}${pos._longConfirmedOpen ? '' : ' (never-confirmed)'} · ` +
           `exchange returned ${Object.keys(sizeBySymbol).length} leg(s) → ` +
@@ -1151,7 +1157,7 @@ async function startSingleAccountEngine(account) {
         }], { onConflict: 'trade_id', ignoreDuplicates: true });
         await supabase.from('active_positions').delete().eq('id', pos.id);
       } catch (e) { logError(`[${accountState.name}] Live long TP booking failed for ${pos.id}:`, e); }
-      log(`[${accountState.name}] 🎯 LIVE ${atExpiry ? 'EXPIRY' : 'LONG TP'}: ${pos.type.toUpperCase()} ${pos.buyLeg.strike} @ index ${triggerLevel} | PnL $${net.toFixed(2)}`);
+      log(`[${accountState.name}] ◎ LIVE ${atExpiry ? 'EXPIRY' : 'LONG TP'}: ${pos.type.toUpperCase()} ${pos.buyLeg.strike} @ index ${triggerLevel} | PnL $${net.toFixed(2)}`);
       return; // closed — not pushed to remaining
     }
 
@@ -1272,7 +1278,7 @@ async function startSingleAccountEngine(account) {
       const label = `${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''}`;
       const tag = `${pos.id}-${isTp ? 'TP' : 'SL'}-armfix`;
       try {
-        logWarn(`[${accountState.name}] 🛡️ Unprotected ${isTp ? 'long TP' : 'short SL'} on Delta: ${symbol} (${label}) has no resting bracket → arming @ index ${level}.`);
+        logWarn(`[${accountState.name}] ✚ Unprotected ${isTp ? 'long TP' : 'short SL'} on Delta: ${symbol} (${label}) has no resting bracket → arming @ index ${level}.`);
         const r = await live.changePositionBracket({ productId: pidBySymbol[symbol], symbol, side, stopPrice: level, tag });
         if (r.ok && !r.skipped && !r.dryRun) {
           engineBracketAt.set(symbol, Date.now()); // engine just set this bracket — shield from manual-adopt lag
@@ -1356,7 +1362,7 @@ async function startSingleAccountEngine(account) {
       if ((pos.buyLeg?.lotSize || 0) > 0 && pos.buyLeg?.symbol && lt != null
         && pos.buyLeg.brkLevel != null && !armingSymbols.has(pos.buyLeg.symbol)
         && !recentEngineBracket(pos.buyLeg.symbol, now) && Math.abs(lt - pos.buyLeg.brkLevel) > 0.5) {
-        logWarn(`[${accountState.name}] 🔄 Manual TP change on Delta: ${label} · ${pos.buyLeg.symbol} bracket @ index ${lt} (engine had ${pos.buyLeg.brkLevel}) → adopting Delta value.`);
+        logWarn(`[${accountState.name}] ⇄ Manual TP change on Delta: ${label} · ${pos.buyLeg.symbol} bracket @ index ${lt} (engine had ${pos.buyLeg.brkLevel}) → adopting Delta value.`);
         pos.buyLeg = { ...pos.buyLeg, brkLevel: lt };
         notifyTrade({ title: '🔄 TP adopted from Delta', detail: `${label} · long TP now index ${lt} (changed manually on Delta)` });
         persist = true;
@@ -1366,7 +1372,7 @@ async function startSingleAccountEngine(account) {
       if (pos.sellQty > 0 && pos.sellLeg?.symbol && ls != null
         && pos.sellLeg.brkLevel != null && !armingSymbols.has(pos.sellLeg.symbol)
         && !recentEngineBracket(pos.sellLeg.symbol, now) && Math.abs(ls - pos.sellLeg.brkLevel) > 0.5) {
-        logWarn(`[${accountState.name}] 🔄 Manual SL change on Delta: ${label} · ${pos.sellLeg.symbol} bracket @ index ${ls} (engine had ${pos.sellLeg.brkLevel}) → adopting Delta value.`);
+        logWarn(`[${accountState.name}] ⇄ Manual SL change on Delta: ${label} · ${pos.sellLeg.symbol} bracket @ index ${ls} (engine had ${pos.sellLeg.brkLevel}) → adopting Delta value.`);
         pos.sellLeg = { ...pos.sellLeg, brkLevel: ls };
         notifyTrade({ title: '🔄 SL adopted from Delta', detail: `${label} · short SL now index ${ls} (changed manually on Delta)` });
         persist = true;
@@ -1522,7 +1528,7 @@ async function startSingleAccountEngine(account) {
 
       // NAKED SHORT → close reduce-only (invalid state; a short must be long-protected).
       if (!sideLong) {
-        logWarn(`[${accountState.name}] 🛰️ Orphan NAKED SHORT ${symbol} (size ${size}) — no DB row & shorts must be long-protected → reduce-only market close.`);
+        logWarn(`[${accountState.name}] ⊘ Orphan NAKED SHORT ${symbol} (size ${size}) — no DB row & shorts must be long-protected → reduce-only market close.`);
         const c = await live.closeSymbol({ symbol, side: 'buy', contracts, tag: `ORPHAN-SHORTX-${symbol}` });
         const done = !!(c.ok || c.dryRun || c.skipped || c.alreadyClosed);
         if (done) orphanHandled.add(symbol);
@@ -1553,13 +1559,13 @@ async function startSingleAccountEngine(account) {
 
       // Can't adopt (unknown symbol, strike collision, or adopt failed) → PROTECT + ALERT.
       if (!meta) {
-        logWarn(`[${accountState.name}] 🛰️ UNPROTECTED orphan ${symbol} (size ${size}) not in symbolMeta → cannot compute a level; ALERT only.`);
+        logWarn(`[${accountState.name}] ⊘ UNPROTECTED orphan ${symbol} (size ${size}) not in symbolMeta → cannot compute a level; ALERT only.`);
         notifyFailure({ account: accountState.name, context: `UNPROTECTED untracked Delta position ${symbol} (size ${size}) — no DB row and symbol unknown to the engine. Close/protect manually NOW.`, error: { message: 'orphan-unprotected-unknown' } });
         continue;
       }
       const level = computeIndexTriggerLevel(meta.type, meta.strike, effExit);
       if (bracketBySymbol[symbol]) {
-        logWarn(`[${accountState.name}] 🛰️ Orphan long ${symbol} (size ${size}) — couldn't adopt (strike taken) but IS bracket-protected → alerting, not managing.`);
+        logWarn(`[${accountState.name}] ⊘ Orphan long ${symbol} (size ${size}) — couldn't adopt (strike taken) but IS bracket-protected → alerting, not managing.`);
         notifyFailure({ account: accountState.name, context: `Untracked Delta long ${symbol} (size ${size}) — buy strike ${meta.strike} already tracked, so not adopted; it is bracket-protected but unmanaged. Review manually.`, error: { message: 'orphan-collision-protected' } });
         orphanHandled.add(symbol);
         continue;
@@ -1567,7 +1573,7 @@ async function startSingleAccountEngine(account) {
       const tag = `ORPHAN-TP-${symbol}`;
       armingSymbols.add(symbol);
       try {
-        logWarn(`[${accountState.name}] 🛰️ UNPROTECTED orphan long ${symbol} (size ${size}) → arming protective TP bracket @ index ${level}.`);
+        logWarn(`[${accountState.name}] ⊘ UNPROTECTED orphan long ${symbol} (size ${size}) → arming protective TP bracket @ index ${level}.`);
         const r = await live.changePositionBracket({ productId: pidBySymbol[symbol], symbol, side: 'tp', stopPrice: level, tag });
         if (r.ok && !r.skipped && !r.dryRun) {
           orphanHandled.add(symbol);
@@ -1602,7 +1608,7 @@ async function startSingleAccountEngine(account) {
     const longBid = t?.bid ?? t?.markPrice ?? t?.lastPrice ?? null;
     const entryPx = Number(p.entry_price) || longBid || 0;
     if (contracts < 1 || !(entryPx > 0)) {
-      logWarn(`[${accountState.name}] 🧬 Adopt skipped ${symbol}: contracts ${contracts} / entry ${entryPx} not usable.`);
+      logWarn(`[${accountState.name}] ⊕ Adopt skipped ${symbol}: contracts ${contracts} / entry ${entryPx} not usable.`);
       return false;
     }
     const level = computeIndexTriggerLevel(meta.type, meta.strike, effExit);
@@ -1637,7 +1643,7 @@ async function startSingleAccountEngine(account) {
       buy_strike: meta.strike, sell_strike: null, account_id: accountState.id,
     }]);
     if (error) {
-      logWarn(`[${accountState.name}] 🧬 Adopt insert failed for ${symbol} (${error.message}) → will protect+alert instead.`);
+      logWarn(`[${accountState.name}] ⊕ Adopt insert failed for ${symbol} (${error.message}) → will protect+alert instead.`);
       return false;
     }
     positions.push(pos); // now in the book → managed by the normal long-only exit path
@@ -1653,9 +1659,9 @@ async function startSingleAccountEngine(account) {
         await live.changePositionBracket({ productId: p.product_id, symbol, side: 'tp', stopPrice: level, tag: `${pos.id}-TP-adopt` });
       }
     } catch (e) {
-      logError(`[${accountState.name}] 🧬 Adopt post-insert setup failed for ${pos.id} (${symbol}) — row exists, managed by catch-all/bracket:`, e);
+      logError(`[${accountState.name}] ⊕ Adopt post-insert setup failed for ${pos.id} (${symbol}) — row exists, managed by catch-all/bracket:`, e);
     }
-    log(`[${accountState.name}] 🧬 ADOPTED orphan long ${symbol} (${contracts} contract(s) @ entry ${entryPx}) as long-only [${pos.id}] — managing via TP bracket + spot-cross/expiry catch-all (no scale-out ladder).`);
+    log(`[${accountState.name}] ⊕ ADOPTED orphan long ${symbol} (${contracts} contract(s) @ entry ${entryPx}) as long-only [${pos.id}] — managing via TP bracket + spot-cross/expiry catch-all (no scale-out ladder).`);
     notifyTrade({ title: '🧬 ORPHAN ADOPTED', detail: `Long ${meta.strike} · ${symbol} · ${contracts} contract(s) @ entry ${entryPx} → managed as long-only (TP bracket + catch-all, no ladder)` });
     return true;
   }
@@ -1774,7 +1780,7 @@ async function startSingleAccountEngine(account) {
         await supabase.from('active_positions').update({ buy_leg: JSON.stringify(pos.buyLeg), entry_fee: pos.entryFee, margin: pos.margin }).eq('id', pos.id);
       } catch (e) { logError(`[${accountState.name}] External long-reduction persist failed for ${pos.id}:`, e); }
       if (silent) {
-        log(`[${accountState.name}] 🔧 ENGINE-DRIFT SYNC (long): ${pos.type.toUpperCase()} ${pos.buyLeg.strike} book ${expected}→${actual} contracts synced to Delta (engine reduce; no P&L booked).`);
+        log(`[${accountState.name}] ⚒ ENGINE-DRIFT SYNC (long): ${pos.type.toUpperCase()} ${pos.buyLeg.strike} book ${expected}→${actual} contracts synced to Delta (engine reduce; no P&L booked).`);
       } else {
         log(`[${accountState.name}] ✂️ EXTERNAL PARTIAL (long, Delta): ${pos.type.toUpperCase()} ${pos.buyLeg.strike} ${expected}→${actual} contracts | booked ${reducedLot} lot @ ${exitPx} | PnL $${net.toFixed(2)}`);
         notifyTrade({ title: '✂️ PARTIAL REDUCTION (Delta)', detail: `${pos.type.toUpperCase()} long ${pos.buyLeg.strike} reduced ${expected}→${actual} on Delta`, pnl: net });
@@ -1816,7 +1822,7 @@ async function startSingleAccountEngine(account) {
         await supabase.from('active_positions').update({ sell_qty: pos.sellQty, entry_fee: pos.entryFee, margin: pos.margin }).eq('id', pos.id);
       } catch (e) { logError(`[${accountState.name}] External short-reduction persist failed for ${pos.id}:`, e); }
       if (silent) {
-        log(`[${accountState.name}] 🔧 ENGINE-DRIFT SYNC (short): ${pos.type.toUpperCase()} ${pos.sellLeg.strike} book ${expected}→${actual} contracts synced to Delta (engine reduce; no P&L booked).`);
+        log(`[${accountState.name}] ⚒ ENGINE-DRIFT SYNC (short): ${pos.type.toUpperCase()} ${pos.sellLeg.strike} book ${expected}→${actual} contracts synced to Delta (engine reduce; no P&L booked).`);
       } else {
         log(`[${accountState.name}] ✂️ EXTERNAL PARTIAL (short, Delta): ${pos.type.toUpperCase()} ${pos.sellLeg.strike} ${expected}→${actual} contracts | PnL $${net.toFixed(2)}`);
         notifyTrade({ title: '✂️ PARTIAL REDUCTION (Delta)', detail: `${pos.type.toUpperCase()} short ${pos.sellLeg.strike} reduced ${expected}→${actual} on Delta`, pnl: net });
@@ -1893,16 +1899,16 @@ async function startSingleAccountEngine(account) {
           const done = !!(c.ok || c.dryRun || c.skipped || c.alreadyClosed);
           if (done) {
             await live.cancelStop({ id: o.id, productId: o.product_id }).catch(() => {});
-            logWarn(`[${accountState.name}] 🧹 Stale -PEX cleanup: market-closed ${remaining} contract(s) on ${sym} + cancelled the resting scale-down limit.`);
+            logWarn(`[${accountState.name}] ⌫ Stale -PEX cleanup: market-closed ${remaining} contract(s) on ${sym} + cancelled the resting scale-down limit.`);
             notifyTrade({ title: '🧹 PARTIAL EXIT (reconcile)', detail: `${sym} · stale resting scale-down cancelled → market-closed ${remaining} contract(s)` });
           } else {
-            logWarn(`[${accountState.name}] 🧹 Stale -PEX cleanup: market-close FAILED on ${sym} (${remaining} contract(s)) — resting limit left in place, will retry next sweep.`);
+            logWarn(`[${accountState.name}] ⌫ Stale -PEX cleanup: market-close FAILED on ${sym} (${remaining} contract(s)) — resting limit left in place, will retry next sweep.`);
             notifyFailure({ account: accountState.name, context: `Stale -PEX cleanup market-close FAILED on ${sym} — leg may still be OPEN`, error: { message: c.error || 'pexclean-failed' }, extra: `${remaining} contract(s) — will retry` });
           }
         } else {
           // Nothing to close (order already fully consumed) — just drop the empty resting limit.
           await live.cancelStop({ id: o.id, productId: o.product_id }).catch(() => {});
-          log(`[${accountState.name}] 🧹 Stale -PEX cleanup: cancelled resting scale-down on ${sym} (nothing to market-close).`);
+          log(`[${accountState.name}] ⌫ Stale -PEX cleanup: cancelled resting scale-down on ${sym} (nothing to market-close).`);
         }
       }
     }
@@ -2119,7 +2125,7 @@ async function startSingleAccountEngine(account) {
     positions = positions.filter(p => p.id !== pos.id);
     heartbeat.update({ active_positions: positions.length });
     const cumulativeNet = net + (pos.accumulatedSellPnl || 0);
-    log(`[${accountState.name}] 🙋 MANUAL EXIT: ${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} | PnL $${cumulativeNet.toFixed(2)} (cumulative)`);
+    log(`[${accountState.name}] ✋ MANUAL EXIT: ${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} | PnL $${cumulativeNet.toFixed(2)} (cumulative)`);
     notifyTrade({ title: '🙋 MANUAL EXIT', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''}`, pnl: cumulativeNet });
   }
 
@@ -2289,7 +2295,7 @@ async function startSingleAccountEngine(account) {
     accountState.close_all_requested = false;
 
     const open = [...positions];
-    log(`[${accountState.name}] 🧨 CLOSE ALL requested — ${open.length} tracked position(s)`);
+    log(`[${accountState.name}] ⏻ CLOSE ALL requested — ${open.length} tracked position(s)`);
 
     // Flatten the whole Delta account FIRST (even if the engine tracks nothing —
     // this also clears any orphaned positions the engine lost track of). One call.
@@ -2339,7 +2345,7 @@ async function startSingleAccountEngine(account) {
         if (sz === 0) continue;
         const side = sz > 0 ? 'sell' : 'buy';
         await live.closeSymbol({ symbol, side, contracts: Math.abs(sz), tag: `${pos.id}-${tagSuffix}` });
-        log(`[${accountState.name}] 🧹 RESIDUAL SWEEP: flattened ${Math.abs(sz)} residual contract(s) on ${symbol} (${side}) before close [${pos.id}]`);
+        log(`[${accountState.name}] ⌫ RESIDUAL SWEEP: flattened ${Math.abs(sz)} residual contract(s) on ${symbol} (${side}) before close [${pos.id}]`);
       }
     } catch (e) {
       logWarn(`[${accountState.name}] Residual sweep failed for ${pos.id}: ${e.message}`);
@@ -2435,7 +2441,7 @@ async function startSingleAccountEngine(account) {
         await supabase.from('active_positions').delete().eq('id', pos.id);
       } catch (e) { logError(`[${accountState.name}] Resting full-exit booking failed for ${pos.id}:`, e); }
       const cumulativeNet = net + (pos.accumulatedSellPnl || 0);
-      log(`[${accountState.name}] 📤 LIVE ${atExpiry ? 'EXPIRY' : 'FULL EXIT'}: ${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} | ${reason} | PnL $${cumulativeNet.toFixed(2)} (cumulative)`);
+      log(`[${accountState.name}] ▲ LIVE ${atExpiry ? 'EXPIRY' : 'FULL EXIT'}: ${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} | ${reason} | PnL $${cumulativeNet.toFixed(2)} (cumulative)`);
       notifyTrade({ title: atExpiry ? '📤 EXPIRY EXIT' : '📤 FULL EXIT', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} · ${reason}`, pnl: cumulativeNet });
       return; // closed
     }
@@ -2587,7 +2593,7 @@ async function startSingleAccountEngine(account) {
               const openSz = Math.abs(Number(livePos.find(p => p.product_symbol === pos.buyLeg.symbol)?.size) || 0);
               if (openSz > 0) {
                 await live.closeSymbol({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: openSz, tag: `${pos.id}-LSWEEP` });
-                log(`[${accountState.name}] 🧹 LONG SWEEP: flattened ${openSz} residual contract(s) on ${pos.buyLeg.symbol} before close [${pos.id}]`);
+                log(`[${accountState.name}] ⌫ LONG SWEEP: flattened ${openSz} residual contract(s) on ${pos.buyLeg.symbol} before close [${pos.id}]`);
               }
             }
           } catch (e) {
@@ -2596,7 +2602,7 @@ async function startSingleAccountEngine(account) {
         }
         try { await supabase.from('active_positions').delete().eq('id', pos.id); }
         catch (e) { logError(`[${accountState.name}] Resting ladder final delete failed for ${pos.id}:`, e); }
-        log(`[${accountState.name}] 🪜 LONG FULLY EXITED (resting ladder): ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | ${newlyFilled.length} slice(s) this cycle`);
+        log(`[${accountState.name}] ▤ LONG FULLY EXITED (resting ladder): ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | ${newlyFilled.length} slice(s) this cycle`);
         notifyTrade({ title: '🪜 LONG FULLY EXITED', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike} · ${newlyFilled.length} slice(s) this cycle · position closed`, pnl: pos.accumulatedSellPnl });
         return;
       }
@@ -2613,7 +2619,7 @@ async function startSingleAccountEngine(account) {
       const remainingDisplay = pos.buyLeg.contractValue
         ? `${longContracts(pos.buyLeg)} contract(s)`
         : `lot ${pos.buyLeg.lotSize}`;
-      log(`[${accountState.name}] 🪜 LONG SLICE EXIT (resting): ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | ${newlyFilled.length} slice(s) | remaining ${remainingDisplay}`);
+      log(`[${accountState.name}] ▤ LONG SLICE EXIT (resting): ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | ${newlyFilled.length} slice(s) | remaining ${remainingDisplay}`);
       notifyTrade({ title: '🪜 LONG SLICE EXIT', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike} · ${newlyFilled.length} slice(s) · remaining ${remainingDisplay}`, pnl: pos.accumulatedSellPnl });
     }
     remaining.push(pos);
@@ -2660,7 +2666,7 @@ async function startSingleAccountEngine(account) {
       const now = Date.now();
       const spotFresh = lastSpotUpdate > 0 && (now - lastSpotUpdate) < OPTION_STALE_MS;
       if (spotFresh && now - lastWsReconnectTime > 30000) {
-        logWarn(`[${accountState.name}] 🛰️ Option feed stale ${Math.round((now - lastOptionTickAt) / 1000)}s while spot is live — forcing WebSocket reconnect.`);
+        logWarn(`[${accountState.name}] ⊘ Option feed stale ${Math.round((now - lastOptionTickAt) / 1000)}s while spot is live — forcing WebSocket reconnect.`);
         lastWsReconnectTime = now;
         try {
           startWebSocket();
@@ -3395,7 +3401,7 @@ async function startSingleAccountEngine(account) {
               // FIX B6: batched insert
               try {
                 await supabase.from('trade_history').upsert(partialExitsToRecord, { onConflict: 'trade_id', ignoreDuplicates: true });
-                log(`📤 PARTIAL EXITS RECORDED: ${pos.id} | ${partialExitsToRecord.length} exits | Total reduced: ${partialExitsToRecord.length * deltaBuyQty} lots`);
+                log(`▲ PARTIAL EXITS RECORDED: ${pos.id} | ${partialExitsToRecord.length} exits | Total reduced: ${partialExitsToRecord.length * deltaBuyQty} lots`);
               } catch (e) {
                 logError(`Failed to insert partial exit history for position ${pos.id}:`, e);
               }
@@ -3557,7 +3563,7 @@ async function startSingleAccountEngine(account) {
             longExitLevels: generatedLevels,
           };
           pos.margin = longOnlyMargin(pos);
-          log(`[${accountState.name}] 🎚️ Long ladder set: ${pos.buyLeg.strike} | bid at exit: ${longBidAtExit} | window variable: ${effectiveConfig.variableExitSlices} | levels ${JSON.stringify(pos.buyLeg.longExitLevels)}`);
+          log(`[${accountState.name}] ▥ Long ladder set: ${pos.buyLeg.strike} | bid at exit: ${longBidAtExit} | window variable: ${effectiveConfig.variableExitSlices} | levels ${JSON.stringify(pos.buyLeg.longExitLevels)}`);
 
           try {
             await supabase.from('active_positions').update({
@@ -3705,14 +3711,14 @@ async function startSingleAccountEngine(account) {
                   } catch (e) {
                     logError(`Failed to persist hedge-only hold for position ${pos.id}:`, e);
                   }
-                  log(`[${accountState.name}] 🪜 LONG FULLY EXITED — holding hedge leg ${pos.hedgeLeg.strike} (qty ${pos.hedgeLeg.lotSize}) until ATM/ITM/OTM or expiry`);
+                  log(`[${accountState.name}] ▤ LONG FULLY EXITED — holding hedge leg ${pos.hedgeLeg.strike} (qty ${pos.hedgeLeg.lotSize}) until ATM/ITM/OTM or expiry`);
                 } else {
                   try {
                     await supabase.from('active_positions').delete().eq('id', pos.id);
                   } catch (e) {
                     logError(`Failed to delete fully-laddered long position ${pos.id}:`, e);
                   }
-                  log(`[${accountState.name}] 🪜 LONG FULLY EXITED: ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | ${longExitSlices.length} slice(s) | Bid $${longBid}`);
+                  log(`[${accountState.name}] ▤ LONG FULLY EXITED: ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | ${longExitSlices.length} slice(s) | Bid $${longBid}`);
                   continue;
                 }
               } else {
@@ -3729,7 +3735,7 @@ async function startSingleAccountEngine(account) {
               const remainingDisplay = pos.buyLeg.contractValue
                 ? `${longContracts(pos.buyLeg)} contract(s)`
                 : `lot ${pos.buyLeg.lotSize}`;
-              log(`[${accountState.name}] 🪜 LONG SLICE EXIT: ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | ${longExitSlices.length} slice(s) | remaining ${remainingDisplay} | stage ${stage}/5`);
+              log(`[${accountState.name}] ▤ LONG SLICE EXIT: ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | ${longExitSlices.length} slice(s) | remaining ${remainingDisplay} | stage ${stage}/5`);
               }
             }
           }
@@ -3839,7 +3845,7 @@ async function startSingleAccountEngine(account) {
                 account_id: accountState.id,
               }], { onConflict: 'trade_id', ignoreDuplicates: true });
             } catch (e) { logError(`[${accountState.name}] Failed to book hedge exit for ${pos.id}:`, e); }
-            log(`[${accountState.name}] 🛡️ HEDGE EXIT: ${pos.type.toUpperCase()} ${hedge.strike} @ $${hedgeBid} (${hedgeReason}) | qty ${hedge.lotSize} | net $${hedgeNetPnl.toFixed(2)}`);
+            log(`[${accountState.name}] ✚ HEDGE EXIT: ${pos.type.toUpperCase()} ${hedge.strike} @ $${hedgeBid} (${hedgeReason}) | qty ${hedge.lotSize} | net $${hedgeNetPnl.toFixed(2)}`);
             pos.hedgeLeg = null; // closed — don't re-book
           }
 
@@ -3921,7 +3927,7 @@ async function startSingleAccountEngine(account) {
       // (17:30 IST trading-day boundary); open positions still managed. Default [0..6] = all.
       // `dayAllowsEntry` is computed once above (candidate-evaluation gate) and reused here.
       if (!dayAllowsEntry && !onlyExits && !paused) {
-        log(`[${accountState.name}] 📅 Trading day disabled — skipping new entries (open positions still managed).`);
+        log(`[${accountState.name}] ⌚ Trading day disabled — skipping new entries (open positions still managed).`);
       }
 
       const liveArmed = accountState.mode === 'live' && !!accountState.live_enabled;
@@ -3976,7 +3982,7 @@ async function startSingleAccountEngine(account) {
               pos._persistedMargin = corrected;
               const cvNote = cvChanged ? `, contractValue ${beforeCV == null ? 'backfilled' : `${beforeCV}→${longCV}`}` : '';
               const verb = cvChanged ? 'corrected' : 'refreshed';
-              log(`[${accountState.name}] 🔧 Live margin ${verb} ${pos.id}: $${(ref || 0).toFixed(2)} → $${pos.margin.toFixed(2)} (contract-value basis${cvNote})`);
+              log(`[${accountState.name}] ⚒ Live margin ${verb} ${pos.id}: $${(ref || 0).toFixed(2)} → $${pos.margin.toFixed(2)} (contract-value basis${cvNote})`);
             } catch (e) {
               logError(`[${accountState.name}] Live margin self-heal persist failed for ${pos.id}:`, e);
             }
@@ -4048,10 +4054,10 @@ async function startSingleAccountEngine(account) {
         }
         if (openable > 0) {
           const pm = remainingBudget / openable;
-          log(`[${accountState.name}] 🌅 ${label} ${config.fullDeployTime} full-deploy: remaining $${remainingBudget.toFixed(2)} ÷ ${openable} openable spread(s) = $${pm.toFixed(2)}/position (window combined cap ${maxPos}).`);
+          log(`[${accountState.name}] ☀ ${label} ${config.fullDeployTime} full-deploy: remaining $${remainingBudget.toFixed(2)} ÷ ${openable} openable spread(s) = $${pm.toFixed(2)}/position (window combined cap ${maxPos}).`);
           return { partMargin: pm, isFullDeploy: true };
         }
-        log(`[${accountState.name}] 🌅 ${label} ${config.fullDeployTime} full-deploy: no qualifying spreads found — nothing filled, $${remainingBudget.toFixed(2)} stays idle.`);
+        log(`[${accountState.name}] ☀ ${label} ${config.fullDeployTime} full-deploy: no qualifying spreads found — nothing filled, $${remainingBudget.toFixed(2)} stays idle.`);
         return { partMargin: 0, isFullDeploy: true };
       };
 
@@ -4078,7 +4084,7 @@ async function startSingleAccountEngine(account) {
             const sized = sizePartMargin({ remainingBudget, remainingSlots, maxPos, openHere, label: 'LIVE' });
             partMargin = sized.partMargin;
             if (!sized.isFullDeploy) {
-              log(`[${accountState.name}] 💰 LIVE sizing: balance $${bal.toFixed(2)} × ${allocPct}% = $${budget.toFixed(2)} budget | used $${usedMargin.toFixed(2)} | remaining $${remainingBudget.toFixed(2)} ÷ ${remainingSlots} free slot(s) (window combined cap ${maxPos}) = $${partMargin.toFixed(2)}/position`);
+              log(`[${accountState.name}] ¤ LIVE sizing: balance $${bal.toFixed(2)} × ${allocPct}% = $${budget.toFixed(2)} budget | used $${usedMargin.toFixed(2)} | remaining $${remainingBudget.toFixed(2)} ÷ ${remainingSlots} free slot(s) (window combined cap ${maxPos}) = $${partMargin.toFixed(2)}/position`);
             }
           } else {
             logWarn(`[${accountState.name}] LIVE sizing: wallet balance unavailable — skipping live entries this cycle.`);
@@ -4115,7 +4121,7 @@ async function startSingleAccountEngine(account) {
         const sized = sizePartMargin({ remainingBudget, remainingSlots, maxPos, openHere, label: 'PAPER' });
         partMargin = sized.partMargin;
         if (!sized.isFullDeploy) {
-          log(`[${accountState.name}] 💰 PAPER sizing: equity $${equity.toFixed(2)} × ${allocPct}% = $${budget.toFixed(2)} budget | used $${usedMargin.toFixed(2)} | remaining $${remainingBudget.toFixed(2)} ÷ ${remainingSlots} free slot(s) (window combined cap ${maxPos}) = $${partMargin.toFixed(2)}/position`);
+          log(`[${accountState.name}] ¤ PAPER sizing: equity $${equity.toFixed(2)} × ${allocPct}% = $${budget.toFixed(2)} budget | used $${usedMargin.toFixed(2)} | remaining $${remainingBudget.toFixed(2)} ÷ ${remainingSlots} free slot(s) (window combined cap ${maxPos}) = $${partMargin.toFixed(2)}/position`);
         }
       }
 
@@ -4172,7 +4178,7 @@ async function startSingleAccountEngine(account) {
 
             if (effPartMargin <= 0.01 || effectivePoolLeft <= 0.01) {
               const loStrike = blockedReplace ? Number(blockedReplace.buyLeg?.strike) : null;
-              logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: paper allocated balance exhausted (no free margin this cycle)${blockedReplace ? ` — 🔎 REPLACE-DIAG: long-only ${blockedReplace.id} at strike ${loStrike} could have been REPLACED but budget starved it` : ''}.`);
+              logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: paper allocated balance exhausted (no free margin this cycle)${blockedReplace ? ` — ⊙ REPLACE-DIAG: long-only ${blockedReplace.id} at strike ${loStrike} could have been REPLACED but budget starved it` : ''}.`);
               continue;
             }
 
@@ -4210,7 +4216,7 @@ async function startSingleAccountEngine(account) {
             if (typeCap === 0) {
               logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: window allows only ${(effectiveConfig.sameType || 'call').toUpperCase()} positions`);
             } else {
-              logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Portfolio cap of ${typeCap} reached for type ${spreadType}${dlo ? ` — 🔎 REPLACE-DIAG: long-only ${dlo.id} at strike ${Number(dlo.buyLeg?.strike)} could have been REPLACED but the per-type cap blocks the new full spread` : ''}`);
+              logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Portfolio cap of ${typeCap} reached for type ${spreadType}${dlo ? ` — ⊙ REPLACE-DIAG: long-only ${dlo.id} at strike ${Number(dlo.buyLeg?.strike)} could have been REPLACED but the per-type cap blocks the new full spread` : ''}`);
             }
             continue;
           }
@@ -4224,7 +4230,7 @@ async function startSingleAccountEngine(account) {
             newEntries.filter(p => p.underlying === underlying).length;
           if (combinedCount >= combinedCap) {
             const dlo = remaining.find(p => p.expiry === config.expiry && p.underlying === underlying && p.type === spreadType && p.sellQty === 0 && (p.buyLeg?.lotSize ?? 0) > 0 && p.sellLeg?.strike != null && (Number(p.buyLeg?.strike) === bStrike || Number(p.buyLeg?.strike) === sStrike));
-            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: combined position cap of ${combinedCap} reached (${combinedCount} open)${dlo ? ` — 🔎 REPLACE-DIAG: long-only ${dlo.id} at strike ${Number(dlo.buyLeg?.strike)} could have been REPLACED but the combined cap blocks the new full spread` : ''}.`);
+            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: combined position cap of ${combinedCap} reached (${combinedCount} open)${dlo ? ` — ⊙ REPLACE-DIAG: long-only ${dlo.id} at strike ${Number(dlo.buyLeg?.strike)} could have been REPLACED but the combined cap blocks the new full spread` : ''}.`);
             continue;
           }
 
@@ -4275,7 +4281,7 @@ async function startSingleAccountEngine(account) {
                 : otherBlockers.length > 0
                   ? `BLOCKED — other strike ${otherStrike} occupied by ${otherBlockers.join(', ')}`
                   : 'ELIGIBLE — replacement will fire this cycle';
-            log(`[${accountState.name}] 🔎 REPLACE-DIAG ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: active long-only ${sameStrikeLongOnly.id} holds strike ${loStrike} → ${reason}. [paper=${isPaperAccount}, clashes=${conflictClashes.length}]`);
+            log(`[${accountState.name}] ⊙ REPLACE-DIAG ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: active long-only ${sameStrikeLongOnly.id} holds strike ${loStrike} → ${reason}. [paper=${isPaperAccount}, clashes=${conflictClashes.length}]`);
           }
 
           if (conflictClashes.length > 0) {
@@ -4299,7 +4305,7 @@ async function startSingleAccountEngine(account) {
                   canReplace = true;
                   replaceableLongOnlyPos = clash;
                   const roleDesc = loStrike === sStrike ? `long ${loStrike} becomes short leg` : `upgrading long ${loStrike} to full spread with short ${sStrike}`;
-                  log(`[${accountState.name}] 💡 ${isPaperAccount ? 'PAPER' : 'LIVE'} replacement candidate: Active long-only ${clash.id} (${spreadType.toUpperCase()} ${loStrike}) will be exited to enter better long/short pair ${bStrike}/${sStrike} (${roleDesc}).`);
+                  log(`[${accountState.name}] ✱ ${isPaperAccount ? 'PAPER' : 'LIVE'} replacement candidate: Active long-only ${clash.id} (${spreadType.toUpperCase()} ${loStrike}) will be exited to enter better long/short pair ${bStrike}/${sStrike} (${roleDesc}).`);
                 }
               }
             }
@@ -4386,7 +4392,7 @@ async function startSingleAccountEngine(account) {
             const maxLongByNotional = ratioToUse > 0
               ? Math.floor(maxShortByNotional / ratioToUse) : Infinity;
             if (longC > maxLongByNotional) {
-              log(`[${accountState.name}] 🧢 LIVE qty capped by ratio-spread max (short notional ≤ $${NOTIONAL_CAP}): long ${longC} → ${Math.max(1, maxLongByNotional)}`);
+              log(`[${accountState.name}] ⌃ LIVE qty capped by ratio-spread max (short notional ≤ $${NOTIONAL_CAP}): long ${longC} → ${Math.max(1, maxLongByNotional)}`);
               longC = Math.max(1, maxLongByNotional);
             }
 
@@ -4399,7 +4405,7 @@ async function startSingleAccountEngine(account) {
             adjustedLotSize = Number((longCV * longC).toFixed(4));
             adjustedSellQty = shortC;
             liveMargin = calcMargin(entryBuyPrice, longCV * longC, spotPrice, adjustedSellQty, shortCV);
-            log(`[${accountState.name}] 💰 LIVE size ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: unit margin $${baseMargin.toFixed(2)} | part $${partMargin.toFixed(2)} → scale ${scale.toFixed(2)}× | long ${longC} short ${shortC} (base 1:${ratioToUse}) | est margin $${liveMargin.toFixed(2)} | cv ${longCV}/${shortCV}`);
+            log(`[${accountState.name}] ¤ LIVE size ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: unit margin $${baseMargin.toFixed(2)} | part $${partMargin.toFixed(2)} → scale ${scale.toFixed(2)}× | long ${longC} short ${shortC} (base 1:${ratioToUse}) | est margin $${liveMargin.toFixed(2)} | cv ${longCV}/${shortCV}`);
           } else if (isPaperAccount && partMargin != null) {
             // PAPER (migration 027): scale the base 1:ratio unit so its margin fills the
             // per-position part (allocated pool ÷ the active window's combined cap), then
@@ -4437,7 +4443,7 @@ async function startSingleAccountEngine(account) {
               shortValue = 195000;
             }
             const estMargin = calcMargin(entryBuyPrice, adjustedLotSize, spotPrice, adjustedSellQty, sellLotSize);
-            log(`[${accountState.name}] 💰 PAPER size ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: unit margin $${baseMargin.toFixed(2)} | part $${effectivePart.toFixed(2)} → scale ${scale.toFixed(2)}× | lot ${adjustedLotSize} short ${adjustedSellQty} (base 1:${ratioToUse}) | est margin $${estMargin.toFixed(2)}`);
+            log(`[${accountState.name}] ¤ PAPER size ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: unit margin $${baseMargin.toFixed(2)} | part $${effectivePart.toFixed(2)} → scale ${scale.toFixed(2)}× | lot ${adjustedLotSize} short ${adjustedSellQty} (base 1:${ratioToUse}) | est margin $${estMargin.toFixed(2)}`);
           } else {
             // LIVE-but-unarmed (no balance sizing): unchanged $195,000 / 200x notional cap.
             let shortValue = spotPrice * ratioToUse * sellLotSize;
@@ -4617,7 +4623,7 @@ async function startSingleAccountEngine(account) {
               const bl = gRes.blockedLeg;
               const hadTxt = Number.isFinite(bl.available) ? bl.available : '∞';
               const msg = `Entry blocked: ${spreadType.toUpperCase()} ${bStrike}/${sStrike} — top-of-book depth exhausted on ${bl.side} leg (needed ${bl.qty}, had ${hadTxt} on ${bl.symbol}). Another account took the available size first.`;
-              logWarn(`[${accountState.name}] 🚦 ${msg}`);
+              logWarn(`[${accountState.name}] ⚑ ${msg}`);
               // Website notification (persisted; NOT Telegram). Fire-and-forget so a
               // slow/failed insert never blocks the eval loop. Identical shape for both
               // modes — the UI (one component for paper AND live, scoped by account_id)
@@ -4714,7 +4720,7 @@ async function startSingleAccountEngine(account) {
           // Delete from active
           await supabase.from('active_positions').delete().eq('id', t.id);
 
-          log(`[${accountState.name}] 📤 EXIT: ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} | ${t.exitReason} | PnL: $${t.realizedNetPnl?.toFixed(2)}`);
+          log(`[${accountState.name}] ▲ EXIT: ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} | ${t.exitReason} | PnL: $${t.realizedNetPnl?.toFixed(2)}`);
         } catch (err) { logError(`[${accountState.name}] Exit persistence error:`, err); }
       }
 
@@ -4753,7 +4759,7 @@ async function startSingleAccountEngine(account) {
                   logError(`[${accountState.name}] Replacement close error for long-only ${posToExit.id}:`, e);
                 }
                 if (!closeOk) {
-                  logWarn(`[${accountState.name}] 🔄 Replacement ABORTED: could not flatten long-only ${posToExit.id} (${posToExit.type.toUpperCase()} ${posToExit.buyLeg.strike}) on Delta — keeping it, skipping new pair ${t.buyLeg.strike}/${t.sellLeg.strike} this cycle.`);
+                  logWarn(`[${accountState.name}] ⇄ Replacement ABORTED: could not flatten long-only ${posToExit.id} (${posToExit.type.toUpperCase()} ${posToExit.buyLeg.strike}) on Delta — keeping it, skipping new pair ${t.buyLeg.strike}/${t.sellLeg.strike} this cycle.`);
                   continue;
                 }
               }
@@ -4816,7 +4822,7 @@ async function startSingleAccountEngine(account) {
                 });
 
                 await refreshRealizedPnl(true);
-                log(`[${accountState.name}] 🔄 ${isPaperAccount ? 'PAPER' : 'LIVE'}: Exited active long-only ${posToExit.id} (${posToExit.type.toUpperCase()} ${posToExit.buyLeg.strike} @ $${exitPrice.toFixed(2)} | PnL $${netPnl.toFixed(2)}) to enter new long/short pair ${t.buyLeg.strike}/${t.sellLeg.strike}.`);
+                log(`[${accountState.name}] ⇄ ${isPaperAccount ? 'PAPER' : 'LIVE'}: Exited active long-only ${posToExit.id} (${posToExit.type.toUpperCase()} ${posToExit.buyLeg.strike} @ $${exitPrice.toFixed(2)} | PnL $${netPnl.toFixed(2)}) to enter new long/short pair ${t.buyLeg.strike}/${t.sellLeg.strike}.`);
                 notifyTrade({ title: '🔄 REPLACED (long → pair)', detail: `${posToExit.type.toUpperCase()} long-only ${posToExit.buyLeg.strike} exited → better pair ${t.buyLeg.strike}/${t.sellLeg.strike}`, pnl: netPnl + (posToExit.accumulatedSellPnl || 0) });
               } catch (e) {
                 logError(`[${accountState.name}] Failed to exit long-only position for replacement:`, e);
@@ -4954,6 +4960,37 @@ async function startSingleAccountEngine(account) {
                 logWarn(`[${accountState.name}] LIVE entry ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} skipped: top-of-book depth too thin — ${thin.join('; ')}. Holding for more size to avoid an uneven fill.`);
                 continue;
               }
+
+              // ── Size-freshness observability (diagnostic only — does NOT gate) ────────
+              // The guard just cleared this entry on `askSize`/`bidSize`, and the governor
+              // gated it on the same numbers — but a size CARRIES FORWARD whenever a tick
+              // omits it, so "there is room" may be an answer from minutes ago. That is a
+              // candidate explanation for an order that clears every depth check and then
+              // fills ZERO (observed 2026-08-28, C-BTC-82400 buy leg, two accounts). Until
+              // we know how old these numbers actually run in production, changing the
+              // guard would be guesswork — so this only measures. Nothing is blocked here.
+              {
+                const nowMs = Date.now();
+                const ageOf = (sym, side) => {
+                  const at = tickerData[sym]?.[side === 'ask' ? 'askSizeAt' : 'bidSizeAt'] ?? 0;
+                  return at > 0 ? nowMs - at : null;   // null = never delivered a size
+                };
+                const stale = [];
+                const note = (sym, side, used) => {
+                  if (used == null) return;            // unknown size → guard already failed open
+                  const age = ageOf(sym, side);
+                  if (age == null) stale.push(`${side} size on ${sym} has NEVER been delivered (carried in)`);
+                  else if (age > DEPTH_SIZE_STALE_MS) stale.push(`${side} size ${used} on ${sym} is ${Math.round(age / 1000)}s old`);
+                };
+                note(t.buyLeg.symbol, 'ask', askSz);
+                if (shortC > 0) note(t.sellLeg.symbol, 'bid', bidSz);
+                if (hedgeC > 0) note(t.hedgeLeg.symbol, 'ask', hedgeAskSz);
+                if (stale.length > 0) {
+                  // Grep on the ASCII phrase "STALE size data", not the marker
+                  // (see the BMP-only log convention in lib/utils.js).
+                  logWarn(`[${accountState.name}] ⌛ Depth guard passed ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} on STALE size data — ${stale.join('; ')}. Entry proceeding; if it fills short, this is why.`);
+                }
+              }
             }
 
             const liveEntry = await live.openSpread(t, {
@@ -5000,7 +5037,7 @@ async function startSingleAccountEngine(account) {
             t.buyLeg = { ...t.buyLeg, brkLevel: bracketLevel, brkComputed: bracketLevel };
             if (t.sellQty > 0) t.sellLeg = { ...t.sellLeg, brkLevel: bracketLevel, brkComputed: bracketLevel };
             if (liveArmed && t.sellQty > 0) {
-              log(`[${accountState.name}] 🎯 Brackets: long TP + short SL @ spot ${bracketLevel} (${effectiveConfig.exitType || 'ATM'})`);
+              log(`[${accountState.name}] ◎ Brackets: long TP + short SL @ spot ${bracketLevel} (${effectiveConfig.exitType || 'ATM'})`);
             }
 
             // Triplet 3rd leg: buy the hedge long (best-effort, no bracket). A fill
@@ -5040,7 +5077,7 @@ async function startSingleAccountEngine(account) {
                 exitProductId: seRes?.order?.product_id ?? null,
                 exitOrderPx: exitPx,
               };
-              log(`[${accountState.name}] 🎯 Resting short-exit armed: limit BUY short ${t.sellLeg.strike} @ $${exitPx} (id ${seRes?.order?.id ?? '?'})`);
+              log(`[${accountState.name}] ◎ Resting short-exit armed: limit BUY short ${t.sellLeg.strike} @ $${exitPx} (id ${seRes?.order?.id ?? '?'})`);
             }
 
             // Decoy observability snapshot (migration 031/032) — ALL accounts. Reuse the
@@ -5126,7 +5163,7 @@ async function startSingleAccountEngine(account) {
               // contractValue) keep the notional-lot basis unchanged.
               const rawNet = t.sellQty * t.entrySellPrice - t.entryBuyPrice * ratioLong;
               const netUsd = t.buyLeg.contractValue ? rawNet * t.buyLeg.contractValue : rawNet;
-              log(`[${accountState.name}] 📥 ENTRY: ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} | Qty: ${ratioLong.toFixed(2)}:${t.sellQty} | Net: $${netUsd.toFixed(2)}`);
+              log(`[${accountState.name}] ▼ ENTRY: ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} | Qty: ${ratioLong.toFixed(2)}:${t.sellQty} | Net: $${netUsd.toFixed(2)}`);
               notifyTrade({ title: '📥 LIVE ENTRY', detail: `${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} · qty ${ratioLong.toFixed(2)}:${t.sellQty} · net $${netUsd.toFixed(2)} · spot ${Math.round(t.entrySpotPrice)}` });
             }
           } catch (err) { logError(`[${accountState.name}] Entry persistence error:`, err); }
@@ -5175,7 +5212,7 @@ async function startSingleAccountEngine(account) {
       && pos.sellQty > 0 && pos.sellLeg?.exitOrderId
       && (pos.sellLeg?.exitOrderPx ?? null) !== effShortPx);
     if (drifted.length === 0) return;
-    log(`[${accountState.name}] 🔧 Short-exit price re-sync — moving ${drifted.length} resting buy-back(s) to $${effShortPx}${activeSchedule ? ` [window "${activeSchedule.label}"]` : ''}`);
+    log(`[${accountState.name}] ⚒ Short-exit price re-sync — moving ${drifted.length} resting buy-back(s) to $${effShortPx}${activeSchedule ? ` [window "${activeSchedule.label}"]` : ''}`);
     for (const pos of drifted) {
       try {
         const r = await live.editOrder({
@@ -5239,7 +5276,7 @@ async function startSingleAccountEngine(account) {
     // ATM = buy strike (points are NOT applied); only ITM/OTM add/subtract exitPoints.
     const exitDesc = effExit.exitType === 'ATM' ? 'ATM' : `${effExit.exitType}±${effExit.exitPoints ?? 0}`;
     const decoyDesc = (effExit.slTpDecoyDiff ?? 0) > 0 ? ` decoy +${effExit.slTpDecoyDiff}pts` : '';
-    log(`[${accountState.name}] 🔧 Exit brackets (${reason}): moving ${drift.length} position(s) to ${exitDesc}${decoyDesc}${activeSchedule ? ` [window "${activeSchedule.label}"]` : ''}`);
+    log(`[${accountState.name}] ⚒ Exit brackets (${reason}): moving ${drift.length} position(s) to ${exitDesc}${decoyDesc}${activeSchedule ? ` [window "${activeSchedule.label}"]` : ''}`);
 
     // Fetch (armed real only) the product_ids and the CURRENT resting bracket/stop orders
     // per symbol, so we can cancel the existing bracket before re-posting. Only stop/bracket

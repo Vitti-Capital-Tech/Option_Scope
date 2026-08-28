@@ -770,9 +770,18 @@ Per leg (`submitChase`):
 2. Otherwise poll `/v2/orders` every `pollMs` for the order's `unfilled_size`. While
    it's still resting, **re-price in place** (`editOrder`, keeping the order id **and
    its attached bracket**) toward the market — fresh ask/bid + the offset + an
-   escalating `bump` (premium $) per attempt — up to `attempts` times. The edit sends
+   escalating cross per attempt — up to `attempts` times. The edit sends
    the **original total size** so Delta keeps the already-filled portion and re-rests
    only the remainder.
+
+   **Ratchet — the price only ever moves toward the market.** Each attempt re-derives the
+   price from the *current* quote, so a quote drifting the other way can produce a price
+   **weaker than the previous attempt**, silently undoing the escalation. Observed
+   2026-08-28: attempt 1 priced `110.94` off an ask of `98`, attempt 2 priced `110.70` off
+   an ask of `95` — the 3%→6% step went *backwards* and that attempt was wasted. The chase
+   now keeps `max(previous, computed)` on a buy and `min(previous, computed)` on a sell.
+   This costs nothing: a limit is a **ceiling** (buy) / **floor** (sell), so the fill still
+   happens at whatever is resting in the book, never at our limit.
 
 If a leg still can't fully fill after the chase, the entry **unwinds and aborts** so
 the account is left flat (no manual reconciliation):
@@ -963,6 +972,23 @@ quantity is LESS THAN the top-of-book size on the side it would take**:
   the quantity must be *less than* the resting size, leaving a margin.
 - **Fail-open:** if a leg's size is unknown (not on the WS feed yet) it is **not** blocked —
   a shortfall can't be proven, and the all-or-nothing chase-fill remains the backstop.
+- **Size freshness is measured, not enforced (yet).** A size **carries forward** whenever a
+  tick omits it — and until now it carried *no timestamp*, so "there is room" could be an
+  answer from minutes ago that both this guard and the [governor](#cross-account-entry-governor-shared-depth-budget)
+  were trusting. `bidSizeAt` / `askSizeAt` now stamp the feed (only when a size is actually
+  present; a carried-forward value keeps its old age), and when the guard clears an entry on
+  a size older than `DEPTH_SIZE_STALE_MS` (default `10000`) it logs:
+
+  ```
+  🕰 Depth guard passed CALL 82400/84000 on STALE size data — ask size 500 on
+  C-BTC-82400-280826 is 47s old. Entry proceeding; if it fills short, this is why.
+  ```
+
+  **Nothing is blocked by this** — the guard's fail-open behaviour is unchanged. It exists
+  because an order that cleared every depth check and then filled **zero** (observed
+  2026-08-28, `C-BTC-82400` buy leg, two accounts, ~13% through the quoted ask) is exactly
+  what a stale size would produce, and guessing at a fix before measuring would be
+  premature. Grep this line for a day to find out how old these numbers really run.
 - **Paper / dry-run / disarmed:** no-op (no real order is placed).
 
 ### Cross-account entry governor (shared depth budget)

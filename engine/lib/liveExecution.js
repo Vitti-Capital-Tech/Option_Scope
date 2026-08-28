@@ -158,7 +158,7 @@ export function createLiveExecutor(getCtx) {
     const summary = `${side.toUpperCase()} ${size}x ${symbol} @ ${priceStr ?? '—'}${reduceOnly ? ' reduceOnly' : ''}${brkStr} [${tag}]`;
 
     if (DRY_RUN) {
-      log(`[${accountName}] 🧪 DRY-RUN live order (not sent): ${summary}`);
+      log(`[${accountName}] ⚗ DRY-RUN live order (not sent): ${summary}`);
       return { ok: true, dryRun: true };
     }
 
@@ -223,7 +223,7 @@ export function createLiveExecutor(getCtx) {
     const { accountName, creds, telegramChatId } = getCtx();
     const size = Math.max(1, Math.round(Math.abs(contracts || 0)));
     const summary = `CLOSE ${side.toUpperCase()} ${size}x ${symbol} reduceOnly [${tag}]`;
-    if (DRY_RUN) { log(`[${accountName}] 🧪 DRY-RUN close-symbol (not sent): ${summary}`); return { ok: true, dryRun: true }; }
+    if (DRY_RUN) { log(`[${accountName}] ⚗ DRY-RUN close-symbol (not sent): ${summary}`); return { ok: true, dryRun: true }; }
     if (!creds?.apiKey || !creds?.apiSecret) return { ok: false, error: 'no-credentials' };
     try {
       const order = await placeOrder(creds, {
@@ -280,6 +280,14 @@ export function createLiveExecutor(getCtx) {
     const attempts = Math.max(0, chase.attempts ?? 3);
     const pollMs = Math.max(200, chase.pollMs ?? 1500);
     const offset = side === 'buy' ? (chase.buyOffset ?? 0) : (chase.sellOffset ?? 0);
+    // RATCHET: the chase may only ever move TOWARD the market. Each attempt re-derives the
+    // price from the CURRENT quote, so a quote drifting the other way produces a price
+    // WEAKER than the previous attempt and silently undoes the escalation. Observed
+    // 2026-08-28: attempt 1 priced 110.94 off an ask of 98, attempt 2 priced 110.70 off an
+    // ask of 95 — the 3%→6% step went BACKWARDS and that attempt was wasted. A limit is a
+    // ceiling (buy) / floor (sell), so holding the more aggressive of the two costs nothing:
+    // the fill still happens at whatever is resting in the book, not at our limit.
+    let bestPx = Number.isFinite(Number(price)) ? Number(price) : null;
     for (let a = 1; a <= attempts; a++) {
       await sleep(pollMs);
       const u = await unfilledContracts(creds, id);
@@ -291,13 +299,20 @@ export function createLiveExecutor(getCtx) {
       // whichever is larger (see there).
       const bump = (chase.bump ?? 1) * a;
       const bumpPct = (chase.bumpPct ?? 0) * a;
-      const newPx = cleanLimitPrice(marketableChasePrice(side, chase.quote?.(symbol), offset, bump, bumpPct));
+      const quoted = marketableChasePrice(side, chase.quote?.(symbol), offset, bump, bumpPct);
+      if (quoted == null) continue;
+      // Ratchet against the best price sent so far (see above) — never step back.
+      const stepped = bestPx == null
+        ? quoted
+        : (side === 'buy' ? Math.max(bestPx, quoted) : Math.min(bestPx, quoted));
+      const newPx = cleanLimitPrice(stepped);
       if (!newPx) continue;
+      bestPx = Number(newPx);
       try {
         // Send the ORIGINAL total size: Delta keeps the already-filled portion and
         // re-rests the remainder at the new price (a smaller size would be < filled).
         await editOrder(creds, { id, product_id: productId, limit_price: newPx, size: Math.max(1, Math.round(contracts)) });
-        log(`[${accountName}] 🏃 CHASE ${side} ${symbol}: ${unfilled} unfilled → reprice ${newPx} (attempt ${a}/${attempts}, cross +${bumpPct ? Math.max(bump, 0).toFixed(2) + '/' + bumpPct.toFixed(2) + '%' : bump}) [${tag}]`);
+        log(`[${accountName}] ➤ CHASE ${side} ${symbol}: ${unfilled} unfilled → reprice ${newPx} (attempt ${a}/${attempts}, cross +${bumpPct ? Math.max(bump, 0).toFixed(2) + '/' + bumpPct.toFixed(2) + '%' : bump}) [${tag}]`);
       } catch (e) {
         logWarn(`[${accountName}] chase reprice failed for ${symbol} [${tag}]: ${e.message}`);
       }
@@ -420,7 +435,7 @@ export function createLiveExecutor(getCtx) {
       const { accountName, creds } = getCtx();
       const priceStr = cleanLimitPrice(price);
       const summary = `EDIT order ${id} ${symbol} → @ ${priceStr ?? '—'}${size != null ? ` x${size}` : ''} [${tag}]`;
-      if (DRY_RUN) { log(`[${accountName}] 🧪 DRY-RUN edit order (not sent): ${summary}`); return { ok: true, dryRun: true }; }
+      if (DRY_RUN) { log(`[${accountName}] ⚗ DRY-RUN edit order (not sent): ${summary}`); return { ok: true, dryRun: true }; }
       if (!creds?.apiKey || !id || !priceStr) return { ok: false, error: 'missing id/price/creds' };
       try {
         const order = await editOrder(creds, { id, product_symbol: symbol, limit_price: priceStr, ...(size != null ? { size: Math.max(1, Math.round(size)) } : {}) });
@@ -443,7 +458,7 @@ export function createLiveExecutor(getCtx) {
       const sl = (stopLoss != null && Number.isFinite(stopLoss)) ? String(stopLoss) : null;
       const tp = (takeProfit != null && Number.isFinite(takeProfit)) ? String(takeProfit) : null;
       const summary = `EDIT bracket ${symbol} →${sl ? ` SL@${sl}` : ''}${tp ? ` TP@${tp}` : ''} via ${triggerMethod} [${tag}]`;
-      if (DRY_RUN) { log(`[${accountName}] 🧪 DRY-RUN edit bracket (not sent): ${summary}`); return { ok: true, dryRun: true }; }
+      if (DRY_RUN) { log(`[${accountName}] ⚗ DRY-RUN edit bracket (not sent): ${summary}`); return { ok: true, dryRun: true }; }
       if (!creds?.apiKey || (!sl && !tp)) return { ok: false, error: 'missing creds/levels' };
       try {
         const res = await editBracket(creds, {
@@ -478,7 +493,7 @@ export function createLiveExecutor(getCtx) {
       const stopStr = cleanLimitPrice(stopPrice);
       const legObj = { order_type: 'market_order', stop_price: stopStr };
       const summary = `BRACKET ${String(side).toUpperCase()} ${symbol}${productId != null ? ` (pid ${productId})` : ''} @stop ${stopStr ?? '—'} via ${triggerMethod} [${tag}]`;
-      if (DRY_RUN) { log(`[${accountName}] 🧪 DRY-RUN bracket set (not sent): ${summary}`); return { ok: true, dryRun: true }; }
+      if (DRY_RUN) { log(`[${accountName}] ⚗ DRY-RUN bracket set (not sent): ${summary}`); return { ok: true, dryRun: true }; }
       if (!creds?.apiKey || !stopStr || (side !== 'sl' && side !== 'tp')) {
         return { ok: false, error: 'missing creds/stop/side' };
       }
@@ -539,7 +554,7 @@ export function createLiveExecutor(getCtx) {
       const summary = `STOP ${side.toUpperCase()} ${size}x ${symbol} trigger@${triggerMethod} ${stopStr ?? '—'} reduceOnly [${tag}]`;
 
       if (DRY_RUN) {
-        log(`[${accountName}] 🧪 DRY-RUN stop order (not sent): ${summary}`);
+        log(`[${accountName}] ⚗ DRY-RUN stop order (not sent): ${summary}`);
         return { ok: true, dryRun: true };
       }
       if (!creds?.apiKey || !creds?.apiSecret) {
@@ -583,7 +598,7 @@ export function createLiveExecutor(getCtx) {
       if (!creds?.apiKey || id == null) return { ok: false, error: 'no-id-or-creds' };
       try {
         await cancelOrder(creds, { id, product_id: productId });
-        log(`[${accountName}] 🧹 Cancelled resting order id ${id}`);
+        log(`[${accountName}] ⌫ Cancelled resting order id ${id}`);
         return { ok: true };
       } catch (e) {
         logWarn(`[${accountName}] cancelStop failed for id ${id}: ${e.message}`);
@@ -600,7 +615,7 @@ export function createLiveExecutor(getCtx) {
       if (!armed()) return { ok: true, skipped: true };
       const { accountName, creds } = getCtx();
       if (DRY_RUN) {
-        log(`[${accountName}] 🧪 DRY-RUN close-all (not sent): POST /v2/positions/close_all`);
+        log(`[${accountName}] ⚗ DRY-RUN close-all (not sent): POST /v2/positions/close_all`);
         return { ok: true, dryRun: true };
       }
       if (!creds?.apiKey || !creds?.apiSecret) return { ok: false, error: 'no-credentials' };
