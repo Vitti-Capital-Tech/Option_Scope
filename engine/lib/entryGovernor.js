@@ -103,22 +103,42 @@ export function reserveSpread(legs, now = Date.now(), { isLive = false } = {}) {
   const active = (Array.isArray(legs) ? legs : []).filter(l => l && Number(l.qty) > 0);
   if (active.length === 0) return { ok: true };
 
-  // Pass 1 — resolve every pool and check ALL legs fit before touching any. Real orders
-  // are measured against the real book; simulated ones against the shadow.
   const resolved = active.map(l => ({ leg: l, pool: getPool(l.symbol, l.side, l.depth, now) }));
-  for (const { leg, pool } of resolved) {
-    const need = Number(leg.qty);
-    const have = isLive ? pool.remaining : pool.shadow;
-    if (Number.isFinite(have) && have < need) {
-      return {
-        ok: false,
-        blockedLeg: { symbol: leg.symbol, side: leg.side, qty: need, available: have },
-      };
+
+  // ── A REAL ORDER IS NEVER BLOCKED HERE ──────────────────────────────────────
+  // Live only RECORDS its draw; the gate applies to simulations. Two reasons:
+  //
+  //   1. Correctness. Live already has two checks with better information than this
+  //      one: the account's own top-of-book depth guard (live L1 sizes at placement
+  //      time, not a frozen 8s snapshot) and openSpread's all-or-nothing chase, which
+  //      unwinds cleanly if the book can't absorb the order. A frozen snapshot
+  //      second-guessing those can only produce false negatives — an entry refused
+  //      against depth that has since replenished.
+  //
+  //   2. Scale. "First come" is decided by timer REGISTRATION order, which is fixed for
+  //      the life of the process — so the same accounts win every minute, forever. At 3
+  //      live accounts that is a nuisance; at 40 it means the last-registered ~37 never
+  //      trade a contended strike at all. A gate whose fairness degrades with account
+  //      count cannot sit in front of real money.
+  //
+  // Paper still contends — against `shadow`, which live's draws deplete — so a simulated
+  // fill still reflects what the live book had left. That was the point of enrolling
+  // paper, and it is preserved.
+  if (!isLive) {
+    for (const { leg, pool } of resolved) {
+      const need = Number(leg.qty);
+      if (Number.isFinite(pool.shadow) && pool.shadow < need) {
+        return {
+          ok: false,
+          blockedLeg: { symbol: leg.symbol, side: leg.side, qty: need, available: pool.shadow },
+        };
+      }
     }
   }
 
-  // Pass 2 — all legs fit: consume. Everyone draws the shadow down; only REAL orders touch
-  // the real book. (Infinity - n === Infinity, so an unknown-depth pool stays unlimited.)
+  // Consume. Everyone draws the shadow down; a real order additionally draws the real
+  // book (now purely observational — nothing gates on it, but it records what live took).
+  // (Infinity - n === Infinity, so an unknown-depth pool stays unlimited.)
   for (const { leg, pool } of resolved) {
     const need = Number(leg.qty);
     pool.shadow = Math.max(0, pool.shadow - need);
