@@ -288,11 +288,23 @@ export function createLiveExecutor(getCtx) {
     // ceiling (buy) / floor (sell), so holding the more aggressive of the two costs nothing:
     // the fill still happens at whatever is resting in the book, not at our limit.
     let bestPx = Number.isFinite(Number(price)) ? Number(price) : null;
+    let readFailures = 0;
+    // Did ANY state read succeed? If none ever does we must not pretend to know whether
+    // this order filled — see the `unknown` return below.
+    let everRead = false;
     for (let a = 1; a <= attempts; a++) {
       await sleep(pollMs);
       const u = await unfilledContracts(creds, id);
+      if (u == null) {
+        // Read failed (timeout / 429 / transient). This says NOTHING about the order, so
+        // it must not consume an escalation step: `a--` keeps the cross where it is and
+        // retries the read. Bounded by `readFailures` so a persistently dead endpoint
+        // can't spin here forever.
+        if (++readFailures <= attempts) { a--; continue; }
+        break;
+      }
+      everRead = true;
       if (u === 0) { unfilled = 0; break; }
-      if (u == null) continue;                 // fetch hiccup — retry next loop
       unfilled = u;
       // Re-price toward the market, escalating the cross each attempt. BOTH the flat and
       // the percentage component scale with the attempt number; marketableChasePrice takes
@@ -317,11 +329,27 @@ export function createLiveExecutor(getCtx) {
         logWarn(`[${accountName}] chase reprice failed for ${symbol} [${tag}]: ${e.message}`);
       }
     }
-    const uFinal = await unfilledContracts(creds, id);
-    if (uFinal === 0) unfilled = 0;
-    else if (uFinal != null) unfilled = uFinal;
-    const filled = Math.max(0, contracts - unfilled);
-    return { ok: unfilled === 0, order: first.order, id, productId, filled, unfilled };
+    // Final verdict. Retry the last read a few times: this one decides whether the caller
+    // unwinds a real position, so a single transient failure must not settle it.
+    let uFinal = null;
+    for (let i = 0; i < 3 && uFinal == null; i++) {
+      if (i > 0) await sleep(400);
+      uFinal = await unfilledContracts(creds, id);
+    }
+    if (uFinal != null) { everRead = true; unfilled = uFinal; }
+
+    // If NO read ever succeeded, `unfilled` still holds the optimistic starting guess —
+    // it is not evidence. Concluding "unfilled" from it made the caller abort and cancel
+    // an order that may in fact have FILLED, leaving a live position the engine had no
+    // row for (reconcileOrphans then had to adopt it ~30s later). Report the state as
+    // UNKNOWN instead and let the caller unwind defensively.
+    const unknown = !everRead;
+    const filled = unknown ? 0 : Math.max(0, contracts - unfilled);
+    return {
+      ok: !unknown && unfilled === 0,
+      order: first.order, id, productId, filled, unfilled, unknown,
+      ...(unknown ? { error: 'order state unreadable after chase (Delta reads failing)' } : {}),
+    };
   }
 
   return {
@@ -359,7 +387,17 @@ export function createLiveExecutor(getCtx) {
       });
       if (!buy.ok) {
         // Long couldn't be fully filled — stay flat: unwind any partial, else cancel.
-        if (buy.filled > 0) {
+        if (buy.unknown) {
+          // We could not read the order's state at all, so we do not know whether it
+          // filled. Do BOTH, in this order, and let each no-op if it doesn't apply:
+          // cancel (kills it if still resting, so it can't fill mid-cleanup) then a
+          // reduce-only close of the FULL size (flattens it if it did fill; Delta's
+          // `no_position_for_reduce_only` is already treated as benign). Cancelling
+          // alone was the bug — a filled order has nothing to cancel and was left live.
+          logWarn(`[${accountName}] ⚠ Entry BUY state UNREADABLE for ${pos.id} — cancelling and reduce-only closing ${long} to guarantee flat.`);
+          if (buy.id) await cancelOrder(creds, { id: buy.id, product_id: buy.productId }).catch(() => {});
+          await marketClose({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: long, tag: `${pos.id}-EAB` }).catch(() => {});
+        } else if (buy.filled > 0) {
           logWarn(`[${accountName}] ⚠ Entry BUY only ${buy.filled}/${long} filled for ${pos.id} — unwinding to abort cleanly.`);
           await marketClose({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: buy.filled, tag: `${pos.id}-EAB` }).catch(() => {});
         } else if (buy.id) {
@@ -382,7 +420,12 @@ export function createLiveExecutor(getCtx) {
           // short) so we never carry a naked/mismatched leg. All-or-nothing entry.
           logError(`[${accountName}] ⚠ Entry SELL only ${sell.filled}/${short} filled after chase for ${pos.id} — unwinding long + partial short to abort.`);
           await marketClose({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: long, tag: `${pos.id}-EAB` }).catch(() => {});
-          if (sell.filled > 0) {
+          if (sell.unknown) {
+            // State unreadable — cancel then reduce-only close the FULL short (see the
+            // buy-leg path above for why cancelling alone is not enough).
+            if (sell.id) await cancelOrder(creds, { id: sell.id, product_id: sell.productId }).catch(() => {});
+            await marketClose({ symbol: pos.sellLeg.symbol, side: 'buy', contracts: short, tag: `${pos.id}-EAB` }).catch(() => {});
+          } else if (sell.filled > 0) {
             await marketClose({ symbol: pos.sellLeg.symbol, side: 'buy', contracts: sell.filled, tag: `${pos.id}-EAB` }).catch(() => {});
           } else if (sell.id) {
             await cancelOrder(creds, { id: sell.id, product_id: sell.productId }).catch(() => {});

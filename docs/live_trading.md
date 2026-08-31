@@ -792,6 +792,27 @@ the account is left flat (no manual reconciliation):
   then abort. `openSpread` returns `{ ok: false, legFailed }` and the engine skips the
   `active_positions` insert.
 
+> [!IMPORTANT]
+> **A failed state read is not evidence.** The chase polls `/v2/orders` for the order's
+> `unfilled_size`, and that read can fail on its own (timeout, 429, transient). Two rules
+> follow, both of which the code previously got wrong:
+>
+> - **A failed read does not consume an escalation attempt.** It says nothing about the
+>   order, so the cross stays where it is and the read is simply retried (bounded, so a
+>   dead endpoint can't spin). Previously each failed read burned an attempt *without
+>   repricing*, quietly throwing away the chase.
+> - **If no read ever succeeds, the result is `unknown`, not "unfilled".** `unfilled`
+>   still holds the optimistic starting guess, which is not evidence. Treating it as fact
+>   made the caller abort and merely *cancel* an order that may have **filled** — leaving
+>   a live position with no `active_positions` row until `reconcileOrphans` adopted it
+>   ~30s later. On `unknown` the abort path now **cancels AND reduce-only closes the full
+>   size**: the cancel kills it if it is still resting, the close flattens it if it filled,
+>   and each no-ops harmlessly if it doesn't apply (`no_position_for_reduce_only` is
+>   already handled as benign). The account is guaranteed flat either way.
+>
+> This became more likely once Delta reads were bounded by `DELTA_READ_TIMEOUT_MS` — a
+> slow endpoint now fails fast instead of eventually answering.
+
 > [!NOTE]
 > **Abort cause is named (submit rejection vs chase timeout).** The abort return carries a
 > `rejected` flag: `true` when Delta **refused the order outright** at submit (e.g.
