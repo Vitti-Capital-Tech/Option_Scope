@@ -188,6 +188,30 @@ This means:
 - **Exits** are checked every **1 second** (fast reaction to price moves)
 - **New entries** are checked every **1 minute** (no need to rush entries)
 
+### Hang recovery: fencing a stuck cycle
+
+A cycle can stall on a call that never returns. It used to be handled with
+`process.exit(1)` so PM2 would restart everything — but **every account engine runs in one
+process**, so one account's unresponsive socket blinded the whole fleet through a restart,
+a WebSocket re-subscribe and a ticker warm-up. Wrong at three accounts; unthinkable at forty.
+
+A hung cycle cannot be cancelled — JavaScript has no way to abort an `await` that never
+settles — so it is **fenced** instead:
+
+1. Each cycle takes a monotonic `evalEpoch` when it starts and keeps it as `myEpoch`.
+2. When the watchdog sees a cycle past `EVAL_HANG_MS`, it bumps `evalEpoch`, releases the
+   lock, and lets the next tick start a fresh cycle. The stuck cycle's `myEpoch` can now
+   never match again.
+3. Every durable step re-checks `stale()` — before the write phase, before each exit row,
+   before each entry placement, and before the in-memory book is replaced. A fenced cycle
+   that finally wakes up writes **nothing**.
+4. The `finally` block releases the lock **only if the cycle still owns it**, so a fenced
+   cycle can't clear the flag out from under the fresh one now running.
+
+The result: recovery is scoped to one account, and the single-evaluator invariant survives
+even while two cycles are technically alive. A hang raises a Telegram alert (it is no longer
+self-announcing via a process restart); repeated hangs mean some call is not returning.
+
 ### Why entries can't skip a minute
 
 "Once a minute" is only true if the marker that tracks *which* minute was scanned is
@@ -216,7 +240,7 @@ Live-trading specifics are in [live_trading.md](./live_trading.md#entry-phase-bu
 Before any evaluation runs, these guards must pass:
 
 1. **`isEvaluating` mutex check** — prevents overlapping evaluations. If the previous run is still active, it skips (and the tick retries a second later).
-   - *Hang Timeout Guard*: If `isEvaluating` has been active for more than **60 seconds** (e.g. database query is hung indefinitely), the engine logs a fatal error and crashes the process (`process.exit(1)`). This allows PM2 to auto-restart the engine container cleanly.
+   - *Hang Timeout Guard*: If `isEvaluating` has been active for more than `EVAL_HANG_MS` (default **60s**) — e.g. a call that never returns — the watchdog **abandons that cycle and starts a fresh one for that account alone**. It does **not** restart the process: every account engine shares one process, so the old `process.exit(1)` took the entire fleet down for one account's stuck socket. See [Hang recovery](#hang-recovery-fencing-a-stuck-cycle).
    - *Entry-minute claim*: once the guards below pass and a **full** (entry-eligible) cycle actually begins, it stamps `lastEntryMinute` with the **current** minute — on START, not on completion. See [Why entries can't skip a minute](#why-entries-cant-skip-a-minute).
 2. **Spot price exists** — can't evaluate without knowing the underlying price.
 3. **Spot not stale** — if the spot price hasn't been updated in **120 seconds**, the evaluation is skipped.
@@ -937,7 +961,7 @@ Here's every safety guard in one table:
 | `isEvaluating` mutex | `paperTradingEngine.js` | Prevents overlapping evaluation cycles |
 | Spot staleness (120s) | `paperTradingEngine.js` | Skips evaluation if spot price is stale |
 | WebSocket stale spot reconnect | `paperTradingEngine.js` | Automatically forces WebSocket reconnect (`startWebSocket()`) if spot remains stale > 120s |
-| Evaluation hang guard (60s) | `paperTradingEngine.js` | Logs fatal error and crashes process (`exit(1)`) if evaluation is hung > 60s, triggering PM2 container recovery |
+| Evaluation hang guard (`EVAL_HANG_MS`, 60s) | `paperTradingEngine.js` | Abandons a cycle stuck > 60s and starts a fresh one **for that account only** — the stuck cycle is fenced by epoch and can never write or release the lock. Does not restart the process |
 | Entry-phase budget (25s) | `paperTradingEngine.js` | Caps the serial entry-placement phase of one cycle so it can never reach the 60s hang guard; remaining candidates are deferred to the next minute's scan. Checked *before* each entry, so an in-flight one always completes |
 | Entry-minute claimed on start | `paperTradingEngine.js` | `lastEntryMinute` is stamped when a full cycle begins, so an overrunning cycle can't consume a minute it never scanned (no silently skipped entries) |
 | Fills-cache staleness (30s) | `paperTradingEngine.js` | The off-lock recent-fills cache returns `null` once older than 30s; the exit loop then holds every position rather than inferring a fill from a stale snapshot |

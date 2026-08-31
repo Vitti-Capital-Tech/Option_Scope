@@ -83,6 +83,11 @@ const ENTRY_WARMUP_RETRY_MS = Math.max(500, Number(process.env.ENTRY_WARMUP_RETR
 // these values actually run before deciding whether they should gate anything.
 const DEPTH_SIZE_STALE_MS = Math.max(1000, Number(process.env.DEPTH_SIZE_STALE_MS ?? 10000));
 
+// How long one evaluation cycle may run before the watchdog abandons it. Recovery is
+// per-account (the stuck cycle is fenced, a fresh one takes over) — it no longer restarts
+// the process, so this can stay generous without risking the whole fleet.
+const EVAL_HANG_MS = Math.max(10000, Number(process.env.EVAL_HANG_MS ?? 60000));
+
 // Hard wall-clock ceiling on the ENTRY-PLACEMENT phase of a single cycle. Entries are
 // placed serially (each one a chase-fill + several Supabase guard reads), so a cycle
 // with many candidates could otherwise run long enough to trip the 60s hang guard —
@@ -279,6 +284,10 @@ async function startSingleAccountEngine(account) {
   // call) advanced the marker into the minute it had never actually scanned, silently
   // skipping that whole minute's entries. Stamping on start makes every minute get
   // exactly one entry scan, however long the previous one took.
+  // Monotonic cycle counter used as a fencing token (see the hang watchdog in
+  // evaluateStrategy). Incremented when a cycle starts, and again when the watchdog
+  // abandons one — so an abandoned cycle can never match the current value again.
+  let evalEpoch = 0;
   let lastEntryMinute = -1;
   // Pending same-minute entry retry (see ENTRY_RETRY_DELAY_MS). `entryRetryAt` is when the
   // retry becomes eligible (0 = none pending); the counter is scoped to `entryRetryMinute`
@@ -2628,11 +2637,32 @@ async function startSingleAccountEngine(account) {
   async function evaluateStrategy(onlyExits = false) {
     if (isEvaluating) {
       const evalDuration = Date.now() - evaluationStart;
-      if (evaluationStart > 0 && evalDuration > 60000) {
-        logError(`[${accountState.name}] Strategy evaluation has been hung for ${Math.round(evalDuration / 1000)}s. Crashing process for PM2 recovery.`);
-        process.exit(1);
+      if (evaluationStart > 0 && evalDuration > EVAL_HANG_MS) {
+        // ── HANG RECOVERY, SCOPED TO THIS ACCOUNT ──────────────────────────────
+        // This used to call process.exit(1) and let PM2 restart everything. Every
+        // account engine lives in ONE process, so a single account stuck on one
+        // unresponsive socket took the whole fleet down — all positions blind
+        // through a restart, WS re-subscribe and ticker warm-up. That blast radius
+        // is wrong at three accounts and unthinkable at forty.
+        //
+        // A hung cycle cannot be cancelled — JS has no way to abort an await that
+        // never settles — so we FENCE it instead: bump the epoch, which permanently
+        // invalidates the stuck cycle, and hand the lock to a fresh one. If the old
+        // cycle ever does resume it finds itself stale, writes nothing, and does not
+        // touch the lock the new cycle now holds (see `stale()` below).
+        evalEpoch++;
+        isEvaluating = false;
+        evaluationStart = 0;
+        logError(`[${accountState.name}] Strategy evaluation hung for ${Math.round(evalDuration / 1000)}s — fencing that cycle and starting a fresh one. Other accounts are unaffected.`);
+        notifyFailure({
+          account: accountState.name,
+          context: `Evaluation cycle hung >${Math.round(EVAL_HANG_MS / 1000)}s and was abandoned; a fresh cycle has taken over`,
+          extra: 'The stale cycle is fenced and cannot write. If this repeats, a call is not returning — check Delta/Supabase latency.',
+        });
+        // fall through and let THIS tick own the new cycle
+      } else {
+        return;
       }
-      return;
     }
     if (!spotPrice) return;
 
@@ -2679,6 +2709,10 @@ async function startSingleAccountEngine(account) {
 
     isEvaluating = true;
     evaluationStart = Date.now();
+    // Fencing token. Only the cycle holding the current epoch may write or release the
+    // lock; a cycle the watchdog abandoned fails every `stale()` check from then on.
+    const myEpoch = ++evalEpoch;
+    const stale = () => evalEpoch !== myEpoch;
     // Claim THIS minute for entries the moment the cycle actually begins (all early-return
     // guards above are already past, so the scan really is going to run). A cycle that
     // overruns into the next minute therefore leaves that next minute unclaimed, and the
@@ -4664,12 +4698,20 @@ async function startSingleAccountEngine(account) {
       }
 
       // ── 3. Supabase side effects ──────────────────────────────────────
+      // Last point before this cycle writes anything durable (trade history, live orders,
+      // position rows). A fenced cycle stops here: its view of `positions` is now stale and
+      // a fresh cycle has already re-derived it, so writing would double-book.
+      if (stale()) {
+        logWarn(`[${accountState.name}] Fenced cycle reached the write phase after being abandoned — discarding its ${exited.length} exit(s) and ${newEntries.length} entry(ies) unwritten.`);
+        return;
+      }
       if (exited.length > 0 || newEntries.length > 0) {
         lastDbWrite = Date.now();
       }
 
       // Process exits
       for (const t of exited) {
+        if (stale()) break;   // fenced mid-write — stop before the next durable change
         try {
           // Idempotent: trade_id is the stable position id, so a concurrent
           // evaluator's duplicate is silently ignored (ON CONFLICT DO NOTHING).
@@ -4729,6 +4771,7 @@ async function startSingleAccountEngine(account) {
         const entryPhaseStart = Date.now();
         let entryBudgetSpent = false;
         for (const t of newEntries) {
+          if (stale()) break;   // fenced mid-placement — never open a NEW position
           // Stop placing once the phase budget is gone — the rest are retried next minute.
           // Checked BEFORE each entry so an in-flight one always completes (never leaves a
           // half-open spread); only not-yet-started entries are deferred.
@@ -5174,6 +5217,7 @@ async function startSingleAccountEngine(account) {
       // active_positions — any entry skipped by a guard or dropped after a failed/unwound
       // insert stays out, so the in-memory book never diverges from the DB/exchange (no
       // phantom or orphan positions).
+      if (stale()) return;  // a fresh cycle owns the book now — do not overwrite it
       positions = [...remaining, ...newEntries.filter(n => persistedEntryIds.has(n.id))];
 
       // Update heartbeat
@@ -5187,8 +5231,12 @@ async function startSingleAccountEngine(account) {
     } catch (e) {
       logError(`[${accountState.name}] Strategy evaluation error:`, e);
     } finally {
-      isEvaluating = false;
-      evaluationStart = 0;
+      // Only release the lock if we still OWN it. A fenced cycle that finally resolves
+      // must not clear the flag out from under the fresh cycle now running.
+      if (!stale()) {
+        isEvaluating = false;
+        evaluationStart = 0;
+      }
       // NB: no entry-minute stamp here — it is claimed on START (see above) so a long
       // cycle can never consume the minute it never scanned.
     }
