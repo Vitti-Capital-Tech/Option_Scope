@@ -1029,6 +1029,12 @@ live and a paper account chasing the same book contend with each other.
 - **Rule:** first come, first served at **FULL qty**; **all-or-nothing per spread** (both
   legs have room, or neither pool is touched and the whole spread is blocked). A blocked
   account is never handed a smaller size — it retries next wave against fresh depth.
+- **A real order is never blocked.** Live reservations only *record* their draw; the gate
+  applies to simulations. Live already has two better-informed checks — the per-account
+  depth guard (live L1 sizes at placement time, not a frozen 8s snapshot) and the
+  all-or-nothing chase that unwinds cleanly — and "first come" here is decided by timer
+  **registration order**, fixed for the life of the process. At three live accounts that
+  is a nuisance; at forty the last-registered ~37 would never trade a contended strike.
 
 > [!IMPORTANT]
 > **Paper can never deprive live of depth.** Each pool carries **two** counters:

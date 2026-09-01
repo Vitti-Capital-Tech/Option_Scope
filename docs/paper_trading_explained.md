@@ -592,6 +592,9 @@ Normal sizing **reserves** budget for every empty combined slot (`partMargin = r
 
 Every account's engine runs inside **one Node process** (see [Multi-Account Supervisor](#multi-account-supervisor)). When several accounts pick the **same spread** in the same ~1s entry wave, their **combined** contract size can exceed the **real top-of-book depth** resting on Delta. Without coordination each account would independently "fill" the spread in paper — a fill the live market could never have handed all of them at once. The governor gates entries against a **shared, first-come-first-serve depth budget** so the book is never over-consumed. It's the **last gate before an entry is committed** (runs right before `newEntries.push`).
 
+> [!IMPORTANT]
+> **It gates simulations only — a real order is never blocked.** Live reservations merely *record* what they took, so paper still contends against the real book while a simulation can never deprive live of depth. This is also what lets the fleet scale: "first come" is decided by timer registration order, which never changes for the life of the process, so a blocking gate would permanently starve whichever accounts happen to register last.
+
 Paper **and** live accounts draw from the **same** budget, so a live account and a paper account chasing the same book contend with each other — that is what makes the paper result mirror what live could actually have got, rather than both being handed the same size.
 
 ### The rule
