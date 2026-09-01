@@ -18,7 +18,7 @@
  * disconnected / error) are fanned to every listener so each account's heartbeat ws_status
  * and logs stay accurate.
  */
-import { createTickerStream } from './deltaApi.js';
+import { createTickerStream, processTickerMessage } from './deltaApi.js';
 import { log } from './utils.js';
 
 // underlying → hub. A hub owns one upstream stream and the set of account listeners.
@@ -30,6 +30,15 @@ function unionSymbols(hub) {
   const u = new Set();
   for (const l of hub.listeners) for (const s of l.symbols) u.add(s);
   return u;
+}
+
+// Merged symbol metadata across every listener, so the hub can normalise a tick ONCE for
+// all of them. Values are identical wherever two accounts share a symbol (both derive it
+// from the same products list), so a plain merge is safe.
+function unionMeta(hub) {
+  const m = {};
+  for (const l of hub.listeners) Object.assign(m, l.meta || {});
+  return m;
 }
 
 function sameSet(a, b) {
@@ -47,16 +56,38 @@ function rebuild(underlying) {
   if (union.size < 2) return;
   if (hub.stream && sameSet(union, hub.symbols)) return; // no change → keep the live socket
 
+  // Refresh the merged metadata before the early-outs below: a listener can join with a
+  // symbol set already covered by the union (no resubscribe needed) and still need its
+  // metadata present for parsing.
+  hub.meta = unionMeta(hub);
+
   hub.symbols = union;
   const prev = hub.stream;
   hub.stream = createTickerStream(
     [...union],
     (msg) => {
-      // Route each tick only to listeners that subscribed to that symbol (accounts still
-      // filter again via their own symbolMeta, but this avoids waking every engine per tick).
       const sym = msg?.symbol;
+      // Normalise ONCE for the whole hub and hand every listener the SAME object.
+      //
+      // Each account used to run processTickerMessage on its own copy, which meant N parses
+      // per tick and N divergent snapshots — two accounts could read a different `ask` for
+      // the same symbol in the same second (observed 2026-08-28: one chased off ask 98 while
+      // another chased off 95, on the same strike, at the same timestamp). That divergence
+      // also decided the entry governor's frozen depth pool, since whichever account touched
+      // a leg first seeded it from ITS OWN copy. One parse removes both problems; the CPU
+      // saving (~2% of a core at 40 accounts) is the smaller half of the benefit.
+      //
+      // Safe to share because ticker objects are read-only downstream: the engine's only
+      // write is `tickerData[symbol] = <this object>`, and nothing mutates one in place.
+      // The perp/spot symbol carries no metadata, so it stays `null` and the engine reads
+      // spot straight off the raw message.
+      let parsed = null;
+      if (sym != null && hub.meta?.[sym]) {
+        parsed = processTickerMessage(msg, hub.meta, hub.store);
+        if (parsed) hub.store[parsed.symbol] = parsed;
+      }
       for (const l of hub.listeners) {
-        if (sym == null || l.symbols.has(sym)) l.onTicker?.(msg);
+        if (sym == null || l.symbols.has(sym)) l.onTicker?.(msg, parsed);
       }
     },
     (status, info) => {
@@ -88,21 +119,34 @@ function scheduleRebuild(underlying) {
  *   `update` swaps this listener's symbol set (expiry roll); `close` detaches it. Both
  *   mirror the handle shape of createTickerStream so callers swap in with no other change.
  */
-export function subscribeTickers(underlying, symbols, onTicker, onStatus) {
+/**
+ * Join the shared feed for `underlying`.
+ *
+ * `symbolMeta` (symbol → { strike, lotSize, type, expiry }) lets the hub normalise each
+ * tick once for every listener; `onTicker` then receives `(rawMsg, parsed)`, where `parsed`
+ * is null for symbols with no metadata (the perp/spot symbol). Omit it and listeners get
+ * `(rawMsg, null)` and can parse for themselves.
+ *
+ * `hub.store` is the hub's own normalised snapshot. It doubles as the carry-forward source
+ * for processTickerMessage (a tick that omits a field inherits the previous value), so that
+ * chain is now single and consistent instead of one per account.
+ */
+export function subscribeTickers(underlying, symbols, onTicker, onStatus, symbolMeta = null) {
   let hub = hubs.get(underlying);
   if (!hub) {
-    hub = { stream: null, symbols: new Set(), listeners: new Set(), rebuildTimer: null, lastStatus: 'reconnecting' };
+    hub = { stream: null, symbols: new Set(), listeners: new Set(), rebuildTimer: null, lastStatus: 'reconnecting', meta: {}, store: {} };
     hubs.set(underlying, hub);
   }
-  const listener = { symbols: new Set(symbols || []), onTicker, onStatus };
+  const listener = { symbols: new Set(symbols || []), meta: symbolMeta || {}, onTicker, onStatus };
   hub.listeners.add(listener);
   // Report the current upstream status right away so a late joiner's heartbeat isn't stale.
   if (hub.stream) onStatus?.(hub.lastStatus);
   scheduleRebuild(underlying);
 
   return {
-    update(newSymbols) {
+    update(newSymbols, newMeta = null) {
       listener.symbols = new Set(newSymbols || []);
+      if (newMeta) listener.meta = newMeta;
       scheduleRebuild(underlying);
     },
     close() {

@@ -21,7 +21,7 @@ import { notifyLiveFailure, notifyLiveTrade, sendTelegramMessage } from './lib/t
 import { getBalance } from './lib/deltaTradeApi.js';
 import {
   loadProducts, getExpiries, getSpotPrice,
-  buildSymbolMeta, processTickerMessage,
+  buildSymbolMeta,
   backfillTickers, getOptionHigh
 } from './lib/deltaApi.js';
 // Shared per-underlying upstream WS (see tickerHub.js): all account engines in this process
@@ -815,7 +815,7 @@ async function startSingleAccountEngine(account) {
     wsHandle = subscribeTickers(
       config.underlying,
       allSymbols,
-      (msg) => {
+      (msg, parsed) => {
         if (msg.symbol === perpSymbol) {
           const sp = parseFloat(msg.spot_price || msg.mark_price || msg.close || msg.last_price);
           if (sp && !isNaN(sp)) {
@@ -824,9 +824,12 @@ async function startSingleAccountEngine(account) {
           }
           return;
         }
-        const processed = processTickerMessage(msg, symbolMeta, tickerData);
-        if (processed) {
-          tickerData[processed.symbol] = processed;
+        // Already normalised by the hub, ONCE for every account (see subscribeTickers).
+        // Storing the shared object means two accounts can never disagree about the same
+        // symbol's quote in the same instant. Nothing downstream mutates it — every other
+        // `tickerData[...]` reference in this file is a read.
+        if (parsed) {
+          tickerData[parsed.symbol] = parsed;
           lastOptionTickAt = Date.now(); // an option quote just moved — feed is live
         }
       },
@@ -846,7 +849,10 @@ async function startSingleAccountEngine(account) {
           const retryStr = info?.retryMs != null ? `${(info.retryMs / 1000).toFixed(1)}s` : 'shortly';
           logWarn(`[${accountState.name}] WebSocket disconnected${codeStr}${reasonStr} — auto-reconnecting in ${retryStr}...`);
         }
-      }
+      },
+      // This account's symbol metadata, merged into the hub's union so it can normalise
+      // every tick once on behalf of all accounts (see subscribeTickers).
+      symbolMeta,
     );
 
     heartbeat.update({ ws_status: 'live' });

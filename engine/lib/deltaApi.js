@@ -101,15 +101,51 @@ export function getStrikes(products, settlementTime) {
 /**
  * Get current spot price from perpetual futures.
  */
+// Shared spot cache, keyed by underlying. This call is PUBLIC, and Delta throttles
+// unauthenticated requests **per IP** — one 10,000-unit budget for the whole box, unlike
+// the signed calls which are metered per user id. Every account polling spot on its own
+// 10s timer therefore made that shared budget scale with account count: at weight 3, forty
+// accounts would spend ~3,600 of 10,000 units per window re-fetching the *same number*.
+// One in-flight request now serves them all, so public-quota usage stops depending on how
+// many accounts run.
+//
+// Deliberately a cache rather than a background poller: nothing to own or shut down, no
+// requests when no account is asking, and a caller never waits longer than its own call
+// would have taken.
+const spotCache = new Map(); // underlying → { price, at, inflight }
+const SPOT_TTL_MS = Math.max(1000, Number(process.env.SPOT_CACHE_TTL_MS ?? 5000));
+
 export async function getSpotPrice(underlying) {
-  try {
-    const tickers = await apiGet('/v2/tickers', {
-      underlying_asset_symbols: underlying,
-      contract_types: 'perpetual_futures',
-    });
-    if (tickers && tickers[0]) return parseFloat(tickers[0].spot_price);
-  } catch (e) { /* ignore */ }
-  return null;
+  const now = Date.now();
+  const hit = spotCache.get(underlying);
+  if (hit && hit.price != null && now - hit.at < SPOT_TTL_MS) return hit.price;
+  // Coalesce concurrent callers onto ONE request — every account's 10s timer fires within
+  // milliseconds of the others, so without this they would all miss the cache together.
+  if (hit?.inflight) return hit.inflight;
+
+  const inflight = (async () => {
+    try {
+      const tickers = await apiGet('/v2/tickers', {
+        underlying_asset_symbols: underlying,
+        contract_types: 'perpetual_futures',
+      });
+      const px = (tickers && tickers[0]) ? parseFloat(tickers[0].spot_price) : null;
+      if (px != null && Number.isFinite(px)) {
+        spotCache.set(underlying, { price: px, at: Date.now(), inflight: null });
+        return px;
+      }
+    } catch (e) { /* fall through — caller treats null as "no update this tick" */ }
+    // Failed: clear the in-flight marker but KEEP any previous price so the next caller
+    // retries instead of inheriting the failure. Returning null matters — fetchSpot only
+    // advances `lastSpotUpdate` on a non-null result, which is what the spot-staleness
+    // guard and its forced WS reconnect key off.
+    const prev = spotCache.get(underlying);
+    spotCache.set(underlying, { price: prev?.price ?? null, at: prev?.at ?? 0, inflight: null });
+    return null;
+  })();
+
+  spotCache.set(underlying, { price: hit?.price ?? null, at: hit?.at ?? 0, inflight });
+  return inflight;
 }
 
 /**

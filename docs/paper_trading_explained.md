@@ -188,6 +188,35 @@ This means:
 - **Exits** are checked every **1 second** (fast reaction to price moves)
 - **New entries** are checked every **1 minute** (no need to rush entries)
 
+### One feed, one parse, one snapshot
+
+The upstream WebSocket was already shared — one connection per underlying, fanned out to
+every account (`tickerHub.js`). What was **not** shared was the work done per tick: each
+account ran `processTickerMessage` on its own copy, so N accounts meant N parses and N
+independent snapshots of the same market.
+
+That divergence was visible in production. On 2026-08-28 two accounts chased the same
+strike in the same second off **different asks** (98 and 95) — same config, same feed,
+different answer. It also fed the entry governor, whose frozen depth pool is seeded by
+whichever account touches a leg first, using *that account's* copy.
+
+The hub now normalises each tick **once** and hands every listener the same object. Safe
+because ticker objects are read-only downstream: the engine's only write is
+`tickerData[symbol] = <the shared object>`, and nothing mutates one in place. Each account
+keeps its own map (so an expiry roll or REST backfill stays local), it just stores shared
+values. The hub's snapshot also becomes the single carry-forward source — a tick that omits
+a field inherits the previous value from one consistent chain instead of N drifting ones.
+
+CPU saved is the smaller half (~2% of a core at 40 accounts); the point is that two accounts
+can no longer disagree about the same quote at the same instant.
+
+Separately, `getSpotPrice` is now a shared cache keyed by underlying
+(`SPOT_CACHE_TTL_MS`, default 5s) with concurrent callers coalesced onto one request. It is
+a **public** call, and Delta meters unauthenticated requests per IP — one budget for the
+whole box — so per-account polling made that budget scale with account count. A failed
+refresh still returns `null`, so `lastSpotUpdate` is not advanced and the spot-staleness
+guard behaves exactly as before.
+
 ### Hang recovery: fencing a stuck cycle
 
 A cycle can stall on a call that never returns. It used to be handled with
