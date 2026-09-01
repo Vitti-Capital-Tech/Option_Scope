@@ -51,15 +51,26 @@ function rebuild(underlying) {
   const hub = hubs.get(underlying);
   if (!hub) return;
   const union = unionSymbols(hub);
+  // Refresh the merged metadata and prune the snapshot BEFORE the early-outs — both must
+  // happen even when the subscription itself is unchanged (a listener can join with symbols
+  // the union already covers, and a listener can LEAVE without changing it either).
+  //
+  // The prune matters because hub.store is process-lifetime state. Each account still resets
+  // its own map on an expiry roll, but the hub's had no such reset, so every expiry's symbols
+  // accumulated in it forever — ~252 objects per roll, unbounded. Dropping anything no longer
+  // in the union keeps it to the live chain. Skipped while the union is degenerate (below),
+  // so a momentary empty subscription can't wipe a healthy snapshot.
+  if (union.size >= 2) {
+    hub.meta = unionMeta(hub);
+    for (const sym of Object.keys(hub.store)) {
+      if (!union.has(sym)) delete hub.store[sym];
+    }
+  }
+
   // Need at least the perp + one option; if a hub momentarily has too few, leave the
   // current stream as-is (a lone account with no symbols shouldn't tear down a live feed).
   if (union.size < 2) return;
   if (hub.stream && sameSet(union, hub.symbols)) return; // no change → keep the live socket
-
-  // Refresh the merged metadata before the early-outs below: a listener can join with a
-  // symbol set already covered by the union (no resubscribe needed) and still need its
-  // metadata present for parsing.
-  hub.meta = unionMeta(hub);
 
   hub.symbols = union;
   const prev = hub.stream;
