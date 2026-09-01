@@ -272,6 +272,9 @@ async function startSingleAccountEngine(account) {
   let expiries = [];
   let spotPrice = null;
   let lastSpotUpdate = 0;
+  // When the WS perp ticker last delivered spot. Distinct from lastSpotUpdate (which any
+  // source advances) so fetchSpot can tell whether the live feed is actually carrying spot.
+  let lastWsSpotAt = 0;
   let lastOptionTickAt = 0; // last time ANY option ticker updated — drives the option-feed watchdog
   let positions = []; // Active positions (in-memory mirror of Supabase)
   let tickerData = {}; // Live ticker data from WS
@@ -778,7 +781,18 @@ async function startSingleAccountEngine(account) {
 
   // ── Spot price polling ────────────────────────────────────────────────
 
+  // REST spot is a FALLBACK — the WS perp ticker is the primary source and delivers spot
+  // continuously. This used to overwrite `spotPrice` unconditionally every 10s, which is
+  // always a downgrade while the socket is live: the REST value is older by definition
+  // (request latency, and since getSpotPrice became a shared cache, up to SPOT_CACHE_TTL_MS
+  // of cache age on top). `spotPrice` drives the exit spot-cross and entry ATM selection, so
+  // replacing a millisecond-old WS tick with a several-second-old REST one can move an exit
+  // trigger by a real amount — BTC covers $50-100 in five seconds. Skip while WS spot is
+  // fresh; poll at full cadence the moment it goes quiet.
+  const WS_SPOT_FRESH_MS = Math.max(2000, Number(process.env.WS_SPOT_FRESH_MS ?? 15000));
+
   async function fetchSpot() {
+    if (lastWsSpotAt > 0 && Date.now() - lastWsSpotAt < WS_SPOT_FRESH_MS) return; // WS has it
     try {
       const sp = await getSpotPrice(config.underlying);
       if (sp) {
@@ -821,6 +835,7 @@ async function startSingleAccountEngine(account) {
           if (sp && !isNaN(sp)) {
             spotPrice = sp;
             lastSpotUpdate = Date.now();
+            lastWsSpotAt = lastSpotUpdate;
           }
           return;
         }
