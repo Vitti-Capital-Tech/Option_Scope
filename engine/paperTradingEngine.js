@@ -27,7 +27,7 @@ import {
 // Shared per-underlying upstream WS (see tickerHub.js): all account engines in this process
 // share ONE Delta market-data connection per underlying instead of opening one each — the
 // per-IP connection cap (HTTP 429) makes N-per-account unscalable.
-import { subscribeTickers, forceUpstreamReconnect } from './lib/tickerHub.js';
+import { subscribeTickers } from './lib/tickerHub.js';
 import {
   safeParseLeg, calculateFee, calcMargin, scanTickers,
   computeEntryAtmRatio, computeScaledSellQty,
@@ -2720,50 +2720,11 @@ async function startSingleAccountEngine(account) {
         logWarn(`[${accountState.name}] ⊘ Option feed stale ${Math.round((now - lastOptionTickAt) / 1000)}s while spot is live — forcing WebSocket reconnect.`);
         lastWsReconnectTime = now;
         try {
-          // Replace the shared upstream FIRST. startWebSocket() alone only re-registers this
-          // account's listener, and on a hub with other accounts the union is unchanged, so
-          // rebuild() keeps the exact socket that stopped delivering (see forceUpstreamReconnect).
-          forceUpstreamReconnect(config.underlying);
           startWebSocket();
         } catch (e) {
           logError(`[${accountState.name}] Failed to force WS reconnect (stale options):`, e);
         }
         return;
-      }
-    }
-
-    // Option-feed watchdog, PART 2: PARTIAL death. The guard above only fires when NOT ONE
-    // option quote has moved — but Delta can keep streaming most of the chain while a SUBSET of
-    // strikes goes silent, and that shape never trips it. Those strikes then sit in tickerData
-    // with carried-forward bid/ask on an ageing stamp (processTickerMessage): scanTickers drops
-    // every pair that touches them, and the ATM intrinsic lookups lose the strikes they need.
-    // Observed 2026-09-02 06:15 IST on JD Algo — the scanner showed 5 call matches, the engine
-    // evaluated 1 candidate, and that one was priced off a ~7h-old ATM+800 ask.
-    //
-    // Threshold is a MAJORITY of the current expiry's chain, not one strike: a genuinely
-    // illiquid far-OTM strike can legitimately go 2 minutes without a quote, and reconnecting
-    // the whole fleet's feed for that would be worse than the problem. Same 30s throttle as the
-    // guards above, and it needs a live spot to prove the socket itself is up.
-    {
-      const now = Date.now();
-      const chain = Object.values(tickerData).filter(t => t.expiry === config.expiry);
-      const spotFresh = lastSpotUpdate > 0 && (now - lastSpotUpdate) < OPTION_STALE_MS;
-      if (chain.length >= 10 && spotFresh && now - lastWsReconnectTime > 30000) {
-        const stale = chain.filter(t => {
-          const ts = Math.max(t.bidUpdatedAt || 0, t.askUpdatedAt || 0);
-          return !(ts > 0 && (now - ts) < 120000);
-        }).length;
-        if (stale > chain.length / 2) {
-          logWarn(`[${accountState.name}] ⊘ Option chain partially stale — ${stale}/${chain.length} symbols have had no quote for 120s while spot is live. Forcing WebSocket reconnect.`);
-          lastWsReconnectTime = now;
-          try {
-            forceUpstreamReconnect(config.underlying);
-            startWebSocket();
-          } catch (e) {
-            logError(`[${accountState.name}] Failed to force WS reconnect (partially stale chain):`, e);
-          }
-          return;
-        }
       }
     }
 
@@ -3129,8 +3090,8 @@ async function startSingleAccountEngine(account) {
         // on 2026-09-02 this line said -$32.80 while the scanner showed +$111.15 for the same
         // spread, and nothing in the log said WHICH input disagreed. `—` on either intrinsic
         // now means that strike has no fresh quote (candidate skipped, not mis-priced).
-        const px = (v) => (v != null ? `${v.toFixed(2)}` : '—');
-        log(`[${accountState.name}] Candidate ${spread.buyLeg.type.toUpperCase()} ${spread.buyLeg.strike}/${spread.sellLeg.strike}: ATM P&L = ${atmPnl != null ? atmPnl.toFixed(2) : 'null'} (Min required: ${minAtmPnl.toFixed(2)}), ROI = ${roi != null ? roi.toFixed(2) : 0}%, Passed = ${passed} | ATM ${atmStrike} ${px(buyIntrinsic)} / ${targetSellStrike} ${px(sellIntrinsic)} → ratio ${atmRatio ?? '—'} → qty ${spread.sellQty}→${ratioToUse ?? '—'} | legs ${px(spread.buyPrice)}/${px(spread.sellPrice)}`);
+        const usd = (v) => (v != null ? `${v.toFixed(2)}` : '—');
+        log(`[${accountState.name}] Candidate ${spread.buyLeg.type.toUpperCase()} ${spread.buyLeg.strike}/${spread.sellLeg.strike}: ATM P&L = ${atmPnl != null ? atmPnl.toFixed(2) : 'null'} (Min required: ${minAtmPnl.toFixed(2)}), ROI = ${roi != null ? roi.toFixed(2) : 0}%, Passed = ${passed} | ATM ${atmStrike} ${usd(buyIntrinsic)} / ${targetSellStrike} ${usd(sellIntrinsic)} → ratio ${atmRatio ?? '—'} → qty ${spread.sellQty}→${ratioToUse ?? '—'} | legs ${usd(spread.buyPrice)}/${usd(spread.sellPrice)}`);
         if (passed) {
           processedSpreads.push({ ...spread, atmPnl, roi });
         }

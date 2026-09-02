@@ -206,32 +206,6 @@ export function subscribeTickers(underlying, symbols, onTicker, onStatus, symbol
   };
 }
 
-/**
- * Tear down and rebuild the shared upstream socket for `underlying`, even when the symbol
- * union is unchanged.
- *
- * WHY: the per-account staleness guards "force a reconnect" by calling startWebSocket(), which
- * detaches that account's listener and immediately re-adds it. With more than one account on
- * the hub the union comes back IDENTICAL, so rebuild() takes its `sameSet` early-out and keeps
- * the very socket that stopped delivering — the reconnect logs but never actually happens. A
- * feed that has gone (partially) silent has to be replaced at the HUB, not at the listener.
- *
- * Clearing hub.symbols is what makes rebuild() unable to early-out; the union is recomputed
- * from the listeners on the way through, so nothing is lost.
- */
-export function forceUpstreamReconnect(underlying) {
-  const hub = hubs.get(underlying);
-  if (!hub) return false;
-  const prev = hub.stream;
-  hub.stream = null;
-  hub.symbols = new Set();
-  try { prev?.close(); } catch { /* noop */ }
-  clearTimeout(hub.rebuildTimer);
-  log(`[ticker-hub:${underlying}] forcing upstream reconnect`);
-  rebuild(underlying);
-  return true;
-}
-
 /** Test/diagnostics: current hub count and per-underlying listener/symbol counts. */
 export function _hubStats() {
   const out = {};
