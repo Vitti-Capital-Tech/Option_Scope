@@ -3090,8 +3090,8 @@ async function startSingleAccountEngine(account) {
         // on 2026-09-02 this line said -$32.80 while the scanner showed +$111.15 for the same
         // spread, and nothing in the log said WHICH input disagreed. `—` on either intrinsic
         // now means that strike has no fresh quote (candidate skipped, not mis-priced).
-        const usd = (v) => (v != null ? `${v.toFixed(2)}` : '—');
-        log(`[${accountState.name}] Candidate ${spread.buyLeg.type.toUpperCase()} ${spread.buyLeg.strike}/${spread.sellLeg.strike}: ATM P&L = ${atmPnl != null ? atmPnl.toFixed(2) : 'null'} (Min required: ${minAtmPnl.toFixed(2)}), ROI = ${roi != null ? roi.toFixed(2) : 0}%, Passed = ${passed} | ATM ${atmStrike} ${usd(buyIntrinsic)} / ${targetSellStrike} ${usd(sellIntrinsic)} → ratio ${atmRatio ?? '—'} → qty ${spread.sellQty}→${ratioToUse ?? '—'} | legs ${usd(spread.buyPrice)}/${usd(spread.sellPrice)}`);
+        const usd = (v) => (v != null ? `$${v.toFixed(2)}` : '—');
+        log(`[${accountState.name}] Candidate ${spread.buyLeg.type.toUpperCase()} ${spread.buyLeg.strike}/${spread.sellLeg.strike}: ATM P&L = $${atmPnl != null ? atmPnl.toFixed(2) : 'null'} (Min required: $${minAtmPnl.toFixed(2)}), ROI = ${roi != null ? roi.toFixed(2) : 0}%, Passed = ${passed} | ATM ${atmStrike} ${usd(buyIntrinsic)} / ${targetSellStrike} ${usd(sellIntrinsic)} → ratio ${atmRatio ?? '—'} → qty ${spread.sellQty}→${ratioToUse ?? '—'} | legs ${usd(spread.buyPrice)}/${usd(spread.sellPrice)}`);
         if (passed) {
           processedSpreads.push({ ...spread, atmPnl, roi });
         }

@@ -23,7 +23,7 @@ This document explains **every** logic and condition in the Paper Trading engine
 15. [Manual Exit (Liquidation)](#manual-exit-liquidation)
 16. [Duplicate Exit Prevention (Idempotent Writes)](#duplicate-exit-prevention-idempotent-writes)
 17. [Safety Guards Summary](#safety-guards-summary)
-18. [Diagnostic Logging (0 Candidates)](#diagnostic-logging-0-candidates)
+18. [Diagnostic Logging (Scan Rejections)](#diagnostic-logging-scan-rejections)
 19. [Config Synchronization](#config-synchronization)
 20. [Time-Based Filter Schedules](#time-based-filter-schedules)
 21. [Frontend Dashboard Architecture](#frontend-dashboard-architecture)
@@ -209,6 +209,53 @@ a field inherits the previous value from one consistent chain instead of N drift
 
 CPU saved is the smaller half (~2% of a core at 40 accounts); the point is that two accounts
 can no longer disagree about the same quote at the same instant.
+
+#### The metadata map is shared too — and that has a sharp edge
+
+To parse a tick once for everyone, the hub also needs **one** `symbol → { strike, lotSize,
+contractValue, type, expiry }` map, merged from every account. Symbols carry their expiry
+(`C-BTC-79000-020926`), so different expiries can never collide. What *can* collide is two
+accounts describing the **same** symbol — and they are not equally authoritative.
+
+An account subscribes two kinds of symbol. Its **own chain**, built from the products list
+for its `config.expiry`. And the legs of any position it still holds on a **different**
+expiry — a window with `daysToExpiry: 1` re-points `config.expiry` while yesterday's
+position is still open, and the engine has to keep pricing that position to exit it.
+
+That second kind used to copy `lotSize` from the **position** instead of the instrument.
+A position's lot is how much you bought (`0.31`, or `0` once the short is bought back); the
+instrument's lot is a property of the contract. A plain `Object.assign` merge then let
+whichever account registered last decide, so on 2026-09-02 a `0.31` from an account trading
+3 Sep became the contract lot of a 2 Sep symbol **for every account**, including the ones
+actually trading 2 Sep.
+
+Everything downstream is built on `deltaNotional = |delta| × lotSize`, so the delta-neutral
+ratio `sellQty = buyDN / sellDN` came out ~3× too large. JD Algo's scanner showed 5 call
+matches; the engine kept **1** (the other four blew past `maxSellQty: 10`) and priced that
+one at **-$32.80 / -3.26%** where the scanner showed **+$111.15 / +11.11%** — so no entry
+ever cleared the ATM P&L gate. A leg carrying `lotSize: 0` was worse: `deltaNotional: 0`
+fails the delta check outright.
+
+Note what made this a *fleet* bug rather than a local one: before parsing moved into the
+hub, each account parsed with its own map, so a wrong lot only ever hurt the account holding
+the foreign position — and that account wasn't trading that expiry, so nothing broke. The
+optimisation didn't introduce the wrong value; it removed the isolation that had been hiding
+it.
+
+Three changes, at three depths:
+
+1. **Source** — the fallback resolves the real contract lot from `products` by symbol and
+   fills in `contractValue`; a position's sized lot never enters the map.
+2. **Merge** — chain-derived metadata beats position-derived, in either arrival order.
+3. **Tripwire** — any surviving disagreement on `lotSize` / `contractValue` / `strike` /
+   `expiry` logs `symbol meta conflict` once per symbol+field. The failure took a day to
+   find because the symptom (a wrong ROI) sat three layers below the cause and nothing in
+   between said a word.
+
+A related edge, same family: `atmStrike` is now picked from the account's **own expiry**
+only. `tickerData` holds those foreign position legs too, and weekly chains use a coarser
+strike grid than the dailies — so "nearest listed strike to spot" could return a strike the
+traded chain doesn't list, quietly pushing every ATM lookup onto bracket-averaged estimates.
 
 Separately, `getSpotPrice` is now a shared cache keyed by underlying
 (`SPOT_CACHE_TTL_MS`, default 5s) with concurrent callers coalesced onto one request. It is
@@ -1033,11 +1080,11 @@ Here's every safety guard in one table:
 
 ---
 
-## Diagnostic Logging (0 Candidates)
+## Diagnostic Logging (Scan Rejections)
 
 **Files**: [`paperTradingEngine.js`](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js), [`utils.js`](file:///c:/Users/ASUS/Documents/Option_Scope/engine/lib/utils.js)
 
-When `Evaluating 0 candidate spreads` appears in logs, the engine now automatically logs **why** — making it easy to distinguish a market condition issue from a technical one.
+Every entry cycle logs **why** the scan dropped what it dropped — making it easy to distinguish a market-condition issue from a technical one.
 
 ### How It Works
 
@@ -1051,7 +1098,20 @@ rejected = {
 }
 ```
 
-After scanning, the engine merges call and put rejection counts and logs the **top rejecting filter** when 0 candidates result.
+After scanning, the engine merges call and put rejection counts and appends the pool sizes plus the **top three rejecting filters** to the `Evaluating…` line:
+
+```
+Evaluating 1 candidate spreads for entry (Spot: 77226.3, ATM Strike: 77200)
+  | pool 42c/38p, top rejects: maxSellQty:31 ivDiff:12 netPrem:4
+```
+
+When the count is **0**, the single top filter is additionally logged as a warning with the pool sizes.
+
+> [!NOTE]
+> This used to print **only** when the scan returned zero candidates. That blind spot is what
+> made the 2026-09-02 `lotSize` leak take a day to find: the scanner showed 5 matches, the
+> engine kept 1, and nothing in the log said the other 4 died on `maxSellQty`. A scan that
+> returns *some* candidates can still be dropping the good ones.
 
 ### Reading the Diagnostic Logs
 
@@ -1485,8 +1545,8 @@ flowchart TD
 | Scaling step | 10% | Lot size reduction per scaling event (full spreads only) |
 | Scaling floor | 50% | Minimum lot size as % of initial (full spreads only) |
 | ATM PnL minimum | $50 | Min simulated ATM profit for entry |
-| ATM strike tolerance (BTC) | 500 points | Fallback tolerance for finding ATM prices |
-| ATM strike tolerance (ETH) | 50 points | Fallback tolerance for finding ATM prices |
+| ATM strike tolerance (BTC) | 1000 points | Bracket-and-average tolerance per side when a target strike is unlisted or its quote is stale |
+| ATM strike tolerance (ETH) | 50 points | Bracket-and-average tolerance per side when a target strike is unlisted or its quote is stale |
 | Evaluation hang limit | 60 seconds | Max duration evaluation can run before process is restarted |
 | Days to Expiry | User configured | Minimum days to expiry required for new spreads |
 | Exit Type | ATM | Default option exit type parameter (`ATM`, `ITM`, or `OTM`) |

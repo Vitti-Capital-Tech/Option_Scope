@@ -58,6 +58,14 @@ The hub is a module-level singleton that owns **one upstream `createTickerStream
 
 - **`subscribeTickers(underlying, symbols, onTicker, onStatus)`** registers an account as a listener and returns a handle shaped exactly like `createTickerStream`'s (`{ update, close }`), so `startWebSocket()` swaps it in with no other change. `wsHandle.close()` detaches the listener.
 - **Union subscription**: the upstream is (re)subscribed to the **union** of all listeners' symbols. Each incoming tick is routed **only** to listeners whose symbol set contains `msg.symbol` (accounts still filter again through their own `symbolMeta`).
+- **Merged symbol metadata (`unionMeta`)**: because the hub normalises each tick **once for the whole process**, it needs one `symbol → { strike, lotSize, contractValue, type, expiry }` map covering every listener. Keys are full Delta symbols (`C-BTC-79000-020926`), which already encode the expiry, so two expiries can never collide on a key. Two accounts *can* however describe the **same** symbol, and they are not equally authoritative:
+  - **Chain-derived** entries come from the products list for that account's own `config.expiry`.
+  - **Position-derived** entries (`fromPosition: true`) come from `buildSymbolMeta`'s fallback loop, which subscribes the legs of any open position **outside** that expiry (a window with `daysToExpiry: 1` re-points `config.expiry` while yesterday's position is still open).
+
+  **Chain-derived always wins**, in either arrival order. Any remaining disagreement on `lotSize` / `contractValue` / `strike` / `expiry` between two listeners emits a one-shot `symbol meta conflict` warning per symbol+field — a divergence here is silently multiplied across every account, so it is never allowed to pass unlogged.
+
+  > [!WARNING]
+  > **Incident (2026-09-02).** The fallback loop copied `pos.buyLeg.lotSize` — the position's *sized* lot (`0.31`, `0.2`, or `0` for a short already bought back) — into `lotSize`, which must be the **instrument's contract lot**. A plain `Object.assign` merge let that entry overwrite the chain entry for a symbol another account was trading for real, and since the hub parses every tick from this one map, `deltaNotional = |delta| × lotSize` came out ~3× too small **process-wide**. The delta-neutral `sellQty = buyDN / sellDN` was then ~3× too large: on JD Algo the scanner showed 5 call matches while the engine kept **1** (the other 4 blew past `maxSellQty`), and that one was priced at **-$32.80 / -3.26%** against the scanner's **+$111.15 / +11.11%**. A leg carrying `lotSize: 0` was worse still — `deltaNotional: 0` fails `scanTickers`' delta check outright. Fixed at the source (the fallback resolves the real lot from `products` by symbol and fills in `contractValue`), at the merge (chain wins), and made loud (the conflict warning above). This only became cross-account when tick parsing moved into the hub; before that each account parsed with its own map, so a wrong lot stayed local to the account holding the foreign position.
 - **Debounced rebuild** (`REBUILD_DEBOUNCE_MS = 800`): when a listener joins/leaves or swaps symbols (expiry roll), the union is recomputed; if it changed, the old upstream is torn down and a new one opened. The debounce collapses a burst of staggered account starts into a single (re)subscribe. The replacement stream is created *before* the old one is closed, and `createTickerStream.close()` suppresses its own `close` event, so a rebuild never fans a spurious `disconnected` out to accounts.
 - **Status fan-out**: upstream `live`/`stale`/`disconnected`/`error` events are delivered to every listener, so each account's heartbeat `ws_status` and logs stay accurate. A late joiner is told the last known status immediately.
 - **Teardown**: when the last listener for an underlying closes, its upstream stream and rebuild timer are cleared and the hub entry is deleted.
@@ -465,11 +473,21 @@ Migrations `022` (config columns on `paper_trading_schedules`: `hedge_strike_typ
 ### F. ATM P&L & ROI Candidate Filtering
 
 Spreads scanned from the options chain are evaluated for their potential At-The-Money payout:
-1. **getTickerPrice**: Sourced using live quotes (bid for long leg, ask for short leg) with nearest-strike fallbacks.
+0. **ATM strike sourcing (expiry-scoped)**: `atmStrike` is the listed strike nearest to spot **within this account's own `config.expiry`**. `tickerData` is not just the current chain — it also holds the legs of any open position on a *different* expiry, and weekly chains use a coarser strike grid than the dailies, so an unfiltered nearest-to-spot search could return a strike the traded chain does not list. Every consumer (`buyIntrinsic`, `targetSellStrike = atmStrike ± strikeDiff`, the `strike >= atmStrike` pool split, the ATM exit levels) would then silently degrade to bracket-averaged estimates. This matches the scanner UI, which derives its ATM from the selected expiry alone. `atmStrike` is `null` while the account's chain has not arrived yet; every consumer already guards for it.
+1. **getTickerPrice**: Sourced using live quotes (bid for long leg, ask for short leg), with the freshness gate and bracket-and-average fallback described in §9.2.
 2. **ATM P&L Calculation**: `[(ATM_Bid - entryBuyPrice) - (OTM_Ask - entrySellPrice) × sellQty] × lotSize`.
 3. **ROI Calculation**: `(ATM_PnL / Margin) × 100`.
 4. **Gauntlet Filter**: Candidates with `ATM P&L < $50` are discarded.
 5. **Selection**: For each unique buy strike, candidates are sorted by ROI descending, and the one with the highest ROI is chosen.
+
+**Observability.** The per-candidate log carries the two prices the verdict was computed from, not just the verdict — an ATM P&L is only ever as good as its inputs, and without them a wrong number cannot be checked against the scanner:
+
+```
+Candidate CALL 78200/79000: ATM P&L = $98.42 (Min required: $37.50), ROI = 9.83%, Passed = true
+  | ATM 77200 $312.00 / 78000 $55.00 → ratio 5.75 → qty 2.5→3.25 | legs $33.00/$13.00
+```
+
+A `—` in either intrinsic means that strike has no fresh quote, so the candidate was skipped rather than mis-priced. The `Evaluating N candidate spreads` line additionally carries the pool sizes and the **top three rejection reasons** on *every* entry cycle — previously the breakdown printed only when the scan returned **zero**, so a scan that returned *some* hid why it dropped the rest.
 
 ### G. Entry Logic
 
@@ -636,6 +654,7 @@ All ATM price lookups go through `getTickerPrice(strike, optType, priceField, ex
 
 1. **Filter by type and expiry**: Collects all tickers from `tickerData` matching `optType` (case-insensitive) and the requested `expiry`. Returns `null` immediately if no tickers match.
 2. **Exact match**: If a ticker at the requested `strike` is found, its `priceField` (or `markPrice` as fallback) is returned — or `null` if the value is missing/zero.
+2b. **Quote freshness (engine only)**: the engine's copy additionally ages every value by the stamp for the **field being read** — `bidUpdatedAt` for `'bid'`, `askUpdatedAt` for `'ask'` — against the same **120 s** window `scanTickers` uses, because a symbol can hold a fresh bid and a stale ask. `processTickerMessage` **carries forward** `bid`/`ask` when a tick omits them but leaves the stamp on its old value, so without this a strike that stopped ticking would serve an hours-old price indefinitely. Consequences: `lastPrice` is **no longer a fallback** (a trade print with no timestamp attached); a **stale exact strike falls through to the bracket** instead of being returned; and each bracket side is priced as the loop walks outward, so the nearest **usable** neighbour is taken rather than the nearest neighbour outright (one stale neighbour no longer drops that whole side). If nothing fresh is in range the call returns `null`, which skips the candidate rather than mis-pricing it. The **scanner UI keeps the `lastPrice` fallback** — its snapshot is a live browser feed that does not carry stale entries forward.
 3. **Bracket-and-average fallback**: If no exact match exists (a "weird" `ATM ± strikeDiff` target can land *between* two listed grid strikes, e.g. `±1100` between listed `1000`/`1200`), the scanner takes the **nearest listed strike below** and the **nearest listed strike above** the target and returns the **average** of their prices as a midpoint estimate (equivalent to linear interpolation for the symmetric case). This replaces the old single-nearest **snap**, which biased toward one side and skewed the ATM ratio. If only **one** side exists within tolerance, it falls back to that single strike.
 4. **Tolerance** (each side must be within): **`1000`** points for BTC and **`50`** points for ETH.
 5. **Returns `null`** (never `0`) when no strike falls within tolerance on either side, so callers can cleanly distinguish "no data" from "priced at zero".
