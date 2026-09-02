@@ -33,11 +33,24 @@ function unionSymbols(hub) {
 }
 
 // Merged symbol metadata across every listener, so the hub can normalise a tick ONCE for
-// all of them. Values are identical wherever two accounts share a symbol (both derive it
-// from the same products list), so a plain merge is safe.
+// all of them. Two accounts that both derive a symbol from the products list produce
+// identical values, so those merge freely.
+//
+// What does NOT merge freely is buildSymbolMeta's position-leg fallback (`fromPosition`),
+// which an account emits for legs OUTSIDE the expiry it currently trades. A plain
+// Object.assign let whichever listener happened to come last decide, so a fallback entry
+// could overwrite the chain entry for a symbol another account trades for real — and since
+// this map normalises every tick for EVERY account, one wrong lotSize became a wrong
+// deltaNotional process-wide. Chain-derived always wins, in either arrival order.
 function unionMeta(hub) {
   const m = {};
-  for (const l of hub.listeners) Object.assign(m, l.meta || {});
+  for (const l of hub.listeners) {
+    for (const sym of Object.keys(l.meta || {})) {
+      const meta = l.meta[sym];
+      if (meta?.fromPosition && m[sym] && !m[sym].fromPosition) continue;
+      m[sym] = meta;
+    }
+  }
   return m;
 }
 
@@ -171,6 +184,32 @@ export function subscribeTickers(underlying, symbols, onTicker, onStatus, symbol
       }
     },
   };
+}
+
+/**
+ * Tear down and rebuild the shared upstream socket for `underlying`, even when the symbol
+ * union is unchanged.
+ *
+ * WHY: the per-account staleness guards "force a reconnect" by calling startWebSocket(), which
+ * detaches that account's listener and immediately re-adds it. With more than one account on
+ * the hub the union comes back IDENTICAL, so rebuild() takes its `sameSet` early-out and keeps
+ * the very socket that stopped delivering — the reconnect logs but never actually happens. A
+ * feed that has gone (partially) silent has to be replaced at the HUB, not at the listener.
+ *
+ * Clearing hub.symbols is what makes rebuild() unable to early-out; the union is recomputed
+ * from the listeners on the way through, so nothing is lost.
+ */
+export function forceUpstreamReconnect(underlying) {
+  const hub = hubs.get(underlying);
+  if (!hub) return false;
+  const prev = hub.stream;
+  hub.stream = null;
+  hub.symbols = new Set();
+  try { prev?.close(); } catch { /* noop */ }
+  clearTimeout(hub.rebuildTimer);
+  log(`[ticker-hub:${underlying}] forcing upstream reconnect`);
+  rebuild(underlying);
+  return true;
 }
 
 /** Test/diagnostics: current hub count and per-underlying listener/symbol counts. */

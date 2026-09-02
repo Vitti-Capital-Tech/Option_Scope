@@ -336,21 +336,47 @@ export function buildSymbolMeta(products, expiry, underlying, activePositions = 
     }
   }
 
-  // Also monitor symbols from existing positions of this underlying
+  // Also monitor symbols from existing positions of this underlying. In practice these are
+  // legs on a DIFFERENT expiry from the one this account is currently trading — a schedule
+  // window with days_to_expiry 1 re-points config.expiry while yesterday's position is still
+  // open — so the chain loop above never covered them.
+  //
+  // `lotSize` here MUST be the INSTRUMENT's contract lot, never `pos.buyLeg.lotSize`. That is
+  // the position's SIZED lot (0.31, 0.2, or 0 for a short already bought back) and says
+  // nothing about the symbol. It used to be copied straight in, and because tickerHub merges
+  // every account's meta into ONE map (unionMeta) and normalises each tick once for the whole
+  // process, that sized lot leaked ACROSS ACCOUNTS: `deltaNotional = |delta| * lotSize` for
+  // e.g. C-BTC-79000-020926 was computed with 0.31 for EVERY account, so an account actually
+  // trading that expiry saw a deltaNotional ~3x too small and a sell ratio ~3x too large.
+  // Observed 2026-09-02 06:15 IST — JD Algo's scanner showed 5 call matches while the engine
+  // kept 1 (the rest blew past maxSellQty on the inflated ratio) and priced that one at
+  // -$32.80 / -3.26% instead of the scanner's +$111.15 / +11.11%. A leg with lotSize 0 was
+  // worse still: deltaNotional 0 → the pair failed scanTickers' delta check outright.
+  //
+  // `products` holds every live product for the underlying (all expiries), so the real lot is
+  // a symbol lookup away; the position's own values are only a last resort for a symbol that
+  // has since been delisted.
+  const productBySymbol = new Map(products.map(p => [p.symbol, p]));
+  const positionLegMeta = (leg, type, posExpiry) => {
+    const prod = productBySymbol.get(leg.symbol);
+    return {
+      strike: prod ? parseFloat(prod.strike_price) : leg.strike,
+      lotSize: parseFloat(prod?.contract_size ?? prod?.quoting_precision ?? 1),
+      contractValue: parseFloat(prod?.contract_value ?? prod?.contract_size ?? prod?.quoting_precision ?? 1),
+      type,
+      symbol: leg.symbol,
+      expiry: prod?.settlement_time ?? posExpiry,
+      // Chain-derived meta must win over this when the hub merges listeners — see unionMeta.
+      fromPosition: true,
+    };
+  };
   for (const pos of activePositions) {
-    if (pos.underlying === underlying) {
-      if (pos.buyLeg && !symbolMeta[pos.buyLeg.symbol]) {
-        symbolMeta[pos.buyLeg.symbol] = {
-          strike: pos.buyLeg.strike, lotSize: pos.buyLeg.lotSize,
-          type: pos.type, symbol: pos.buyLeg.symbol, expiry: pos.expiry
-        };
-      }
-      if (pos.sellLeg && !symbolMeta[pos.sellLeg.symbol]) {
-        symbolMeta[pos.sellLeg.symbol] = {
-          strike: pos.sellLeg.strike, lotSize: pos.sellLeg.lotSize,
-          type: pos.type, symbol: pos.sellLeg.symbol, expiry: pos.expiry
-        };
-      }
+    if (pos.underlying !== underlying) continue;
+    if (pos.buyLeg?.symbol && !symbolMeta[pos.buyLeg.symbol]) {
+      symbolMeta[pos.buyLeg.symbol] = positionLegMeta(pos.buyLeg, pos.type, pos.expiry);
+    }
+    if (pos.sellLeg?.symbol && !symbolMeta[pos.sellLeg.symbol]) {
+      symbolMeta[pos.sellLeg.symbol] = positionLegMeta(pos.sellLeg, pos.type, pos.expiry);
     }
   }
 

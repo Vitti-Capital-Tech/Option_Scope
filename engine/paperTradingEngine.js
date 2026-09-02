@@ -27,7 +27,7 @@ import {
 // Shared per-underlying upstream WS (see tickerHub.js): all account engines in this process
 // share ONE Delta market-data connection per underlying instead of opening one each — the
 // per-IP connection cap (HTTP 429) makes N-per-account unscalable.
-import { subscribeTickers } from './lib/tickerHub.js';
+import { subscribeTickers, forceUpstreamReconnect } from './lib/tickerHub.js';
 import {
   safeParseLeg, calculateFee, calcMargin, scanTickers,
   computeEntryAtmRatio, computeScaledSellQty,
@@ -2720,11 +2720,50 @@ async function startSingleAccountEngine(account) {
         logWarn(`[${accountState.name}] ⊘ Option feed stale ${Math.round((now - lastOptionTickAt) / 1000)}s while spot is live — forcing WebSocket reconnect.`);
         lastWsReconnectTime = now;
         try {
+          // Replace the shared upstream FIRST. startWebSocket() alone only re-registers this
+          // account's listener, and on a hub with other accounts the union is unchanged, so
+          // rebuild() keeps the exact socket that stopped delivering (see forceUpstreamReconnect).
+          forceUpstreamReconnect(config.underlying);
           startWebSocket();
         } catch (e) {
           logError(`[${accountState.name}] Failed to force WS reconnect (stale options):`, e);
         }
         return;
+      }
+    }
+
+    // Option-feed watchdog, PART 2: PARTIAL death. The guard above only fires when NOT ONE
+    // option quote has moved — but Delta can keep streaming most of the chain while a SUBSET of
+    // strikes goes silent, and that shape never trips it. Those strikes then sit in tickerData
+    // with carried-forward bid/ask on an ageing stamp (processTickerMessage): scanTickers drops
+    // every pair that touches them, and the ATM intrinsic lookups lose the strikes they need.
+    // Observed 2026-09-02 06:15 IST on JD Algo — the scanner showed 5 call matches, the engine
+    // evaluated 1 candidate, and that one was priced off a ~7h-old ATM+800 ask.
+    //
+    // Threshold is a MAJORITY of the current expiry's chain, not one strike: a genuinely
+    // illiquid far-OTM strike can legitimately go 2 minutes without a quote, and reconnecting
+    // the whole fleet's feed for that would be worse than the problem. Same 30s throttle as the
+    // guards above, and it needs a live spot to prove the socket itself is up.
+    {
+      const now = Date.now();
+      const chain = Object.values(tickerData).filter(t => t.expiry === config.expiry);
+      const spotFresh = lastSpotUpdate > 0 && (now - lastSpotUpdate) < OPTION_STALE_MS;
+      if (chain.length >= 10 && spotFresh && now - lastWsReconnectTime > 30000) {
+        const stale = chain.filter(t => {
+          const ts = Math.max(t.bidUpdatedAt || 0, t.askUpdatedAt || 0);
+          return !(ts > 0 && (now - ts) < 120000);
+        }).length;
+        if (stale > chain.length / 2) {
+          logWarn(`[${accountState.name}] ⊘ Option chain partially stale — ${stale}/${chain.length} symbols have had no quote for 120s while spot is live. Forcing WebSocket reconnect.`);
+          lastWsReconnectTime = now;
+          try {
+            forceUpstreamReconnect(config.underlying);
+            startWebSocket();
+          } catch (e) {
+            logError(`[${accountState.name}] Failed to force WS reconnect (partially stale chain):`, e);
+          }
+          return;
+        }
       }
     }
 
@@ -2917,39 +2956,67 @@ async function startSingleAccountEngine(account) {
         for (const k of Object.keys(callRej)) totalRejected[k] = (callRej[k] || 0) + (putRej[k] || 0);
       }
 
+      // Quote freshness for the intrinsic lookups below. MUST stay equal to scanTickers'
+      // FRESHNESS_MS (engine/lib/utils.js) — the two disagreeing is exactly what mis-priced
+      // entries. processTickerMessage CARRIES FORWARD `bid`/`ask` when a tick omits them but
+      // leaves `bidUpdatedAt`/`askUpdatedAt` on the OLD stamp, so a strike that stops ticking
+      // keeps serving an hours-old price forever. scanTickers rejects those pairs (it reads the
+      // stamps); getTickerPrice did NOT — so the one candidate that survived the scan still had
+      // its ATM P&L computed off a stale ATM/target quote. Observed 2026-09-02 06:15 IST: the
+      // scanner showed CALL 78200/79000 at +$111.15 (+11.11%) while the engine logged -$32.80
+      // (-3.26%) for the SAME spread, because its ATM+800 ask was still the value from ~7h
+      // earlier (~$135 instead of ~$55). Every entry was blocked by the ATM P&L gate on a
+      // number that was never real.
+      const QUOTE_FRESHNESS_MS = 120000;
+
       function getTickerPrice(strike, optType, priceField, expiry) {
         const lowerType = optType.toLowerCase();
         const allTickersOfType = allTickers.filter(t => t.type === lowerType && (!expiry || t.expiry === expiry));
         if (!allTickersOfType.length) return null;
 
-        // Exact match first
-        const exact = allTickersOfType.find(t => t.strike === strike);
-        if (exact) {
-          const val = exact[priceField] ?? exact.lastPrice ?? exact.markPrice;
-          return (val != null && val > 0) ? val : null;
-        }
-
-        // The requested strike isn't listed (e.g. an ATM ± "weird" diff that lands between two
-        // grid strikes). BRACKET it: take the nearest listed strike BELOW and the nearest ABOVE
-        // (within tolerance) and AVERAGE their prices as a midpoint estimate — same as the scanner
-        // (RatioSpreadScanner.jsx / ResultTable.jsx), so the engine's entry sizing, live ATM-ratio
-        // scaling, and ATM-exit pricing match what the scanner shows (no snap bias toward one side).
-        // If only one side exists within tolerance, fall back to it (the old nearest behaviour).
+        // Age the value by the stamp for the FIELD being read — a symbol can hold a fresh bid
+        // and a stale ask. `lastPrice` is deliberately NOT a fallback any more: it is a trade
+        // print that can be hours old and carries no timestamp at all, so it silently became
+        // the stale value that poisoned the ATM ratio. markPrice stays, but only off a tick
+        // whose quote we have just proven fresh.
         const maxTolerance = config.underlying === 'ETH' ? 50 : 1000;
+        const stampField = priceField === 'bid' ? 'bidUpdatedAt' : priceField === 'ask' ? 'askUpdatedAt' : null;
+        const nowMs = Date.now();
         const priceOf = (t) => {
           if (!t) return null;
-          const v = t[priceField] ?? t.lastPrice ?? t.markPrice;
+          if (stampField) {
+            const ts = t[stampField] || 0;
+            if (!(ts > 0 && (nowMs - ts) < QUOTE_FRESHNESS_MS)) return null;   // stale → unusable
+          }
+          const v = t[priceField] ?? t.markPrice;
           return (v != null && v > 0) ? v : null;
         };
-        let below = null, belowDist = Infinity;
-        let above = null, aboveDist = Infinity;
+
+        // Exact match first — but only when its own quote is fresh.
+        const exactPrice = priceOf(allTickersOfType.find(t => t.strike === strike));
+        if (exactPrice != null) return exactPrice;
+
+        // Either the requested strike isn't listed (e.g. an ATM ± "weird" diff that lands between
+        // two grid strikes) or the strike IS listed but its quote went stale. BRACKET it: take the
+        // nearest listed strike BELOW and the nearest ABOVE (within tolerance) and AVERAGE their
+        // prices as a midpoint estimate — same as the scanner (RatioSpreadScanner.jsx /
+        // ResultTable.jsx), so the engine's entry sizing, live ATM-ratio scaling, and ATM-exit
+        // pricing match what the scanner shows (no snap bias toward one side). If only one side
+        // exists within tolerance, fall back to it (the old nearest behaviour). The stale exact
+        // strike is skipped naturally — the loop below only considers d < 0 and d > 0.
+        // Only a strike with a USABLE (fresh AND priced) quote can act as a bracket side.
+        // Picking the nearest strike first and pricing it afterwards would drop a whole side
+        // whenever that one neighbour happened to be stale, skewing the midpoint — so price
+        // as we go and keep the nearest neighbour that actually yields a value.
+        let belowDist = Infinity, pBelow = null;
+        let aboveDist = Infinity, pAbove = null;
         for (const t of allTickersOfType) {
           const d = t.strike - strike;
-          if (d < 0 && -d <= maxTolerance && -d < belowDist) { belowDist = -d; below = t; }
-          if (d > 0 && d <= maxTolerance && d < aboveDist) { aboveDist = d; above = t; }
+          const dist = Math.abs(d);
+          if (d === 0 || dist > maxTolerance) continue;
+          if (d < 0 && dist < belowDist) { const v = priceOf(t); if (v != null) { belowDist = dist; pBelow = v; } }
+          if (d > 0 && dist < aboveDist) { const v = priceOf(t); if (v != null) { aboveDist = dist; pAbove = v; } }
         }
-        const pBelow = priceOf(below);
-        const pAbove = priceOf(above);
         if (pBelow != null && pAbove != null) return (pBelow + pAbove) / 2;
         return pBelow ?? pAbove;
       }
@@ -2960,8 +3027,12 @@ async function startSingleAccountEngine(account) {
         const sellIntrinsic = getTickerPrice(targetSellStrike, spread.buyLeg.type, 'ask', config.expiry);
         const lotSize = spread.buyLeg.lotSize || 1;
 
+        // Either intrinsic missing now means "no FRESH quote for that strike" (getTickerPrice
+        // gates on the quote stamp). Returning null skips the candidate — deliberately better
+        // than pricing it off a carried-forward quote, which is what silently produced a
+        // negative ATM P&L for a spread the scanner showed at +11%.
         if (buyIntrinsic == null || sellIntrinsic == null) {
-          return { atmPnl: null, roi: null };
+          return { atmPnl: null, roi: null, buyIntrinsic, sellIntrinsic, targetSellStrike, atmRatio: null, ratioToUse: null };
         }
 
         const entryAtmRatio = computeEntryAtmRatio(buyIntrinsic, sellIntrinsic);
@@ -2985,7 +3056,7 @@ async function startSingleAccountEngine(account) {
         const margin = calcMargin(spread.buyPrice, adjustedLotSize, spotPrice, adjustedSellQty, sellLotSize);
         const roi = margin > 0 ? (atmPnl / margin) * 100 : 0;
 
-        return { atmPnl, roi };
+        return { atmPnl, roi, buyIntrinsic, sellIntrinsic, targetSellStrike, atmRatio: entryAtmRatio, ratioToUse };
       }
 
       // Compute ATM P&L and ROI for each spread in topSpreads, and filter by ATM P&L >= 50.
@@ -3001,7 +3072,18 @@ async function startSingleAccountEngine(account) {
       // `dayAllowsEntry` / `wantEntries` are computed above the scan — see there.
       const processedSpreads = [];
       if (wantEntries) {
-        log(`[${accountState.name}] Evaluating ${topSpreads.length} candidate spreads for entry (Spot: ${spotPrice}, ATM Strike: ${atmStrike})`);
+        // The rejection breakdown used to print ONLY when the scan returned nothing, so a scan
+        // that returned "some" hid why it dropped the rest. That blind spot is what made the
+        // 2026-09-02 lotSize leak (see buildSymbolMeta) take a day to find: the scanner showed
+        // 5 matches, the engine kept 1, and no log said the other 4 died on maxSellQty. One
+        // extra clause per account per minute is cheap next to that.
+        const rejSummary = Object.entries(totalRejected)
+          .filter(([, v]) => v > 0)
+          .sort(([, a], [, b]) => b - a)
+          .slice(0, 3)
+          .map(([k, v]) => `${k}:${v}`)
+          .join(' ');
+        log(`[${accountState.name}] Evaluating ${topSpreads.length} candidate spreads for entry (Spot: ${spotPrice}, ATM Strike: ${atmStrike})${rejSummary ? ` | pool ${callTickers.length}c/${putTickers.length}p, top rejects: ${rejSummary}` : ''}`);
         if (topSpreads.length === 0) {
           // Log top rejection reason to diagnose why 0 candidates
           const topFilter = Object.entries(totalRejected)
@@ -3022,7 +3104,7 @@ async function startSingleAccountEngine(account) {
       // Skip the per-spread ATM P&L/ROI compute whenever this cycle can't open an entry
       // (exits-only, paused, or a disabled trading day) — processedSpreads stays empty.
       for (const spread of (wantEntries ? topSpreads : [])) {
-        const { atmPnl, roi } = calculateAtmPnlAndRoi(spread);
+        const { atmPnl, roi, buyIntrinsic, sellIntrinsic, targetSellStrike, atmRatio, ratioToUse } = calculateAtmPnlAndRoi(spread);
 
         let minAtmPnl = 50;
         if (effectiveConfig.atmRatioScaling) {
@@ -3032,7 +3114,13 @@ async function startSingleAccountEngine(account) {
 
         const passed = (atmPnl != null && atmPnl >= minAtmPnl);
         // Loop only runs when wantEntries, so this always logs during an entry-eligible cycle.
-        log(`[${accountState.name}] Candidate ${spread.buyLeg.type.toUpperCase()} ${spread.buyLeg.strike}/${spread.sellLeg.strike}: ATM P&L = $${atmPnl != null ? atmPnl.toFixed(2) : 'null'} (Min required: $${minAtmPnl.toFixed(2)}), ROI = ${roi != null ? roi.toFixed(2) : 0}%, Passed = ${passed}`);
+        // The intrinsics are logged alongside the verdict because the ATM P&L is only ever
+        // as good as the two prices it came from. Without them a wrong number is unfalsifiable:
+        // on 2026-09-02 this line said -$32.80 while the scanner showed +$111.15 for the same
+        // spread, and nothing in the log said WHICH input disagreed. `—` on either intrinsic
+        // now means that strike has no fresh quote (candidate skipped, not mis-priced).
+        const px = (v) => (v != null ? `${v.toFixed(2)}` : '—');
+        log(`[${accountState.name}] Candidate ${spread.buyLeg.type.toUpperCase()} ${spread.buyLeg.strike}/${spread.sellLeg.strike}: ATM P&L = ${atmPnl != null ? atmPnl.toFixed(2) : 'null'} (Min required: ${minAtmPnl.toFixed(2)}), ROI = ${roi != null ? roi.toFixed(2) : 0}%, Passed = ${passed} | ATM ${atmStrike} ${px(buyIntrinsic)} / ${targetSellStrike} ${px(sellIntrinsic)} → ratio ${atmRatio ?? '—'} → qty ${spread.sellQty}→${ratioToUse ?? '—'} | legs ${px(spread.buyPrice)}/${px(spread.sellPrice)}`);
         if (passed) {
           processedSpreads.push({ ...spread, atmPnl, roi });
         }
