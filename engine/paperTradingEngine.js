@@ -2872,10 +2872,21 @@ async function startSingleAccountEngine(account) {
         }
       }
 
-      // Identify ATM strike
+      // Identify ATM strike — from THIS account's current expiry only.
+      //
+      // tickerData is not just the current chain: buildSymbolMeta also subscribes the legs of
+      // any open position on a DIFFERENT expiry (a window with days_to_expiry 1 re-points
+      // config.expiry while yesterday's position is still open), and weekly chains use a
+      // coarser strike grid than the dailies. An unfiltered nearest-to-spot search could
+      // therefore pick a strike that only exists on the foreign expiry — and every consumer of
+      // atmStrike (the ATM intrinsics, targetSellStrike = atmStrike ± strikeDiff, the
+      // strike >= atmStrike pool filter, the ATM exit levels) then works off a strike the
+      // traded chain does not list, silently degrading to bracket-averaged estimates.
+      // The scanner UI derives its ATM from the selected expiry alone; this now matches.
       let atmStrike = null;
       let minDiff = Infinity;
       for (const t of allTickers) {
+        if (t.expiry !== config.expiry) continue;
         const diff = Math.abs(t.strike - spotPrice);
         if (diff < minDiff) { minDiff = diff; atmStrike = t.strike; }
       }
