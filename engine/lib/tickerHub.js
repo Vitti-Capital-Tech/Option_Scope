@@ -19,7 +19,7 @@
  * and logs stay accurate.
  */
 import { createTickerStream, processTickerMessage } from './deltaApi.js';
-import { log } from './utils.js';
+import { log, logWarn } from './utils.js';
 
 // underlying → hub. A hub owns one upstream stream and the set of account listeners.
 const hubs = new Map();
@@ -42,12 +42,32 @@ function unionSymbols(hub) {
 // could overwrite the chain entry for a symbol another account trades for real — and since
 // this map normalises every tick for EVERY account, one wrong lotSize became a wrong
 // deltaNotional process-wide. Chain-derived always wins, in either arrival order.
+// One warning per symbol+field for the life of the process — enough to see it, never a flood.
+const warnedMetaConflicts = new Set();
+
 function unionMeta(hub) {
   const m = {};
   for (const l of hub.listeners) {
     for (const sym of Object.keys(l.meta || {})) {
       const meta = l.meta[sym];
-      if (meta?.fromPosition && m[sym] && !m[sym].fromPosition) continue;
+      const cur = m[sym];
+      // TRIPWIRE. Two listeners describing the SAME instrument differently is always a bug:
+      // this map normalises every tick for every account, so whichever entry wins silently
+      // becomes everyone's truth. That is exactly how a position's sized lot once became the
+      // contract lot for a symbol another account was trading for real, and the only visible
+      // symptom was a sell ratio ~3x too large three layers downstream. Resolution is still
+      // deterministic (chain-derived wins, below) — this just refuses to let the next
+      // divergence be silent.
+      if (cur && meta) {
+        for (const f of ['lotSize', 'contractValue', 'strike', 'expiry']) {
+          const key = `${sym}:${f}`;
+          if (cur[f] !== meta[f] && !warnedMetaConflicts.has(key)) {
+            warnedMetaConflicts.add(key);
+            logWarn(`[ticker-hub] symbol meta conflict on ${sym}.${f}: ${cur[f]} (${cur.fromPosition ? 'position' : 'chain'}) vs ${meta[f]} (${meta.fromPosition ? 'position' : 'chain'}) — chain-derived wins.`);
+          }
+        }
+      }
+      if (meta?.fromPosition && cur && !cur.fromPosition) continue;
       m[sym] = meta;
     }
   }
