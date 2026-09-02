@@ -2956,23 +2956,22 @@ async function startSingleAccountEngine(account) {
         for (const k of Object.keys(callRej)) totalRejected[k] = (callRej[k] || 0) + (putRej[k] || 0);
       }
 
-      // Quote freshness for the intrinsic lookups below. MUST stay equal to scanTickers'
-      // FRESHNESS_MS (engine/lib/utils.js) — the two disagreeing is exactly what mis-priced
-      // entries. processTickerMessage CARRIES FORWARD `bid`/`ask` when a tick omits them but
-      // leaves `bidUpdatedAt`/`askUpdatedAt` on the OLD stamp, so a strike that stops ticking
-      // keeps serving an hours-old price forever. scanTickers rejects those pairs (it reads the
-      // stamps); getTickerPrice did NOT — so the one candidate that survived the scan still had
-      // its ATM P&L computed off a stale ATM/target quote. Observed 2026-09-02 06:15 IST: the
-      // scanner showed CALL 78200/79000 at +$111.15 (+11.11%) while the engine logged -$32.80
-      // (-3.26%) for the SAME spread, because its ATM+800 ask was still the value from ~7h
-      // earlier (~$135 instead of ~$55). Every entry was blocked by the ATM P&L gate on a
-      // number that was never real.
-      const QUOTE_FRESHNESS_MS = 120000;
-
       function getTickerPrice(strike, optType, priceField, expiry) {
         const lowerType = optType.toLowerCase();
         const allTickersOfType = allTickers.filter(t => t.type === lowerType && (!expiry || t.expiry === expiry));
         if (!allTickersOfType.length) return null;
+
+        // Quote freshness for the intrinsic lookups. MUST stay equal to scanTickers'
+        // FRESHNESS_MS (engine/lib/utils.js). processTickerMessage CARRIES FORWARD `bid`/`ask`
+        // when a tick omits them but leaves `bidUpdatedAt`/`askUpdatedAt` on the OLD stamp, so
+        // a strike that stops ticking would otherwise serve an hours-old price forever —
+        // scanTickers reads the stamps, this lookup did not.
+        //
+        // Declared INSIDE the function on purpose. As a const in the enclosing block it sat
+        // textually after the scanTickers() call that reaches getTickerPrice through hoisting,
+        // so the first entry scan of every cycle hit its temporal dead zone and threw
+        // ReferenceError (2026-09-02 01:16 UTC, every account).
+        const QUOTE_FRESHNESS_MS = 120000;
 
         // Age the value by the stamp for the FIELD being read — a symbol can hold a fresh bid
         // and a stale ask. `lastPrice` is deliberately NOT a fallback any more: it is a trade
