@@ -418,12 +418,43 @@ After `scanTickers` produces candidates, each one gets an **ATM PnL check**:
 This simulates: _What's the profit if spot moves to the buy strike?_ 
 
 To maintain consistency when **ATM Ratio Scaling** is enabled, both the scanner filter and UI adjust the minimum required ATM P&L threshold dynamically:
-- **ATM Ratio Scaling Disabled**: Spreads must have `ATM PnL >= $50.00`.
+- **ATM Ratio Scaling Disabled**: Spreads must have `ATM PnL >= minAtmPnl` (default **`$50.00`**).
 - **ATM Ratio Scaling Enabled**: The threshold is reduced proportionally to the scaling percentage to account for the larger short leg ratio:
-  - **Call Spreads**: `Min Required = 50 * (1 - config.atmRatioPctCall / 100)` (e.g., a `50%` scaling value reduces the required floor to **`$25.00`**).
-  - **Put Spreads**: `Min Required = 50 * (1 - config.atmRatioPctPut / 100)` (e.g., a `25%` scaling value reduces the required floor to **`$37.50`**).
+  - **Call Spreads**: `Min Required = minAtmPnl * (1 - config.atmRatioPctCall / 100)` (e.g., a `50%` scaling value reduces the required floor to **`$25.00`**).
+  - **Put Spreads**: `Min Required = minAtmPnl * (1 - config.atmRatioPctPut / 100)` (e.g., a `25%` scaling value reduces the required floor to **`$37.50`**).
 
-Only spreads that meet this adjusted minimum floor survive the filter.
+#### ATM Edge Floors — `minAtmPnl` + `minAtmRoi` (paper only, migration 039)
+
+Both floors are **global** account config (Control Panel → Entry Filters), the same pair the
+Ratio Spread scanner exposes. A candidate must clear **both**:
+
+```
+passed = atmPnl != null && atmPnl >= minAtmPnl(scaled) && roi >= minAtmRoi
+```
+
+| Field | Default | Applied |
+|---|---|---|
+| `minAtmPnl` | `50` | Discounted by the ATM-ratio scaling pct, exactly as the old hardcoded `50` was |
+| `minAtmRoi` | `2` (%) | **Flat** — no scaling discount, matching the scanner UI |
+
+**Live accounts ignore both** and keep the historical hardcoded `50` with no ROI floor, so
+live behaviour is unchanged. The Control Panel hides the two fields on a live account.
+
+> [!IMPORTANT]
+> **Why a dollar floor alone doesn't travel across underlyings.** `calculateAtmPnlAndRoi`
+> sizes every candidate at `lotSize = 1` and scales it *down* only when the **$195,000**
+> short-notional cap binds. On BTC that cap always binds (`77,000 × 3.25 ≈ $251k`), so the
+> candidate is measured as a ~$1,000-margin unit and `$50` is a sensible floor. On ETH it can
+> **never** bind: reaching $195,000 at a ~$2,400 spot needs a sell ratio of ~81, against a
+> `maxSellQty` of 10. So an ETH candidate is always measured on its raw 1-unit basis and a
+> genuinely good spread reads as single-digit dollars.
+>
+> Observed 2026-09-03 on the JD Eth account — `CALL 2800/2900` at **35.38% ROI** rejected for
+> an ATM P&L of **$9.50** against the `$25.00` floor, while the position the engine would
+> actually have opened was sized to ~$1,071 of margin (≈40× the measured unit). ROI is the
+> dimension that survives the change of scale; the dollar floor remains for accounts already
+> tuned around it. An ETH account typically wants `minAtmPnl` near `0` and the decision left
+> to `minAtmRoi`.
 
 ### Deduplication & Ranking
 
@@ -1055,7 +1086,8 @@ Here's every safety guard in one table:
 | Ratio deviation | `utils.js` | Premium ratio must roughly match delta notional ratio |
 | Max sell qty | `utils.js` | Caps the short side quantity |
 | Max net premium debit | `utils.js` | Limits how much net debit is acceptable |
-| ATM PnL ≥ $50 | `paperTradingEngine.js` | Only enters spreads that would profit $50+ at ATM |
+| ATM P&L ≥ `minAtmPnl` | `paperTradingEngine.js` | Paper: account-level floor (default `$50`), still discounted by the ATM-scaling pct. Live: the hardcoded `50`. |
+| ATM ROI ≥ `minAtmRoi` | `paperTradingEngine.js` | **Paper only** (default `2%`), applied flat. The floor that holds its meaning across underlyings — see [ATM Edge Floors](#atm-edge-floors--minatmpnl--minatmroi-paper-only-migration-039). |
 | Days to Expiry | `paperTradingEngine.js` | Rejects candidates whose expiry is fewer than `daysToExpiry` days away |
 | Portfolio cap | `paperTradingEngine.js` | **All accounts** (migration `027` combined model, promoted to live): derived per-type cap `ceil(split% × maxCombined)` (both calls and puts) + a combined-total cap of `max_combined_positions`. Held long-only positions (`sellQty = 0`) excluded. |
 | Combined-position cap (paper) | `paperTradingEngine.js` | **Paper only**: total open full spreads (calls + puts) may not exceed the active window's `max_combined_positions` |
@@ -1149,7 +1181,7 @@ This eliminates the largest source of Supabase egress. A full re-fetch still hap
 **File**: [paperTradingEngine.js:L1279-L1312](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L1279-L1312)
 
 > [!NOTE]
-> The Control Panel filter bar (`ControlPanel.jsx`) shows **only the global filters** — Min IV Edge, Max Delta Deviation, Min Short Premium, Max Net Debit, Max Short Ratio, Min DTE, Exit Type/Points, Short Exit Price, and Variable/Long Exit Slices. The 8 sizing/scaling fields (open calls/puts, spread width, spot distance, ATM scaling + call/put %, re-entry step) were removed from it — they are set at account creation and configured per window in the Schedule Panel. Apply/Reset/dirty-tracking therefore operate only on the global filters.
+> The Control Panel filter bar (`ControlPanel.jsx`) shows **only the global filters** — Min IV Edge, Max Delta Deviation, Min Short Premium, Max Net Debit, Max Short Ratio, Min DTE, Exit Type/Points, Short Exit Price, Variable/Long Exit Slices, and — on **paper accounts only** — Min ATM P&L and Min ATM ROI (migration 039). The 8 sizing/scaling fields (open calls/puts, spread width, spot distance, ATM scaling + call/put %, re-entry step) were removed from it — they are set at account creation and configured per window in the Schedule Panel. Apply/Reset/dirty-tracking therefore operate only on the global filters.
 
 When you change filters in the UI and click **Apply**:
 
@@ -1541,10 +1573,12 @@ flowchart TD
 | Max **full-spread** positions | Configurable | Combined cap `maxCombinedPositions` (default: 4) + derived per-type cap `ceil(split% × maxCombined)`, all accounts; held long-only positions excluded |
 | Short-leg exit trigger | ask ≤ 1.1 | Short leg's live ask `≤ 1.1` → buy back short, hold long (gap-safe, once per position) |
 | Long-only exit levels | 10 equidistant | Evenly-spaced **bid** levels in [current bid, max(entry, last 2hr high)]; exit 1/10 long per crossed level (bid-triggered) |
-| $195K cap | $195,000 | Max short notional value |
+| $195K cap | $195,000 | Max short notional value — same for every underlying |
+| Short-leg leverage | BTC 200× · ETH 100× | `leverageFor(underlying)`; divides the (capped) short notional to give its margin. ETH pays 2× the margin for the same notional |
 | Scaling step | 10% | Lot size reduction per scaling event (full spreads only) |
 | Scaling floor | 50% | Minimum lot size as % of initial (full spreads only) |
-| ATM PnL minimum | $50 | Min simulated ATM profit for entry |
+| ATM P&L minimum (`minAtmPnl`) | $50 (configurable, paper) | Min simulated ATM profit for entry; scaled down by the ATM-ratio pct |
+| ATM ROI minimum (`minAtmRoi`) | 2% (configurable, paper) | Min simulated ATM ROI for entry; applied flat. Live ignores it |
 | ATM strike tolerance (BTC) | 1000 points | Bracket-and-average tolerance per side when a target strike is unlisted or its quote is stale |
 | ATM strike tolerance (ETH) | 50 points | Bracket-and-average tolerance per side when a target strike is unlisted or its quote is stale |
 | Evaluation hang limit | 60 seconds | Max duration evaluation can run before process is restarted |

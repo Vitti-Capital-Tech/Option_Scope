@@ -133,7 +133,7 @@ When the **ATM Ratio Entry** checkbox (`atmRatioScaling`) is enabled in the conf
 
 ### $195K Short Value Portfolio Cap
 
-To restrict exposure, the system enforces a strict portfolio notional cap on the short side. At 200× leverage, a maximum notional short value of **$195,000** is allowed per position.
+To restrict exposure, the system enforces a strict portfolio notional cap on the short side: a maximum notional short value of **$195,000** per position. The cap is the same for every underlying; the **leverage applied to it is not** — **BTC 200×, ETH 100×** (`leverageFor()`), so the same notional costs an ETH account twice the margin.
 
 $$\text{Short Value} = \text{Spot Price} \times \text{Adjusted Sell Qty} \times \text{Sell Leg Lot Size}$$
 
@@ -157,7 +157,7 @@ $$\text{sellIntrinsic} = \text{OTM Sell leg Ask price (at ATM} \pm \text{strikeD
 
 $$\text{ATM PnL} = [(\text{buyIntrinsic} - \text{Entry Buy Price}) + (\text{Entry Sell Price} - \text{sellIntrinsic}) \times \text{originalSellQty}] \times \text{Adjusted Lot Size}$$
 
-$$\text{Margin Requirement} = (\text{Entry Buy Price} \times \text{Adjusted Lot Size}) + \frac{\$195,000}{\text{Leverage (200)}}$$
+$$\text{Margin Requirement} = (\text{Entry Buy Price} \times \text{Adjusted Lot Size}) + \frac{\text{Short Value (capped at } \$195{,}000)}{\text{Leverage (BTC } 200 \text{, ETH } 100)}$$
 
 $$\text{ROI} = \left(\frac{\text{ATM PnL}}{\text{Margin Requirement}}\right) \times 100$$
 

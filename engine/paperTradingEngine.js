@@ -29,7 +29,7 @@ import {
 // per-IP connection cap (HTTP 429) makes N-per-account unscalable.
 import { subscribeTickers } from './lib/tickerHub.js';
 import {
-  safeParseLeg, calculateFee, calcMargin, scanTickers,
+  safeParseLeg, calculateFee, calcMargin, leverageFor, scanTickers,
   computeEntryAtmRatio, computeScaledSellQty,
   pickTopUniqueStrikes, log, logWarn, logError
 } from './lib/utils.js';
@@ -237,6 +237,9 @@ async function startSingleAccountEngine(account) {
     minStrikeDiff: 800, minIvDiff: 5, maxRatioDeviation: 0.25,
     minSellPremium: 10, maxNetPremium: 20, minLongDist: 500, maxSellQty: 10,
     atmRatioScaling: true,
+    // ATM edge floors (migration 039) — PAPER only; live keeps the historical constants.
+    minAtmPnl: 50,
+    minAtmRoi: 2,
     atmRatioPctCall: 50,
     atmRatioPctPut: 25,
     daysToExpiry: 0,
@@ -456,6 +459,8 @@ async function startSingleAccountEngine(account) {
           min_long_dist: 500,
           max_sell_qty: 10,
           atm_ratio_scaling: true,
+          min_atm_pnl: 50,          // migration 039 — paper-only ATM edge floors
+          min_atm_roi: 2,
           atm_ratio_distance_call: 50,
           atm_ratio_distance_put: 25,
           days_to_expiry: 0,
@@ -504,6 +509,9 @@ async function startSingleAccountEngine(account) {
           minLongDist: data.min_long_dist || 500,
           maxSellQty: data.max_sell_qty || 10,
           atmRatioScaling: data.atm_ratio_scaling ?? true,
+          // ATM edge floors (migration 039) — PAPER only, applied at the entry gate below.
+          minAtmPnl: data.min_atm_pnl ?? 50,
+          minAtmRoi: data.min_atm_roi ?? 2,
           atmRatioPctCall: data.atm_ratio_distance_call ?? 50,
           atmRatioPctPut: data.atm_ratio_distance_put ?? 25,
           daysToExpiry: data.days_to_expiry ?? 0,
@@ -993,7 +1001,7 @@ async function startSingleAccountEngine(account) {
   function longOnlyMargin(pos) {
     const cv = pos.buyLeg?.contractValue;
     const lot = cv != null ? cv * longContracts(pos.buyLeg) : (pos.buyLeg?.lotSize || 0);
-    return calcMargin(pos.entryBuyPrice, lot, spotPrice, 0, 1);
+    return calcMargin(pos.entryBuyPrice, lot, spotPrice, 0, 1, pos.underlying);
   }
 
   // Correct-basis margin for a full/partial spread. A LIVE position is sized on the real
@@ -1005,11 +1013,11 @@ async function startSingleAccountEngine(account) {
   // formula (calcMargin with longCV × contracts for the long, shortCV for the short).
   function contractBasisMargin(pos, longCV) {
     if (longCV == null) {
-      return calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, spotPrice, pos.sellQty, pos.sellLeg.lotSize || 1);
+      return calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, spotPrice, pos.sellQty, pos.sellLeg.lotSize || 1, pos.underlying);
     }
     const longLot = longCV * longContracts(pos.buyLeg);
     const shortCV = pos.sellQty > 0 ? (symbolMeta[pos.sellLeg?.symbol]?.contractValue ?? longCV) : 1;
-    return calcMargin(pos.entryBuyPrice, longLot, spotPrice, pos.sellQty, shortCV);
+    return calcMargin(pos.entryBuyPrice, longLot, spotPrice, pos.sellQty, shortCV, pos.underlying);
   }
 
   // One-time PnL-basis normalisation for a LIVE position that was opened on the PAPER
@@ -3024,7 +3032,7 @@ async function startSingleAccountEngine(account) {
         }
 
         const atmPnl = ((buyIntrinsic - spread.buyPrice) + (spread.sellPrice - sellIntrinsic) * ratioToUse) * adjustedLotSize;
-        const margin = calcMargin(spread.buyPrice, adjustedLotSize, spotPrice, adjustedSellQty, sellLotSize);
+        const margin = calcMargin(spread.buyPrice, adjustedLotSize, spotPrice, adjustedSellQty, sellLotSize, config.underlying);
         const roi = margin > 0 ? (atmPnl / margin) * 100 : 0;
 
         return { atmPnl, roi, buyIntrinsic, sellIntrinsic, targetSellStrike, atmRatio: entryAtmRatio, ratioToUse };
@@ -3077,13 +3085,34 @@ async function startSingleAccountEngine(account) {
       for (const spread of (wantEntries ? topSpreads : [])) {
         const { atmPnl, roi, buyIntrinsic, sellIntrinsic, targetSellStrike, atmRatio, ratioToUse } = calculateAtmPnlAndRoi(spread);
 
-        let minAtmPnl = 50;
+        // ── ATM edge floors (migration 039) ───────────────────────────────────────
+        // PAPER accounts read both floors from config; LIVE keeps the historical
+        // hardcoded $50 and has no ROI floor, so its behaviour is byte-identical to before.
+        //
+        // WHY the ROI floor exists at all: a dollar floor is calibrated to whatever scale
+        // the candidate is measured on, and that scale is NOT the same across underlyings.
+        // calculateAtmPnlAndRoi sizes a candidate at lotSize 1 and only scales it down when
+        // the $195,000 short-notional cap binds — which on BTC it always does (77,000 × 3.25
+        // ≈ $251k → a ~$1,000-margin unit), and on ETH it never can (reaching $195k at a
+        // ~$2,400 spot needs a sell ratio of ~81, against a maxSellQty of 10). So an ETH
+        // candidate is always measured on its raw 1-unit basis and a genuinely good spread
+        // reads as single-digit dollars. Observed 2026-09-03 on JD Eth: CALL 2800/2900 at
+        // **35.38% ROI** rejected for a $9.50 ATM P&L against a $25.00 floor. ROI is the
+        // dimension that travels; the dollar floor stays for accounts tuned around it.
+        const isPaperAccount = accountState.mode !== 'live';
+        const basePnlFloor = isPaperAccount ? (effectiveConfig.minAtmPnl ?? 50) : 50;
+
+        // The scaling discount applies to the DOLLAR floor only — that is exactly what the
+        // hardcoded 50 already did, so paper accounts left on the default behave as before.
+        // The ROI floor is applied flat, matching the scanner UI's ATM Edge Floors.
+        let minAtmPnl = basePnlFloor;
         if (effectiveConfig.atmRatioScaling) {
           const pct = spread.buyLeg.type === 'call' ? effectiveConfig.atmRatioPctCall : effectiveConfig.atmRatioPctPut;
-          minAtmPnl = 50 * (1 - (pct || 0) / 100);
+          minAtmPnl = basePnlFloor * (1 - (pct || 0) / 100);
         }
+        const minAtmRoi = isPaperAccount ? (effectiveConfig.minAtmRoi ?? 2) : 0;
 
-        const passed = (atmPnl != null && atmPnl >= minAtmPnl);
+        const passed = (atmPnl != null && atmPnl >= minAtmPnl && (roi ?? 0) >= minAtmRoi);
         // Loop only runs when wantEntries, so this always logs during an entry-eligible cycle.
         // The intrinsics are logged alongside the verdict because the ATM P&L is only ever
         // as good as the two prices it came from. Without them a wrong number is unfalsifiable:
@@ -3091,7 +3120,7 @@ async function startSingleAccountEngine(account) {
         // spread, and nothing in the log said WHICH input disagreed. `—` on either intrinsic
         // now means that strike has no fresh quote (candidate skipped, not mis-priced).
         const usd = (v) => (v != null ? `$${v.toFixed(2)}` : '—');
-        log(`[${accountState.name}] Candidate ${spread.buyLeg.type.toUpperCase()} ${spread.buyLeg.strike}/${spread.sellLeg.strike}: ATM P&L = $${atmPnl != null ? atmPnl.toFixed(2) : 'null'} (Min required: $${minAtmPnl.toFixed(2)}), ROI = ${roi != null ? roi.toFixed(2) : 0}%, Passed = ${passed} | ATM ${atmStrike} ${usd(buyIntrinsic)} / ${targetSellStrike} ${usd(sellIntrinsic)} → ratio ${atmRatio ?? '—'} → qty ${spread.sellQty}→${ratioToUse ?? '—'} | legs ${usd(spread.buyPrice)}/${usd(spread.sellPrice)}`);
+        log(`[${accountState.name}] Candidate ${spread.buyLeg.type.toUpperCase()} ${spread.buyLeg.strike}/${spread.sellLeg.strike}: ATM P&L = $${atmPnl != null ? atmPnl.toFixed(2) : 'null'} (Min required: $${minAtmPnl.toFixed(2)}), ROI = ${roi != null ? roi.toFixed(2) : 0}% (Min required: ${minAtmRoi.toFixed(2)}%), Passed = ${passed} | ATM ${atmStrike} ${usd(buyIntrinsic)} / ${targetSellStrike} ${usd(sellIntrinsic)} → ratio ${atmRatio ?? '—'} → qty ${spread.sellQty}→${ratioToUse ?? '—'} | legs ${usd(spread.buyPrice)}/${usd(spread.sellPrice)}`);
         if (passed) {
           processedSpreads.push({ ...spread, atmPnl, roi });
         }
@@ -3815,7 +3844,7 @@ async function startSingleAccountEngine(account) {
                   // do NOT delete or `continue` — fall through so the catch-all can close it.
                   pos.buyLeg.lotSize = 0;
                   pos.buyLeg.longExitStage = stage;
-                  pos.margin = calcMargin(pos.hedgeLeg.entryPrice, pos.hedgeLeg.lotSize, spotPrice, 0, 1);
+                  pos.margin = calcMargin(pos.hedgeLeg.entryPrice, pos.hedgeLeg.lotSize, spotPrice, 0, 1, pos.underlying);
                   try {
                     await supabase.from('active_positions').update({
                       buy_leg: JSON.stringify(pos.buyLeg),
@@ -4048,7 +4077,7 @@ async function startSingleAccountEngine(account) {
 
       // SELF-HEAL live margin basis. Positions opened before the account was armed (or
       // before live sizing existed) carry a PAPER notional margin (short term =
-      // spot × sellQty × 1 / 200) that is ~100× a real Delta margin, so their summed
+      // spot × sellQty × 1 / leverage) that is ~100× a real Delta margin, so their summed
       // `usedMargin` dwarfs the live budget and blocks all new entries. Recompute each
       // open live position's margin on the real contract-value basis (the same basis
       // entry uses), backfill buyLeg.contractValue from symbolMeta, and persist on change
@@ -4485,7 +4514,7 @@ async function startSingleAccountEngine(account) {
             }
             liveLongCV = longCV; // persist as the leg's margin basis for later long-only recompute
             liveShortCV = shortCV; // persist for the short leg object built after this block
-            const baseMargin = calcMargin(entryBuyPrice, longCV, spotPrice, ratioToUse, shortCV);
+            const baseMargin = calcMargin(entryBuyPrice, longCV, spotPrice, ratioToUse, shortCV, config.underlying);
             scale = (baseMargin > 0) ? (partMargin / baseMargin) : 1;
             if (scale < 1) {
               logWarn(`[${accountState.name}] LIVE size: one unit (margin $${baseMargin.toFixed(2)}) exceeds 1 part ($${partMargin.toFixed(2)}) — trading the minimum 1 unit.`);
@@ -4518,7 +4547,7 @@ async function startSingleAccountEngine(account) {
             }
             adjustedLotSize = Number((longCV * longC).toFixed(4));
             adjustedSellQty = shortC;
-            liveMargin = calcMargin(entryBuyPrice, longCV * longC, spotPrice, adjustedSellQty, shortCV);
+            liveMargin = calcMargin(entryBuyPrice, longCV * longC, spotPrice, adjustedSellQty, shortCV, config.underlying);
             log(`[${accountState.name}] ¤ LIVE size ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: unit margin $${baseMargin.toFixed(2)} | part $${partMargin.toFixed(2)} → scale ${scale.toFixed(2)}× | long ${longC} short ${shortC} (base 1:${ratioToUse}) | est margin $${liveMargin.toFixed(2)} | cv ${longCV}/${shortCV}`);
           } else if (isPaperAccount && partMargin != null) {
             // PAPER (migration 027): scale the base 1:ratio unit so its margin fills the
@@ -4540,7 +4569,7 @@ async function startSingleAccountEngine(account) {
             // pool. The $195k ceiling is STILL enforced after scaling (below), so a large
             // part / concentrate fill can never place a short past $195k notional.
             const baseShortNotional = spotPrice * ratioToUse * sellLotSize;
-            const baseMargin = (entryBuyPrice || 0) * originalLotSize + baseShortNotional / 200;
+            const baseMargin = (entryBuyPrice || 0) * originalLotSize + baseShortNotional / leverageFor(config.underlying);
             scale = baseMargin > 0 ? (effectivePart / baseMargin) : 1;
             if (!(scale > 0)) scale = 1;
             adjustedLotSize = Number((originalLotSize * scale).toFixed(4));
@@ -4556,7 +4585,7 @@ async function startSingleAccountEngine(account) {
               adjustedSellQty = Number((adjustedSellQty * capScale).toFixed(4));
               shortValue = 195000;
             }
-            const estMargin = calcMargin(entryBuyPrice, adjustedLotSize, spotPrice, adjustedSellQty, sellLotSize);
+            const estMargin = calcMargin(entryBuyPrice, adjustedLotSize, spotPrice, adjustedSellQty, sellLotSize, config.underlying);
             log(`[${accountState.name}] ¤ PAPER size ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: unit margin $${baseMargin.toFixed(2)} | part $${effectivePart.toFixed(2)} → scale ${scale.toFixed(2)}× | lot ${adjustedLotSize} short ${adjustedSellQty} (base 1:${ratioToUse}) | est margin $${estMargin.toFixed(2)}`);
           } else {
             // LIVE-but-unarmed (no balance sizing): unchanged $195,000 / 200x notional cap.
@@ -4596,10 +4625,10 @@ async function startSingleAccountEngine(account) {
           const entrySellFee = calculateFee(entrySellPrice, spotPrice, adjustedSellQty, sellLegWithIv.lotSize);
           const entryFee = entryBuyFee + entrySellFee;
           // Live: store the real contract_value-based margin (matches Delta + feeds the
-          // remaining-budget sizing correctly). Paper: unchanged notional/200 estimate.
+          // remaining-budget sizing correctly). Paper: unchanged notional/leverage estimate.
           const candidateMargin = liveMargin != null
             ? liveMargin
-            : calcMargin(entryBuyPrice, adjustedLotSize, spotPrice, adjustedSellQty, spread.sellLeg.lotSize);
+            : calcMargin(entryBuyPrice, adjustedLotSize, spotPrice, adjustedSellQty, spread.sellLeg.lotSize, config.underlying);
 
           // ── Per-spread hedge leg (3rd long-only leg → long/short/long triplet) ──
           // strategy_version >= 2 only. Gated by the active window's hedgeStrikeType
@@ -4650,7 +4679,7 @@ async function startSingleAccountEngine(account) {
                   entryFee: calculateFee(bestAsk, spotPrice, hedgeQty, 1),
                   contractValue: hedgeCV,
                 };
-                hedgeMargin = calcMargin(bestAsk, hedgeQty, spotPrice, 0, 1);
+                hedgeMargin = calcMargin(bestAsk, hedgeQty, spotPrice, 0, 1, config.underlying);
               }
             }
           }
@@ -4707,7 +4736,7 @@ async function startSingleAccountEngine(account) {
               // scale the 1:ratio unit by (part ÷ unit margin), round the long to a whole
               // contract, derive the short from long × ratio, and clamp both by the $195k
               // short-notional cap so a large part can't size past the spread's max qty.
-              const gBaseMargin = calcMargin(entryBuyPrice, gLongCV, spotPrice, ratioToUse, gShortCV);
+              const gBaseMargin = calcMargin(entryBuyPrice, gLongCV, spotPrice, ratioToUse, gShortCV, config.underlying);
               let gScale = gBaseMargin > 0 ? (partMargin / gBaseMargin) : 1;
               if (gScale < 1) gScale = 1;
               gLongC = Math.max(1, Math.round(gScale));

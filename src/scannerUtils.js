@@ -11,6 +11,19 @@ export function formatDateTime(d) {
   }).format(d);
 }
 
+/**
+ * Short-leg leverage, per underlying — the browser-side twin of engine/lib/utils.js's
+ * leverageFor(). ETH sits at 100x where BTC sits at 200x, so the same short notional costs
+ * an ETH account twice the margin. Both copies must move together: the scanner's displayed
+ * margin/ROI is the number a user checks the engine's decision against.
+ *
+ * Accepts either the underlying code ('ETH') or a full Delta symbol ('C-ETH-2800-030926').
+ * The $195,000 short-notional cap is NOT per-underlying — it stays the same for both.
+ */
+export function leverageFor(underlyingOrSymbol) {
+  return /ETH/i.test(String(underlyingOrSymbol ?? '')) ? 100 : 200;
+}
+
 export function normalizeIv(iv) {
   if (!Number.isFinite(iv)) return null;
   return iv <= 1 ? iv * 100 : iv;

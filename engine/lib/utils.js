@@ -37,14 +37,30 @@ export function safeParseLeg(value) {
 }
 
 /**
- * Tiered margin calculation matching Delta Exchange leverage tiers.
- * margin = (entryBuyPrice × buyLotSize) + (shortValue / leverage)
+ * Short-leg leverage, per underlying. ETH sits at 100x where BTC sits at 200x, so the SAME
+ * short notional costs an ETH account twice the margin. This is the only place the number
+ * lives — every margin path (engine entry sizing, ATM P&L/ROI, the scanner's displayed
+ * margin, the UI's position margin) goes through it, so the three surfaces cannot drift.
+ *
+ * Accepts either the underlying code ('ETH') or a full Delta symbol ('C-ETH-2800-030926'):
+ * the scanner's display path only has the symbol to hand. The short-notional CAP is
+ * deliberately NOT per-underlying — it stays $195,000 for both.
  */
-export function calcMargin(buyPrice, buyLot, spot, sellQty, sellLot = 1) {
+export function leverageFor(underlyingOrSymbol) {
+  return /ETH/i.test(String(underlyingOrSymbol ?? '')) ? 100 : 200;
+}
+
+/**
+ * Tiered margin calculation matching Delta Exchange leverage tiers.
+ * margin = (entryBuyPrice × buyLotSize) + (shortValue / leverageFor(underlying))
+ *
+ * `underlying` defaults to BTC's 200x. Every caller in this repo passes it explicitly —
+ * the default exists so an omission degrades to the historical behaviour rather than NaN.
+ */
+export function calcMargin(buyPrice, buyLot, spot, sellQty, sellLot = 1, underlying = 'BTC') {
   const longMargin = (buyPrice || 0) * (buyLot || 1);
   const shortValue = Math.min(195000, (spot || 0) * (sellQty || 0) * sellLot);
-  const leverage = 200; // Fixed leverage as 200
-  return longMargin + (shortValue / leverage);
+  return longMargin + (shortValue / leverageFor(underlying));
 }
 
 /**

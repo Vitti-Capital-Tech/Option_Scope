@@ -151,6 +151,18 @@ export default function ControlPanel({
                 { label: 'Max Short Ratio', key: 'maxSellQty', width: 110, step: '0.25', prefix: '1:' },
                 // Min Days to Expiry now lives per schedule window for ALL accounts (paper
                 // AND live) — migration 019 — so it no longer appears in the Control Panel.
+                //
+                // ATM edge floors (migration 039) — PAPER ONLY, and global rather than
+                // per-window. Same pair the Ratio Spread scanner exposes. A dollar-only floor
+                // is calibrated to whatever scale the candidate is measured on, and that
+                // differs by underlying: the $195k short-notional cap that scales a BTC
+                // candidate down to a ~$1,000-margin unit can never bind at ETH's notional,
+                // so ETH candidates stay on their raw 1-unit basis and a 35%-ROI spread can
+                // read as $9.50. The ROI floor is the one that travels across underlyings.
+                ...(accountIsLive ? [] : [
+                  { label: 'Min ATM P&L', key: 'minAtmPnl', width: 110, step: '10', prefix: '$' },
+                  { label: 'Min ATM ROI', key: 'minAtmRoi', width: 110, step: '1', suffix: '%' },
+                ]),
               ].map(({ label, key, width, step, prefix, suffix }) => (
                 <div key={key} className="form-group">
                   <label className="pt-field-label" style={{ marginBottom: 0 }}>{label}</label>

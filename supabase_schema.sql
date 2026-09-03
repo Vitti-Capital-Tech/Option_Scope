@@ -106,6 +106,15 @@ CREATE TABLE IF NOT EXISTS public.paper_trading_config (
     short_exit_price NUMERIC NOT NULL DEFAULT 1.1,
     long_exit_slices INTEGER NOT NULL DEFAULT 10,
     variable_exit_slices BOOLEAN NOT NULL DEFAULT false,
+    -- ATM edge floors, PAPER accounts only (migration 039). min_atm_pnl replaces the
+    -- hardcoded 50 the entry gate used (and is still discounted by the ATM-ratio scaling
+    -- pct); min_atm_roi adds the ROI floor the scanner UI already has. A dollar floor alone
+    -- is BTC-calibrated: the $195k short-notional cap that scales a candidate up to a
+    -- ~$1,000-margin unit cannot bind at ETH's notional (it would need a sell ratio of ~81
+    -- against a maxSellQty of 10), so ETH candidates are always measured on their unscaled
+    -- 1-unit basis and a good spread reads as single-digit dollars. Live accounts ignore both.
+    min_atm_pnl NUMERIC NOT NULL DEFAULT 50,
+    min_atm_roi NUMERIC NOT NULL DEFAULT 2,
     -- Which strategy logic this account runs: live accounts stay on 1 (stable),
     -- an experimental paper account is bumped to 2 to test new logic. Engine and
     -- UI both branch on this value. See migration 018.

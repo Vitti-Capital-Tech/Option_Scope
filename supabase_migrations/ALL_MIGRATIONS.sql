@@ -1309,3 +1309,25 @@ BEGIN
     CHECK (max_combined_positions >= 0);
 END $$;
 
+-- ─── 039_atm_edge_floors.sql ───
+-- Migration 039: ATM edge floors (min_atm_pnl / min_atm_roi) on paper_trading_config
+ALTER TABLE public.paper_trading_config
+  ADD COLUMN IF NOT EXISTS min_atm_pnl NUMERIC NOT NULL DEFAULT 50,
+  ADD COLUMN IF NOT EXISTS min_atm_roi NUMERIC NOT NULL DEFAULT 2;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'paper_trading_config_min_atm_pnl_check'
+  ) THEN
+    ALTER TABLE public.paper_trading_config
+      ADD CONSTRAINT paper_trading_config_min_atm_pnl_check CHECK (min_atm_pnl >= 0);
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'paper_trading_config_min_atm_roi_check'
+  ) THEN
+    ALTER TABLE public.paper_trading_config
+      ADD CONSTRAINT paper_trading_config_min_atm_roi_check CHECK (min_atm_roi >= 0);
+  END IF;
+END $$;

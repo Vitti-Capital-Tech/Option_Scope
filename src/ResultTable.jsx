@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useCallback } from 'react';
 import { RefreshCw, Target, ChevronRight } from 'lucide-react';
+import { leverageFor } from './scannerUtils';
 
 // Human-readable explanation of how an ATM intrinsic price was resolved for a target
 // strike — exact listed / bracket-average / single-neighbour / omitted. Rendered as a
@@ -207,7 +208,9 @@ export default function ResultTable({
         shortValue = 195000;
       }
 
-      const leverage = 200; // Fixed leverage as 200
+      // Per-underlying (ETH 100x / BTC 200x) — derived from the leg symbol, the same source
+      // the bracket tolerance above uses. Must match engine/lib/utils.js calcMargin().
+      const leverage = leverageFor(r.buyLeg?.symbol);
 
       // Compute P&L scaled to the adjusted lot size
       const atAtmPnl = hasAtmData

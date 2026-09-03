@@ -4,7 +4,7 @@ import {
   loadProducts, getExpiries, getStrikes, getSpotPrice,
   fmtExpiry, createTickerStream, apiGet, getTickers
 } from './api';
-import { normalizeIv, toFiniteNumber, matchesOptionType, formatTime, formatDateTime } from './scannerUtils';
+import { normalizeIv, toFiniteNumber, matchesOptionType, formatTime, formatDateTime, leverageFor } from './scannerUtils';
 import { useTabListener } from './useTabSync';
 import { supabase } from './supabase';
 import { Loader2, AlertTriangle } from 'lucide-react';
@@ -33,6 +33,10 @@ const ACCOUNT_CONFIG_DEFAULTS = {
   maxNetPremium: 20,
   minLongDist: 500,
   maxSellQty: 10,
+  // ATM edge floors (migration 039) — PAPER accounts only; the Control Panel hides them
+  // for live accounts and the engine ignores them there.
+  minAtmPnl: 50,
+  minAtmRoi: 2,
   atmRatioScaling: true,
   atmRatioPctCall: 50,
   atmRatioPctPut: 25,
@@ -202,6 +206,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       maxNetPremium: 20,
       minLongDist: 500,
       maxSellQty: 10,
+      minAtmPnl: 50,
+      minAtmRoi: 2,
       atmRatioScaling: true,
       atmRatioPctCall: 50,
       atmRatioPctPut: 25,
@@ -245,6 +251,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     maxNetPremium: 20,
     minLongDist: 500,
     maxSellQty: 10,
+    minAtmPnl: 50,
+    minAtmRoi: 2,
     atmRatioScaling: true,
     atmRatioPctCall: 50,
     atmRatioPctPut: 25,
@@ -753,6 +761,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       maxNetPremium: data.maxNetPremium,
       minLongDist: data.minLongDist,
       maxSellQty: data.maxSellQty,
+      minAtmPnl: data.minAtmPnl,
+      minAtmRoi: data.minAtmRoi,
       atmRatioScaling: data.atmRatioScaling,
       atmRatioPctCall: data.atmRatioPctCall,
       atmRatioPctPut: data.atmRatioPctPut,
@@ -804,6 +814,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           max_net_premium: data.maxNetPremium,
           min_long_dist: data.minLongDist,
           max_sell_qty: data.maxSellQty,
+          min_atm_pnl: data.minAtmPnl ?? 50,
+          min_atm_roi: data.minAtmRoi ?? 2,
           atm_ratio_scaling: data.atmRatioScaling,
           atm_ratio_distance_call: data.atmRatioPctCall,
           atm_ratio_distance_put: data.atmRatioPctPut,
@@ -869,6 +881,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       maxNetPremium: config.maxNetPremium,
       minLongDist: config.minLongDist,
       maxSellQty: config.maxSellQty,
+      minAtmPnl: config.minAtmPnl,
+      minAtmRoi: config.minAtmRoi,
       atmRatioScaling: config.atmRatioScaling,
       atmRatioPctCall: config.atmRatioPctCall,
       atmRatioPctPut: config.atmRatioPctPut,
@@ -1166,6 +1180,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         max_net_premium: newCfg.maxNetPremium,
         min_long_dist: newCfg.minLongDist,
         max_sell_qty: newCfg.maxSellQty,
+        min_atm_pnl: newCfg.minAtmPnl ?? 50,
+        min_atm_roi: newCfg.minAtmRoi ?? 2,
         atm_ratio_scaling: newCfg.atmRatioScaling,
         atm_ratio_distance_call: newCfg.atmRatioPctCall,
         atm_ratio_distance_put: newCfg.atmRatioPctPut,
@@ -1204,6 +1220,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     'minSellPremium',
     'maxNetPremium',
     'maxSellQty',
+    'minAtmPnl',
+    'minAtmRoi',
     'daysToExpiry',
     'exitType',
     'exitPoints',
@@ -1265,6 +1283,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       minSellPremium: 10,
       maxNetPremium: 20,
       maxSellQty: 10,
+      minAtmPnl: 50,
+      minAtmRoi: 2,
       daysToExpiry: 0,
       exitType: 'ATM',
       exitPoints: 0
@@ -1346,6 +1366,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           max_net_premium: 20,
           min_long_dist: 500,
           max_sell_qty: 10,
+          min_atm_pnl: 50,
+          min_atm_roi: 2,
           atm_ratio_scaling: true,
           atm_ratio_distance_call: 50,
           atm_ratio_distance_put: 25,
@@ -1384,6 +1406,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           maxNetPremium: data.max_net_premium,
           minLongDist: data.min_long_dist || 500,
           maxSellQty: data.max_sell_qty || 10,
+          minAtmPnl: data.min_atm_pnl ?? 50,
+          minAtmRoi: data.min_atm_roi ?? 2,
           atmRatioScaling: data.atm_ratio_scaling ?? true,
           atmRatioPctCall: data.atm_ratio_distance_call ?? 50,
           atmRatioPctPut: data.atm_ratio_distance_put ?? 25,
@@ -2769,7 +2793,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     const sellQty = p.sellQty;
     const longMargin = buyPrice * buyLot;
     const shortValue = Math.min(195000, spot * sellQty * sellLot);
-    const leverage = 200;
+    // Per-underlying (ETH 100x / BTC 200x) — read off the position itself, so a mixed
+    // BTC/ETH list stays correct. Must match engine/lib/utils.js calcMargin().
+    const leverage = leverageFor(p.underlying);
     // Triplet 3rd leg (long-only): premium paid = its margin.
     const hedgeMargin = (p.hedgeLeg && (p.hedgeLeg.lotSize || 0) > 0)
       ? (p.currentHedgePrice != null ? p.currentHedgePrice : (p.hedgeLeg.entryPrice || 0)) * p.hedgeLeg.lotSize
