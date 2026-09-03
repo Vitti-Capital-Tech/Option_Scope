@@ -4765,7 +4765,17 @@ async function startSingleAccountEngine(account) {
             if (!gRes.ok) {
               const bl = gRes.blockedLeg;
               const hadTxt = Number.isFinite(bl.available) ? bl.available : '∞';
-              const msg = `Entry blocked: ${spreadType.toUpperCase()} ${bStrike}/${sStrike} — top-of-book depth exhausted on ${bl.side} leg (needed ${bl.qty}, had ${hadTxt} on ${bl.symbol}). Another account took the available size first.`;
+              // The cause decides the response — size down, or stagger/retry — so state the
+              // one that actually happened instead of asserting contention every time. The
+              // old text always blamed another account; on 2026-09-03 five ETH blocks in a
+              // row read that way while `available` never moved off its snapshot, because
+              // the C-ETH-2900-110926 bid genuinely held only ~4086 the whole window.
+              const drawn = (Number.isFinite(bl.capacity) && Number.isFinite(bl.available))
+                ? bl.capacity - bl.available : 0;
+              const cause = drawn > 0
+                ? `Another account drew ${drawn} of the ${bl.capacity} on offer this window.`
+                : `The book itself was this thin — no other account had drawn on it, so this spread needs a smaller size (or a deeper strike).`;
+              const msg = `Entry blocked: ${spreadType.toUpperCase()} ${bStrike}/${sStrike} — top-of-book depth exhausted on ${bl.side} leg (needed ${bl.qty}, had ${hadTxt} on ${bl.symbol}). ${cause}`;
               logWarn(`[${accountState.name}] ⚑ ${msg}`);
               // Website notification (persisted; NOT Telegram). Fire-and-forget so a
               // slow/failed insert never blocks the eval loop. Identical shape for both
@@ -4780,6 +4790,8 @@ async function startSingleAccountEngine(account) {
                   underlying, type: spreadType, buy_strike: bStrike, sell_strike: sStrike,
                   blocked_side: bl.side, blocked_symbol: bl.symbol,
                   needed: bl.qty, available: Number.isFinite(bl.available) ? bl.available : null,
+                  capacity: Number.isFinite(bl.capacity) ? bl.capacity : null,
+                  contended: drawn > 0,
                   long_qty: gLongC, short_qty: gShortC,
                   mode: accountState.mode === 'live' ? 'live' : 'paper',
                 },

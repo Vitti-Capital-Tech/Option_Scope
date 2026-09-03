@@ -77,7 +77,12 @@ function getPool(symbol, side, depth, now) {
   // is 0, not NaN, so guard the nullish case explicitly before coercing.
   const d = depth == null ? NaN : Number(depth);
   const cap = Number.isFinite(d) ? Math.max(0, d) : Infinity;
-  const fresh = { remaining: cap, shadow: cap, expiresAt: now + WINDOW_MS };
+  // `cap` is the snapshot the window opened with, kept so a blocked caller can tell a book
+  // that was ALREADY too thin from one another account drew down. Those two call for
+  // opposite responses — size down vs. retry — and without it the block message had to
+  // guess (it asserted "another account took it" unconditionally, which on 2026-09-03 was
+  // wrong five times in a row: the ETH weekly 2900 bid simply held 4086 all along).
+  const fresh = { cap, remaining: cap, shadow: cap, expiresAt: now + WINDOW_MS };
   pools.set(key, fresh);
   return fresh;
 }
@@ -95,7 +100,9 @@ function getPool(symbol, side, depth, now) {
  *   shadow counter and consume only that, so paper can never block live. Dry-run live
  *   counts as simulated — it sends no orders. Defaults to false (the safe side: a caller
  *   that forgets the flag cannot silently eat real depth).
- * @returns {{ok:true} | {ok:false, blockedLeg:{symbol,side,qty,available}}}
+ * @returns {{ok:true} | {ok:false, blockedLeg:{symbol,side,qty,available,capacity}}}
+ *   `capacity` is the top-of-book snapshot this window opened with; `available` is what is
+ *   left of it. Equal ⇒ no other account has drawn — the book itself was too thin.
  *   On ok:false NOTHING is consumed, so the freed depth stays available to the next
  *   account. On ok:true every leg's pool is decremented by its qty.
  */
@@ -130,7 +137,11 @@ export function reserveSpread(legs, now = Date.now(), { isLive = false } = {}) {
       if (Number.isFinite(pool.shadow) && pool.shadow < need) {
         return {
           ok: false,
-          blockedLeg: { symbol: leg.symbol, side: leg.side, qty: need, available: pool.shadow },
+          blockedLeg: {
+            symbol: leg.symbol, side: leg.side, qty: need,
+            available: pool.shadow,
+            capacity: pool.cap,   // available === capacity ⇒ nobody drew; the book was just thin
+          },
         };
       }
     }

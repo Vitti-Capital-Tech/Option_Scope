@@ -728,7 +728,26 @@ When an account is blocked, the engine appends a row to **`entry_block_notificat
 **Live accounts get the identical bell + toast** with no UI change: `main.jsx` renders the *same* `PaperTrading` component for `mode="paper"` and `mode="live"`, and the panel, badge, toast and Realtime subscription are all scoped by `activeAccountId` alone — never by mode. Live accounts are rows in the same `paper_trading_accounts` table (`mode` column, `CHECK IN ('paper','live')`), so migration `035`'s foreign key and Realtime publication already cover them.
 
 > [!NOTE]
-> **Log line**: `🚦 Entry blocked: PUT 62800/61800 — top-of-book depth exhausted on buy leg (needed 3, had 1 on P-BTC-62800-…). Another account took the available size first.`
+> **Log line** — the cause clause is derived, not assumed, because the two cases call for
+> opposite responses (size down vs. stagger/retry):
+>
+> ```
+> ⚑ Entry blocked: PUT 62800/61800 — top-of-book depth exhausted on buy leg
+>   (needed 3, had 1 on P-BTC-62800-…). Another account drew 2 of the 3 on offer this window.
+>
+> ⚑ Entry blocked: CALL 2500/2900 — top-of-book depth exhausted on sell leg
+>   (needed 4399, had 4086 on C-ETH-2900-110926). The book itself was this thin —
+>   no other account had drawn on it, so this spread needs a smaller size (or a deeper strike).
+> ```
+>
+> A blocked reservation consumes **nothing**, so several candidates rejected in the same
+> window all report the *same* `available`. An unchanging number across a burst of blocks is
+> therefore the signature of a thin book, not of contention — the message used to assert
+> contention unconditionally and read wrong in exactly that case (observed 2026-09-03: five
+> ETH weekly blocks in a row, `available` pinned at 4086 throughout).
+>
+> The same string is written to `entry_block_notifications` (browser toast + 🚦 bell panel).
+> Entry blocks are deliberately **not** sent to Telegram.
 
 ### Scope
 
