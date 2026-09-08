@@ -11,6 +11,10 @@
  *   TELEGRAM_CHAT_ID    — the DEFAULT chat/channel/group id (fallback when an account
  *                         has no per-account chat id of its own)
  *   TELEGRAM_DEDUPE_MS  — (optional) suppress identical alerts within this window (default 60000)
+ *   TELEGRAM_MIN_GAP_MS — (optional) minimum gap between two sends to the SAME chat (default 1200)
+ *   TELEGRAM_GLOBAL_GAP_MS — (optional) minimum gap between ANY two sends, bot-wide (default 150)
+ *   TELEGRAM_MAX_RETRIES— (optional) retries after a 429 / transient failure (default 3)
+ *   TELEGRAM_MAX_QUEUE  — (optional) max messages queued per chat before dropping (default 200)
  *
  * Per-account routing: callers may pass a `chatId` (e.g. an account's own
  * `telegram_chat_id`) to send that account's alerts to its own chat. When omitted
@@ -44,6 +48,162 @@ function escapeHtml(s) {
     .replace(/>/g, '&gt;');
 }
 
+// ── Delivery: per-chat queue + retry ─────────────────────────────────────────
+// Telegram rate-limits PER CHAT (a group tolerates roughly 20 messages/minute), and
+// this engine's traffic is bursty by construction: every account evaluates on the same
+// minute boundary, so their entry notifications hit the API in the same second. A plain
+// fire-and-forget POST therefore drops messages exactly when they matter most —
+// observed 2026-09-08 02:39/02:40 UTC, BOTH of JD Algo's live entries came back
+// `429 Too Many Requests: retry after 8` and were lost, while the partial scale-down
+// notifications a dozen minutes later (long after the burst) arrived fine. The account
+// never got told it had opened two live positions.
+//
+// Two changes, neither of which may ever block the engine:
+//   1. Serialise per destination with a minimum gap, so a burst is SPREAD instead of
+//      racing the limiter. Different chats still send in parallel.
+//   2. Retry — honouring Telegram's own `retry_after` on a 429, and a short backoff on
+//      network/5xx. A non-429 4xx is permanent (bad token, bad chat id) and is never
+//      retried; retrying it would just burn the queue.
+//
+// Timers are unref'd: a pending retry must not hold the process open through a restart.
+const MIN_GAP_MS = Math.max(0, Number(process.env.TELEGRAM_MIN_GAP_MS ?? 1200));
+// Telegram enforces TWO ceilings and they fail differently, so both need pacing:
+//   • per chat  — ~1/s to a user, ~20/min to a group  → MIN_GAP_MS, per-queue
+//   • per BOT   — ~30 messages/second across every chat → GLOBAL_GAP_MS, shared
+// The 2026-09-08 429s were on a chat carrying ONE account's traffic (two messages a
+// minute apart), which no per-chat limit can explain — every armed account fires on the
+// same minute boundary, so the bot-wide ceiling is what gave way. A per-chat queue alone
+// would have left those chats free to burst simultaneously all over again.
+const GLOBAL_GAP_MS = Math.max(0, Number(process.env.TELEGRAM_GLOBAL_GAP_MS ?? 150));
+const MAX_RETRIES = Math.max(0, Number(process.env.TELEGRAM_MAX_RETRIES ?? 3));
+const MAX_QUEUE = Math.max(1, Number(process.env.TELEGRAM_MAX_QUEUE ?? 200));
+const RETRY_CAP_MS = 30000;   // never park a message longer than this, whatever Telegram asks
+const FETCH_TIMEOUT_MS = 15000;
+
+// dest → { chain: Promise, size: number, nextAt: epoch ms the next send may go out }
+const queues = new Map();
+// Bot-wide floor on the next send, shared by every chat's queue.
+let globalNextAt = 0;
+
+// ── Send-volume trace ────────────────────────────────────────────────────────
+// A 429 says a ceiling was crossed but not WHICH one or by whom, and successful sends
+// were never logged — so after the 2026-09-08 incident there was no way to tell whether
+// the chat had taken 2 messages that minute or 40. Both readings pointed at completely
+// different fixes and neither could be checked.
+//
+// Keep a 60s rolling record of send attempts (timestamp + destination). It costs a push
+// and a shift per message, and turns the NEXT 429 into a self-explanatory log line
+// instead of an inference.
+const SEND_LOG_MS = 60000;
+const sendLog = [];   // [{ at, dest }], pruned to the last SEND_LOG_MS
+
+function recordSend(dest) {
+  const now = Date.now();
+  sendLog.push({ at: now, dest });
+  while (sendLog.length && now - sendLog[0].at > SEND_LOG_MS) sendLog.shift();
+}
+
+/** "12 to this chat, 31 bot-wide, in the last 60s" — the context a 429 needs. */
+function volumeSummary(dest) {
+  const cutoff = Date.now() - SEND_LOG_MS;
+  let mine = 0, all = 0;
+  for (const s of sendLog) {
+    if (s.at < cutoff) continue;
+    all++;
+    if (s.dest === dest) mine++;
+  }
+  return `${mine} to this chat, ${all} bot-wide, in the last ${SEND_LOG_MS / 1000}s`;
+}
+
+const sleep = (ms) => new Promise((resolve) => {
+  const t = setTimeout(resolve, ms);
+  if (typeof t?.unref === 'function') t.unref();
+});
+
+/** One POST attempt. Never throws. `retryAfterMs` non-null ⇒ worth retrying. */
+async function postOnce(dest, text) {
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: dest,
+        text,
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+      }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    if (res.ok) return { ok: true };
+    let body = null;
+    try { body = await res.json(); } catch { /* non-JSON */ }
+    const desc = body == null ? '' : JSON.stringify(body);
+    if (res.status === 429) {
+      // Telegram tells us exactly how long to wait; trust it over any backoff we'd invent.
+      const secs = Number(body?.parameters?.retry_after);
+      const waitMs = Math.min(RETRY_CAP_MS, (Number.isFinite(secs) && secs > 0 ? secs : 5) * 1000);
+      return { ok: false, status: 429, body: desc, retryAfterMs: waitMs };
+    }
+    return { ok: false, status: res.status, body: desc, retryAfterMs: res.status >= 500 ? 2000 : null };
+  } catch (e) {
+    return { ok: false, status: 0, body: e?.message || String(e), retryAfterMs: 2000 };
+  }
+}
+
+/** Queue one message behind everything already pending for that chat. */
+function enqueue(dest, text) {
+  let q = queues.get(dest);
+  if (!q) { q = { chain: Promise.resolve(), size: 0, nextAt: 0 }; queues.set(dest, q); }
+  if (q.size >= MAX_QUEUE) {
+    logError(`Telegram queue full for chat ${dest} (${MAX_QUEUE} pending) — dropping a message.`);
+    return Promise.resolve({ ok: false, dropped: true });
+  }
+  q.size++;
+  const run = q.chain.then(async () => {
+    try {
+      // Wait out whichever ceiling is further away — this chat's own gap, or the bot's.
+      // Re-read `globalNextAt` after each sleep: another chat's queue may have advanced it
+      // (or a 429 may have pushed it out) while this one was waiting.
+      for (;;) {
+        const wait = Math.max(q.nextAt, globalNextAt) - Date.now();
+        if (wait <= 0) break;
+        await sleep(wait);
+      }
+      for (let attempt = 0; ; attempt++) {
+        globalNextAt = Math.max(globalNextAt, Date.now() + GLOBAL_GAP_MS);
+        recordSend(dest);
+        const r = await postOnce(dest, text);
+        if (r.ok) { q.nextAt = Date.now() + MIN_GAP_MS; return { ok: true }; }
+        const givingUp = r.retryAfterMs == null || attempt >= MAX_RETRIES;
+        if (givingUp) {
+          logError(`Telegram sendMessage failed: HTTP ${r.status} ${r.body}`
+            + (r.retryAfterMs == null ? ' (not retryable)' : ` (gave up after ${attempt + 1} attempts)`)
+            + ` · volume: ${volumeSummary(dest)}`);
+          q.nextAt = Date.now() + MIN_GAP_MS;
+          return { ok: false };
+        }
+        // Hold this chat's queue for the wait. A 429 also nudges the BOT-WIDE floor:
+        // we cannot tell from the response which ceiling we hit, and if it was the global
+        // one, letting the other chats keep firing just earns more 429s. The global nudge
+        // is deliberately a fraction of the per-chat wait — a genuinely per-chat limit
+        // must not stall every other account's notifications.
+        q.nextAt = Date.now() + r.retryAfterMs + MIN_GAP_MS;
+        if (r.status === 429) {
+          globalNextAt = Math.max(globalNextAt, Date.now() + Math.min(r.retryAfterMs, 2000));
+        }
+        // The volume line is the whole point: a 429 with "2 to this chat, 38 bot-wide"
+        // and one with "24 to this chat, 26 bot-wide" are different problems.
+        log(`Telegram HTTP ${r.status} for chat ${dest} — retrying in ${Math.round(r.retryAfterMs / 1000)}s `
+          + `(attempt ${attempt + 1}/${MAX_RETRIES}) · volume: ${volumeSummary(dest)}`);
+        await sleep(r.retryAfterMs);
+      }
+    } finally { q.size--; }
+  });
+  // A rejection here must not poison the chain for every later message.
+  q.chain = run.catch(() => {});
+  return run;
+}
+
 /** Low-level send. Resolves { ok } and never throws. `chatId` defaults to the env
  * TELEGRAM_CHAT_ID; pass an account's own chat id to route per-account. */
 async function sendTelegram(text, chatId) {
@@ -55,28 +215,7 @@ async function sendTelegram(text, chatId) {
     }
     return { ok: false, disabled: true };
   }
-  try {
-    const res = await fetch(`https://api.telegram.org/bot${TOKEN}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: dest,
-        text,
-        parse_mode: 'HTML',
-        disable_web_page_preview: true,
-      }),
-    });
-    if (!res.ok) {
-      let body = '';
-      try { body = JSON.stringify(await res.json()); } catch { /* non-JSON */ }
-      logError(`Telegram sendMessage failed: HTTP ${res.status} ${body}`);
-      return { ok: false };
-    }
-    return { ok: true };
-  } catch (e) {
-    logError('Telegram sendMessage error:', e.message);
-    return { ok: false };
-  }
+  return enqueue(String(dest), text);
 }
 
 /**

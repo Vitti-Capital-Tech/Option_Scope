@@ -215,12 +215,80 @@ Telegram outage can never crash or block the engine.
 | --- | --- | --- |
 | `TELEGRAM_BOT_TOKEN` | yes | Bot token from **@BotFather** (one bot serves every chat) |
 | `TELEGRAM_CHAT_ID` | no | **Default/fallback** chat id — used for accounts without their own (per-account) chat id |
-| `TELEGRAM_DEDUPE_MS` | no (default `60000`) | Suppress identical alerts within this window |
+| `TELEGRAM_DEDUPE_MS` | no (default `60000`) | Suppress identical **failure** alerts within this window (trade events are never deduped) |
+| `TELEGRAM_MIN_GAP_MS` | no (default `1200`) | Minimum gap between two sends to the **same** chat |
+| `TELEGRAM_GLOBAL_GAP_MS` | no (default `150`) | Minimum gap between **any** two sends, bot-wide across every chat |
+| `TELEGRAM_MAX_RETRIES` | no (default `3`) | Retries after a `429` / transient failure |
+| `TELEGRAM_MAX_QUEUE` | no (default `200`) | Max messages queued per chat before the oldest is dropped (logged) |
 | `VITE_TELEGRAM_BOT_USERNAME` | frontend | Bot @username (no `@`) — builds the per-account "Connect Telegram" deep link |
 
 Only the **bot token** is fundamentally required now; a message is sent when the token
 is set **and** a destination resolves (a per-account chat id, else the global
 `TELEGRAM_CHAT_ID`). If neither resolves, alerts are **silently disabled** (logged once).
+
+#### Delivery: per-chat queue + retry
+
+Telegram enforces **two** ceilings, and they fail differently:
+
+| Ceiling | Roughly | Paced by |
+| --- | --- | --- |
+| **Per chat** | ~1 msg/s to a user, ~20 msg/min to a group | `TELEGRAM_MIN_GAP_MS` (per-queue) |
+| **Per bot** | ~30 msg/s across **every** chat | `TELEGRAM_GLOBAL_GAP_MS` (shared) |
+
+This engine's traffic is bursty by construction: every armed account evaluates on the same
+minute boundary, so their trade notifications hit the API in the same second — each to its
+*own* chat. That shape cannot trip a per-chat limit, but it walks straight into the
+**bot-wide** one, which is why per-chat queueing alone would not have been enough.
+
+Sends therefore go through a **per-destination queue** with a **bot-wide floor**:
+
+- **Serialised per chat with a minimum gap** (`TELEGRAM_MIN_GAP_MS`, default 1200 ms) so a
+  burst to one chat is spread instead of racing the limiter.
+- **Spaced bot-wide** (`TELEGRAM_GLOBAL_GAP_MS`, default 150 ms ≈ 6–7 msg/s, well under the
+  ~30/s ceiling) so simultaneous sends to *different* chats are staggered too. Chats still
+  progress independently; they just cannot all fire in the same instant.
+- **Retried** up to `TELEGRAM_MAX_RETRIES`: a `429` waits exactly as long as Telegram's own
+  `retry_after` says (capped at 30 s), a `5xx` or network error backs off ~2 s. A **non-429
+  `4xx` is permanent** (bad token, bad chat id) and is never retried.
+- **Bounded** at `TELEGRAM_MAX_QUEUE` per chat; beyond that the message is dropped with a log
+  line rather than growing memory.
+- Retry timers are **unref'd**, so a pending retry can never hold the process open through a
+  restart.
+
+> [!IMPORTANT]
+> This exists because the previous single-shot send **lost messages silently**. On
+> 2026-09-08 02:39/02:40 UTC both of JD Algo's live entries came back
+> `429 Too Many Requests: retry after 8` and were dropped — the account was never told it
+> had opened two live positions — while the partial scale-down notifications a dozen
+> minutes later (long after the burst) arrived normally. The only trace was one
+> `✖ Telegram sendMessage failed: HTTP 429` line per lost message in the **error** log
+> (`logError` → stderr → `optionscope-engine-error.log`, *not* the out log).
+>
+> **Which ceiling gave way was never established**, and it is worth being precise about why:
+> a `429` body does not name the limit, and *successful* sends were not logged at all, so
+> there was no record of how many messages that chat (or the bot) had taken in the
+> preceding minute. Two readings fit the same evidence and imply different fixes — the chat
+> took only those two trade messages and the **bot-wide** ~30/s ceiling broke under four
+> armed accounts notifying their own chats on the same minute boundary; or that chat had
+> also been absorbing JD Algo's **failure** alerts (it has no per-account chat id, so
+> `notifyLiveFailure` falls back to it too) and crossed the ~20/min **group** limit on its
+> own. Both are paced now, and neither guess had to be right for the retry to save the
+> message.
+>
+> So that the next one is not a guess, every 429 and every give-up logs a **volume** line:
+>
+> ```
+> Telegram HTTP 429 for chat -100123… — retrying in 8s (attempt 1/3)
+>   · volume: 3 to this chat, 27 bot-wide, in the last 60s
+> ```
+>
+> `3 / 27` points at the bot-wide ceiling; `24 / 26` points at the group limit. A rolling
+> 60-second record of send attempts is kept for exactly this.
+>
+> Binding each live account to its **own** chat (Edit → **Connect Telegram**) is still worth
+> doing — it keeps any one chat clear of the per-chat ceiling, and it stops an account's
+> failure alerts from landing in the shared group — but it does not help with the bot-wide
+> ceiling, which is what the global gap is for.
 
 #### Per-account routing (`/start` deep-link auto-capture)
 
