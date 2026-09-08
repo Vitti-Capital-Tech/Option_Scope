@@ -296,17 +296,25 @@ Sends therefore go through a **per-destination queue** with a **bot-wide floor**
 > `retry_after: 424` with `volume: 2 to this chat, 2 bot-wide, in the last 60s` — a
 > seven-minute ban that **no send volume can explain**, because the sends did not cause it.
 > `getUpdates` shares the same bot-wide API budget as every `sendMessage`, and the
-> `/start` long-poll below could **spin**: an error *response* (as opposed to a thrown
-> fetch error) left `body.ok` false, fell through the `if`, and looped straight into the
-> next request with no delay and no log line. The path that hits is **`409 Conflict:
-> terminated by other getUpdates request` on every deploy** — PM2's 10 s `kill_timeout`
-> keeps the outgoing engine polling while the new one starts, so Telegram answers both
-> processes with a 409 and the engine fired requests as fast as the network allowed until
-> one exited. That earned the *token* a flood ban, which the trade alerts then walked into.
+> `/start` long-poll below could **spin**: **any** non-ok reply — a `409`, a `429`, a
+> Telegram `5xx`, any `ok: false` body — left `body.ok` false, fell through the `if`, and
+> looped straight into the next request with **no delay and no log line**. The engine then
+> fired requests as fast as the network allowed, for as long as the condition lasted, and
+> earned the *token* a flood ban that the trade alerts walked into.
+>
+> **Which** non-ok reply started it was not recorded (that is the same missing-log problem
+> as the 02:39 incident, one layer down) and is worth not guessing about. Two candidates
+> fit: `409 Conflict: terminated by other getUpdates request`, if a second consumer ever
+> overlaps this one — a deploy window, or a dev engine run against the same token; or
+> Telegram-side trouble, which `getWebhookInfo` does place in the window
+> (`last_synchronization_error_date` = 06:13:31 UTC, nine minutes after the ban) — and
+> `pm2 list` showed a single instance at the time. The fix does not depend on the answer:
+> it covers every non-ok reply, and now **names** the one it saw.
 >
 > Two things were wrong and both are fixed: the poll now **backs off and logs** on every
 > non-ok response (honouring `retry_after`, else 5 s → 60 s exponential) with a floor
-> between iterations that no code path can skip; and the sender **no longer retries inside
+> between iterations that no code path can skip — a spin is now impossible *and* legible;
+> and the sender **no longer retries inside
 > a ban** — it used to cap the honoured wait at 30 s and retry anyway, so four attempts
 > 30 s apart landed inside a 424 s window and each one *extended* it.
 >

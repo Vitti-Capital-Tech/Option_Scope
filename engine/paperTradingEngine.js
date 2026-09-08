@@ -6173,19 +6173,23 @@ export async function startPaperTradingEngine() {
   // getUpdates and webhooks are mutually exclusive. Single consumer (this process).
   const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
   // getUpdates draws on the SAME bot-wide API budget as every sendMessage, so this loop
-  // must never spin. It used to: an error RESPONSE (as opposed to a thrown fetch error)
-  // just left `body.ok` false, fell through the if, and looped straight back into the
-  // next request with no delay and no log line. The path that hits is 409 on every
-  // deploy — PM2's 10s kill_timeout keeps the outgoing engine polling while the new one
-  // starts, and Telegram answers both with
-  // `409 Conflict: terminated by other getUpdates request` — so the engine fired
-  // requests as fast as the network allowed until one process exited, and earned the bot
-  // a token-wide flood ban. That is what 2026-09-08 06:04 UTC actually was:
-  // `sendMessage 429 retry_after 424` while the volume trace read "2 to this chat, 2
-  // bot-wide" — a ban no send volume could explain, because the sends did not cause it.
+  // must never spin. It used to: ANY non-ok reply — a 409, a 429, a Telegram 5xx, any
+  // `ok: false` body — left `body.ok` false, fell through the if, and looped straight
+  // back into the next request with no delay and NO LOG LINE. The engine then fired
+  // requests as fast as the network allowed, for as long as the condition lasted, and
+  // earned the bot a token-wide flood ban. That is what 2026-09-08 06:04 UTC actually
+  // was: `sendMessage 429 retry_after 424` while the volume trace read "2 to this chat,
+  // 2 bot-wide" — a ban no send volume could explain, because the sends did not cause it.
+  //
+  // Which reply started it went unrecorded, so it is left as two candidates rather than a
+  // guess: a `409 Conflict: terminated by other getUpdates request` from a second
+  // consumer overlapping this one (a deploy window, or a dev engine on the same token),
+  // or Telegram-side trouble — getWebhookInfo did report a synchronization error nine
+  // minutes after the ban, and pm2 showed a single instance.
   //
   // So: every non-ok response backs off (honouring `retry_after`, exponential otherwise)
-  // and is LOGGED, and there is a floor between iterations that no path can skip.
+  // and is LOGGED, and there is a floor between iterations that no path can skip. The
+  // spin is impossible now, and the next occurrence names its own cause.
   const TG_POLL_FLOOR_MS = 1000;
   const TG_POLL_MAX_BACKOFF_MS = 60000;
   const tgSleep = (ms) => new Promise((r) => {
