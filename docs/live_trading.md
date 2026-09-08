@@ -247,9 +247,16 @@ Sends therefore go through a **per-destination queue** with a **bot-wide floor**
 - **Spaced bot-wide** (`TELEGRAM_GLOBAL_GAP_MS`, default 150 ms ≈ 6–7 msg/s, well under the
   ~30/s ceiling) so simultaneous sends to *different* chats are staggered too. Chats still
   progress independently; they just cannot all fire in the same instant.
-- **Retried** up to `TELEGRAM_MAX_RETRIES`: a `429` waits exactly as long as Telegram's own
-  `retry_after` says (capped at 30 s), a `5xx` or network error backs off ~2 s. A **non-429
-  `4xx` is permanent** (bad token, bad chat id) and is never retried.
+- **Retried** up to `TELEGRAM_MAX_RETRIES`: a `429` waits **the full `retry_after`
+  Telegram asked for**, a `5xx` or network error backs off ~2 s. A **non-429 `4xx` is
+  permanent** (bad token, bad chat id) and is never retried. A `retry_after` past **10 min**
+  is treated as non-retryable — the alert would be stale on arrival anyway.
+- A `429` **carries forward** onto the queue even for the message we give up on: the ban
+  outlives the message, so releasing the queue immediately would fire the next alert into
+  the still-running wait. A wait past **60 s** is a **bot-wide** flood ban (no per-chat limit
+  produces one) and gates *every* chat; a short wait stays local, with only a ≤2 s global
+  nudge, so one noisy chat cannot stall every account's alerts. One message may sit parked
+  for **10 min total** across its retries, then it is dropped.
 - **Bounded** at `TELEGRAM_MAX_QUEUE` per chat; beyond that the message is dropped with a log
   line rather than growing memory.
 - Retry timers are **unref'd**, so a pending retry can never hold the process open through a
@@ -285,6 +292,24 @@ Sends therefore go through a **per-destination queue** with a **bot-wide floor**
 > `3 / 27` points at the bot-wide ceiling; `24 / 26` points at the group limit. A rolling
 > 60-second record of send attempts is kept for exactly this.
 >
+> **What the volume line then caught (2026-09-08 06:04 UTC).** The very next 429 read
+> `retry_after: 424` with `volume: 2 to this chat, 2 bot-wide, in the last 60s` — a
+> seven-minute ban that **no send volume can explain**, because the sends did not cause it.
+> `getUpdates` shares the same bot-wide API budget as every `sendMessage`, and the
+> `/start` long-poll below could **spin**: an error *response* (as opposed to a thrown
+> fetch error) left `body.ok` false, fell through the `if`, and looped straight into the
+> next request with no delay and no log line. The path that hits is **`409 Conflict:
+> terminated by other getUpdates request` on every deploy** — PM2's 10 s `kill_timeout`
+> keeps the outgoing engine polling while the new one starts, so Telegram answers both
+> processes with a 409 and the engine fired requests as fast as the network allowed until
+> one exited. That earned the *token* a flood ban, which the trade alerts then walked into.
+>
+> Two things were wrong and both are fixed: the poll now **backs off and logs** on every
+> non-ok response (honouring `retry_after`, else 5 s → 60 s exponential) with a floor
+> between iterations that no code path can skip; and the sender **no longer retries inside
+> a ban** — it used to cap the honoured wait at 30 s and retry anyway, so four attempts
+> 30 s apart landed inside a 424 s window and each one *extended* it.
+>
 > Binding each live account to its **own** chat (Edit → **Connect Telegram**) is still worth
 > doing — it keeps any one chat clear of the per-chat ceiling, and it stops an account's
 > failure alerts from landing in the shared group — but it does not help with the bot-wide
@@ -303,7 +328,9 @@ chat it already has an id for), the chat id is captured automatically:
 3. A single global **`getUpdates` long-poll** in the engine supervisor
    (`startTelegramLinkListener`, requires the token **and** the service_role key, and
    **no webhook** set on the bot) matches the code, stores `telegram_chat_id`, clears
-   the code, and confirms in-chat. The account row change flows back to the UI via
+   the code, and confirms in-chat. Every non-ok response **backs off** (see the flood-ban
+   note above) — this poll spends the same bot-wide API budget the trade alerts do, so it
+   must never spin. The account row change flows back to the UI via
    Realtime, flipping it to **Connected**.
 4. `notifyLiveTrade`/`notifyLiveFailure` then send to that account's `chatId`, falling
    back to `TELEGRAM_CHAT_ID` when an account has none. **Disconnect** clears the id.

@@ -6172,6 +6172,26 @@ export async function startPaperTradingEngine() {
   // AND the service_role key (to update accounts). The bot must have NO webhook set —
   // getUpdates and webhooks are mutually exclusive. Single consumer (this process).
   const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+  // getUpdates draws on the SAME bot-wide API budget as every sendMessage, so this loop
+  // must never spin. It used to: an error RESPONSE (as opposed to a thrown fetch error)
+  // just left `body.ok` false, fell through the if, and looped straight back into the
+  // next request with no delay and no log line. The path that hits is 409 on every
+  // deploy — PM2's 10s kill_timeout keeps the outgoing engine polling while the new one
+  // starts, and Telegram answers both with
+  // `409 Conflict: terminated by other getUpdates request` — so the engine fired
+  // requests as fast as the network allowed until one process exited, and earned the bot
+  // a token-wide flood ban. That is what 2026-09-08 06:04 UTC actually was:
+  // `sendMessage 429 retry_after 424` while the volume trace read "2 to this chat, 2
+  // bot-wide" — a ban no send volume could explain, because the sends did not cause it.
+  //
+  // So: every non-ok response backs off (honouring `retry_after`, exponential otherwise)
+  // and is LOGGED, and there is a floor between iterations that no path can skip.
+  const TG_POLL_FLOOR_MS = 1000;
+  const TG_POLL_MAX_BACKOFF_MS = 60000;
+  const tgSleep = (ms) => new Promise((r) => {
+    const t = setTimeout(r, ms);
+    if (typeof t?.unref === 'function') t.unref();
+  });
   let tgListenerStop = false;
   let tgUpdateOffset = 0;
   const tgEscape = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -6199,13 +6219,28 @@ export async function startPaperTradingEngine() {
   }
 
   async function pollTelegramUpdates() {
+    let backoffMs = 0;
     while (!tgListenerStop) {
+      if (backoffMs > 0) await tgSleep(backoffMs);
+      if (tgListenerStop) break;
       try {
         const offsetParam = tgUpdateOffset ? `&offset=${tgUpdateOffset}` : '';
         const url = `https://api.telegram.org/bot${TG_TOKEN}/getUpdates?timeout=50&allowed_updates=%5B%22message%22%5D${offsetParam}`;
         const res = await fetch(url);
         const body = await res.json().catch(() => null);
-        if (body && body.ok && Array.isArray(body.result)) {
+        if (!res.ok || !body?.ok) {
+          // Trust Telegram's own `retry_after` when it gives one; otherwise double the
+          // wait (5s → 60s), which rides out a deploy overlap without hammering.
+          const secs = Number(body?.parameters?.retry_after);
+          backoffMs = Number.isFinite(secs) && secs > 0
+            ? Math.min(secs * 1000, TG_POLL_MAX_BACKOFF_MS)
+            : Math.min(Math.max(backoffMs * 2, 5000), TG_POLL_MAX_BACKOFF_MS);
+          logError(`Telegram getUpdates HTTP ${res.status} ${body ? JSON.stringify(body).slice(0, 200) : '(no body)'}`
+            + ` — backing off ${Math.round(backoffMs / 1000)}s`);
+          continue;
+        }
+        backoffMs = TG_POLL_FLOOR_MS;
+        if (Array.isArray(body.result)) {
           for (const upd of body.result) {
             tgUpdateOffset = upd.update_id + 1;
             const msg = upd.message;
@@ -6219,8 +6254,8 @@ export async function startPaperTradingEngine() {
         }
       } catch (e) {
         // Network blip / Telegram outage — back off, never crash the process.
-        logError('Telegram getUpdates error:', e.message);
-        await new Promise(r => setTimeout(r, 5000));
+        backoffMs = Math.min(Math.max(backoffMs * 2, 5000), TG_POLL_MAX_BACKOFF_MS);
+        logError(`Telegram getUpdates error: ${e.message} — backing off ${Math.round(backoffMs / 1000)}s`);
       }
     }
   }
