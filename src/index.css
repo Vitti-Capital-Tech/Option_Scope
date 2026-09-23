@@ -5283,6 +5283,144 @@ body.light-theme .pt-btn-apply.active {
   gap: 5px !important;
 }
 
+/* ── Excluded Strikes filter (paper only, migration 040) ── */
+.pt-excl-strikes {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pt-excl-manual {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.pt-excl-add-btn,
+.pt-excl-clear {
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  color: var(--text);
+  font-family: 'Inter', sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 6px;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.pt-excl-add-btn:hover:not(:disabled),
+.pt-excl-clear:hover {
+  border-color: #3b82f6;
+  color: #3b82f6;
+}
+
+.pt-excl-add-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pt-excl-clear {
+  padding: 3px 8px;
+  font-size: 11px;
+  background: transparent;
+}
+
+.pt-excl-error {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--danger);
+}
+
+.pt-excl-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.pt-excl-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px 3px 9px;
+  border-radius: 999px;
+  background: rgba(246, 70, 93, 0.12);
+  border: 1px solid rgba(246, 70, 93, 0.35);
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Manually-entered strike the current expiry doesn't list */
+.pt-excl-chip.off-chain {
+  border-style: dashed;
+  opacity: 0.75;
+}
+
+.pt-excl-chip button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.pt-excl-chip button:hover {
+  background: rgba(246, 70, 93, 0.2);
+}
+
+.pt-excl-search {
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* position:relative so item.offsetTop is measured from the list (ATM auto-centering) */
+.pt-excl-menu .custom-dropdown-list {
+  position: relative;
+}
+
+.pt-excl-box {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--text-dim);
+  border-radius: 3px;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.pt-excl-box.on {
+  background: #3b82f6;
+  border-color: #3b82f6;
+}
+
+.pt-excl-atm {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: #3b82f6;
+  border: 1px solid rgba(59, 130, 246, 0.4);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.pt-excl-empty {
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
 /* ── Tab bar ── */
 .pt-workspace {
   padding: 0;

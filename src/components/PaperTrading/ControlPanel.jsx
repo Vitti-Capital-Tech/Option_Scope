@@ -4,6 +4,7 @@ import { ChevronDown } from 'lucide-react';
 import CustomSelect from '../common/CustomSelect';
 import CustomInput from '../common/CustomInput';
 import SchedulePanel from './SchedulePanel';
+import ExcludedStrikesFilter from './ExcludedStrikesFilter';
 
 export default function ControlPanel({
   underlying,
@@ -22,6 +23,7 @@ export default function ControlPanel({
   isDefaultConfig,
   handleResetFilters,
   spotPrice,
+  chainStrikes = [],
   schedules,
   setSchedules,
   isSavingSchedules,
@@ -173,6 +175,24 @@ export default function ControlPanel({
               ))}
             </div>
           </div>
+
+          {/* Excluded Strikes (migration 040) — PAPER ONLY, global (not per window). Strike
+              prices the engine never enters a leg on, for calls and puts alike. Pick them from
+              the current expiry's chain or type them in; both build the same list. Goes
+              through Apply/Cancel like the other filters. Open positions are unaffected. */}
+          {!accountIsLive && (
+            <div className="pt-filter-cluster">
+              <span className="pt-cluster-head">
+                Excluded Strikes <span style={{ color: 'var(--text-dim)', fontWeight: 600, letterSpacing: '0.04em' }}>(calls &amp; puts, new entries only)</span>
+              </span>
+              <ExcludedStrikesFilter
+                value={draftConfig?.excludedStrikes ?? []}
+                onChange={list => updateDraftConfig('excludedStrikes', list)}
+                chainStrikes={chainStrikes}
+                spotPrice={spotPrice}
+              />
+            </div>
+          )}
 
           {/* Exit Rules (Short Exit Price, Variable Exit Slices, Long Exit Slices) moved to
               per-schedule-window controls (migration 033) — edit them in the Schedule Panel,

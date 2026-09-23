@@ -264,6 +264,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     variableExitSlices: false,
     strategyVersion: 1,
     tradeDays: [0, 1, 2, 3, 4, 5, 6],
+    // Strike prices no new leg may be entered on (migration 040) — paper only.
+    excludedStrikes: [],
     // Paper full-deployment fill (migration 030) — paper only.
     fullDeployEnabled: false,
     fullDeployTime: '04:30'
@@ -1192,6 +1194,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         long_exit_slices: newCfg.longExitSlices ?? 10,
         variable_exit_slices: newCfg.variableExitSlices ?? false,
         trade_days: Array.isArray(newCfg.tradeDays) ? newCfg.tradeDays : [0, 1, 2, 3, 4, 5, 6],
+        excluded_strikes: Array.isArray(newCfg.excludedStrikes) ? newCfg.excludedStrikes : [],
         full_deploy_enabled: newCfg.fullDeployEnabled ?? false,
         full_deploy_time: newCfg.fullDeployTime ?? '04:30',
         updated_at: new Date().toISOString()
@@ -1229,6 +1232,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     'longExitSlices',
     'variableExitSlices',
     'tradeDays',
+    'excludedStrikes',
     'fullDeployEnabled',
     'fullDeployTime'
   ];
@@ -1238,7 +1242,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     const parsedUpdates = {};
     for (const k of Object.keys(updates)) {
       const val = updates[k];
-      if (k === 'exitType' || k === 'variableExitSlices' || k === 'atmRatioScaling' || k === 'underlying' || k === 'expiry' || k === 'tradeDays') {
+      if (k === 'exitType' || k === 'variableExitSlices' || k === 'atmRatioScaling' || k === 'underlying' || k === 'expiry' || k === 'tradeDays'
+        || k === 'excludedStrikes') {
         parsedUpdates[k] = val;
       } else {
         const num = (val === '' || val === '-' || val == null) ? null : Number(val);
@@ -1285,6 +1290,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       maxSellQty: 10,
       minAtmPnl: 50,
       minAtmRoi: 2,
+      excludedStrikes: [],
       daysToExpiry: 0,
       exitType: 'ATM',
       exitPoints: 0
@@ -1297,7 +1303,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
 
   const isDefaultConfig = React.useMemo(() => {
     if (!config) return true;
-    return Object.keys(DEFAULT_FILTERS).every(k => config[k] === DEFAULT_FILTERS[k]);
+    return Object.keys(DEFAULT_FILTERS).every(k => (
+      Array.isArray(DEFAULT_FILTERS[k])
+        ? JSON.stringify(config[k] ?? []) === JSON.stringify(DEFAULT_FILTERS[k])
+        : config[k] === DEFAULT_FILTERS[k]
+    ));
   }, [config, DEFAULT_FILTERS]);
 
   const isFiltersDirty = React.useMemo(() => {
@@ -1305,7 +1315,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     return FILTER_KEYS.some(k => {
       const val1 = draftConfig[k];
       const val2 = config[k];
-      if (k === 'tradeDays') {
+      if (k === 'tradeDays' || k === 'excludedStrikes') {
         const arr1 = Array.isArray(val1) ? val1 : [];
         const arr2 = Array.isArray(val2) ? val2 : [];
         if (arr1.length !== arr2.length) return true;
@@ -1380,6 +1390,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           variable_exit_slices: false,
           strategy_version: 1,
           trade_days: [0, 1, 2, 3, 4, 5, 6],
+          excluded_strikes: [],
           full_deploy_enabled: false,
           full_deploy_time: '04:30',
           updated_at: new Date().toISOString()
@@ -1428,6 +1439,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           strategyVersion: data.strategy_version ?? 1,
           // Weekdays new entries are allowed on (0=Sun..6=Sat). v2/paper entry-gate. See migration 021.
           tradeDays: Array.isArray(data.trade_days) ? data.trade_days : [0, 1, 2, 3, 4, 5, 6],
+          // Strike prices no new leg may be entered on (migration 040) — paper only.
+          excludedStrikes: Array.isArray(data.excluded_strikes)
+            ? data.excluded_strikes.map(Number).filter(Number.isFinite)
+            : [],
           // Paper full-deployment fill (migration 030) — paper only.
           fullDeployEnabled: data.full_deploy_enabled ?? false,
           fullDeployTime: data.full_deploy_time ?? '04:30'
@@ -2427,6 +2442,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       .join(',');
   }, [positions, underlying]);
 
+  // Strikes listed on the traded expiry — the pick list for the Excluded Strikes filter.
+  const chainStrikes = React.useMemo(
+    () => (selExpiry && products.length ? getStrikes(products, selExpiry) : []),
+    [products, selExpiry]
+  );
+
   const getSymbolMeta = useCallback(() => {
     if (!selExpiry || !products.length) return {};
     const strikes = getStrikes(products, selExpiry);
@@ -2961,6 +2982,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
               isDefaultConfig={isDefaultConfig}
               handleResetFilters={handleResetFilters}
               spotPrice={spotPrice}
+              chainStrikes={chainStrikes}
               schedules={schedules}
               setSchedules={setSchedules}
               isSavingSchedules={isSavingSchedules}

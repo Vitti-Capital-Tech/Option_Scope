@@ -339,6 +339,11 @@ The `scanTickers()` function is the **spread finder**. It works like this:
 > [!TIP]
 > ATM = the strike price closest to the current spot price. If BTC is at $105,000, the ATM strike might be $105,000.
 
+Two kinds of strike are removed from both pools before the scan:
+
+- **Occupied strikes**: strikes already held by one of this account's full spreads (one leg per strike).
+- **Excluded strikes** (`excluded_strikes`, **paper only**, migration 040): a global, account-level list the user sets in the Control Panel's *Excluded Strikes* cluster. They can pick strikes from the current expiry's chain in a multi-select dropdown, or type them in manually (comma separated). An excluded strike is dropped for **calls and puts alike**, so neither the long nor the short can land on it. The v2 hedge-leg picker skips it too. The ATM strike and intrinsic pricing still read the full chain, because they only *price* candidates. Open positions on an excluded strike are left alone; the list gates **new entries only**. Live accounts ignore it. The per-minute `Evaluating N candidate spreads…` log line lists the active exclusions.
+
 ### Step 2: O(N²) pair scan
 
 For each option type, the scanner tries **every possible pair** of options and checks if they form a valid spread. It sorts all tickers by strike price, then pairs each one with every other one.

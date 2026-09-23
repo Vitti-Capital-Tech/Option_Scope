@@ -115,6 +115,9 @@ CREATE TABLE IF NOT EXISTS public.paper_trading_config (
     -- 1-unit basis and a good spread reads as single-digit dollars. Live accounts ignore both.
     min_atm_pnl NUMERIC NOT NULL DEFAULT 50,
     min_atm_roi NUMERIC NOT NULL DEFAULT 2,
+    -- Strike prices no new entry leg may use (calls and puts alike), PAPER accounts only
+    -- (migration 040). JSON array of numbers; [] = nothing excluded. Live ignores it.
+    excluded_strikes JSONB NOT NULL DEFAULT '[]'::jsonb,
     -- Which strategy logic this account runs: live accounts stay on 1 (stable),
     -- an experimental paper account is bumped to 2 to test new logic. Engine and
     -- UI both branch on this value. See migration 018.

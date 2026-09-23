@@ -1331,3 +1331,19 @@ BEGIN
       ADD CONSTRAINT paper_trading_config_min_atm_roi_check CHECK (min_atm_roi >= 0);
   END IF;
 END $$;
+
+-- ─── 040_excluded_strikes.sql ───
+-- Migration 040: excluded strikes (excluded_strikes) on paper_trading_config
+ALTER TABLE public.paper_trading_config
+  ADD COLUMN IF NOT EXISTS excluded_strikes JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'paper_trading_config_excluded_strikes_check'
+  ) THEN
+    ALTER TABLE public.paper_trading_config
+      ADD CONSTRAINT paper_trading_config_excluded_strikes_check
+      CHECK (jsonb_typeof(excluded_strikes) = 'array');
+  END IF;
+END $$;

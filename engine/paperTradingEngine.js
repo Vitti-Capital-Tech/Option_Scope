@@ -240,6 +240,8 @@ async function startSingleAccountEngine(account) {
     // ATM edge floors (migration 039) — PAPER only; live keeps the historical constants.
     minAtmPnl: 50,
     minAtmRoi: 2,
+    // Excluded strikes (migration 040) — PAPER only. Strike prices no leg may be entered on.
+    excludedStrikes: [],
     atmRatioPctCall: 50,
     atmRatioPctPut: 25,
     daysToExpiry: 0,
@@ -461,6 +463,7 @@ async function startSingleAccountEngine(account) {
           atm_ratio_scaling: true,
           min_atm_pnl: 50,          // migration 039 — paper-only ATM edge floors
           min_atm_roi: 2,
+          excluded_strikes: [],     // migration 040 — paper-only strike blacklist
           atm_ratio_distance_call: 50,
           atm_ratio_distance_put: 25,
           days_to_expiry: 0,
@@ -512,6 +515,10 @@ async function startSingleAccountEngine(account) {
           // ATM edge floors (migration 039) — PAPER only, applied at the entry gate below.
           minAtmPnl: data.min_atm_pnl ?? 50,
           minAtmRoi: data.min_atm_roi ?? 2,
+          // Excluded strikes (migration 040) — PAPER only, applied to the scan pool below.
+          excludedStrikes: Array.isArray(data.excluded_strikes)
+            ? data.excluded_strikes.map(Number).filter(Number.isFinite)
+            : [],
           atmRatioPctCall: data.atm_ratio_distance_call ?? 50,
           atmRatioPctPut: data.atm_ratio_distance_put ?? 25,
           daysToExpiry: data.days_to_expiry ?? 0,
@@ -2885,9 +2892,19 @@ async function startSingleAccountEngine(account) {
         if (p.sellLeg?.strike != null) set.add(Number(p.sellLeg.strike));
       }
 
+      // ── User-excluded strikes (migration 040) — PAPER only ─────────────────────
+      // Strike prices the user never wants a leg on, for calls AND puts alike. Removed from
+      // the scan pool (so neither the long nor the short can land on one) and from the hedge
+      // picker below. atmStrike and the intrinsic lookups still see the full chain: they
+      // only PRICE the spread, and an excluded ATM must not shift every candidate's ratio.
+      // Live accounts ignore the list.
+      const excludedStrikes = new Set(
+        accountState.mode !== 'live' ? (config.excludedStrikes || []).map(Number) : []
+      );
+
       // A. Local Scan: top candidates per type
-      const callTickers = allTickers.filter(t => t.type === 'call' && t.expiry === config.expiry && (atmStrike === null || t.strike >= atmStrike) && !occupiedStrikes.call.has(Number(t.strike)));
-      const putTickers = allTickers.filter(t => t.type === 'put' && t.expiry === config.expiry && (atmStrike === null || t.strike <= atmStrike) && !occupiedStrikes.put.has(Number(t.strike)));
+      const callTickers = allTickers.filter(t => t.type === 'call' && t.expiry === config.expiry && (atmStrike === null || t.strike >= atmStrike) && !occupiedStrikes.call.has(Number(t.strike)) && !excludedStrikes.has(Number(t.strike)));
+      const putTickers = allTickers.filter(t => t.type === 'put' && t.expiry === config.expiry && (atmStrike === null || t.strike <= atmStrike) && !occupiedStrikes.put.has(Number(t.strike)) && !excludedStrikes.has(Number(t.strike)));
 
       if (!onlyExits) {
         const now = Date.now();
@@ -3062,7 +3079,7 @@ async function startSingleAccountEngine(account) {
           .slice(0, 3)
           .map(([k, v]) => `${k}:${v}`)
           .join(' ');
-        log(`[${accountState.name}] Evaluating ${topSpreads.length} candidate spreads for entry (Spot: ${spotPrice}, ATM Strike: ${atmStrike})${rejSummary ? ` | pool ${callTickers.length}c/${putTickers.length}p, top rejects: ${rejSummary}` : ''}`);
+        log(`[${accountState.name}] Evaluating ${topSpreads.length} candidate spreads for entry (Spot: ${spotPrice}, ATM Strike: ${atmStrike})${rejSummary ? ` | pool ${callTickers.length}c/${putTickers.length}p, top rejects: ${rejSummary}` : ''}${excludedStrikes.size ? ` | excluded strikes: ${[...excludedStrikes].sort((a, b) => a - b).join(',')}` : ''}`);
         if (topSpreads.length === 0) {
           // Log top rejection reason to diagnose why 0 candidates
           const topFilter = Object.entries(totalRejected)
@@ -4654,6 +4671,7 @@ async function startSingleAccountEngine(account) {
               for (const t of allTickers) {
                 if (t.type !== spreadType || t.expiry !== config.expiry) continue;
                 if (t.symbol === spread.buyLeg.symbol || t.symbol === spread.sellLeg.symbol) continue;
+                if (excludedStrikes.has(Number(t.strike))) continue; // user-excluded (paper, migration 040)
                 const isOtm = spreadType === 'call' ? t.strike > spotPrice : t.strike < spotPrice;
                 if (!isOtm) continue;
                 const ask = t.ask ?? t.lastPrice ?? t.markPrice;
