@@ -710,14 +710,6 @@ qty)`**:
 > a whole number, the on-exchange ratio matches the sized ratio (see the **contract-size
 > mapping** open-item note above).
 
-#### Delta free-margin cap, pre-order check and margin cooldown
-
-`calcMargin` runs **low** against Delta. It assumes a flat 200× on the short, ignores the short's premium, and is only re-marked by the self-heal above. On 2026-09-23, Pk and Biswal Holdings were sized to a "remaining" $1,063 and $720. Delta had only ~$100 free, because it held ~30% more on the open book than the engine's `usedMargin`. Every short was rejected with `insufficient_margin` (Pk's first attempt with `insufficient_commission`), and each retry bought and unwound the long for a ~$6–9 loss per attempt. Three guards now sit on top of the sizing above:
-
-1. **Free-margin cap.** Each sizing cycle reads `balance` **and** `available_balance` in one wallet call (`live.walletSnapshot()`). The allocation reserve is `balance × (100 − allocation)%`, and `liveAvailLeft = available_balance − reserve`. The remaining budget is capped at `liveAvailLeft ÷ LIVE_MARGIN_SAFETY` (default **1.35**, env `LIVE_MARGIN_SAFETY`). The `¤ LIVE sizing` line shows `Delta free $… − reserve $… → cap $…`, with `(BINDING)` when the cap is lower than the engine's own figure. If Delta omits `available_balance`, the engine logs a warning and sizes as before.
-2. **Pre-order check.** Before any order goes out, the entry's `est margin × LIVE_MARGIN_SAFETY` must fit in `liveAvailLeft`, otherwise the entry is skipped (`Entry … skipped: needs ~$… margin …`). This runs **before the long is bought**, so there is no lossy unwind. Each successful entry draws `liveAvailLeft` down, so a second entry in the same cycle is checked against what is left. It also blocks the "minimum one unit" trade when the budget is `$0`.
-3. **Margin cooldown.** If Delta still rejects an entry with `insufficient_margin` or `insufficient_commission`, new live entries on that account pause for `LIVE_MARGIN_COOLDOWN_MS` (default **10 min**). The Telegram alert says so. Exits and position management keep running.
-
 Paper accounts keep the `$195k` / 200× branch **unchanged** (the balance-sizing branch is
 gated on `mode==='live' && live_enabled`; only live adds the balance scale on top of the
 shared `$195k` notional ceiling). Dry-run logs the full breakdown
