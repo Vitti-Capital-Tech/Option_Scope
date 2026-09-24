@@ -135,6 +135,25 @@ export function extractBalance(balances) {
 }
 
 /**
+ * Total AND free balance of the same wallet extractBalance() picks, from one response.
+ * `available` is Delta's available_balance: what is left after the margin Delta itself
+ * blocks for open positions and orders (the "Available Margin" on the order ticket).
+ * Null when Delta didn't send it, so callers can fall back to the engine's estimate.
+ */
+export function extractWalletSnapshot(balances) {
+  if (!Array.isArray(balances) || balances.length === 0) return null;
+  const sym = (b) => String(b.asset_symbol || b.asset?.symbol || '').toUpperCase();
+  const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : null; };
+  const amt = (b) => num(b.balance ?? b.available_balance ?? b.wallet_balance) ?? 0;
+  const pick =
+    balances.find((b) => sym(b) === 'USDT') ||
+    balances.find((b) => sym(b) === 'USD') ||
+    [...balances].sort((a, b) => amt(b) - amt(a))[0];
+  if (!pick) return null;
+  return { balance: amt(pick), available: num(pick.available_balance) };
+}
+
+/**
  * @param getCtx () => ({ accountName, mode, liveEnabled, creds, telegramChatId })
  *   `creds` = { apiKey, apiSecret } or null.
  *   `telegramChatId` = the account's own Telegram chat id for per-account failure
@@ -705,6 +724,22 @@ export function createLiveExecutor(getCtx) {
       try {
         const balances = await getBalance(creds);
         return extractBalance(balances);
+      } catch (e) {
+        logWarn(`[${accountName}] Wallet balance fetch failed: ${e.message}`);
+        return null;
+      }
+    },
+
+    /**
+     * { balance, available } from one wallet read (armed accounts only), else null.
+     * Live entry sizing uses `available` so it never sizes past Delta's real free margin.
+     */
+    async walletSnapshot() {
+      if (!armed()) return null;
+      const { accountName, creds } = getCtx();
+      if (!creds?.apiKey) return null;
+      try {
+        return extractWalletSnapshot(await getBalance(creds));
       } catch (e) {
         logWarn(`[${accountName}] Wallet balance fetch failed: ${e.message}`);
         return null;

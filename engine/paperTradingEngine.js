@@ -108,6 +108,16 @@ const ENTRY_PHASE_BUDGET_MS = Math.max(5000, Number(process.env.ENTRY_PHASE_BUDG
 // being trusted at all and the exit loop holds (same fail-safe as a failed fetch).
 const LIVE_FILL_POLL_MS = Math.max(500, Number(process.env.LIVE_FILL_POLL_MS ?? 3000));
 const LIVE_FILL_STALE_MS = Math.max(5000, Number(process.env.LIVE_FILL_STALE_MS ?? 30000));
+// Delta blocks more margin than calcMargin() estimates (flat 200x, no short premium, not
+// re-marked as the market moves). Observed 2026-09-23 on Pk / Biswal Holdings: Delta held
+// ~30% more on the open book than the engine's figure, so entries sized to the "remaining"
+// budget were rejected with insufficient_margin. Live sizing and the pre-order check scale
+// the estimate by this factor before comparing it with Delta's available_balance.
+const LIVE_MARGIN_SAFETY = Math.max(1, Number(process.env.LIVE_MARGIN_SAFETY ?? 1.35));
+// After Delta rejects an entry for margin/commission, pause that account's NEW live entries
+// for this long. Retrying every minute bought and unwound the long each time (~$6-9 lost
+// per attempt on 2026-09-23) without ever opening the spread.
+const LIVE_MARGIN_COOLDOWN_MS = Math.max(60000, Number(process.env.LIVE_MARGIN_COOLDOWN_MS ?? 600000));
 
 /**
  * ── STRATEGY VERSIONING ──────────────────────────────────────────────────────
@@ -312,6 +322,9 @@ async function startSingleAccountEngine(account) {
   // once per day. In-memory only — resets on restart (a same-day restart may re-fire).
   let lastFullDeployKey = null;
   let lastEntryIstMin = null;
+  // Epoch ms until which new live entries are paused after an insufficient_margin /
+  // insufficient_commission rejection (LIVE_MARGIN_COOLDOWN_MS).
+  let liveMarginCooldownUntil = 0;
   let lastDbWrite = 0;
   let schedules = []; // Time-based schedule windows
 
@@ -1905,8 +1918,21 @@ async function startSingleAccountEngine(account) {
     return filled > 0 ? notional / filled : null;
   }
 
+  // Three timers call this (30s reconcile, 60s balance, 5-min positions). Without a guard,
+  // two passes that overlap both see the same flat position and each book + notify it.
+  let reconcileInFlight = false;
   async function reconcileOrphans() {
     if (!(accountState.mode === 'live' && accountState.live_enabled && !live.dryRun)) return;
+    if (reconcileInFlight) return;
+    reconcileInFlight = true;
+    try {
+      await reconcileOrphansPass();
+    } finally {
+      reconcileInFlight = false;
+    }
+  }
+
+  async function reconcileOrphansPass() {
     const livePos = await live.positions();
     if (livePos == null) return; // fetch failed → don't infer any closes this pass
     const liveOrders = await live.orders();
@@ -2073,9 +2099,14 @@ async function startSingleAccountEngine(account) {
       const net = gross - (entryFee + exitFee);
       try {
         await cancelRestingOrders(pos);
+        // The label is shared by the history row and the Telegram message below.
+        // _danglingShortClosed = the user closed the LONG manually and the engine then flattened
+        // the lone short. No bracket fired, so don't call it a stop loss.
+        const isTp = pos.sellQty === 0;
+        const label = pos._danglingShortClosed
+          ? '🔒 SHORT CLOSED (long closed manually)'
+          : (isTp ? '🎯 TAKE PROFIT (long TP)' : '🚨 STOP LOSS (short SL)');
         if (pos._everOpenOnDelta) {
-          const isTp = pos.sellQty === 0;
-          const label = isTp ? '🎯 TAKE PROFIT (long TP)' : '🚨 STOP LOSS (short SL)';
           await supabase.from('trade_history').upsert([{
             trade_id: pos.id, underlying: pos.underlying, expiry: pos.expiry, type: pos.type,
             buy_leg: JSON.stringify(pos.buyLeg), sell_leg: JSON.stringify(pos.sellLeg),
@@ -2089,11 +2120,15 @@ async function startSingleAccountEngine(account) {
           }], { onConflict: 'trade_id', ignoreDuplicates: true });
         }
         await supabase.from('active_positions').delete().eq('id', pos.id);
+        // Drop it from memory HERE. The Realtime DELETE listener can't be relied on for this:
+        // it subscribes with an account_id filter, and Supabase doesn't deliver filtered
+        // DELETE events. Left in memory, every later pass re-booked it and re-sent the
+        // Telegram alert until the 5-minute full reload (seen 2026-09-24, Dg PUT 83600/82800).
+        positions = positions.filter(p => p.id !== pos.id);
+        heartbeat.update({ active_positions: positions.length });
         log(`[${accountState.name}] ♻️ RECONCILE-CLEAN: ${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} absent from Delta → ${pos._everOpenOnDelta ? 'booked + removed' : 'silently removed (never filled)'}`);
         if (pos._everOpenOnDelta) {
-          const isTp = pos.sellQty === 0;
-          const title = isTp ? '🎯 TAKE PROFIT (long TP)' : '🚨 STOP LOSS (short SL)';
-          notifyTrade({ title, detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} · closed on Delta`, pnl: net + (pos.accumulatedSellPnl || 0) });
+          notifyTrade({ title: label, detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} · closed on Delta`, pnl: net + (pos.accumulatedSellPnl || 0) });
         }
       } catch (e) {
         logError(`[${accountState.name}] reconcileOrphans failed for ${pos.id}:`, e);
@@ -4151,6 +4186,10 @@ async function startSingleAccountEngine(account) {
       }
 
       let partMargin = null;
+      // Live: Delta's free margin above the allocation reserve, as read this cycle. Each
+      // entry is checked against it before orders go out and it is drawn down per entry.
+      // null = not read (paper, disarmed, or Delta sent no available_balance).
+      let liveAvailLeft = null;
       // Paper full-deployment clamp state (per cycle): the remaining allocated pool and
       // how much of it has been consumed by entries opened this cycle, so the 4:30
       // concentrate fill never deploys more than the pool.
@@ -4221,9 +4260,16 @@ async function startSingleAccountEngine(account) {
         return { partMargin: 0, isFullDeploy: true };
       };
 
-      if (!onlyExits && !paused && dayAllowsEntry && liveArmed) {
+      const liveCoolingDown = liveArmed && Date.now() < liveMarginCooldownUntil;
+      if (!onlyExits && !paused && dayAllowsEntry && liveCoolingDown) {
+        // partMargin stays null -> the entry loop skips every live candidate this cycle.
+        const mins = Math.ceil((liveMarginCooldownUntil - Date.now()) / 60000);
+        logWarn(`[${accountState.name}] LIVE entries paused ~${mins} more min after a Delta margin rejection.`);
+      }
+      if (!onlyExits && !paused && dayAllowsEntry && liveArmed && !liveCoolingDown) {
         try {
-          const bal = await live.walletBalance();
+          const snap = await live.walletSnapshot();
+          const bal = snap?.balance;
           if (bal != null && bal > 0) {
             const allocPct = config.balanceAllocationPct ?? 90;
             const budget = bal * (allocPct / 100);
@@ -4237,14 +4283,31 @@ async function startSingleAccountEngine(account) {
             const openHere = remaining.filter(p => p.underlying === underlying);
             const usedMargin = openHere.reduce((s, p) => s + (p.margin || 0), 0);
             const occupiedSlots = openHere.filter(p => p.sellQty > 0).length; // full spreads occupy cap slots
-            const remainingBudget = Math.max(0, budget - usedMargin);
+            let remainingBudget = Math.max(0, budget - usedMargin);
             const remainingSlots = Math.max(0, maxPos - occupiedSlots);
+            // `usedMargin` is the engine's own estimate and runs low (see LIVE_MARGIN_SAFETY),
+            // so also cap by what Delta says is actually free. Keep the allocation reserve
+            // (balance × (100 − alloc)%) untouched, and divide by the safety factor so an
+            // entry sized to the cap still fits once Delta applies its real margin.
+            let deltaNote = '';
+            if (snap.available != null) {
+              const reserve = bal * (1 - allocPct / 100);
+              liveAvailLeft = Math.max(0, snap.available - reserve);
+              const deltaCap = liveAvailLeft / LIVE_MARGIN_SAFETY;
+              deltaNote = ` | Delta free $${snap.available.toFixed(2)} − reserve $${reserve.toFixed(2)} → cap $${deltaCap.toFixed(2)}`;
+              if (deltaCap < remainingBudget) {
+                deltaNote += ' (BINDING)';
+                remainingBudget = deltaCap;
+              }
+            } else {
+              logWarn(`[${accountState.name}] LIVE sizing: Delta sent no available_balance — sizing on the engine's margin estimate only.`);
+            }
             // Normal: remaining ÷ free slots. Full-deploy pass: concentrate the whole
             // remaining pool across openable spreads (migration 030, now live too).
             const sized = sizePartMargin({ remainingBudget, remainingSlots, maxPos, openHere, label: 'LIVE' });
             partMargin = sized.partMargin;
             if (!sized.isFullDeploy) {
-              log(`[${accountState.name}] ¤ LIVE sizing: balance $${bal.toFixed(2)} × ${allocPct}% = $${budget.toFixed(2)} budget | used $${usedMargin.toFixed(2)} | remaining $${remainingBudget.toFixed(2)} ÷ ${remainingSlots} free slot(s) (window combined cap ${maxPos}) = $${partMargin.toFixed(2)}/position`);
+              log(`[${accountState.name}] ¤ LIVE sizing: balance $${bal.toFixed(2)} × ${allocPct}% = $${budget.toFixed(2)} budget | used $${usedMargin.toFixed(2)}${deltaNote} | remaining $${remainingBudget.toFixed(2)} ÷ ${remainingSlots} free slot(s) (window combined cap ${maxPos}) = $${partMargin.toFixed(2)}/position`);
             }
           } else {
             logWarn(`[${accountState.name}] LIVE sizing: wallet balance unavailable — skipping live entries this cycle.`);
@@ -5175,6 +5238,18 @@ async function startSingleAccountEngine(account) {
               }
             }
 
+            // Pre-order margin check (live armed): the entry's estimated margin × safety must
+            // fit in Delta's remaining free margin. Catches a rounded-up size or a second
+            // entry in the same cycle BEFORE the long is bought, instead of Delta rejecting
+            // the short after the long already filled (which forces a lossy unwind).
+            if (liveArmed && liveAvailLeft != null) {
+              const need = (t.margin || 0) * LIVE_MARGIN_SAFETY;
+              if (need > liveAvailLeft) {
+                logWarn(`[${accountState.name}] Entry ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} skipped: needs ~$${need.toFixed(2)} margin (est $${(t.margin || 0).toFixed(2)} × ${LIVE_MARGIN_SAFETY}) but only $${liveAvailLeft.toFixed(2)} is free on Delta above the reserve.`);
+                continue;
+              }
+            }
+
             const liveEntry = await live.openSpread(t, {
               long: longContracts(t.buyLeg),
               short: shortContracts(t.sellQty),
@@ -5201,7 +5276,16 @@ async function startSingleAccountEngine(account) {
                 ? `rejected by Delta at submit (${liveEntry.error})`
                 : 'could not fill (chase exhausted)';
               logError(`[${accountState.name}] LIVE entry aborted (${liveEntry.legFailed} leg: ${liveEntry.error}) — not persisting ${t.buyLeg.strike}/${t.sellLeg.strike}`);
-              notifyFailure({ account: accountState.name, context: `Entry ABORTED — ${liveEntry.legFailed} leg ${failMode}; position unwound, account left flat`, error: liveEntry.error, extra: `${t.type?.toUpperCase?.() || ''} ${t.buyLeg.strike}/${t.sellLeg.strike}` });
+              // Out of funds on Delta: the same entry would be rejected again next minute, and
+              // each attempt buys + unwinds the long at a loss. Pause new live entries.
+              const marginReject = /insufficient_(margin|commission)/i.test(String(liveEntry.error ?? ''));
+              if (marginReject) {
+                liveMarginCooldownUntil = Date.now() + LIVE_MARGIN_COOLDOWN_MS;
+                liveAvailLeft = 0; // no further entries this cycle either
+                logWarn(`[${accountState.name}] LIVE entries paused for ${Math.round(LIVE_MARGIN_COOLDOWN_MS / 60000)} min after Delta rejected on ${liveEntry.error}.`);
+              }
+              const pauseNote = marginReject ? ` — new live entries paused ${Math.round(LIVE_MARGIN_COOLDOWN_MS / 60000)} min` : '';
+              notifyFailure({ account: accountState.name, context: `Entry ABORTED — ${liveEntry.legFailed} leg ${failMode}; position unwound, account left flat${pauseNote}`, error: liveEntry.error, extra: `${t.type?.toUpperCase?.() || ''} ${t.buyLeg.strike}/${t.sellLeg.strike}` });
               // A leg that couldn't FILL is a transient market condition — the same spread is
               // usually fillable moments later, so queue a short-cooldown retry instead of
               // burning the rest of the minute. A submit-time REJECTION is structural
@@ -5210,6 +5294,11 @@ async function startSingleAccountEngine(account) {
                 requestEntryRetry(`${t.type?.toUpperCase?.() || ''} ${t.buyLeg.strike}/${t.sellLeg.strike} ${liveEntry.legFailed} leg unfilled`);
               }
               continue;
+            }
+            // Draw the cycle's free margin down so a second entry this cycle is checked
+            // against what this one just consumed.
+            if (liveArmed && liveAvailLeft != null) {
+              liveAvailLeft = Math.max(0, liveAvailLeft - (t.margin || 0) * LIVE_MARGIN_SAFETY);
             }
             // Remember the exchange bracket level on each leg so a later
             // exitType/exitPoints change can detect the drift and move the bracket
