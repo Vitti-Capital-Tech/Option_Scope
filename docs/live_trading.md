@@ -139,7 +139,8 @@ flag is passed to `upsert_delta_credentials` so the stored row's `status` reflec
   `getLiveOrders`, `getFills`, `getOrderHistory`.
 - `engine/lib/liveExecution.js` — the gated executor: `openSpread`, `closeLeg`,
   `editOrder`, `changePositionBracket`, `placeStop`, `cancelStop`, `positions`,
-  `orders`, `fills`, `recentFillOrderIds`, `snapshot`, `walletBalance`, `reconcile`.
+  `orders`, `fills`, `recentFillOrderIds`, `orderHistory`, `snapshot`, `walletBalance`,
+  `walletSnapshot` (balance + `available_balance`), `reconcile`.
   Reads the `DELTA_LIVE_DRYRUN` flag and the per-account arm state.
 - `engine/lib/supabase.js` — now prefers `SUPABASE_SERVICE_ROLE_KEY` so the engine
   can decrypt credentials.
@@ -580,7 +581,8 @@ raises the generic bracket alarm:
   protect. Before posting, `syncExitBrackets` checks the live-positions snapshot (**only when
   that fetch succeeded**, so an API blip can't wrongly skip a real sync) and, if the leg isn't
   open, **skips the bracket quietly**. `reconcileOrphans` books the exit and removes the
-  position within ~90s. `changePositionBracket` also suppresses the alarm on this code for the
+  position once the leg is confirmed missing (3 checks + 90 s) **and** order history shows the
+  closing fill, so typically within ~1.5–2 min (see *Absence confirmation*). `changePositionBracket` also suppresses the alarm on this code for the
   fetch-failed path.
 - **`bracket_order_immediate_execution`** — the position **is** open, but the exit level is
   **already breached** at the current spot, so Delta refuses to rest a bracket that would fire
@@ -628,7 +630,9 @@ ceiling** on the resulting quantity (see the max-qty cap below):
   positions carry across a window change is still prevented by the remaining-budget guard
   (`budget − usedMargin`, below). The same value is published to the heartbeat so the UI's
   per-position figure matches the engine.
-- **part** = `(balance × allocation%) ÷ max positions`.
+- **part** = `remaining budget ÷ free slots`, where remaining = `balance × allocation% − usedMargin`,
+  further capped by Delta's real free margin (see [Delta free-margin cap](#delta-free-margin-cap-order-fitting-and-margin-rejections)).
+  Each candidate is then fitted to the Delta free margin still unclaimed that cycle.
 
 **"1 unit" scale sizing (fill one part, keep the ratio).** The base unit is
 **1 long : `ratioToUse` short** (`ratioToUse` = the ATM-scaled sell quantity). The unit
@@ -639,7 +643,7 @@ is scaled up to fill one part and both legs move together so the ratio is preser
    `calcMargin(entryBuyPrice, longCV, spot, ratioToUse, shortCV)`. Using the real contract
    value (not the paper `lotSize = 1`) makes the estimate match Delta's actual margin
    instead of blowing past the notional cap and pinning the size to 1.
-2. **scale** = `part ÷ unit margin`, floored at **1** (min one unit).
+2. **scale** = `part ÷ unit margin`, floored at **1** (min one unit), unless even one unit doesn't fit Delta's free margin, in which case the entry is skipped (below).
 3. **longC** = `round(scale)`; **shortC** = `round(longC × ratioToUse)` — the short follows
    the rounded long at the base ratio, so `1:ratio` stays exact. `adjustedLotSize =
    longLot × longC`, `adjustedSellQty = shortC`.
@@ -657,9 +661,7 @@ qty)`**:
 - Balance funds **less** than the cap → the balance size wins unchanged. Balance funds
   **more** → the cap wins (logged `🧢 LIVE qty capped by ratio-spread max …: long X → Y`).
 
-**Minimum one unit (no skip):** if even one unit's margin exceeds the part, `scale` stays
-`1` and the engine trades that single unit anyway (warning `LIVE size: one unit … exceeds
-1 part …`) — it does **not** skip the entry. The `$195k` clamp still applies to that unit.
+**Minimum one unit:** if even one unit's margin exceeds the part, `scale` stays `1` and the engine trades that single unit (warning `LIVE size: one unit … exceeds 1 part …`). The `$195k` clamp still applies. **Exception:** if that one unit (× the margin factor) doesn't fit in Delta's free margin above the reserve, the entry is **skipped** (`LIVE entry … skipped: even 1 unit needs ~$… margin …`), because Delta would reject the short after the long had already filled.
 
 > [!IMPORTANT]
 > **Missing `contractValue` → skip, never guess.** The sizing math above needs the real
@@ -710,7 +712,7 @@ qty)`**:
 > a whole number, the on-exchange ratio matches the sized ratio (see the **contract-size
 > mapping** open-item note above).
 
-#### Delta free-margin cap, pre-order check and margin cooldown
+#### Delta free-margin cap, order fitting and margin rejections
 
 `calcMargin` runs **low** against Delta. It assumes a flat 200× on the short, ignores the short's premium, and is only re-marked by the self-heal above. On 2026-09-23, Pk and Biswal Holdings were sized to a "remaining" $1,063 and $720. Delta had only ~$100 free, because it held ~30% more on the open book than the engine's `usedMargin`. Every short was rejected with `insufficient_margin` (Pk's first attempt with `insufficient_commission`), and each retry bought and unwound the long for a ~$6–9 loss per attempt. Four guards now sit on top of the sizing above:
 
@@ -793,8 +795,8 @@ platform**, outside OptionScope. All of it is **armed-live only** and runs on th
 
 | Done directly on Delta | Detected? | Engine reaction |
 | --- | --- | --- |
-| **Full close** of a position (both legs, or a bracket fired) | Yes (~30–90s) | `reconcileOrphans` books a full exit + deletes the row. The exit price is Delta's **actual close-fill** — size-weighted over the recent closing fills for the leg (`closingFillPrice`, long sells / short buys) so the booked PnL matches Delta — falling back to the current mark only when no matching fill is found. |
-| **Close of ONLY the short leg** (long still open) | Yes (~90s) | `externalShortExitToLongLadder` — books the short exit (at Delta's **actual buy-back fill**, `closingFillPriceFrom`; mark fallback) + starts the long-slice ladder (**dangling-long recovery**, below) |
+| **Full close** of a position (both legs, or a bracket fired) | Yes (~1.5–2 min) | Once both legs are confirmed missing (3 checks + 90 s) **and** order history shows the closing fills (see *Absence confirmation*), `reconcileOrphans` books a full exit + deletes the row. Without that proof nothing is booked and the admin is alerted. The exit price is Delta's **actual close-fill** — size-weighted over the recent closing fills for the leg (`closingFillPrice`, long sells / short buys) so the booked PnL matches Delta — falling back to the current mark only when no matching fill is found. |
+| **Close of ONLY the short leg** (long still open) | Yes (~1.5–2 min) | After the short is confirmed missing **and** its buy-back is found in order history: `externalShortExitToLongLadder` — books the short exit (at Delta's **actual buy-back fill**, `closingFillPriceFrom`; mark fallback) + starts the long-slice ladder (**dangling-long recovery**, below) |
 | **TP / SL price change** on a bracket | Yes (~30s) | `adoptManualBrackets` — adopts the Delta value into `brkLevel` (below) |
 | **Cancel of a protective bracket/stop** (leg still open) | Yes | `armMissingBrackets` re-arms it at the engine level (your cancel is undone) |
 | **Partial size reduction** of a leg | Yes (~90s, stable) | `reconcilePartialReductions` — shrinks the tracked size to match + books the closed slice at Delta's **actual fill** (`closingFillPriceFrom`, long sold / short bought; mark fallback) (below) |
@@ -805,15 +807,18 @@ platform**, outside OptionScope. All of it is **armed-live only** and runs on th
 went flat on Delta (a manual/external short close) while its partner **long** is still open
 and the engine still thinks the short is on. `reconcileOrphans` detects it
 (`sellQty > 0`, short size 0, long size > 0, age > 90s, and the short was seen open this run
-`_shortEverOpen` — or the row is > 5 min old) and treats it **exactly like an engine-driven
+`_shortEverOpen` — or the row is > 5 min old). Since 2026-09-24 the short must also be **confirmed**
+missing (3 checks + 90 s) and its **buy-back must appear in order history** with at least the
+tracked contracts; otherwise the engine alerts the admin and leaves both legs alone, so a bad
+positions snapshot can't put a sell ladder on a long whose short is still open. It then treats it **exactly like an engine-driven
 short exit**: it books the short close as an idempotent `${id}-SE` partial (the shared
 trade_id means it can't double-book with the normal path), converts the row to long-only
 (`sellQty = 0`), and places the **fixed resting SELL ladder** (`${id}-LE-*`) so the held long
 scales out in slices just as it would have had the engine bought the short back itself. The
 short's SL bracket has already auto-cancelled on Delta (Delta drops a bracket when its
-position closes). Latched (`_danglingLongConverted`) so the conversion fires at most once; the
-short exit price is unknown (the fill wasn't ours) so it's booked at the short's current mark,
-consistent with how the full-close orphan path books other externally-closed legs.
+position closes). Latched (`_danglingLongConverted`) so the conversion fires at most once. The
+short exit is booked at Delta's actual buy-back fill (`closingFillPriceFrom`), falling back to the
+short's current mark only when no matching fill is found.
 
 **Manual TP/SL adoption (`adoptManualBrackets`).** The engine used to treat its computed
 level as the sole authority, so a bracket the user edited on Delta was invisible **and** got
@@ -1369,7 +1374,7 @@ manage correctly and falls back to protect+alert where it isn't:
   action. This covers the **entry race** (entry places Delta orders *before* the DB insert) and the
   **startup book-load** window, so a position mid-entry or a not-yet-loaded book is never mistaken
   for an orphan.
-- **Once-per-orphan latch** (`orphanHandled`): a symbol adopted/closed/flagged isn't re-actioned
+- **Once-per-orphan latch** (`orphanHandled`): a symbol adopted/alerted isn't re-actioned
   every sweep; a still-**failed** action stays unlatched so it keeps retrying. Both maps are pruned
   when the symbol stops being an orphan (adopted/tracked now, or gone flat), so the grace restarts
   cleanly if it reappears.
