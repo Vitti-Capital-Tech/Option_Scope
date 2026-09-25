@@ -108,22 +108,13 @@ const ENTRY_PHASE_BUDGET_MS = Math.max(5000, Number(process.env.ENTRY_PHASE_BUDG
 // being trusted at all and the exit loop holds (same fail-safe as a failed fetch).
 const LIVE_FILL_POLL_MS = Math.max(500, Number(process.env.LIVE_FILL_POLL_MS ?? 3000));
 const LIVE_FILL_STALE_MS = Math.max(5000, Number(process.env.LIVE_FILL_STALE_MS ?? 30000));
-// Delta blocks more margin than calcMargin() estimates (flat 200x, no short premium, not
-// re-marked as the market moves). Observed 2026-09-23 on Pk / Biswal Holdings: Delta held
-// ~30% more on the open book than the engine's figure, so entries sized to the "remaining"
-// budget were rejected with insufficient_margin. Live sizing and the pre-order check scale
-// the estimate by this factor before comparing it with Delta's available_balance.
-const LIVE_MARGIN_SAFETY = Math.max(1, Number(process.env.LIVE_MARGIN_SAFETY ?? 1.35));
-// When Delta still rejects an entry for margin/commission, the margin estimate is scaled up
-// by LIVE_MARGIN_BOOST_STEP (capped at _MAX) and the entry is retried: the retry re-reads
-// Delta's available balance and sizes a smaller order to fit it. The boost eases back toward
-// 1 after each successful live entry.
-const LIVE_MARGIN_BOOST_STEP = 1.25;
-const LIVE_MARGIN_BOOST_MAX = 3;
-// Consecutive margin rejections (each retried with a re-sized order) before new live entries
-// pause for LIVE_MARGIN_COOLDOWN_MS. Each attempt buys and unwinds the long, so this is
-// bounded: on 2026-09-23 unbounded retries lost ~$6-9 per attempt.
-const LIVE_MARGIN_MAX_RESIZE_RETRIES = 3;
+// Live entries are sized to use ALL of Delta's available margin (above the allocation
+// reserve) — no safety factor on the margin estimate. If Delta still rejects an entry for
+// margin/commission, the entry is retried once: the retry re-reads Delta's available
+// balance and sizes the order to it. A second rejection in a row pauses new live entries
+// for LIVE_MARGIN_COOLDOWN_MS, because each attempt buys and unwinds the long (unbounded
+// retries lost ~$6-9 per attempt on 2026-09-23).
+const LIVE_MARGIN_MAX_RESIZE_RETRIES = 2;
 const LIVE_MARGIN_COOLDOWN_MS = Math.max(60000, Number(process.env.LIVE_MARGIN_COOLDOWN_MS ?? 600000));
 // Reconcile books a tracked leg as "closed on Delta" only after it has been missing from
 // Delta's positions list for this many consecutive successful snapshots AND this long.
@@ -346,11 +337,8 @@ async function startSingleAccountEngine(account) {
   // Epoch ms until which new live entries are paused after an insufficient_margin /
   // insufficient_commission rejection (LIVE_MARGIN_COOLDOWN_MS).
   let liveMarginCooldownUntil = 0;
-  // Learned multiplier on the margin estimate (see LIVE_MARGIN_BOOST_*), and the count of
-  // consecutive margin rejections since the last successful live entry.
-  let liveMarginBoost = 1;
+  // Consecutive margin rejections since the last successful live entry.
   let liveMarginRejects = 0;
-  const liveMarginFactor = () => LIVE_MARGIN_SAFETY * liveMarginBoost;
   // True while the active window's max positions is 0 and entry cycles are being skipped,
   // so the skip/resume is logged once each instead of every minute.
   let capZeroSkipping = false;
@@ -4425,7 +4413,7 @@ async function startSingleAccountEngine(account) {
       // entry is checked against it before orders go out and it is drawn down per entry.
       // null = not read (paper, disarmed, or Delta sent no available_balance).
       let liveAvailLeft = null;
-      // Delta free margin (× factor) already claimed by live candidates sized this cycle,
+      // Delta free margin already claimed by live candidates sized this cycle,
       // so a second candidate is fitted to what is left, not to the full amount.
       let liveSizedSoFar = 0;
       // Paper full-deployment clamp state (per cycle): the remaining allocated pool and
@@ -4523,15 +4511,14 @@ async function startSingleAccountEngine(account) {
             const occupiedSlots = openHere.filter(p => p.sellQty > 0).length; // full spreads occupy cap slots
             let remainingBudget = Math.max(0, budget - usedMargin);
             const remainingSlots = Math.max(0, maxPos - occupiedSlots);
-            // `usedMargin` is the engine's own estimate and runs low (see LIVE_MARGIN_SAFETY),
-            // so also cap by what Delta says is actually free. Keep the allocation reserve
-            // (balance × (100 − alloc)%) untouched, and divide by the safety factor so an
-            // entry sized to the cap still fits once Delta applies its real margin.
+            // `usedMargin` is the engine's own estimate and can drift from Delta, so also cap
+            // by what Delta says is actually free. Keep the allocation reserve
+            // (balance × (100 − alloc)%) untouched and use ALL of the rest — no safety factor.
             let deltaNote = '';
             if (snap.available != null) {
               const reserve = bal * (1 - allocPct / 100);
               liveAvailLeft = Math.max(0, snap.available - reserve);
-              const deltaCap = liveAvailLeft / liveMarginFactor();
+              const deltaCap = liveAvailLeft;
               deltaNote = ` | Delta free $${snap.available.toFixed(2)} − reserve $${reserve.toFixed(2)} → cap $${deltaCap.toFixed(2)}`;
               if (deltaCap < remainingBudget) {
                 deltaNote += ' (BINDING)';
@@ -4834,20 +4821,17 @@ async function startSingleAccountEngine(account) {
             liveShortCV = shortCV; // persist for the short leg object built after this block
             const baseMargin = calcMargin(entryBuyPrice, longCV, spotPrice, ratioToUse, shortCV, config.underlying);
             // Fit the order to what Delta actually has free: Delta's available margin above
-            // the reserve, minus what candidates sized earlier this cycle already claimed,
-            // against the margin estimate × the (learned) safety factor.
-            const mFactor = liveMarginFactor();
+            // the reserve, minus what candidates sized earlier this cycle already claimed.
             const liveFree = liveAvailLeft != null ? Math.max(0, liveAvailLeft - liveSizedSoFar) : null;
             let candPart = partMargin;
             if (liveFree != null) {
-              if (baseMargin * mFactor > liveFree) {
-                logWarn(`[${accountState.name}] LIVE entry ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: even 1 unit needs ~$${(baseMargin * mFactor).toFixed(2)} margin but only $${liveFree.toFixed(2)} is free on Delta above the reserve.`);
+              if (baseMargin > liveFree) {
+                logWarn(`[${accountState.name}] LIVE entry ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: even 1 unit needs ~$${baseMargin.toFixed(2)} margin but only $${liveFree.toFixed(2)} is free on Delta above the reserve.`);
                 continue;
               }
-              const fitPart = liveFree / mFactor;
-              if (fitPart < candPart) {
-                log(`[${accountState.name}] ⤵ LIVE size ${spreadType.toUpperCase()} ${bStrike}/${sStrike} fitted to Delta's available margin: part $${candPart.toFixed(2)} → $${fitPart.toFixed(2)} (free $${liveFree.toFixed(2)} ÷ ${mFactor.toFixed(2)})`);
-                candPart = fitPart;
+              if (liveFree < candPart) {
+                log(`[${accountState.name}] ⤵ LIVE size ${spreadType.toUpperCase()} ${bStrike}/${sStrike} fitted to Delta's available margin: part $${candPart.toFixed(2)} → $${liveFree.toFixed(2)}`);
+                candPart = liveFree;
               }
             }
             scale = (baseMargin > 0) ? (candPart / baseMargin) : 1;
@@ -4860,7 +4844,7 @@ async function startSingleAccountEngine(account) {
             // step it down until the order fits (never below 1, which fits by the check above).
             if (liveFree != null) {
               const estAt = (lc) => calcMargin(entryBuyPrice, longCV * lc, spotPrice, Math.max(1, Math.round(lc * ratioToUse)), shortCV, config.underlying);
-              while (longC > 1 && estAt(longC) * mFactor > liveFree) longC--;
+              while (longC > 1 && estAt(longC) > liveFree) longC--;
             }
 
             // Ratio-spread max-qty cap: never size the spread past what the ratio spread
@@ -4889,7 +4873,7 @@ async function startSingleAccountEngine(account) {
             adjustedLotSize = Number((longCV * longC).toFixed(4));
             adjustedSellQty = shortC;
             liveMargin = calcMargin(entryBuyPrice, longCV * longC, spotPrice, adjustedSellQty, shortCV, config.underlying);
-            if (liveFree != null) liveSizedSoFar += liveMargin * mFactor;
+            if (liveFree != null) liveSizedSoFar += liveMargin;
             log(`[${accountState.name}] ¤ LIVE size ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: unit margin $${baseMargin.toFixed(2)} | part $${candPart.toFixed(2)} → scale ${scale.toFixed(2)}× | long ${longC} short ${shortC} (base 1:${ratioToUse}) | est margin $${liveMargin.toFixed(2)} | cv ${longCV}/${shortCV}`);
           } else if (isPaperAccount && partMargin != null) {
             // PAPER (migration 027): scale the base 1:ratio unit so its margin fills the
@@ -5505,9 +5489,9 @@ async function startSingleAccountEngine(account) {
             // entry in the same cycle BEFORE the long is bought, instead of Delta rejecting
             // the short after the long already filled (which forces a lossy unwind).
             if (liveArmed && liveAvailLeft != null) {
-              const need = (t.margin || 0) * liveMarginFactor();
+              const need = t.margin || 0;
               if (need > liveAvailLeft) {
-                logWarn(`[${accountState.name}] Entry ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} skipped: needs ~$${need.toFixed(2)} margin (est $${(t.margin || 0).toFixed(2)} × ${liveMarginFactor().toFixed(2)}) but only $${liveAvailLeft.toFixed(2)} is free on Delta above the reserve.`);
+                logWarn(`[${accountState.name}] Entry ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} skipped: needs ~$${need.toFixed(2)} margin but only $${liveAvailLeft.toFixed(2)} is free on Delta above the reserve.`);
                 continue;
               }
             }
@@ -5538,24 +5522,22 @@ async function startSingleAccountEngine(account) {
                 ? `rejected by Delta at submit (${liveEntry.error})`
                 : 'could not fill (chase exhausted)';
               logError(`[${accountState.name}] LIVE entry aborted (${liveEntry.legFailed} leg: ${liveEntry.error}) — not persisting ${t.buyLeg.strike}/${t.sellLeg.strike}`);
-              // Delta needed more margin than estimated. Scale the estimate up and retry: the
-              // retry re-reads Delta's available balance and sizes a smaller order to fit it.
-              // Only after LIVE_MARGIN_MAX_RESIZE_RETRIES rejections in a row (each one buys and
-              // unwinds the long) do new live entries pause.
+              // Delta needed more margin than was available. Retry: the retry re-reads Delta's
+              // available balance and sizes the order to it. After LIVE_MARGIN_MAX_RESIZE_RETRIES
+              // rejections in a row (each one buys and unwinds the long) new live entries pause.
               const marginReject = /insufficient_(margin|commission)/i.test(String(liveEntry.error ?? ''));
               let pauseNote = '';
               if (marginReject) {
                 liveMarginRejects += 1;
-                liveMarginBoost = Math.min(LIVE_MARGIN_BOOST_MAX, liveMarginBoost * LIVE_MARGIN_BOOST_STEP);
                 liveAvailLeft = 0; // no further entries this cycle; the retry re-reads the balance
                 if (liveMarginRejects >= LIVE_MARGIN_MAX_RESIZE_RETRIES) {
                   liveMarginCooldownUntil = Date.now() + LIVE_MARGIN_COOLDOWN_MS;
                   liveMarginRejects = 0;
-                  pauseNote = ` — ${LIVE_MARGIN_MAX_RESIZE_RETRIES} re-sized attempts rejected in a row, new live entries paused ${Math.round(LIVE_MARGIN_COOLDOWN_MS / 60000)} min`;
+                  pauseNote = ` — ${LIVE_MARGIN_MAX_RESIZE_RETRIES} attempts rejected in a row, new live entries paused ${Math.round(LIVE_MARGIN_COOLDOWN_MS / 60000)} min`;
                   logWarn(`[${accountState.name}] LIVE entries paused for ${Math.round(LIVE_MARGIN_COOLDOWN_MS / 60000)} min after ${LIVE_MARGIN_MAX_RESIZE_RETRIES} margin rejections in a row (last: ${liveEntry.error}).`);
                 } else {
-                  pauseNote = ` — retrying with an order re-sized to Delta's available balance (margin estimate ×${liveMarginFactor().toFixed(2)})`;
-                  logWarn(`[${accountState.name}] Delta rejected on ${liveEntry.error} (${liveMarginRejects}/${LIVE_MARGIN_MAX_RESIZE_RETRIES}) — margin estimate now ×${liveMarginFactor().toFixed(2)}; retrying with an order re-sized to Delta's available balance.`);
+                  pauseNote = ` — retrying with an order re-sized to Delta's current available balance`;
+                  logWarn(`[${accountState.name}] Delta rejected on ${liveEntry.error} (${liveMarginRejects}/${LIVE_MARGIN_MAX_RESIZE_RETRIES}) — retrying with an order re-sized to Delta's current available balance.`);
                   requestEntryRetry(`${t.type?.toUpperCase?.() || ''} ${t.buyLeg.strike}/${t.sellLeg.strike} margin rejection — re-sizing to Delta's available balance`);
                 }
               }
@@ -5572,14 +5554,10 @@ async function startSingleAccountEngine(account) {
             // Draw the cycle's free margin down so a second entry this cycle is checked
             // against what this one just consumed.
             if (liveArmed && liveAvailLeft != null) {
-              liveAvailLeft = Math.max(0, liveAvailLeft - (t.margin || 0) * liveMarginFactor());
+              liveAvailLeft = Math.max(0, liveAvailLeft - (t.margin || 0));
             }
-            // A live entry went through: clear the rejection streak and ease the learned
-            // margin boost back toward 1.
-            if (liveArmed) {
-              liveMarginRejects = 0;
-              if (liveMarginBoost > 1) liveMarginBoost = Math.max(1, liveMarginBoost / LIVE_MARGIN_BOOST_STEP);
-            }
+            // A live entry went through: clear the rejection streak.
+            if (liveArmed) liveMarginRejects = 0;
             // Remember the exchange bracket level on each leg so a later
             // exitType/exitPoints change can detect the drift and move the bracket
             // (resyncRestingOrders) instead of leaving it stale at the entry level.
