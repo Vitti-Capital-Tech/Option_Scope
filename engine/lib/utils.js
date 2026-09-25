@@ -83,6 +83,35 @@ export function pickTopUniqueStrikes(spreads, limit = 3) {
 }
 
 /**
+ * Hedge (3rd long) strike for a ratio spread: one strike-width beyond the short, on the
+ * same side — call: short + (short − long), put: short − (long − short). Picks the listed
+ * candidate nearest that target, strictly beyond the short and within half a width of the
+ * target (ties → the one nearer the short, i.e. more protective). `candidates` are
+ * same-type, same-expiry tickers the caller has already filtered (quoted, not excluded,
+ * not the spread's own legs). Returns the ticker, or null if none qualifies.
+ * Twin of src/scannerUtils.js pickHedgeStrike — keep the two identical.
+ */
+export function pickHedgeStrike(candidates, type, buyStrike, sellStrike) {
+  const width = Math.abs(Number(sellStrike) - Number(buyStrike));
+  if (!(width > 0)) return null;
+  const isCall = String(type).toLowerCase() === 'call';
+  const short = Number(sellStrike);
+  const target = isCall ? short + width : short - width;
+  let best = null;
+  let bestDist = Infinity;
+  for (const t of candidates || []) {
+    const k = Number(t?.strike);
+    if (!Number.isFinite(k)) continue;
+    if (isCall ? !(k > short) : !(k < short)) continue;
+    const dist = Math.abs(k - target);
+    if (dist > width / 2) continue;
+    const nearerShort = best != null && Math.abs(k - short) < Math.abs(Number(best.strike) - short);
+    if (dist < bestDist || (dist === bestDist && nearerShort)) { best = t; bestDist = dist; }
+  }
+  return best;
+}
+
+/**
  * The ATM ratio = (ATM buy intrinsic) / (OTM sell intrinsic), rounded to the
  * nearest 0.25. Returns null when either intrinsic is unavailable.
  */

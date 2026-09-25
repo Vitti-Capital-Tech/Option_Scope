@@ -25,11 +25,8 @@ const DEFAULT_WINDOW = {
   variableExitSlices: false,
   longExitSlices: 10,
   daysToExpiry: 0,
-  hedgeStrikeType: 'none',
-  hedgeCallPrice: 0,
-  hedgeCallPct: 0,
-  hedgePutPrice: 0,
-  hedgePutPct: 0,
+  hedgeEnabled: false,
+  hedgeLotPct: 0,
   isActive: true,
 };
 
@@ -781,49 +778,27 @@ export default function SchedulePanel({
                 </div>
 
                 {/* Hedge leg — per-spread 3rd long (experimental / strategy_version >= 2).
-                    Each entered spread of the chosen type(s) becomes a long/short/long
-                    triplet: a 3rd long-only leg bought at the OTM strike whose ask is the
-                    highest ≤ Price (budget), sized as (that spread's own short qty) × Pct.
-                    It rides the triplet and exits with it (main-strike ATM/ITM/OTM or expiry). */}
-                {strategyVersion >= 2 && (
+                    When on, every entered spread (call or put) becomes a long/short/long
+                    triplet: a 3rd long one strike-width beyond the short (call: short + width,
+                    put: short − width, nearest listed strike), sized as that spread's own short
+                    qty × Hedge Lot %. It rides the triplet and exits with it (main-strike
+                    ATM/ITM/OTM or expiry). Paper accounts only — never shown for live. */}
+                {isPaper && strategyVersion >= 2 && (
                   <div className="schedule-item-block schedule-item-num-block">
-                    <span className="schedule-item-label">Hedge Leg Type</span>
-                    <CustomSelect
-                      value={s.hedgeStrikeType ?? 'none'}
-                      onChange={val => handleChange(s.id, 'hedgeStrikeType', val)}
-                      options={[
-                        { label: 'None', value: 'none' },
-                        { label: 'Call only', value: 'call' },
-                        { label: 'Put only', value: 'put' },
-                        { label: 'Call & Put', value: 'both' },
-                      ]}
-                      style={{ width: '100%' }}
-                    />
+                    <span className="schedule-item-label" title="Add a 3rd long one strike-width beyond the short leg to every spread entered in this window.">Hedge Leg</span>
+                    <div style={{ height: 34, display: 'flex', alignItems: 'center' }}>
+                      <label className="pt-switch">
+                        <input type="checkbox" id={`hedgeEnabled_${s.id}`} checked={s.hedgeEnabled ?? false} onChange={e => handleChange(s.id, 'hedgeEnabled', e.target.checked)} />
+                        <span className="pt-slider"></span>
+                      </label>
+                    </div>
                   </div>
                 )}
-                {strategyVersion >= 2 && (s.hedgeStrikeType === 'call' || s.hedgeStrikeType === 'both') && (
-                  <>
-                    <div className="schedule-item-block schedule-item-num-block">
-                      <span className="schedule-item-label">Hedge Call Price</span>
-                      <CustomInput type="number" min="0" step="1" prefix="$" value={s.hedgeCallPrice ?? 0} onChange={e => handleChange(s.id, 'hedgeCallPrice', Number(e.target.value))} />
-                    </div>
-                    <div className="schedule-item-block schedule-item-num-block">
-                      <span className="schedule-item-label">Hedge Call %</span>
-                      <CustomInput type="number" min="0" max="100" step="1" suffix="%" value={s.hedgeCallPct ?? 0} onChange={e => handleChange(s.id, 'hedgeCallPct', Number(e.target.value))} />
-                    </div>
-                  </>
-                )}
-                {strategyVersion >= 2 && (s.hedgeStrikeType === 'put' || s.hedgeStrikeType === 'both') && (
-                  <>
-                    <div className="schedule-item-block schedule-item-num-block">
-                      <span className="schedule-item-label">Hedge Put Price</span>
-                      <CustomInput type="number" min="0" step="1" prefix="$" value={s.hedgePutPrice ?? 0} onChange={e => handleChange(s.id, 'hedgePutPrice', Number(e.target.value))} />
-                    </div>
-                    <div className="schedule-item-block schedule-item-num-block">
-                      <span className="schedule-item-label">Hedge Put %</span>
-                      <CustomInput type="number" min="0" max="100" step="1" suffix="%" value={s.hedgePutPct ?? 0} onChange={e => handleChange(s.id, 'hedgePutPct', Number(e.target.value))} />
-                    </div>
-                  </>
+                {isPaper && strategyVersion >= 2 && s.hedgeEnabled && (
+                  <div className="schedule-item-block schedule-item-num-block">
+                    <span className="schedule-item-label" title="Hedge leg quantity as a % of the spread's short-leg quantity.">Hedge Lot %</span>
+                    <CustomInput type="number" min="0" max="100" step="1" suffix="%" value={s.hedgeLotPct ?? 0} onChange={e => handleChange(s.id, 'hedgeLotPct', Number(e.target.value))} />
+                  </div>
                 )}
 
                 <div className="schedule-item-block schedule-item-num-block">

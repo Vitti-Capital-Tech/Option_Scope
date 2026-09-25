@@ -31,7 +31,7 @@ import { subscribeTickers } from './lib/tickerHub.js';
 import {
   safeParseLeg, calculateFee, calcMargin, leverageFor, scanTickers,
   computeEntryAtmRatio, computeScaledSellQty,
-  pickTopUniqueStrikes, log, logWarn, logError
+  pickTopUniqueStrikes, pickHedgeStrike, log, logWarn, logError
 } from './lib/utils.js';
 
 // Entry chase-fill tuning (armed-real only): re-price each entry leg toward the
@@ -653,12 +653,10 @@ async function startSingleAccountEngine(account) {
           // Per-window min-days-to-expiry (migration 019) — all accounts, paper AND live.
           // Falls back to the account-level config value for rows that predate it.
           daysToExpiry: s.days_to_expiry ?? config.daysToExpiry ?? 0,
-          // Per-window hedge overlay (strategy_version >= 2 only, migration 022).
-          hedgeStrikeType: s.hedge_strike_type ?? 'none',
-          hedgeCallPrice: s.hedge_call_price ?? 0,
-          hedgeCallPct: s.hedge_call_pct ?? 0,
-          hedgePutPrice: s.hedge_put_price ?? 0,
-          hedgePutPct: s.hedge_put_pct ?? 0,
+          // Per-window hedge leg (strategy_version >= 2 only, migration 041): on/off, and the
+          // 3rd long's size as a % of the spread's short qty.
+          hedgeEnabled: s.hedge_enabled ?? false,
+          hedgeLotPct: s.hedge_lot_pct ?? 0,
           isActive: s.is_active ?? true,
         }));
 
@@ -686,7 +684,7 @@ async function startSingleAccountEngine(account) {
                 'combinedSplitPct', 'minLongDist', 'minStrikeDiff', 'minIvDiff', 'atmRatioScaling',
                 'atmRatioPctCall', 'atmRatioPctPut', 'maxNetPremium', 'exitType', 'exitPoints',
                 'slTpDecoyDiff', 'shortExitPrice', 'variableExitSlices', 'longExitSlices', 'daysToExpiry',
-                'hedgeStrikeType', 'hedgeCallPrice', 'hedgeCallPct', 'hedgePutPrice', 'hedgePutPct'
+                'hedgeEnabled', 'hedgeLotPct'
               ];
               fieldsToCompare.forEach(f => {
                 if (oldWin[f] !== newWin[f] && oldWin[f] !== undefined) {
@@ -3045,14 +3043,11 @@ async function startSingleAccountEngine(account) {
           // Per-window min-days-to-expiry (migration 019) — all accounts, paper AND live.
           // Falls back to the account-level value for rows that predate the migration.
           daysToExpiry: activeSchedule.daysToExpiry ?? config.daysToExpiry,
-          // Hedge overlay (migration 022) stays experimental — strategy_version >= 2 only.
+          // Hedge leg (migration 041) stays experimental — strategy_version >= 2 only.
           ...(config.strategyVersion >= 2
             ? {
-              hedgeStrikeType: activeSchedule.hedgeStrikeType ?? 'none',
-              hedgeCallPrice: activeSchedule.hedgeCallPrice ?? 0,
-              hedgeCallPct: activeSchedule.hedgeCallPct ?? 0,
-              hedgePutPrice: activeSchedule.hedgePutPrice ?? 0,
-              hedgePutPct: activeSchedule.hedgePutPct ?? 0,
+              hedgeEnabled: activeSchedule.hedgeEnabled ?? false,
+              hedgeLotPct: activeSchedule.hedgeLotPct ?? 0,
             }
             : {}),
         }
@@ -4957,38 +4952,33 @@ async function startSingleAccountEngine(account) {
             : calcMargin(entryBuyPrice, adjustedLotSize, spotPrice, adjustedSellQty, spread.sellLeg.lotSize, config.underlying);
 
           // ── Per-spread hedge leg (3rd long-only leg → long/short/long triplet) ──
-          // strategy_version >= 2 only. Gated by the active window's hedgeStrikeType
-          // (call/put/both). The 3rd long is sized as THIS spread's own short qty × pct,
-          // bought at the OTM strike of the same type whose ask is the highest ≤ the price
-          // budget (most protective within budget — identical selection to the old overlay).
-          // Attached to this position (persisted in hedge_leg); it rides the triplet and
-          // exits only on the main long's ATM/ITM/OTM cross or expiry (see exit tree).
+          // PAPER accounts with strategy_version >= 2 only, gated by the active window's Hedge toggle (calls and
+          // puts alike). The 3rd long sits one strike-width beyond the short (call: short +
+          // width, put: short − width; nearest listed strike, pickHedgeStrike) and is sized as
+          // THIS spread's own short qty × Hedge Lot %. Attached to this position (persisted in
+          // hedge_leg); it rides the triplet and exits only on the main long's ATM/ITM/OTM
+          // cross or expiry (see exit tree). No quoted strike there → plain 2-leg entry.
           let hedgeLeg = null;
           let hedgeMargin = 0;
-          const hedgeType = effectiveConfig.hedgeStrikeType;
-          const hedgeEnabled = config.strategyVersion >= 2 && hedgeType && hedgeType !== 'none'
-            && (hedgeType === 'both' || hedgeType === spreadType);
+          const hedgePct = Number(effectiveConfig.hedgeLotPct) || 0;
+          // Paper accounts only: a live account never gets a hedge leg, whatever its
+          // strategy_version (so a live account bumped to v2 can't send a -HB order).
+          const hedgeEnabled = accountState.mode !== 'live' && config.strategyVersion >= 2
+            && !!effectiveConfig.hedgeEnabled && hedgePct > 0;
           if (hedgeEnabled) {
-            const targetPrice = spreadType === 'call' ? effectiveConfig.hedgeCallPrice : effectiveConfig.hedgePutPrice;
-            const pct = spreadType === 'call' ? effectiveConfig.hedgeCallPct : effectiveConfig.hedgePutPct;
-            const hedgeQty = (targetPrice > 0 && pct > 0)
-              ? Number((adjustedSellQty * (pct / 100)).toFixed(4)) : 0;
+            const hedgeQty = Number((adjustedSellQty * (hedgePct / 100)).toFixed(4));
             if (hedgeQty > 0) {
-              // OTM strike, same type/expiry, whose ask is the highest ≤ budget. Skip the
-              // main long/short symbols so the hedge is a distinct strike.
-              let best = null, bestAsk = -Infinity;
-              for (const t of allTickers) {
-                if (t.type !== spreadType || t.expiry !== config.expiry) continue;
-                if (t.symbol === spread.buyLeg.symbol || t.symbol === spread.sellLeg.symbol) continue;
-                if (excludedStrikes.has(Number(t.strike))) continue; // user-excluded (paper, migration 040)
-                const isOtm = spreadType === 'call' ? t.strike > spotPrice : t.strike < spotPrice;
-                if (!isOtm) continue;
-                const ask = t.ask ?? t.lastPrice ?? t.markPrice;
-                if (ask == null || !(ask > 0) || ask > targetPrice) continue; // within budget only
-                if (ask > bestAsk) { bestAsk = ask; best = t; }
-              }
+              const quote = (t) => t.ask ?? t.lastPrice ?? t.markPrice;
+              const pool = allTickers.filter(t => t.type === spreadType && t.expiry === config.expiry
+                && t.symbol !== spread.buyLeg.symbol && t.symbol !== spread.sellLeg.symbol
+                && !excludedStrikes.has(Number(t.strike)) // user-excluded (paper, migration 040)
+                && quote(t) > 0);
+              const best = pickHedgeStrike(pool, spreadType, bStrike, sStrike);
+              const bestAsk = best ? quote(best) : null;
               if (!best) {
-                logWarn(`[${accountState.name}] Hedge ${spreadType} skipped for ${bStrike}/${sStrike}: no OTM strike with ask ≤ budget $${targetPrice} — entering as plain 2-leg.`);
+                const width = Math.abs(sStrike - bStrike);
+                const target = spreadType === 'call' ? sStrike + width : sStrike - width;
+                logWarn(`[${accountState.name}] Hedge ${spreadType} skipped for ${bStrike}/${sStrike}: no quoted strike near ${target} (one width beyond the short) — entering as plain 2-leg.`);
               } else {
                 // Combined-premium gate: the Max Net Debit now applies to ALL THREE legs.
                 // Adding a long makes the debit larger, so the triplet gate is stricter than

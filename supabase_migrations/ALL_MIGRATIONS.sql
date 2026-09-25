@@ -1347,3 +1347,38 @@ BEGIN
       CHECK (jsonb_typeof(excluded_strikes) = 'array');
   END IF;
 END $$;
+
+-- ─── 041_hedge_toggle_and_lot_pct.sql ───
+-- Migration 041: simplified hedge leg (hedge_enabled + hedge_lot_pct) on paper_trading_schedules
+ALTER TABLE public.paper_trading_schedules
+  ADD COLUMN IF NOT EXISTS hedge_enabled BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS hedge_lot_pct NUMERIC NOT NULL DEFAULT 0;
+
+-- Carry existing hedged windows over: any window that had a hedge type set keeps a hedge,
+-- sized at the larger of its old call/put %. Runs only on rows still at the new defaults.
+UPDATE public.paper_trading_schedules
+   SET hedge_enabled = true,
+       hedge_lot_pct = LEAST(100, GREATEST(COALESCE(hedge_call_pct, 0), COALESCE(hedge_put_pct, 0)))
+ WHERE COALESCE(hedge_strike_type, 'none') <> 'none'
+   AND hedge_enabled = false
+   AND hedge_lot_pct = 0;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'paper_trading_schedules_hedge_lot_pct_check'
+  ) THEN
+    ALTER TABLE public.paper_trading_schedules
+      ADD CONSTRAINT paper_trading_schedules_hedge_lot_pct_check
+      CHECK (hedge_lot_pct >= 0 AND hedge_lot_pct <= 100);
+  END IF;
+END $$;
+
+-- ─── 042_drop_old_hedge_columns.sql ───
+-- Migration 042: drop the unused migration-022 hedge columns (run AFTER deploying the code that uses 041)
+ALTER TABLE public.paper_trading_schedules
+  DROP COLUMN IF EXISTS hedge_strike_type,
+  DROP COLUMN IF EXISTS hedge_call_price,
+  DROP COLUMN IF EXISTS hedge_call_pct,
+  DROP COLUMN IF EXISTS hedge_put_price,
+  DROP COLUMN IF EXISTS hedge_put_pct;

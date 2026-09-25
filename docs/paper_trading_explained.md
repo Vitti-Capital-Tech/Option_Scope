@@ -1257,7 +1257,7 @@ The following parameters are scheduled per window:
 14. **SL/TP Diff (pts)** (`slTpDecoyDiff`) — per-window SL/TP decoy trigger offset (migration `031`)
 15. **Short Exit Price / Variable Ladder** (`shortExitPrice`, `variableExitSlices`, `longExitSlices`) — per-window exit ladder controls (migration `033`)
 16. **Days to Expiry** (`daysToExpiry`) — **v2 (experimental paper) accounts only** (migration `019`). The window's value guards its own entries; the account-global traded expiry **follows the active window** as **(current date + that window's DTE)**, re-selected in ~realtime as windows change (smallest DTE wins on overlap). On v1 (live) this stays an account-level Control Panel field and is **not** shown per window. See [Strategy Versioning](#strategy-versioning-paper-vs-live).
-17. **Hedge Leg** (`hedgeStrikeType` + `hedgeCallPrice`/`hedgeCallPct`/`hedgePutPrice`/`hedgePutPct`) — **v2 (experimental paper) accounts only** (config migration `022`, leg column `023`). Adds a per-spread 3rd long-only leg (long/short/long triplet). See [Hedge Leg](#hedge-leg--per-spread-3rd-long-long--short--long-triplet).
+17. **Hedge Leg** (`hedgeEnabled` + `hedgeLotPct`) — **v2 (experimental paper) accounts only** (config migration `041`, leg column `023`). Adds a per-spread 3rd long-only leg (long/short/long triplet). See [Hedge Leg](#hedge-leg--per-spread-3rd-long-long--short--long-triplet).
 
 All other filter settings (like `minSellPremium`, `maxRatioDeviation`, etc.) default back to the base account config.
 
@@ -1298,14 +1298,15 @@ An **account-level** day-of-week filter that chooses which weekdays the account 
 
 ### Hedge Leg — Per-Spread 3rd Long (Long / Short / Long Triplet)
 
-**File**: [paperTradingEngine.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js) (hedge attach at entry + `-HX` exit), [SchedulePanel.jsx](file:///c:/Users/ASUS/Documents/Option_Scope/src/components/PaperTrading/SchedulePanel.jsx) · **Config columns**: `paper_trading_schedules.hedge_strike_type`, `hedge_call_price/pct`, `hedge_put_price/pct` (migration `022`) · **Leg column**: `active_positions.hedge_leg` / `trade_history.hedge_leg` (migration `023`)
+**File**: [paperTradingEngine.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js) (hedge attach at entry + `-HX` exit), [SchedulePanel.jsx](file:///c:/Users/ASUS/Documents/Option_Scope/src/components/PaperTrading/SchedulePanel.jsx) · **Config columns**: `paper_trading_schedules.hedge_enabled`, `hedge_lot_pct` (migration `041`; the migration-`022` columns are dropped by `042`) · **Leg column**: `active_positions.hedge_leg` / `trade_history.hedge_leg` (migration `023`)
 
-Replaces the old standalone "hedge overlay" with a **3rd long-only leg baked into each ratio spread**, so an entered call/put spread becomes a **long / short / long triplet**. The five per-window config fields from migration `022` are **reused** to drive it. Experimental — **`strategy_version >= 2` (paper) only**; v1 (live) ignores it and the UI is hidden. See [Strategy Versioning](#strategy-versioning-paper-vs-live).
+Replaces the old standalone "hedge overlay" with a **3rd long-only leg baked into each ratio spread**, so an entered call/put spread becomes a **long / short / long triplet**. Experimental — **paper accounts with `strategy_version >= 2` only**; v1 ignores it and the UI is hidden. A **live** account never gets a hedge leg, whatever its version: the toggle is hidden and the engine skips it. See [Strategy Versioning](#strategy-versioning-paper-vs-live).
 
 **Config (per window):**
-- **Hedge Leg Type** (`hedgeStrikeType`) — `none` / `call` / `put` / `both`. Which spread type(s) get a 3rd leg (`both` shows inputs for each side).
-- **Price** (`hedgeCallPrice` / `hedgePutPrice`) — a **premium budget ($)**. The engine buys the **OTM** strike of that type (call strike > spot, put strike < spot) whose **ask is the highest ≤ the budget** (= the most protective leg still within budget), skipping the main long/short symbols. If **no** strike quotes at/below the budget, the hedge is **skipped** and the spread enters as a plain 2-leg (a warning is logged) — entries are never starved.
-- **Percentage** (`hedgeCallPct` / `hedgePutPct`) — 3rd-long qty = **(that spread's own short qty) × pct/100**.
+- **Hedge Leg** (`hedgeEnabled`) — on/off toggle. When on, **every** spread entered in the window (call or put) gets a 3rd leg.
+- **Hedge Lot %** (`hedgeLotPct`, shown when the toggle is on) — 3rd-long qty = **(that spread's own short qty) × pct/100**.
+- **Strike** (no setting) — **one strike-width beyond the short**, on the same side: call `short + (short − long)`, put `short − (long − short)`. E.g. CALL 84800/85800 → hedge 86800, PUT 83000/81500 → hedge 80000. If that exact strike isn't listed, the nearest listed strike beyond the short within half a width is used (ties go to the one nearer the short). Excluded strikes and unquoted strikes are skipped. If none qualifies, the hedge is **skipped** and the spread enters as a plain 2-leg (a warning is logged), so entries are never starved.
+- **Migration**: `041` copied windows that had a hedge type set to `hedge_enabled = true` with the larger of their old call/put % (a former call-only or put-only window now hedges both types). `042` then drops the old columns, and must run only after the new frontend and engine are deployed.
 
 **Entry** (per spread, in the entry loop): once the main long/short are sized, the engine attaches the hedge leg (stored in `hedge_leg`, not a separate row). The **Max Net Debit gate now applies to the combined premium of all three legs** — `combinedNet = shortQty × sellBid − longAsk − hedgeQty × hedgeAsk`; if the combined debit exceeds `maxNetPremium` the **whole entry is skipped**. Adding a long makes the debit larger, so the triplet gate is strictly stricter than the 2-leg scan gate. The hedge cost is added to the position's margin; the hedge's own entry fee is tracked in `hedgeLeg.entryFee` (kept out of `pos.entryFee`, which the ladder/short-exit logic apportions for the main legs).
 
@@ -1315,7 +1316,7 @@ Replaces the old standalone "hedge overlay" with a **3rd long-only leg baked int
 - On the full exit (or a manual exit / Close All), the hedge is sold at its live **bid** (neutral fallback to entry price if momentarily unquoted) and booked as its own idempotent `trade_history` row with `trade_id = ${pos.id}-HX`, `exit_reason = "Hedge Exit @ <ATM|ITM|OTM|Expiry>"`.
 
 > [!NOTE]
-> Logs: `🛡️ HEDGE EXIT`; entry skips log the reason (`no OTM strike ≤ budget` / `combined 3-leg net exceeds max debit`). Live (armed-real) is best-effort — the hedge buy uses a separate `-HB` order (non-fatal on failure: the 2-leg spread is kept, the hedge dropped) and the `-HX` reduce-only close. Legacy standalone `isHedge` overlay rows (migration `022`) close gracefully through the normal long-only ladder.
+> Logs: `🛡️ HEDGE EXIT`; entry skips log the reason (`no quoted strike near <target> (one width beyond the short)` / `combined 3-leg net exceeds max debit`). Live (armed-real) is best-effort — the hedge buy uses a separate `-HB` order (non-fatal on failure: the 2-leg spread is kept, the hedge dropped) and the `-HX` reduce-only close. Legacy standalone `isHedge` overlay rows (migration `022`) close gracefully through the normal long-only ladder.
 
 ---
 

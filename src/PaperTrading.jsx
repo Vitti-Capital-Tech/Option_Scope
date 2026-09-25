@@ -117,11 +117,8 @@ const makeFirstWindow = (cfg = {}) => ({
   variableExitSlices: cfg.variableExitSlices ?? false,
   longExitSlices: cfg.longExitSlices ?? 10,
   daysToExpiry: cfg.daysToExpiry ?? 0,
-  hedgeStrikeType: 'none',
-  hedgeCallPrice: 0,
-  hedgeCallPct: 0,
-  hedgePutPrice: 0,
-  hedgePutPct: 0,
+  hedgeEnabled: false,
+  hedgeLotPct: 0,
   isActive: true,
   sort_order: 0,
 });
@@ -1517,11 +1514,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           variableExitSlices: s.variable_exit_slices ?? false,
           longExitSlices: s.long_exit_slices ?? 10,
           daysToExpiry: s.days_to_expiry ?? 0,
-          hedgeStrikeType: s.hedge_strike_type ?? 'none',
-          hedgeCallPrice: s.hedge_call_price ?? 0,
-          hedgeCallPct: s.hedge_call_pct ?? 0,
-          hedgePutPrice: s.hedge_put_price ?? 0,
-          hedgePutPct: s.hedge_put_pct ?? 0,
+          hedgeEnabled: s.hedge_enabled ?? false,
+          hedgeLotPct: s.hedge_lot_pct ?? 0,
           isActive: s.is_active ?? true,
           sort_order: s.sort_order ?? 0,
         }));
@@ -1554,11 +1548,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           variableExitSlices: s.variableExitSlices,
           longExitSlices: s.longExitSlices,
           daysToExpiry: s.daysToExpiry,
-          hedgeStrikeType: s.hedgeStrikeType,
-          hedgeCallPrice: s.hedgeCallPrice,
-          hedgeCallPct: s.hedgeCallPct,
-          hedgePutPrice: s.hedgePutPrice,
-          hedgePutPct: s.hedgePutPct,
+          hedgeEnabled: s.hedgeEnabled,
+          hedgeLotPct: s.hedgeLotPct,
           isActive: s.isActive
         })));
       }
@@ -1598,11 +1589,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         variable_exit_slices: s.variableExitSlices ?? false,
         long_exit_slices: s.longExitSlices ?? 10,
         days_to_expiry: s.daysToExpiry ?? 0,
-        hedge_strike_type: s.hedgeStrikeType ?? 'none',
-        hedge_call_price: s.hedgeCallPrice ?? 0,
-        hedge_call_pct: s.hedgeCallPct ?? 0,
-        hedge_put_price: s.hedgePutPrice ?? 0,
-        hedge_put_pct: s.hedgePutPct ?? 0,
+        hedge_enabled: s.hedgeEnabled ?? false,
+        hedge_lot_pct: s.hedgeLotPct ?? 0,
         is_active: s.isActive ?? true,
         sort_order: i,
         updated_at: new Date().toISOString(),
@@ -1647,11 +1635,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         variableExitSlices: s.variableExitSlices,
         longExitSlices: s.longExitSlices,
         daysToExpiry: s.daysToExpiry,
-        hedgeStrikeType: s.hedgeStrikeType,
-        hedgeCallPrice: s.hedgeCallPrice,
-        hedgeCallPct: s.hedgeCallPct,
-        hedgePutPrice: s.hedgePutPrice,
-        hedgePutPct: s.hedgePutPct,
+        hedgeEnabled: s.hedgeEnabled,
+        hedgeLotPct: s.hedgeLotPct,
         isActive: s.isActive
       })));
       lastSavedSchedulesRef.current = savedJson;
@@ -1686,11 +1671,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       variableExitSlices: s.variableExitSlices,
       longExitSlices: s.longExitSlices,
       daysToExpiry: s.daysToExpiry,
-      hedgeStrikeType: s.hedgeStrikeType,
-      hedgeCallPrice: s.hedgeCallPrice,
-      hedgeCallPct: s.hedgeCallPct,
-      hedgePutPrice: s.hedgePutPrice,
-      hedgePutPct: s.hedgePutPct,
+      hedgeEnabled: s.hedgeEnabled,
+      hedgeLotPct: s.hedgeLotPct,
       isActive: s.isActive
     })));
     return lastSavedSchedulesRef.current !== currentJson;

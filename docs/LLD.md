@@ -464,9 +464,9 @@ The former Priority-4 rotation logic — Leg Swap (same sell strike, better buy 
 
 ### E2. Hedge Leg — Per-Spread 3rd Long (paper v2)
 
-Migrations `022` (config columns on `paper_trading_schedules`: `hedge_strike_type`, `hedge_call_price/pct`, `hedge_put_price/pct`) + `023` (leg columns `active_positions.hedge_leg` / `trade_history.hedge_leg`). **`strategy_version >= 2` (paper) only**; v1 hides the UI and ignores it.
+Migrations `041` (config columns on `paper_trading_schedules`: `hedge_enabled`, `hedge_lot_pct`; replaces the migration-`022` columns, which `042` drops) + `023` (leg columns `active_positions.hedge_leg` / `trade_history.hedge_leg`). **Paper accounts with `strategy_version >= 2` only**; v1 hides the UI and ignores it, and a live account never gets a hedge (UI hidden, engine skips it) even if its version is 2.
 
-- **Type** `none`/`call`/`put`/`both`; **Price** = a premium budget ($) — the engine buys the **OTM** strike (call > spot / put < spot) whose ask is the **highest ≤ budget** (if none qualifies, the hedge is skipped and a plain 2-leg spread is entered, with a warning); **Percentage** — 3rd-long qty = short qty × pct/100, forming a **long / short / long triplet**.
+- **Toggle** `hedge_enabled` (applies to call and put spreads alike) + **Hedge Lot %** `hedge_lot_pct` — 3rd-long qty = short qty × pct/100, forming a **long / short / long triplet**. **Strike**: `pickHedgeStrike` (`engine/lib/utils.js`, twin in `src/scannerUtils.js`) picks the quoted, non-excluded strike one strike-width beyond the short (call: short + width, put: short − width, nearest listed strike within half a width). If none qualifies, the hedge is skipped and a plain 2-leg spread is entered, with a warning.
 - **Entry gate**: Max Net Debit applies to the combined 3-leg premium `combinedNet = shortQty×sellBid − longAsk − hedgeQty×hedgeAsk`; if it exceeds `maxNetPremium` the whole entry is skipped. Hedge cost is added to margin; the hedge fee is tracked in `hedgeLeg.entryFee` (kept out of `pos.entryFee`).
 - **Exit**: the hedge rides the triplet and is closed **only** by the main long's ATM/ITM/OTM spot-cross or expiry catch-all — never short-bought-back, laddered, or scaled. If the main long ladders out first, the row is held "hedge-only" (`lotSize = 0`) until the catch-all. Sold at live bid (fallback entry price), `trade_id = ${pos.id}-HX`, `exit_reason = "Hedge Exit @ <ATM|ITM|OTM|Expiry>"`, logs `🛡️ HEDGE EXIT`. Armed-real uses a `-HB` buy at entry (non-fatal on failure) + a `-HX` reduce-only close.
 
@@ -793,7 +793,7 @@ Table: `paper_trading_schedules`
 - `sl_tp_decoy_diff` (migration `031`, per-window SL/TP decoy trigger offset)
 - `short_exit_price`, `variable_exit_slices`, `long_exit_slices` (migration `033`, per-window exit ladder controls)
 - `min_days_to_expiry` (migration `019`, **paper v2** — the traded expiry follows the active window)
-- `hedge_strike_type`, `hedge_call_price`, `hedge_call_pct`, `hedge_put_price`, `hedge_put_pct` (Hedge Leg, migration `022`)
+- `hedge_enabled` (BOOLEAN, default `false`), `hedge_lot_pct` (NUMERIC 0–100, default `0`) (Hedge Leg, migration `041`; the old migration-`022` hedge columns are dropped by `042`)
 - `is_active` (BOOLEAN, default `true`, permanently active — the Enabled checkbox was removed)
 - `created_at` (TIMESTAMPTZ, default `now()`)
 

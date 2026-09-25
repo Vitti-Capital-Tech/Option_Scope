@@ -26,6 +26,21 @@ function describeIntrinsic(detail, field) {
 // A fallback (not an exact strike) produced the price → flag it with a "≈" marker.
 const isApproxIntrinsic = (detail) => !!detail && (detail.mode === 'bracket' || detail.mode === 'single');
 
+// Hedge leg (3rd long) under the spread strikes — only when the Hedge toggle is on AND a
+// quoted strike exists one strike-width beyond the short (see pickHedgeStrike).
+function HedgeLine({ hedge }) {
+  if (!hedge) return null;
+  const price = Number(hedge.price);
+  return (
+    <div
+      style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}
+      title={`Hedge long ${hedge.strike.toLocaleString()} @ $${price.toFixed(2)}${hedge.iv != null ? ` (${Number(hedge.iv).toFixed(1)}% IV)` : ''} × ${hedge.qty} (short qty × hedge lot %)`}
+    >
+      H: <span className="scanner-buy">+{hedge.strike.toLocaleString()}</span> @ ${price.toFixed(2)} × {hedge.qty}
+    </div>
+  );
+}
+
 export default function ResultTable({
   title,
   type,
@@ -401,6 +416,7 @@ export default function ResultTable({
                                 </span>
                               </div>
                               <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Δ: {bestRow.strikeDiff.toLocaleString()}</div>
+                              <HedgeLine hedge={bestRow.hedge} />
                             </div>
                           </div>
                         </td>
@@ -482,6 +498,7 @@ export default function ResultTable({
                                   </span>
                                 </div>
                                 <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Δ: {r.strikeDiff.toLocaleString()}</div>
+                                <HedgeLine hedge={r.hedge} />
                               </div>
                             </td>
                             <td>

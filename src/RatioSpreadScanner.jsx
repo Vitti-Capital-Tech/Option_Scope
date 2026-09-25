@@ -8,7 +8,7 @@ const UNDERLYINGS = ['BTC', 'ETH'];
 const SCANNER_TOP_KEY = 'vitti_scanner_top_spreads_v1';
 
 import ResultTable from './ResultTable';
-import { normalizeIv, toFiniteNumber, matchesOptionType } from './scannerUtils';
+import { normalizeIv, toFiniteNumber, matchesOptionType, pickHedgeStrike } from './scannerUtils';
 import Navbar from './components/PaperTrading/Navbar';
 import CustomSelect from './components/common/CustomSelect';
 import CustomInput from './components/common/CustomInput';
@@ -58,7 +58,12 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
       minAtmRoi: 0,
       atmRatioScaling: false,
       atmRatioPctCall: 50,
-      atmRatioPctPut: 50
+      atmRatioPctPut: 50,
+      // Hedge leg preview — shows each spread's 3rd long (one strike-width beyond the short,
+      // sized as short qty × hedgeLotPct), the same leg paper trading adds when its window's
+      // Hedge toggle is on. Display only: it does not change the scan filters.
+      hedgeEnabled: false,
+      hedgeLotPct: 50
     };
 
     if (saved) {
@@ -363,6 +368,22 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
       const sorted = [...tickers].sort((a, b) => a.strike - b.strike);
       const validPairs = [];
 
+      // Hedge leg for a pair (display only): the quoted strike one width beyond the short,
+      // via the same pickHedgeStrike the engine uses. null when off or no such strike.
+      const hedgePool = config.hedgeEnabled ? sorted.filter(t => (t.ask ?? 0) > 0) : [];
+      const hedgeFor = (buyLeg, sellLeg, shortQty) => {
+        if (!config.hedgeEnabled || !(config.hedgeLotPct > 0)) return null;
+        const pool = hedgePool.filter(t => t !== buyLeg && t !== sellLeg);
+        const h = pickHedgeStrike(pool, buyLeg.type, buyLeg.strike, sellLeg.strike);
+        if (!h) return null;
+        return {
+          strike: h.strike,
+          price: h.ask,
+          iv: h.askIv ?? h.iv ?? null,
+          qty: Math.round(shortQty * (config.hedgeLotPct / 100) * 100) / 100,
+        };
+      };
+
       for (let i = 0; i < sorted.length; i++) {
         for (let j = i + 1; j < sorted.length; j++) {
           const buy = sorted[i];
@@ -468,7 +489,8 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             buyIv,
             sellIv,
             netPremium: netPrem.toFixed(2),
-            deltaDiff
+            deltaDiff,
+            hedge: hedgeFor(buyLeg, sellLeg, scaledSellQty)
           });
         }
       }
@@ -755,6 +777,19 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
                 onChange={e => updateConfig('atmRatioScaling', e.target.checked)} />
               <label htmlFor="atmRatioScaling" style={{ cursor: 'pointer', userSelect: 'none' }}>Dynamic ATM Scaling</label>
             </div>
+            <div key="hedgeEnabled" className="form-group row-inline" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <input type="checkbox" id="hedgeEnabled" checked={config.hedgeEnabled ?? false}
+                onChange={e => updateConfig('hedgeEnabled', e.target.checked)} />
+              <label htmlFor="hedgeEnabled" style={{ cursor: 'pointer', userSelect: 'none' }}>Hedge Leg</label>
+            </div>
+            {config.hedgeEnabled && (
+              <div key="hedgeLotPct" className="form-group row-inline">
+                <label>Hedge Lot</label>
+                <CustomInput type="number" step="5" min="0" max="100" suffix="%" showStepper width={100} value={config.hedgeLotPct ?? 50}
+                  onChange={e => updateConfig('hedgeLotPct', Number(e.target.value))}
+                />
+              </div>
+            )}
             {config.atmRatioScaling && (
               <>
                 <div key="atmRatioPctCall" className="form-group row-inline">

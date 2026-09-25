@@ -185,11 +185,11 @@ CREATE TABLE IF NOT EXISTS public.paper_trading_schedules (
     variable_exit_slices BOOLEAN NOT NULL DEFAULT false,
     long_exit_slices INTEGER NOT NULL DEFAULT 10,
     days_to_expiry NUMERIC NOT NULL DEFAULT 0,
-    hedge_strike_type TEXT NOT NULL DEFAULT 'none',
-    hedge_call_price NUMERIC NOT NULL DEFAULT 0,
-    hedge_call_pct NUMERIC NOT NULL DEFAULT 0,
-    hedge_put_price NUMERIC NOT NULL DEFAULT 0,
-    hedge_put_pct NUMERIC NOT NULL DEFAULT 0,
+    -- Hedge leg (migration 041): on/off + 3rd-long qty as % of the short qty. The strike
+    -- sits one strike-width beyond the short. Replaces the migration-022 hedge columns,
+    -- which migration 042 drops.
+    hedge_enabled BOOLEAN NOT NULL DEFAULT false,
+    hedge_lot_pct NUMERIC NOT NULL DEFAULT 0,
     is_active BOOLEAN NOT NULL DEFAULT true,
     sort_order INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
