@@ -710,6 +710,15 @@ qty)`**:
 > a whole number, the on-exchange ratio matches the sized ratio (see the **contract-size
 > mapping** open-item note above).
 
+#### Delta free-margin cap, pre-order check and margin cooldown
+
+`calcMargin` runs **low** against Delta. It assumes a flat 200× on the short, ignores the short's premium, and is only re-marked by the self-heal above. On 2026-09-23, Pk and Biswal Holdings were sized to a "remaining" $1,063 and $720. Delta had only ~$100 free, because it held ~30% more on the open book than the engine's `usedMargin`. Every short was rejected with `insufficient_margin` (Pk's first attempt with `insufficient_commission`), and each retry bought and unwound the long for a ~$6–9 loss per attempt. Four guards now sit on top of the sizing above:
+
+1. **Free-margin cap.** Each sizing cycle reads `balance` **and** `available_balance` in one wallet call (`live.walletSnapshot()`). The allocation reserve is `balance × (100 − allocation)%`, and `liveAvailLeft = available_balance − reserve`. The remaining budget is capped at `liveAvailLeft ÷ (LIVE_MARGIN_SAFETY × learned boost)` (default **1.35**, env `LIVE_MARGIN_SAFETY`). The `¤ LIVE sizing` line shows `Delta free $… − reserve $… → cap $…`, with `(BINDING)` when the cap is lower than the engine's own figure. If Delta omits `available_balance`, the engine logs a warning and sizes as before.
+2. **Pre-order check.** Before any order goes out, the entry's `est margin × margin factor` must fit in `liveAvailLeft`, otherwise the entry is skipped (`Entry … skipped: needs ~$… margin …`). This runs **before the long is bought**, so there is no lossy unwind. Each successful entry draws `liveAvailLeft` down, so a second entry in the same cycle is checked against what is left. It also blocks the "minimum one unit" trade when the budget is `$0`.
+3. **Order fitted to Delta's available margin.** Each live candidate is sized against what Delta actually has free: `liveAvailLeft` minus what candidates sized earlier in the same cycle already claimed, divided by the margin factor (`LIVE_MARGIN_SAFETY` × learned boost). If that is below the normal part, the part shrinks (log `⤵ LIVE size … fitted to Delta's available margin: part $… → $…`). If rounding the long up pushes the estimate over the free margin, the long steps down one contract at a time. If even 1 unit doesn't fit, the candidate is skipped instead of trading the minimum unit.
+4. **Re-size and retry on a Delta margin rejection.** If Delta still rejects with `insufficient_margin` or `insufficient_commission`, the margin estimate's boost is multiplied by **1.25** (`LIVE_MARGIN_BOOST_STEP`, capped at **3×**) and an entry retry is queued. The retry re-reads Delta's available balance and sizes a smaller order to fit it. Only after **3 rejections in a row** (`LIVE_MARGIN_MAX_RESIZE_RETRIES`, since each one buys and unwinds the long) do new live entries pause for `LIVE_MARGIN_COOLDOWN_MS` (default **10 min**). The Telegram alert says which of the two happened. Each successful live entry resets the streak and divides the boost by 1.25 (never below 1). Retries also respect the existing per-minute entry-retry budget. Exits and position management keep running throughout.
+
 Paper accounts keep the `$195k` / 200× branch **unchanged** (the balance-sizing branch is
 gated on `mode==='live' && live_enabled`; only live adds the balance scale on top of the
 shared `$195k` notional ceiling). Dry-run logs the full breakdown
@@ -728,6 +737,8 @@ Live accounts show controls in the account strip (paper accounts are unaffected)
   stays in place). **Resume** clears it. A `PAUSED` badge shows on the account.
 
 Both flags live on `paper_trading_accounts`; the engine picks them up via Realtime.
+
+**Max positions 0 = per-window pause (paper and live).** If the **active schedule window's** max positions is 0 (or the account-level value in a schedule gap), the engine skips the whole entry cycle. That covers the O(n²) scan, the ATM P&L evaluation, the live wallet-balance and pre-entry positions calls, and the per-candidate "cap reached" logs. Open positions and every exit keep running. The cap is re-read every cycle, so raising it resumes entries on the next entry minute. The log shows `⏸ Max positions is 0 …` once when skipping starts and `▶ … entries resumed` once when it ends. Unlike **Pause**, this applies per window, e.g. no entries overnight only.
 
 ### Manual actions — Close All, per-leg close, order cancel
 
@@ -1201,15 +1212,13 @@ doomed entry — a **repeating failure loop** every few minutes. Three coordinat
   is never placed. Symbols opened earlier in the **same** cycle are reserved too. Paper/disarmed
   accounts are unaffected (gated on armed-live).
 
-- **Dangling-short recovery (Fix A).** `reconcileOrphans` used to treat a position as "still open"
-  if **either** leg had size on Delta, so a **half-open** spread — short still open, its partner
-  long already gone — was retained forever. That lone short is not a valid strategy state (the long
-  protects the short) and sits with an **already-breached SL** that keeps feeding the loop.
-  Reconcile now detects it (`sellQty > 0`, short size > 0, long size 0, confirmed-open, age > 90s)
-  and **flattens the short with a reduce-only market close** (`${id}-DANGX`), latched so it fires at
-  most once and reduce-only so it can never over-sell. The next cycle sees the position flat and
-  books it via the normal orphan path. This runs on the existing 30s/60s reconcile timers, so it
-  self-heals without a config change.
+- **Dangling short: alert only (Fix A, revised 2026-09-24).** A **half-open** spread is one where the short is still open and its partner long is gone. Reconcile detects it when `sellQty > 0`, the short has size, the long is gone and the position is older than 90 s. The long counts as gone if the engine zeroed it on purpose (manual leg close), or if it is **confirmed** missing (see the next item). The engine then sends **one admin alert** and does **not** close the short. It used to market-close it (`${id}-DANGX`). The admin decides what to do, and the position is booked once the short goes flat.
+
+- **Absence confirmation, not a single snapshot (2026-09-24).** On 24 Sep, `GET /v2/positions/margined` timed out for four accounts at 08:58:25 UTC. In the next few minutes it returned lists without open positions on three of them. Reconcile booked those spreads as closed, and the engine then market-closed the still-open shorts as "naked". Now:
+  - A tracked leg counts as gone only when it is missing from **3 consecutive successful snapshots** (`ABSENCE_CONFIRM_PASSES`) **and** for at least **90 s** (`ABSENCE_CONFIRM_MS`). Until then nothing is booked, cancelled or converted to long-only, and the log shows `⏸ Reconcile hold: …`.
+  - **A failed or timed-out positions fetch is retried until Delta answers** (`fetchLivePositionsRetrying`: 2 s, 4 s, 8 s … capped at 15 s). The pass doesn't skip, and nothing is inferred from a failure. The loop stops only if the account is disarmed or the engine shuts down. Only successful snapshots count toward confirmation.
+  - **If every tracked leg is missing from one snapshot**, there is no fixed wait. The pass re-queries Delta every **10 s** (`ABSENCE_RECHECK_MS`, still retrying on failure). If the legs come back, it was a bad snapshot and nothing is booked (`✓ Tracked legs are back …`). If they stay missing for 3 snapshots and 90 s, they are booked as normal. The admin gets one alert per episode (account chat + global chat).
+  - **Order-history proof before booking (fallback check).** The positions list is always checked first. A confirmed-missing position is booked, and its SL/TP brackets cancelled, only if Delta's **order history** also shows the close: orders on the closing side (long → sell, short → buy), filled since the leg was last seen open (minus 2 min clock slack), adding up to **at least the tracked contracts**. Filled qty is `size − unfilled_size` and fill time is `updated_at`, the same as the Order History tab. If there is no matching fill, or the history fetch fails, nothing is booked or cancelled. The SL/TP stays on Delta, the admin gets one alert (`… no matching closing fill …`), and the check repeats every pass, booking as soon as the fill shows up. The same proof gates converting a spread to long-only when only its short is missing. Two exceptions: a position **past its expiry** counts as closed (Delta settles it with no order), and a position never seen open this run, whose history reaches back past its entry and shows **no entry fill**, is a dead entry and is removed as before.
 
 - **Benign `no_position_for_reduce_only` (Fix D).** A reduce-only (closing) order that Delta rejects
   with **`no_position_for_reduce_only`** means the leg is **already closed exchange-side** — a benign
@@ -1349,12 +1358,9 @@ manage correctly and falls back to protect+alert where it isn't:
   TP bracket + the ATM/ITM/OTM spot-cross and expiry catch-alls; `ladderOrders` stays `[]` and the
   long-only path never re-creates one. (The laddered exit is reserved for the **pair short-exit**
   flow — a spread whose short is bought back becomes long-only *with* a ladder.)
-- **NAKED SHORT orphan** → a short with no protective long is not a valid strategy state → **reduce-
-  only MARKET close** + alert (same policy as [dangling-short recovery](#same-product-collision-guard--stuck-leg-recovery)).
-- **Can't adopt** (unknown symbol / other expiry, or the buy strike is already tracked) → **PROTECT
-  + ALERT**: arm the spot-triggered TP bracket (`computeIndexTriggerLevel`) if unprotected — or, if
-  the level is already breached, `immediate_execution` → reduce-only MARKET close — and alert.
-  Unknown symbols we can't price are **alert-only**.
+- **Untracked SHORT** → **admin alert only, never closed** (revised 2026-09-24). The engine used to market-close it as a "naked short". On 24 Sep that closed shorts that were still long-protected, because a bad positions snapshot had made the engine forget them.
+- **Untracked long while an untracked short is open** → **alert only**: not adopted and not touched. That long may be the protection for the short, and adopting it would put a sell ladder on it.
+- **Can't adopt** (unknown symbol or other expiry, or the buy strike is already tracked) → **PROTECT + ALERT**: arm the spot-triggered TP bracket (`computeIndexTriggerLevel`) if unprotected. If the level is already breached (`immediate_execution`), the engine **alerts only** and no longer market-closes. Unknown symbols it can't price are **alert-only**.
 
 **Guards.**
 - **Armed-real only**, and it runs inside the existing `reconcileOrphans` sweep (30s / 60s / 5-min),
@@ -1376,10 +1382,7 @@ manage correctly and falls back to protect+alert where it isn't:
   that guard, so orphans are handled exactly when you want them to be.
 
 > [!NOTE]
-> This realises the exchange-primary goal end-to-end: if the DB or a sync errors, open positions
-> keep their brackets on Delta, and any leg the engine loses track of is **adopted back into
-> management** (long), flattened (naked short), or protected + surfaced (can't-adopt) — capital is
-> never left exposed or silently unmanaged.
+> If the DB or a sync errors, open positions keep their brackets on Delta. Any leg the engine loses track of is **adopted back into management** (a lone long), or **surfaced to the admin** (untracked shorts, and longs next to them). The engine **never closes a position just because it doesn't recognise it**; a person decides.
 >
 > **Adoption limits (by design):** a re-adopted long is managed **standalone** — the original
 > spread pairing, entry-time index spot, and entry fee aren't on the exchange, so PnL is booked on

@@ -108,6 +108,37 @@ const ENTRY_PHASE_BUDGET_MS = Math.max(5000, Number(process.env.ENTRY_PHASE_BUDG
 // being trusted at all and the exit loop holds (same fail-safe as a failed fetch).
 const LIVE_FILL_POLL_MS = Math.max(500, Number(process.env.LIVE_FILL_POLL_MS ?? 3000));
 const LIVE_FILL_STALE_MS = Math.max(5000, Number(process.env.LIVE_FILL_STALE_MS ?? 30000));
+// Delta blocks more margin than calcMargin() estimates (flat 200x, no short premium, not
+// re-marked as the market moves). Observed 2026-09-23 on Pk / Biswal Holdings: Delta held
+// ~30% more on the open book than the engine's figure, so entries sized to the "remaining"
+// budget were rejected with insufficient_margin. Live sizing and the pre-order check scale
+// the estimate by this factor before comparing it with Delta's available_balance.
+const LIVE_MARGIN_SAFETY = Math.max(1, Number(process.env.LIVE_MARGIN_SAFETY ?? 1.35));
+// When Delta still rejects an entry for margin/commission, the margin estimate is scaled up
+// by LIVE_MARGIN_BOOST_STEP (capped at _MAX) and the entry is retried: the retry re-reads
+// Delta's available balance and sizes a smaller order to fit it. The boost eases back toward
+// 1 after each successful live entry.
+const LIVE_MARGIN_BOOST_STEP = 1.25;
+const LIVE_MARGIN_BOOST_MAX = 3;
+// Consecutive margin rejections (each retried with a re-sized order) before new live entries
+// pause for LIVE_MARGIN_COOLDOWN_MS. Each attempt buys and unwinds the long, so this is
+// bounded: on 2026-09-23 unbounded retries lost ~$6-9 per attempt.
+const LIVE_MARGIN_MAX_RESIZE_RETRIES = 3;
+const LIVE_MARGIN_COOLDOWN_MS = Math.max(60000, Number(process.env.LIVE_MARGIN_COOLDOWN_MS ?? 600000));
+// Reconcile books a tracked leg as "closed on Delta" only after it has been missing from
+// Delta's positions list for this many consecutive successful snapshots AND this long.
+// A single snapshot is never enough: on 2026-09-24 (08:59–09:03 UTC) Delta returned lists
+// without open positions on three accounts, and booking them made the engine forget legs
+// that were still open.
+const ABSENCE_CONFIRM_PASSES = 3;
+const ABSENCE_CONFIRM_MS = 90000;
+// A failed / timed-out positions fetch is retried with this capped backoff until Delta
+// answers, instead of skipping the reconcile pass.
+const POSITIONS_RETRY_BASE_MS = 2000;
+const POSITIONS_RETRY_MAX_MS = 15000;
+// When EVERY tracked leg is missing from a snapshot, Delta is re-queried this often until
+// the legs come back or their absence is confirmed (ABSENCE_CONFIRM_PASSES + _MS).
+const ABSENCE_RECHECK_MS = 10000;
 
 /**
  * ── STRATEGY VERSIONING ──────────────────────────────────────────────────────
@@ -312,6 +343,17 @@ async function startSingleAccountEngine(account) {
   // once per day. In-memory only — resets on restart (a same-day restart may re-fire).
   let lastFullDeployKey = null;
   let lastEntryIstMin = null;
+  // Epoch ms until which new live entries are paused after an insufficient_margin /
+  // insufficient_commission rejection (LIVE_MARGIN_COOLDOWN_MS).
+  let liveMarginCooldownUntil = 0;
+  // Learned multiplier on the margin estimate (see LIVE_MARGIN_BOOST_*), and the count of
+  // consecutive margin rejections since the last successful live entry.
+  let liveMarginBoost = 1;
+  let liveMarginRejects = 0;
+  const liveMarginFactor = () => LIVE_MARGIN_SAFETY * liveMarginBoost;
+  // True while the active window's max positions is 0 and entry cycles are being skipped,
+  // so the skip/resume is logged once each instead of every minute.
+  let capZeroSkipping = false;
   let lastDbWrite = 0;
   let schedules = []; // Time-based schedule windows
 
@@ -382,6 +424,15 @@ async function startSingleAccountEngine(account) {
   // failure alerts go through this instead of notifyLiveFailure directly.
   function notifyFailure(args = {}) {
     notifyLiveFailure({ account: accountState.name, chatId: accountState.telegram_chat_id, ...args });
+  }
+
+  // Engine/Delta mismatch alert: goes to the account's chat AND the global (admin) chat, so
+  // someone watches the positions. Used where the engine deliberately does NOT act on its own.
+  function notifyAdmin(args = {}) {
+    notifyFailure(args);
+    if (accountState.telegram_chat_id) {
+      notifyLiveFailure({ account: accountState.name, chatId: '', ...args });
+    }
   }
 
   // Load + decrypt Delta credentials for live accounts. Requires the engine to
@@ -1552,6 +1603,12 @@ async function startSingleAccountEngine(account) {
       exitPoints: activeSchedule?.exitPoints ?? config.exitPoints,
     };
 
+    // Any untracked SHORT open right now? Then untracked longs are left alone too (alert
+    // only): they may be the protection for that short, and adopting one would put a sell
+    // ladder on it.
+    const untrackedShortOpen = livePos.some(p => (Number(p.size) || 0) < 0
+      && p.product_symbol && !tracked.has(p.product_symbol));
+
     const liveOrphanSymbols = new Set();
     for (const p of livePos) {
       const size = Number(p.size) || 0;
@@ -1571,13 +1628,20 @@ async function startSingleAccountEngine(account) {
       const sideLong = size > 0;
       const contracts = Math.abs(Math.round(size));
 
-      // NAKED SHORT → close reduce-only (invalid state; a short must be long-protected).
+      // UNTRACKED SHORT → ALERT ONLY. The engine never closes a position just because it
+      // doesn't recognise it: on 2026-09-24 a bad Delta snapshot made the engine forget open
+      // spreads, and this path then market-closed their (still long-protected) shorts.
       if (!sideLong) {
-        logWarn(`[${accountState.name}] ⊘ Orphan NAKED SHORT ${symbol} (size ${size}) — no DB row & shorts must be long-protected → reduce-only market close.`);
-        const c = await live.closeSymbol({ symbol, side: 'buy', contracts, tag: `ORPHAN-SHORTX-${symbol}` });
-        const done = !!(c.ok || c.dryRun || c.skipped || c.alreadyClosed);
-        if (done) orphanHandled.add(symbol);
-        notifyFailure({ account: accountState.name, context: `Orphan naked short ${symbol} (size ${size}) — no DB row → reduce-only close ${done ? 'sent' : 'FAILED, may still be OPEN'}.`, error: { message: c.error || 'orphan-naked-short' } });
+        logWarn(`[${accountState.name}] ⊘ Untracked SHORT ${symbol} (size ${size}) on Delta — no DB row. NOT closing; admin alerted.`);
+        orphanHandled.add(symbol);
+        notifyAdmin({ context: `Untracked SHORT ${symbol} (size ${size}) open on Delta with no engine row. Engine is NOT closing it — check positions and act manually.`, error: { message: 'untracked-short' } });
+        continue;
+      }
+
+      if (untrackedShortOpen) {
+        logWarn(`[${accountState.name}] ⊘ Untracked long ${symbol} (size ${size}) — untracked short(s) also open, so NOT adopting or touching it; admin alerted.`);
+        orphanHandled.add(symbol);
+        notifyAdmin({ context: `Untracked LONG ${symbol} (size ${size}) open on Delta alongside untracked short(s). Engine is NOT adopting or closing it — check positions and act manually.`, error: { message: 'untracked-long-with-short' } });
         continue;
       }
 
@@ -1624,10 +1688,9 @@ async function startSingleAccountEngine(account) {
           orphanHandled.add(symbol);
           notifyFailure({ account: accountState.name, context: `UNPROTECTED orphan long ${symbol} (size ${size}) — no DB row. Engine armed a protective bracket @ index ${level}; it is NOT being managed. Review/close manually.`, error: { message: 'orphan-protected' } });
         } else if (!r.ok && r.code === 'immediate_execution') {
-          const c = await live.closeSymbol({ symbol, side: 'sell', contracts, tag: `${tag}-immed` });
-          const done = !!(c.ok || c.dryRun || c.skipped || c.alreadyClosed);
-          if (done) orphanHandled.add(symbol);
-          notifyFailure({ account: accountState.name, context: `UNPROTECTED orphan ${symbol} (size ${size}) level ${level} already breached → protective MARKET close sell ${contracts}x — ${done ? 'done' : 'FAILED, may still be OPEN'}.`, error: { message: c.error || 'orphan-immediate' } });
+          // Level already breached, so no bracket can rest. Untracked → ALERT ONLY, no close.
+          orphanHandled.add(symbol);
+          notifyAdmin({ context: `UNPROTECTED untracked long ${symbol} (size ${size}) — exit level ${level} already breached, no bracket could be placed. Engine is NOT closing it — act manually.`, error: { message: 'untracked-long-breached' } });
         }
       } catch (e) {
         logError(`[${accountState.name}] protectOrphanExchangePositions failed for ${symbol}:`, e);
@@ -1905,13 +1968,162 @@ async function startSingleAccountEngine(account) {
     return filled > 0 ? notional / filled : null;
   }
 
+  // Three timers call this (30s reconcile, 60s balance, 5-min positions). Without a guard,
+  // two passes that overlap both see the same flat position and each book + notify it.
+  let reconcileInFlight = false;
+  // Set by stop() so a reconcile that is retrying Delta gives up when the engine shuts down.
+  let engineStopped = false;
+  const sleepMs = (ms) => new Promise(r => setTimeout(r, ms));
+  // symbol → { since, passes }: how long / how many consecutive successful snapshots a
+  // tracked leg has been missing from Delta's positions list. Reset when it reappears.
+  const legAbsence = new Map();
+  // symbol → epoch ms of the last successful snapshot that showed the leg OPEN. A close
+  // must have filled after this (minus clock slack) to count as proof in order history.
+  const legLastSeenAt = new Map();
+  // One admin alert per episode of "positions missing but not yet confirmed".
+  let absenceHoldAlerted = false;
   async function reconcileOrphans() {
     if (!(accountState.mode === 'live' && accountState.live_enabled && !live.dryRun)) return;
-    const livePos = await live.positions();
-    if (livePos == null) return; // fetch failed → don't infer any closes this pass
+    if (reconcileInFlight) return;
+    reconcileInFlight = true;
+    try {
+      await reconcileOrphansPass();
+    } finally {
+      reconcileInFlight = false;
+    }
+  }
+
+  // Delta positions, retried until Delta answers: a timeout / error is retried with capped
+  // backoff instead of skipping the pass. Returns null only if the account is disarmed or
+  // the engine stops while retrying.
+  async function fetchLivePositionsRetrying() {
+    for (let attempt = 0; ; attempt++) {
+      if (engineStopped || !(accountState.mode === 'live' && accountState.live_enabled)) return null;
+      const res = await live.positions();
+      if (res != null) {
+        if (attempt > 0) log(`[${accountState.name}] Delta positions fetch succeeded after ${attempt} retr${attempt === 1 ? 'y' : 'ies'}.`);
+        return res;
+      }
+      if (attempt === 0 || attempt % 10 === 0) {
+        logWarn(`[${accountState.name}] Delta positions fetch failed — retrying until Delta answers (attempt ${attempt + 1}). Nothing is booked meanwhile.`);
+      }
+      await sleepMs(Math.min(POSITIONS_RETRY_MAX_MS, POSITIONS_RETRY_BASE_MS * 2 ** Math.min(attempt, 10)));
+    }
+  }
+
+  async function reconcileOrphansPass() {
+    // ── Absence confirmation helpers ──────────────────────────────────────────────
+    // Legs the engine expects open: a long with lots, a short with qty. A leg only counts
+    // as gone once it is missing from ABSENCE_CONFIRM_PASSES successful snapshots in a row
+    // AND for ABSENCE_CONFIRM_MS. Until then nothing is booked, cancelled or converted.
+    const expectedLegs = (p) => [
+      (p.buyLeg?.lotSize || 0) > 0 ? p.buyLeg?.symbol : null,
+      p.sellQty > 0 ? p.sellLeg?.symbol : null,
+    ].filter(Boolean);
+    const trackedHere = () => positions.filter(p => p.underlying === config.underlying);
+    const sizesOf = (list) => {
+      const m = {};
+      for (const p of list) m[p.product_symbol] = Number(p.size) || 0;
+      return m;
+    };
+    // Count one successful snapshot against every expected leg.
+    const recordSnapshot = (sizes) => {
+      const at = Date.now();
+      const seen = new Set();
+      for (const p of trackedHere()) {
+        for (const sym of expectedLegs(p)) {
+          seen.add(sym);
+          if (Math.abs(sizes[sym] ?? 0) > 0) { legAbsence.delete(sym); legLastSeenAt.set(sym, at); continue; }
+          const prev = legAbsence.get(sym);
+          legAbsence.set(sym, { since: prev?.since ?? at, passes: (prev?.passes ?? 0) + 1 });
+        }
+      }
+      for (const sym of [...legAbsence.keys()]) if (!seen.has(sym)) legAbsence.delete(sym);
+    };
+    const allTrackedMissing = (sizes) => {
+      const legs = trackedHere().flatMap(expectedLegs);
+      return legs.length > 0 && legs.every(sym => !(Math.abs(sizes[sym] ?? 0) > 0));
+    };
+    const confirmedAbsent = (sym) => {
+      const a = legAbsence.get(sym);
+      return !!a && a.passes >= ABSENCE_CONFIRM_PASSES && Date.now() - a.since >= ABSENCE_CONFIRM_MS;
+    };
+
+    // ── Fallback proof of a close: Delta order history ──────────────────────────────
+    // The positions list is always the first check. A leg it no longer shows is booked
+    // (and its brackets cancelled) only if order history ALSO shows it closed: orders on
+    // that symbol on the closing side (long → sell, short → buy), filled since the leg was
+    // last seen open, adding up to at least the tracked contracts. A bad positions list
+    // leaves no such fill, so the position is held with its SL/TP intact and the admin is
+    // alerted. Fetched lazily, once per pass, only when a leg actually needs proving.
+    const CLOSE_PROOF_CLOCK_SLACK_MS = 120000;
+    let _orderHistCache;
+    const orderHistory = async () => {
+      if (_orderHistCache === undefined) _orderHistCache = await live.orderHistory({ maxPages: 3 });
+      return _orderHistCache; // null = fetch failed
+    };
+    const orderTime = (o) => new Date(o.updated_at || o.created_at || 0).getTime();
+    const filledSince = (orders, symbol, side, sinceMs) => orders
+      .filter(o => o.product_symbol === symbol && String(o.side) === side && orderTime(o) >= sinceMs)
+      .reduce((sum, o) => sum + Math.max(0, Math.abs(Number(o.size) || 0) - Math.abs(Number(o.unfilled_size) || 0)), 0);
+    const legSpecs = (p) => [
+      (p.buyLeg?.lotSize || 0) > 0
+        ? { symbol: p.buyLeg.symbol, openSide: 'buy', closeSide: 'sell', contracts: longContracts(p.buyLeg) } : null,
+      p.sellQty > 0
+        ? { symbol: p.sellLeg.symbol, openSide: 'sell', closeSide: 'buy', contracts: shortContracts(p.sellQty) } : null,
+    ].filter(Boolean);
+    // → 'closed' | 'never-opened' | 'unverified' (a failed history fetch is 'unverified').
+    const verifyClosedOnDelta = async (p, legs = legSpecs(p)) => {
+      // Past expiry the options are settled by Delta with no closing order, and an expired
+      // option cannot still be open — nothing to prove.
+      if (p.expiry && Date.now() >= new Date(p.expiry).getTime()) return 'closed';
+      const orders = await orderHistory();
+      if (!Array.isArray(orders)) return 'unverified';
+      const entryMs = new Date(p.entryTime).getTime();
+      // Never seen open this run and no entry fill at all → the entry never executed.
+      // Only decidable if the fetched history reaches back past the entry.
+      if (!p._everOpenOnDelta) {
+        const oldest = orders.reduce((m, o) => Math.min(m, orderTime(o) || Infinity), Infinity);
+        const coversEntry = oldest <= entryMs - CLOSE_PROOF_CLOCK_SLACK_MS;
+        if (coversEntry && legs.every(l => filledSince(orders, l.symbol, l.openSide, entryMs - CLOSE_PROOF_CLOCK_SLACK_MS) === 0)) {
+          return 'never-opened';
+        }
+      }
+      const closed = legs.every(l => {
+        const since = (legLastSeenAt.get(l.symbol) ?? entryMs) - CLOSE_PROOF_CLOCK_SLACK_MS;
+        return filledSince(orders, l.symbol, l.closeSide, since) >= l.contracts;
+      });
+      return closed ? 'closed' : 'unverified';
+    };
+
+    let livePos = await fetchLivePositionsRetrying();
+    if (livePos == null) return; // disarmed / stopped while retrying
+    let sizeBySymbol = sizesOf(livePos);
+    recordSnapshot(sizeBySymbol);
+
+    // Every tracked leg missing at once: don't trust it and don't sit on a timer — keep
+    // re-querying Delta until the legs come back (a glitch, e.g. 2026-09-24 08:59–09:03 UTC)
+    // or their absence is confirmed across fresh snapshots. The admin hears about it once.
+    if (allTrackedMissing(sizeBySymbol)) {
+      const missing = [...legAbsence.keys()];
+      logWarn(`[${accountState.name}] ⏸ ALL ${missing.length} tracked leg(s) missing from Delta's positions list — re-checking every ${ABSENCE_RECHECK_MS / 1000}s before booking anything.`);
+      if (!absenceHoldAlerted) {
+        absenceHoldAlerted = true;
+        notifyAdmin({ context: `Delta positions list shows NONE of the ${missing.length} tracked leg(s). Engine is re-checking Delta and is NOT booking or closing anything — check positions on Delta.`, error: { message: 'positions-all-missing' }, extra: missing.join(', ') });
+      }
+      while (allTrackedMissing(sizeBySymbol) && ![...legAbsence.keys()].every(confirmedAbsent)) {
+        await sleepMs(ABSENCE_RECHECK_MS);
+        livePos = await fetchLivePositionsRetrying();
+        if (livePos == null) return;
+        sizeBySymbol = sizesOf(livePos);
+        recordSnapshot(sizeBySymbol);
+      }
+      if (!allTrackedMissing(sizeBySymbol)) {
+        log(`[${accountState.name}] ✓ Tracked legs are back in Delta's positions list — it was a bad snapshot; nothing booked.`);
+      }
+    }
+
     const liveOrders = await live.orders();
-    const sizeBySymbol = {};
-    for (const p of livePos) sizeBySymbol[p.product_symbol] = Number(p.size) || 0;
 
     // Actual close-fill price for a vanished leg, fetched LAZILY (once per pass, only if an
     // orphan actually needs booking) so clean sweeps add no API call. Delegates the math to
@@ -1995,6 +2207,15 @@ async function startSingleAccountEngine(account) {
     await reconcilePartialReductions(sizeBySymbol, liveOrders);
 
     const now = Date.now();
+
+    // Absence was recorded per snapshot at the top of the pass. Just report a hold.
+    const missingNow = [...legAbsence.keys()];
+    if (missingNow.length === 0) {
+      absenceHoldAlerted = false;
+    } else if (!missingNow.every(confirmedAbsent)) {
+      log(`[${accountState.name}] ⏸ Reconcile hold: ${missingNow.length} tracked leg(s) missing from Delta (${missingNow.join(', ')}) — waiting for ${ABSENCE_CONFIRM_PASSES} checks + ${ABSENCE_CONFIRM_MS / 1000}s; not booking yet.`);
+    }
+
     for (const pos of [...positions]) {
       if (pos.underlying !== config.underlying) continue;
       const shortSize = Math.abs(sizeBySymbol[pos.sellLeg?.symbol] ?? 0);
@@ -2011,29 +2232,43 @@ async function startSingleAccountEngine(account) {
         // that the row is old enough (>5 min) that a never-filled entry would already be gone.
         // Age-guarded (>90s) against a mid-fill entry race (long fills before short) and
         // latched so the conversion + ladder placement fires at most once.
-        const danglingLong = pos.sellQty > 0 && shortSize === 0 && longSize > 0;
+        // The short must be CONFIRMED gone (not a single snapshot) before the long gets a
+        // sell ladder — otherwise a bad list would leave the real short naked.
+        const danglingLong = pos.sellQty > 0 && shortSize === 0 && longSize > 0
+          && confirmedAbsent(pos.sellLeg?.symbol);
         if (danglingLong && ageMs > 90000 && (pos._shortEverOpen || ageMs > 300000) && !pos._danglingLongConverted) {
+          const shortProof = await verifyClosedOnDelta(pos, legSpecs(pos).filter(l => l.symbol === pos.sellLeg.symbol));
+          if (shortProof !== 'closed') {
+            if (!pos._shortCloseUnverifiedAlerted) {
+              pos._shortCloseUnverifiedAlerted = true;
+              logWarn(`[${accountState.name}] ⏸ Short ${pos.sellLeg.symbol} missing from Delta's positions list but no matching buy-back in order history — NOT converting to long-only; admin alerted.`);
+              notifyAdmin({ context: `Short ${pos.sellLeg.symbol} (${pos.type.toUpperCase()} ${pos.buyLeg.strike}/${pos.sellLeg.strike}) is missing from Delta's positions list, but order history shows no matching buy-back. Engine is NOT booking it or touching the long — check on Delta.`, error: { message: 'short-close-unverified' } });
+            }
+            continue;
+          }
           pos._danglingLongConverted = true;
           logWarn(`[${accountState.name}] ⚠ Short ${pos.sellLeg.symbol} closed on Delta but long ${pos.buyLeg.symbol} still open → booking short exit + placing long ladder.`);
           await externalShortExitToLongLadder(pos).catch(e => logError(`[${accountState.name}] externalShortExitToLongLadder failed for ${pos.id}:`, e));
           continue;
         }
-        // Fix A — dangling short: the short leg is still open on Delta but its partner
-        // long is GONE. Not a valid strategy state (the long always protects the short),
-        // and it sits with an already-breached SL that keeps re-triggering the entry/
-        // resync failure loop (bracket_order_position_exists / immediate_execution).
-        // Flatten the lone short with a reduce-only MARKET close so the next cycle sees it
-        // flat and books it via the normal orphan path below. Latched + reduce-only → at
-        // most one closing order, and it can never over-sell. Age-guarded so a mid-fill
-        // entry (long fills before short) or a transient fetch blip isn't acted on.
-        const danglingShort = pos.sellQty > 0 && shortSize > 0 && longSize === 0;
-        if (danglingShort && ageMs > 90000 && !pos._danglingShortClosed) {
-          pos._danglingShortClosed = true;
-          logWarn(`[${accountState.name}] ⚠ Dangling short ${pos.sellLeg.symbol} (partner long ${pos.buyLeg.symbol} gone) → reduce-only market close to break the stuck loop.`);
-          await live.closeSymbol({ symbol: pos.sellLeg.symbol, side: 'buy', contracts: shortContracts(pos.sellQty), tag: `${pos.id}-DANGX` }).catch(() => {});
+        // Dangling short: the short is open on Delta but its partner long is gone (closed
+        // manually, or confirmed missing). ALERT ONLY — the engine does not close the short
+        // itself; the admin decides. A long the engine zeroed on purpose (manual leg close)
+        // needs no confirmation; an unexpectedly missing long must be confirmed first.
+        const longGone = longSize === 0
+          && ((pos.buyLeg?.lotSize || 0) <= 0 || confirmedAbsent(pos.buyLeg?.symbol));
+        const danglingShort = pos.sellQty > 0 && shortSize > 0 && longGone;
+        if (danglingShort && ageMs > 90000 && !pos._danglingShortAlerted) {
+          pos._danglingShortAlerted = true;
+          logWarn(`[${accountState.name}] ⚠ Short ${pos.sellLeg.symbol} is open without its long ${pos.buyLeg.symbol} — NOT closing; admin alerted.`);
+          notifyAdmin({ context: `Short ${pos.sellLeg.symbol} (${pos.type.toUpperCase()} ${pos.buyLeg.strike}/${pos.sellLeg.strike}) is open on Delta WITHOUT its long. Engine is NOT closing it — check and act manually.`, error: { message: 'short-without-long' } });
         }
-        continue; // still open (or flatten just sent) — book on a later cycle once flat
+        continue; // still open — book on a later cycle once flat
       }
+
+      // Both legs missing from this snapshot. Book only once every expected leg is CONFIRMED
+      // absent — one bad Delta list must never delete an open position.
+      if (!expectedLegs(pos).every(confirmedAbsent)) continue;
 
       const hasLongOrder = hasOrderForSymbol[pos.buyLeg?.symbol] || false;
       const hasShortOrder = hasOrderForSymbol[pos.sellLeg?.symbol] || false;
@@ -2049,6 +2284,18 @@ async function startSingleAccountEngine(account) {
         // closed — conservative, so a transient fetch/symbol blip can't wrongly wipe
         // a live position (the systemic-mismatch guard above is the primary defence).
         if (ageMs < 90000) continue;
+      }
+
+      // Fallback proof in order history before anything is booked or cancelled.
+      const closeProof = await verifyClosedOnDelta(pos);
+      if (closeProof === 'unverified') {
+        if (!pos._closeUnverifiedAlerted) {
+          pos._closeUnverifiedAlerted = true;
+          const label = `${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''}`;
+          logWarn(`[${accountState.name}] ⏸ ${label} missing from Delta's positions list but no matching closing fill in order history — NOT booking, SL/TP left in place; admin alerted.`);
+          notifyAdmin({ context: `${label} is missing from Delta's positions list, but order history shows no matching closing fill. Engine is NOT booking it or cancelling its SL/TP — check on Delta.`, error: { message: 'close-unverified' } });
+        }
+        continue; // re-checked every pass; books as soon as the closing fill shows up
       }
 
       // Orphan — the exchange closed it. Book a full exit at current mark + delete
@@ -2073,9 +2320,14 @@ async function startSingleAccountEngine(account) {
       const net = gross - (entryFee + exitFee);
       try {
         await cancelRestingOrders(pos);
+        // The label is shared by the history row and the Telegram message below.
+        // _danglingShortAlerted = the long was already gone and the lone short was then closed
+        // (manually or by its SL), so don't call the whole spread a stop loss.
+        const isTp = pos.sellQty === 0;
+        const label = pos._danglingShortAlerted
+          ? '🔒 SHORT CLOSED (long was already closed)'
+          : (isTp ? '🎯 TAKE PROFIT (long TP)' : '🚨 STOP LOSS (short SL)');
         if (pos._everOpenOnDelta) {
-          const isTp = pos.sellQty === 0;
-          const label = isTp ? '🎯 TAKE PROFIT (long TP)' : '🚨 STOP LOSS (short SL)';
           await supabase.from('trade_history').upsert([{
             trade_id: pos.id, underlying: pos.underlying, expiry: pos.expiry, type: pos.type,
             buy_leg: JSON.stringify(pos.buyLeg), sell_leg: JSON.stringify(pos.sellLeg),
@@ -2089,11 +2341,15 @@ async function startSingleAccountEngine(account) {
           }], { onConflict: 'trade_id', ignoreDuplicates: true });
         }
         await supabase.from('active_positions').delete().eq('id', pos.id);
+        // Drop it from memory HERE. The Realtime DELETE listener can't be relied on for this:
+        // it subscribes with an account_id filter, and Supabase doesn't deliver filtered
+        // DELETE events. Left in memory, every later pass re-booked it and re-sent the
+        // Telegram alert until the 5-minute full reload (seen 2026-09-24, Dg PUT 83600/82800).
+        positions = positions.filter(p => p.id !== pos.id);
+        heartbeat.update({ active_positions: positions.length });
         log(`[${accountState.name}] ♻️ RECONCILE-CLEAN: ${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} absent from Delta → ${pos._everOpenOnDelta ? 'booked + removed' : 'silently removed (never filled)'}`);
         if (pos._everOpenOnDelta) {
-          const isTp = pos.sellQty === 0;
-          const title = isTp ? '🎯 TAKE PROFIT (long TP)' : '🚨 STOP LOSS (short SL)';
-          notifyTrade({ title, detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} · closed on Delta`, pnl: net + (pos.accumulatedSellPnl || 0) });
+          notifyTrade({ title: label, detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} · closed on Delta`, pnl: net + (pos.accumulatedSellPnl || 0) });
         }
       } catch (e) {
         logError(`[${accountState.name}] reconcileOrphans failed for ${pos.id}:`, e);
@@ -2934,8 +3190,13 @@ async function startSingleAccountEngine(account) {
       //  • onlyExits        → exits-only cycle (59 of every 60 ticks), no entries
       //  • accountState.paused → account paused, entries blocked (exits still run)
       //  • !dayAllowsEntry  → day-of-week entry gate (see isTradingDayEnabled)
+      //  • !capAllowsEntry  → the active window's max positions is 0. Acts like a per-window
+      //    pause: the scan, the live wallet/positions calls and the per-candidate "cap
+      //    reached" logs are all skipped, exits still run, and entries resume on the first
+      //    entry minute after the cap is raised (it is re-read every cycle).
       const dayAllowsEntry = isTradingDayEnabled();
-      const wantEntries = !onlyExits && !accountState.paused && dayAllowsEntry;
+      const capAllowsEntry = activeCombinedCap() > 0;
+      const wantEntries = !onlyExits && !accountState.paused && dayAllowsEntry && capAllowsEntry;
 
       // scanTickers is an O(n²) pass over every strike pair, per type — tens of ms per
       // account, and it holds the event loop the whole time (every account engine shares
@@ -4089,6 +4350,15 @@ async function startSingleAccountEngine(account) {
       if (!dayAllowsEntry && !onlyExits && !paused) {
         log(`[${accountState.name}] ⌚ Trading day disabled — skipping new entries (open positions still managed).`);
       }
+      if (!onlyExits && !paused && dayAllowsEntry) {
+        if (!capAllowsEntry && !capZeroSkipping) {
+          capZeroSkipping = true;
+          log(`[${accountState.name}] ⏸ Max positions is 0 for the active window — skipping entry scans (open positions still managed). Entries resume once it is raised.`);
+        } else if (capAllowsEntry && capZeroSkipping) {
+          capZeroSkipping = false;
+          log(`[${accountState.name}] ▶ Max positions is ${activeCombinedCap()} again — entries resumed.`);
+        }
+      }
 
       const liveArmed = accountState.mode === 'live' && !!accountState.live_enabled;
 
@@ -4151,6 +4421,13 @@ async function startSingleAccountEngine(account) {
       }
 
       let partMargin = null;
+      // Live: Delta's free margin above the allocation reserve, as read this cycle. Each
+      // entry is checked against it before orders go out and it is drawn down per entry.
+      // null = not read (paper, disarmed, or Delta sent no available_balance).
+      let liveAvailLeft = null;
+      // Delta free margin (× factor) already claimed by live candidates sized this cycle,
+      // so a second candidate is fitted to what is left, not to the full amount.
+      let liveSizedSoFar = 0;
       // Paper full-deployment clamp state (per cycle): the remaining allocated pool and
       // how much of it has been consumed by entries opened this cycle, so the 4:30
       // concentrate fill never deploys more than the pool.
@@ -4221,9 +4498,16 @@ async function startSingleAccountEngine(account) {
         return { partMargin: 0, isFullDeploy: true };
       };
 
-      if (!onlyExits && !paused && dayAllowsEntry && liveArmed) {
+      const liveCoolingDown = liveArmed && Date.now() < liveMarginCooldownUntil;
+      if (!onlyExits && !paused && dayAllowsEntry && capAllowsEntry && liveCoolingDown) {
+        // partMargin stays null -> the entry loop skips every live candidate this cycle.
+        const mins = Math.ceil((liveMarginCooldownUntil - Date.now()) / 60000);
+        logWarn(`[${accountState.name}] LIVE entries paused ~${mins} more min after a Delta margin rejection.`);
+      }
+      if (!onlyExits && !paused && dayAllowsEntry && capAllowsEntry && liveArmed && !liveCoolingDown) {
         try {
-          const bal = await live.walletBalance();
+          const snap = await live.walletSnapshot();
+          const bal = snap?.balance;
           if (bal != null && bal > 0) {
             const allocPct = config.balanceAllocationPct ?? 90;
             const budget = bal * (allocPct / 100);
@@ -4237,14 +4521,31 @@ async function startSingleAccountEngine(account) {
             const openHere = remaining.filter(p => p.underlying === underlying);
             const usedMargin = openHere.reduce((s, p) => s + (p.margin || 0), 0);
             const occupiedSlots = openHere.filter(p => p.sellQty > 0).length; // full spreads occupy cap slots
-            const remainingBudget = Math.max(0, budget - usedMargin);
+            let remainingBudget = Math.max(0, budget - usedMargin);
             const remainingSlots = Math.max(0, maxPos - occupiedSlots);
+            // `usedMargin` is the engine's own estimate and runs low (see LIVE_MARGIN_SAFETY),
+            // so also cap by what Delta says is actually free. Keep the allocation reserve
+            // (balance × (100 − alloc)%) untouched, and divide by the safety factor so an
+            // entry sized to the cap still fits once Delta applies its real margin.
+            let deltaNote = '';
+            if (snap.available != null) {
+              const reserve = bal * (1 - allocPct / 100);
+              liveAvailLeft = Math.max(0, snap.available - reserve);
+              const deltaCap = liveAvailLeft / liveMarginFactor();
+              deltaNote = ` | Delta free $${snap.available.toFixed(2)} − reserve $${reserve.toFixed(2)} → cap $${deltaCap.toFixed(2)}`;
+              if (deltaCap < remainingBudget) {
+                deltaNote += ' (BINDING)';
+                remainingBudget = deltaCap;
+              }
+            } else {
+              logWarn(`[${accountState.name}] LIVE sizing: Delta sent no available_balance — sizing on the engine's margin estimate only.`);
+            }
             // Normal: remaining ÷ free slots. Full-deploy pass: concentrate the whole
             // remaining pool across openable spreads (migration 030, now live too).
             const sized = sizePartMargin({ remainingBudget, remainingSlots, maxPos, openHere, label: 'LIVE' });
             partMargin = sized.partMargin;
             if (!sized.isFullDeploy) {
-              log(`[${accountState.name}] ¤ LIVE sizing: balance $${bal.toFixed(2)} × ${allocPct}% = $${budget.toFixed(2)} budget | used $${usedMargin.toFixed(2)} | remaining $${remainingBudget.toFixed(2)} ÷ ${remainingSlots} free slot(s) (window combined cap ${maxPos}) = $${partMargin.toFixed(2)}/position`);
+              log(`[${accountState.name}] ¤ LIVE sizing: balance $${bal.toFixed(2)} × ${allocPct}% = $${budget.toFixed(2)} budget | used $${usedMargin.toFixed(2)}${deltaNote} | remaining $${remainingBudget.toFixed(2)} ÷ ${remainingSlots} free slot(s) (window combined cap ${maxPos}) = $${partMargin.toFixed(2)}/position`);
             }
           } else {
             logWarn(`[${accountState.name}] LIVE sizing: wallet balance unavailable — skipping live entries this cycle.`);
@@ -4262,7 +4563,7 @@ async function startSingleAccountEngine(account) {
       // window re-divides whatever balance is left by its own combined cap. Paper
       // accounts only (mode !== 'live'); armed AND unarmed live accounts are untouched.
       const isPaperAccount = accountState.mode !== 'live';
-      if (!onlyExits && !paused && dayAllowsEntry && isPaperAccount) {
+      if (!onlyExits && !paused && dayAllowsEntry && capAllowsEntry && isPaperAccount) {
         await refreshRealizedPnl();
         const equity = getPaperEquity();
         const allocPct = config.balanceAllocationPct ?? 90;
@@ -4285,7 +4586,7 @@ async function startSingleAccountEngine(account) {
         }
       }
 
-      if (!onlyExits && !paused && dayAllowsEntry) {
+      if (!onlyExits && !paused && dayAllowsEntry && capAllowsEntry) {
         // Fix B — pre-entry symbol guard (live armed). Delta treats each option contract as
         // ONE product, so if a position already exists on a candidate leg's symbol (e.g.
         // another spread's long at the strike we want to short, or a stuck half-open leg),
@@ -4532,12 +4833,35 @@ async function startSingleAccountEngine(account) {
             liveLongCV = longCV; // persist as the leg's margin basis for later long-only recompute
             liveShortCV = shortCV; // persist for the short leg object built after this block
             const baseMargin = calcMargin(entryBuyPrice, longCV, spotPrice, ratioToUse, shortCV, config.underlying);
-            scale = (baseMargin > 0) ? (partMargin / baseMargin) : 1;
+            // Fit the order to what Delta actually has free: Delta's available margin above
+            // the reserve, minus what candidates sized earlier this cycle already claimed,
+            // against the margin estimate × the (learned) safety factor.
+            const mFactor = liveMarginFactor();
+            const liveFree = liveAvailLeft != null ? Math.max(0, liveAvailLeft - liveSizedSoFar) : null;
+            let candPart = partMargin;
+            if (liveFree != null) {
+              if (baseMargin * mFactor > liveFree) {
+                logWarn(`[${accountState.name}] LIVE entry ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: even 1 unit needs ~$${(baseMargin * mFactor).toFixed(2)} margin but only $${liveFree.toFixed(2)} is free on Delta above the reserve.`);
+                continue;
+              }
+              const fitPart = liveFree / mFactor;
+              if (fitPart < candPart) {
+                log(`[${accountState.name}] ⤵ LIVE size ${spreadType.toUpperCase()} ${bStrike}/${sStrike} fitted to Delta's available margin: part $${candPart.toFixed(2)} → $${fitPart.toFixed(2)} (free $${liveFree.toFixed(2)} ÷ ${mFactor.toFixed(2)})`);
+                candPart = fitPart;
+              }
+            }
+            scale = (baseMargin > 0) ? (candPart / baseMargin) : 1;
             if (scale < 1) {
-              logWarn(`[${accountState.name}] LIVE size: one unit (margin $${baseMargin.toFixed(2)}) exceeds 1 part ($${partMargin.toFixed(2)}) — trading the minimum 1 unit.`);
+              logWarn(`[${accountState.name}] LIVE size: one unit (margin $${baseMargin.toFixed(2)}) exceeds 1 part ($${candPart.toFixed(2)}) — trading the minimum 1 unit.`);
               scale = 1;
             }
             let longC = Math.max(1, Math.round(scale));
+            // Rounding the long UP can push the estimate back over what Delta has free —
+            // step it down until the order fits (never below 1, which fits by the check above).
+            if (liveFree != null) {
+              const estAt = (lc) => calcMargin(entryBuyPrice, longCV * lc, spotPrice, Math.max(1, Math.round(lc * ratioToUse)), shortCV, config.underlying);
+              while (longC > 1 && estAt(longC) * mFactor > liveFree) longC--;
+            }
 
             // Ratio-spread max-qty cap: never size the spread past what the ratio spread
             // itself supports. The SHORT notional (spot × short contracts × contract value)
@@ -4565,7 +4889,8 @@ async function startSingleAccountEngine(account) {
             adjustedLotSize = Number((longCV * longC).toFixed(4));
             adjustedSellQty = shortC;
             liveMargin = calcMargin(entryBuyPrice, longCV * longC, spotPrice, adjustedSellQty, shortCV, config.underlying);
-            log(`[${accountState.name}] ¤ LIVE size ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: unit margin $${baseMargin.toFixed(2)} | part $${partMargin.toFixed(2)} → scale ${scale.toFixed(2)}× | long ${longC} short ${shortC} (base 1:${ratioToUse}) | est margin $${liveMargin.toFixed(2)} | cv ${longCV}/${shortCV}`);
+            if (liveFree != null) liveSizedSoFar += liveMargin * mFactor;
+            log(`[${accountState.name}] ¤ LIVE size ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: unit margin $${baseMargin.toFixed(2)} | part $${candPart.toFixed(2)} → scale ${scale.toFixed(2)}× | long ${longC} short ${shortC} (base 1:${ratioToUse}) | est margin $${liveMargin.toFixed(2)} | cv ${longCV}/${shortCV}`);
           } else if (isPaperAccount && partMargin != null) {
             // PAPER (migration 027): scale the base 1:ratio unit so its margin fills the
             // per-position part (allocated pool ÷ the active window's combined cap), then
@@ -5175,6 +5500,18 @@ async function startSingleAccountEngine(account) {
               }
             }
 
+            // Pre-order margin check (live armed): the entry's estimated margin × safety must
+            // fit in Delta's remaining free margin. Catches a rounded-up size or a second
+            // entry in the same cycle BEFORE the long is bought, instead of Delta rejecting
+            // the short after the long already filled (which forces a lossy unwind).
+            if (liveArmed && liveAvailLeft != null) {
+              const need = (t.margin || 0) * liveMarginFactor();
+              if (need > liveAvailLeft) {
+                logWarn(`[${accountState.name}] Entry ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} skipped: needs ~$${need.toFixed(2)} margin (est $${(t.margin || 0).toFixed(2)} × ${liveMarginFactor().toFixed(2)}) but only $${liveAvailLeft.toFixed(2)} is free on Delta above the reserve.`);
+                continue;
+              }
+            }
+
             const liveEntry = await live.openSpread(t, {
               long: longContracts(t.buyLeg),
               short: shortContracts(t.sellQty),
@@ -5201,7 +5538,28 @@ async function startSingleAccountEngine(account) {
                 ? `rejected by Delta at submit (${liveEntry.error})`
                 : 'could not fill (chase exhausted)';
               logError(`[${accountState.name}] LIVE entry aborted (${liveEntry.legFailed} leg: ${liveEntry.error}) — not persisting ${t.buyLeg.strike}/${t.sellLeg.strike}`);
-              notifyFailure({ account: accountState.name, context: `Entry ABORTED — ${liveEntry.legFailed} leg ${failMode}; position unwound, account left flat`, error: liveEntry.error, extra: `${t.type?.toUpperCase?.() || ''} ${t.buyLeg.strike}/${t.sellLeg.strike}` });
+              // Delta needed more margin than estimated. Scale the estimate up and retry: the
+              // retry re-reads Delta's available balance and sizes a smaller order to fit it.
+              // Only after LIVE_MARGIN_MAX_RESIZE_RETRIES rejections in a row (each one buys and
+              // unwinds the long) do new live entries pause.
+              const marginReject = /insufficient_(margin|commission)/i.test(String(liveEntry.error ?? ''));
+              let pauseNote = '';
+              if (marginReject) {
+                liveMarginRejects += 1;
+                liveMarginBoost = Math.min(LIVE_MARGIN_BOOST_MAX, liveMarginBoost * LIVE_MARGIN_BOOST_STEP);
+                liveAvailLeft = 0; // no further entries this cycle; the retry re-reads the balance
+                if (liveMarginRejects >= LIVE_MARGIN_MAX_RESIZE_RETRIES) {
+                  liveMarginCooldownUntil = Date.now() + LIVE_MARGIN_COOLDOWN_MS;
+                  liveMarginRejects = 0;
+                  pauseNote = ` — ${LIVE_MARGIN_MAX_RESIZE_RETRIES} re-sized attempts rejected in a row, new live entries paused ${Math.round(LIVE_MARGIN_COOLDOWN_MS / 60000)} min`;
+                  logWarn(`[${accountState.name}] LIVE entries paused for ${Math.round(LIVE_MARGIN_COOLDOWN_MS / 60000)} min after ${LIVE_MARGIN_MAX_RESIZE_RETRIES} margin rejections in a row (last: ${liveEntry.error}).`);
+                } else {
+                  pauseNote = ` — retrying with an order re-sized to Delta's available balance (margin estimate ×${liveMarginFactor().toFixed(2)})`;
+                  logWarn(`[${accountState.name}] Delta rejected on ${liveEntry.error} (${liveMarginRejects}/${LIVE_MARGIN_MAX_RESIZE_RETRIES}) — margin estimate now ×${liveMarginFactor().toFixed(2)}; retrying with an order re-sized to Delta's available balance.`);
+                  requestEntryRetry(`${t.type?.toUpperCase?.() || ''} ${t.buyLeg.strike}/${t.sellLeg.strike} margin rejection — re-sizing to Delta's available balance`);
+                }
+              }
+              notifyFailure({ account: accountState.name, context: `Entry ABORTED — ${liveEntry.legFailed} leg ${failMode}; position unwound, account left flat${pauseNote}`, error: liveEntry.error, extra: `${t.type?.toUpperCase?.() || ''} ${t.buyLeg.strike}/${t.sellLeg.strike}` });
               // A leg that couldn't FILL is a transient market condition — the same spread is
               // usually fillable moments later, so queue a short-cooldown retry instead of
               // burning the rest of the minute. A submit-time REJECTION is structural
@@ -5210,6 +5568,17 @@ async function startSingleAccountEngine(account) {
                 requestEntryRetry(`${t.type?.toUpperCase?.() || ''} ${t.buyLeg.strike}/${t.sellLeg.strike} ${liveEntry.legFailed} leg unfilled`);
               }
               continue;
+            }
+            // Draw the cycle's free margin down so a second entry this cycle is checked
+            // against what this one just consumed.
+            if (liveArmed && liveAvailLeft != null) {
+              liveAvailLeft = Math.max(0, liveAvailLeft - (t.margin || 0) * liveMarginFactor());
+            }
+            // A live entry went through: clear the rejection streak and ease the learned
+            // margin boost back toward 1.
+            if (liveArmed) {
+              liveMarginRejects = 0;
+              if (liveMarginBoost > 1) liveMarginBoost = Math.max(1, liveMarginBoost / LIVE_MARGIN_BOOST_STEP);
             }
             // Remember the exchange bracket level on each leg so a later
             // exitType/exitPoints change can detect the drift and move the bracket
@@ -5906,6 +6275,7 @@ async function startSingleAccountEngine(account) {
   return {
     async stop(isDeleted = false) {
       log(`[${accountState.name}] Paper Trading Engine shutting down... (isDeleted: ${isDeleted})`);
+      engineStopped = true;
       clearInterval(evalTimer);
       clearInterval(spotTimer);
       clearInterval(productTimer);
