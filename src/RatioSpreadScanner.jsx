@@ -59,11 +59,15 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
       atmRatioScaling: false,
       atmRatioPctCall: 50,
       atmRatioPctPut: 50,
-      // Hedge leg preview — shows each spread's 3rd long (one strike-width beyond the short,
-      // sized as short qty × hedgeLotPct), the same leg paper trading adds when its window's
-      // Hedge toggle is on. Display only: it does not change the scan filters.
+      // Hedge leg — each spread's 3rd long: beyond the short, the strike nearest it whose
+      // price is below hedgeMaxPrice and whose |IV − short IV| is in [hedgeIvDiffMin,
+      // hedgeIvDiffMax]; sized as short qty × hedgeLotPct. The same leg paper trading adds
+      // when its window's Hedge toggle is on.
       hedgeEnabled: false,
-      hedgeLotPct: 50
+      hedgeLotPct: 50,
+      hedgeMaxPrice: 10,
+      hedgeIvDiffMin: 0,
+      hedgeIvDiffMax: 2
     };
 
     if (saved) {
@@ -368,14 +372,18 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
       const sorted = [...tickers].sort((a, b) => a.strike - b.strike);
       const validPairs = [];
 
-      // Hedge leg for a pair: the quoted strike one width beyond the short, via the same
-      // pickHedgeStrike the engine uses. null when off or no such strike. `unitQty` is per
+      // Hedge leg for a pair: the strike beyond the short that passes the price and IV-diff
+      // filters, nearest the short, via the same pickHedgeStrike the engine uses. null when off or no such strike. `unitQty` is per
       // ratio unit (short qty × Hedge Lot %); ResultTable scales it with the short.
       const hedgePool = config.hedgeEnabled ? sorted.filter(t => (t.ask ?? 0) > 0) : [];
       const hedgeFor = (buyLeg, sellLeg, shortQty) => {
         if (!config.hedgeEnabled || !(config.hedgeLotPct > 0)) return null;
         const pool = hedgePool.filter(t => t !== buyLeg && t !== sellLeg);
-        const h = pickHedgeStrike(pool, buyLeg.type, buyLeg.strike, sellLeg.strike);
+        const h = pickHedgeStrike(pool, buyLeg.type, sellLeg.strike, sellLeg.bidIv ?? sellLeg.iv, {
+          maxPrice: Number(config.hedgeMaxPrice ?? 10),
+          ivMin: Number(config.hedgeIvDiffMin ?? 0),
+          ivMax: Number(config.hedgeIvDiffMax ?? 2),
+        });
         if (!h) return null;
         return {
           strike: h.strike,
@@ -800,6 +808,26 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
                   onChange={e => updateConfig('hedgeLotPct', Number(e.target.value))}
                 />
               </div>
+            )}
+            {config.hedgeEnabled && (
+              <>
+                <div key="hedgeMaxPrice" className="form-group row-inline">
+                  <label>Max Hedge Price</label>
+                  <CustomInput type="number" step="1" min="0" prefix="$" showStepper width={100} value={config.hedgeMaxPrice ?? 10}
+                    onChange={e => updateConfig('hedgeMaxPrice', Number(e.target.value))}
+                  />
+                </div>
+                <div key="hedgeIvDiffMin" className="form-group row-inline">
+                  <label>Hedge IV Diff</label>
+                  <CustomInput type="number" step="0.5" min="0" suffix="%" showStepper width={90} value={config.hedgeIvDiffMin ?? 0}
+                    onChange={e => updateConfig('hedgeIvDiffMin', Number(e.target.value))}
+                  />
+                  <span style={{ margin: '0 4px' }}>to</span>
+                  <CustomInput type="number" step="0.5" min="0" suffix="%" showStepper width={90} value={config.hedgeIvDiffMax ?? 2}
+                    onChange={e => updateConfig('hedgeIvDiffMax', Number(e.target.value))}
+                  />
+                </div>
+              </>
             )}
             {config.atmRatioScaling && (
               <>

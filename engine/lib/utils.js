@@ -83,30 +83,33 @@ export function pickTopUniqueStrikes(spreads, limit = 3) {
 }
 
 /**
- * Hedge (3rd long) strike for a ratio spread: one strike-width beyond the short, on the
- * same side — call: short + (short − long), put: short − (long − short). Picks the listed
- * candidate nearest that target, strictly beyond the short and within half a width of the
- * target (ties → the one nearer the short, i.e. more protective). `candidates` are
- * same-type, same-expiry tickers the caller has already filtered (quoted, not excluded,
- * not the spread's own legs). Returns the ticker, or null if none qualifies.
+ * Hedge (3rd long) strike for a ratio spread. Among quoted strikes BEYOND the short on the
+ * same side (call: above it, put: below it), keep those whose price is below `maxPrice`
+ * and whose IV differs from the short's IV by an amount inside [ivMin, ivMax]
+ * (|hedge IV − short IV|), then pick the one NEAREST the short (the most protective).
+ * `candidates` are same-type, same-expiry tickers the caller has already filtered (not
+ * excluded, not the spread's own legs). Price = ask (fallback last / mark), IV = ask IV
+ * (fallback iv). Returns the ticker, or null if none qualifies (→ plain 2-leg spread).
+ *
  * Twin of src/scannerUtils.js pickHedgeStrike — keep the two identical.
  */
-export function pickHedgeStrike(candidates, type, buyStrike, sellStrike) {
-  const width = Math.abs(Number(sellStrike) - Number(buyStrike));
-  if (!(width > 0)) return null;
+export function pickHedgeStrike(candidates, type, sellStrike, sellIv, { maxPrice = 10, ivMin = 0, ivMax = 2 } = {}) {
   const isCall = String(type).toLowerCase() === 'call';
   const short = Number(sellStrike);
-  const target = isCall ? short + width : short - width;
+  const shortIv = Number(sellIv);
+  if (!Number.isFinite(short) || !Number.isFinite(shortIv)) return null;
   let best = null;
-  let bestDist = Infinity;
   for (const t of candidates || []) {
     const k = Number(t?.strike);
     if (!Number.isFinite(k)) continue;
     if (isCall ? !(k > short) : !(k < short)) continue;
-    const dist = Math.abs(k - target);
-    if (dist > width / 2) continue;
-    const nearerShort = best != null && Math.abs(k - short) < Math.abs(Number(best.strike) - short);
-    if (dist < bestDist || (dist === bestDist && nearerShort)) { best = t; bestDist = dist; }
+    const px = Number(t.ask ?? t.lastPrice ?? t.markPrice);
+    if (!(px > 0) || !(px < maxPrice)) continue;
+    const iv = Number(t.askIv ?? t.iv);
+    if (!Number.isFinite(iv)) continue;
+    const ivDiff = Math.abs(iv - shortIv);
+    if (ivDiff < ivMin || ivDiff > ivMax) continue;
+    if (best == null || Math.abs(k - short) < Math.abs(Number(best.strike) - short)) best = t;
   }
   return best;
 }

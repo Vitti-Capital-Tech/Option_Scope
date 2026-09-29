@@ -657,6 +657,10 @@ async function startSingleAccountEngine(account) {
           // 3rd long's size as a % of the spread's short qty.
           hedgeEnabled: s.hedge_enabled ?? false,
           hedgeLotPct: s.hedge_lot_pct ?? 0,
+          // Hedge strike filters (migration 043): max price and |hedge IV − short IV| range.
+          hedgeMaxPrice: s.hedge_max_price ?? 10,
+          hedgeIvDiffMin: s.hedge_iv_diff_min ?? 0,
+          hedgeIvDiffMax: s.hedge_iv_diff_max ?? 2,
           isActive: s.is_active ?? true,
         }));
 
@@ -684,7 +688,7 @@ async function startSingleAccountEngine(account) {
                 'combinedSplitPct', 'minLongDist', 'minStrikeDiff', 'minIvDiff', 'atmRatioScaling',
                 'atmRatioPctCall', 'atmRatioPctPut', 'maxNetPremium', 'exitType', 'exitPoints',
                 'slTpDecoyDiff', 'shortExitPrice', 'variableExitSlices', 'longExitSlices', 'daysToExpiry',
-                'hedgeEnabled', 'hedgeLotPct'
+                'hedgeEnabled', 'hedgeLotPct', 'hedgeMaxPrice', 'hedgeIvDiffMin', 'hedgeIvDiffMax'
               ];
               fieldsToCompare.forEach(f => {
                 if (oldWin[f] !== newWin[f] && oldWin[f] !== undefined) {
@@ -3071,6 +3075,9 @@ async function startSingleAccountEngine(account) {
             ? {
               hedgeEnabled: activeSchedule.hedgeEnabled ?? false,
               hedgeLotPct: activeSchedule.hedgeLotPct ?? 0,
+              hedgeMaxPrice: activeSchedule.hedgeMaxPrice ?? 10,
+              hedgeIvDiffMin: activeSchedule.hedgeIvDiffMin ?? 0,
+              hedgeIvDiffMax: activeSchedule.hedgeIvDiffMax ?? 2,
             }
             : {}),
         }
@@ -3286,11 +3293,17 @@ async function startSingleAccountEngine(account) {
 
       // Hedge leg (3rd long) this cycle — PAPER accounts, strategy_version >= 2, window
       // toggle on and a Hedge Lot % > 0. Shared by the ATM P&L gate and the entry so both see
-      // the SAME strike: the quoted, non-excluded strike one width beyond the short
+      // the SAME strike: the non-excluded strike beyond the short, nearest it, whose price is
+      // below Max Hedge Price and whose |IV − short IV| is inside the window's range
       // (pickHedgeStrike). Returns { ticker, ask } or null (→ plain 2-leg spread).
       const hedgeLotPct = Number(effectiveConfig.hedgeLotPct) || 0;
       const hedgeOn = accountState.mode !== 'live' && config.strategyVersion >= 2
         && !!effectiveConfig.hedgeEnabled && hedgeLotPct > 0;
+      const hedgeFilters = {
+        maxPrice: Number(effectiveConfig.hedgeMaxPrice ?? 10),
+        ivMin: Number(effectiveConfig.hedgeIvDiffMin ?? 0),
+        ivMax: Number(effectiveConfig.hedgeIvDiffMax ?? 2),
+      };
       function hedgeCandidateFor(spread) {
         if (!hedgeOn) return null;
         const type = spread.buyLeg.type;
@@ -3299,7 +3312,7 @@ async function startSingleAccountEngine(account) {
           && t.symbol !== spread.buyLeg.symbol && t.symbol !== spread.sellLeg.symbol
           && !excludedStrikes.has(Number(t.strike)) // user-excluded (paper, migration 040)
           && quote(t) > 0);
-        const ticker = pickHedgeStrike(pool, type, Number(spread.buyLeg.strike), Number(spread.sellLeg.strike));
+        const ticker = pickHedgeStrike(pool, type, Number(spread.sellLeg.strike), spread.sellIv, hedgeFilters);
         return ticker ? { ticker, ask: quote(ticker) } : null;
       }
 
@@ -5029,9 +5042,7 @@ async function startSingleAccountEngine(account) {
               const best = cand ? cand.ticker : null;
               const bestAsk = cand ? cand.ask : null;
               if (!best) {
-                const width = Math.abs(sStrike - bStrike);
-                const target = spreadType === 'call' ? sStrike + width : sStrike - width;
-                logWarn(`[${accountState.name}] Hedge ${spreadType} skipped for ${bStrike}/${sStrike}: no quoted strike near ${target} (one width beyond the short) — entering as plain 2-leg.`);
+                logWarn(`[${accountState.name}] Hedge ${spreadType} skipped for ${bStrike}/${sStrike}: no strike beyond the short with price < $${hedgeFilters.maxPrice} and |IV − short IV| in [${hedgeFilters.ivMin}, ${hedgeFilters.ivMax}] — entering as plain 2-leg.`);
               } else {
                 // Combined-premium gate: the Max Net Debit now applies to ALL THREE legs.
                 // Adding a long makes the debit larger, so the triplet gate is stricter than

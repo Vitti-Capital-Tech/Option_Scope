@@ -119,6 +119,9 @@ const makeFirstWindow = (cfg = {}) => ({
   daysToExpiry: cfg.daysToExpiry ?? 0,
   hedgeEnabled: false,
   hedgeLotPct: 0,
+  hedgeMaxPrice: 10,
+  hedgeIvDiffMin: 0,
+  hedgeIvDiffMax: 2,
   isActive: true,
   sort_order: 0,
 });
@@ -1516,6 +1519,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           daysToExpiry: s.days_to_expiry ?? 0,
           hedgeEnabled: s.hedge_enabled ?? false,
           hedgeLotPct: s.hedge_lot_pct ?? 0,
+          hedgeMaxPrice: s.hedge_max_price ?? 10,
+          hedgeIvDiffMin: s.hedge_iv_diff_min ?? 0,
+          hedgeIvDiffMax: s.hedge_iv_diff_max ?? 2,
           isActive: s.is_active ?? true,
           sort_order: s.sort_order ?? 0,
         }));
@@ -1550,6 +1556,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           daysToExpiry: s.daysToExpiry,
           hedgeEnabled: s.hedgeEnabled,
           hedgeLotPct: s.hedgeLotPct,
+          hedgeMaxPrice: s.hedgeMaxPrice,
+          hedgeIvDiffMin: s.hedgeIvDiffMin,
+          hedgeIvDiffMax: s.hedgeIvDiffMax,
           isActive: s.isActive
         })));
       }
@@ -1591,6 +1600,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         days_to_expiry: s.daysToExpiry ?? 0,
         hedge_enabled: s.hedgeEnabled ?? false,
         hedge_lot_pct: s.hedgeLotPct ?? 0,
+        hedge_max_price: s.hedgeMaxPrice ?? 10,
+        hedge_iv_diff_min: s.hedgeIvDiffMin ?? 0,
+        hedge_iv_diff_max: s.hedgeIvDiffMax ?? 2,
         is_active: s.isActive ?? true,
         sort_order: i,
         updated_at: new Date().toISOString(),
@@ -1637,6 +1649,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         daysToExpiry: s.daysToExpiry,
         hedgeEnabled: s.hedgeEnabled,
         hedgeLotPct: s.hedgeLotPct,
+        hedgeMaxPrice: s.hedgeMaxPrice,
+        hedgeIvDiffMin: s.hedgeIvDiffMin,
+        hedgeIvDiffMax: s.hedgeIvDiffMax,
         isActive: s.isActive
       })));
       lastSavedSchedulesRef.current = savedJson;
@@ -1673,6 +1688,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       daysToExpiry: s.daysToExpiry,
       hedgeEnabled: s.hedgeEnabled,
       hedgeLotPct: s.hedgeLotPct,
+      hedgeMaxPrice: s.hedgeMaxPrice,
+      hedgeIvDiffMin: s.hedgeIvDiffMin,
+      hedgeIvDiffMax: s.hedgeIvDiffMax,
       isActive: s.isActive
     })));
     return lastSavedSchedulesRef.current !== currentJson;

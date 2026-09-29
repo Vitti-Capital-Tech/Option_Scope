@@ -1382,3 +1382,21 @@ ALTER TABLE public.paper_trading_schedules
   DROP COLUMN IF EXISTS hedge_call_pct,
   DROP COLUMN IF EXISTS hedge_put_price,
   DROP COLUMN IF EXISTS hedge_put_pct;
+
+-- ─── 043_hedge_price_and_iv_filters.sql ───
+-- Migration 043: hedge strike filters (hedge_max_price, hedge_iv_diff_min/max)
+ALTER TABLE public.paper_trading_schedules
+  ADD COLUMN IF NOT EXISTS hedge_max_price NUMERIC NOT NULL DEFAULT 10,
+  ADD COLUMN IF NOT EXISTS hedge_iv_diff_min NUMERIC NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS hedge_iv_diff_max NUMERIC NOT NULL DEFAULT 2;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'paper_trading_schedules_hedge_filters_check'
+  ) THEN
+    ALTER TABLE public.paper_trading_schedules
+      ADD CONSTRAINT paper_trading_schedules_hedge_filters_check
+      CHECK (hedge_max_price >= 0 AND hedge_iv_diff_min >= 0 AND hedge_iv_diff_max >= hedge_iv_diff_min);
+  END IF;
+END $$;

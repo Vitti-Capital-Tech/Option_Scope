@@ -200,7 +200,7 @@ Two threshold filters let you hide spreads whose **projected at-ATM edge** is to
 
 The **Hedge Leg** checkbox in the filter bar (with **Hedge Lot %**, default 50%) shows each spread's 3rd long: the same leg paper trading adds when a window's Hedge toggle is on.
 
-- **Strike**: one strike-width beyond the short, on the same side. Call: `short + (short − long)`, put: `short − (long − short)`. If that exact strike isn't listed, the nearest listed, quoted strike beyond the short within half a width is used (`pickHedgeStrike` in `src/scannerUtils.js`, the twin of the engine's copy).
+- **Strike**: among strikes beyond the short on the same side, the one nearest the short whose price is below **Max Hedge Price** (default $10) and whose **|hedge IV − short IV|** is inside the **Hedge IV Diff** range (default 0 to 2). Uses `pickHedgeStrike` in `src/scannerUtils.js`, the twin of the engine's copy.
 - **Qty**: the **scaled** short qty (after the $195k cap / leverage sizing, the same qty shown in *Ratio*) × Hedge Lot %.
 - **Display**: a line `H: +<strike> @ $<ask> × <qty>` under the spread strikes. It appears only when such a strike exists; otherwise nothing is shown.
 - **Net premium** (and the **Max Net Debit** filter) use all three legs: `short qty × short bid − long ask − hedge qty × hedge ask` (the cell says `incl. hedge`).

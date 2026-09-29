@@ -190,6 +190,11 @@ CREATE TABLE IF NOT EXISTS public.paper_trading_schedules (
     -- which migration 042 drops.
     hedge_enabled BOOLEAN NOT NULL DEFAULT false,
     hedge_lot_pct NUMERIC NOT NULL DEFAULT 0,
+    -- Hedge strike filters (migration 043): price below hedge_max_price and
+    -- |hedge IV − short IV| in [hedge_iv_diff_min, hedge_iv_diff_max]; nearest the short wins.
+    hedge_max_price NUMERIC NOT NULL DEFAULT 10,
+    hedge_iv_diff_min NUMERIC NOT NULL DEFAULT 0,
+    hedge_iv_diff_max NUMERIC NOT NULL DEFAULT 2,
     is_active BOOLEAN NOT NULL DEFAULT true,
     sort_order INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),

@@ -27,6 +27,9 @@ const DEFAULT_WINDOW = {
   daysToExpiry: 0,
   hedgeEnabled: false,
   hedgeLotPct: 0,
+  hedgeMaxPrice: 10,
+  hedgeIvDiffMin: 0,
+  hedgeIvDiffMax: 2,
   isActive: true,
 };
 
@@ -779,9 +782,10 @@ export default function SchedulePanel({
 
                 {/* Hedge leg — per-spread 3rd long (experimental / strategy_version >= 2).
                     When on, every entered spread (call or put) becomes a long/short/long
-                    triplet: a 3rd long one strike-width beyond the short (call: short + width,
-                    put: short − width, nearest listed strike), sized as that spread's own short
-                    qty × Hedge Lot %. It rides the triplet and exits with it (main-strike
+                    triplet: a 3rd long beyond the short (call: above, put: below), the strike
+                    nearest the short whose price is below Max Hedge Price and whose
+                    |IV − short IV| is inside the IV Diff range, sized as that spread's own
+                    short qty × Hedge Lot %. It rides the triplet and exits with it (main-strike
                     ATM/ITM/OTM or expiry). Paper accounts only — never shown for live. */}
                 {isPaper && strategyVersion >= 2 && (
                   <div className="schedule-item-block schedule-item-num-block">
@@ -799,6 +803,22 @@ export default function SchedulePanel({
                     <span className="schedule-item-label" title="Hedge leg quantity as a % of the spread's short-leg quantity.">Hedge Lot %</span>
                     <CustomInput type="number" min="0" max="100" step="1" suffix="%" value={s.hedgeLotPct ?? 0} onChange={e => handleChange(s.id, 'hedgeLotPct', Number(e.target.value))} />
                   </div>
+                )}
+                {isPaper && strategyVersion >= 2 && s.hedgeEnabled && (
+                  <>
+                    <div className="schedule-item-block schedule-item-num-block">
+                      <span className="schedule-item-label" title="The hedge strike's price must be below this.">Max Hedge Price</span>
+                      <CustomInput type="number" min="0" step="1" prefix="$" value={s.hedgeMaxPrice ?? 10} onChange={e => handleChange(s.id, 'hedgeMaxPrice', Number(e.target.value))} />
+                    </div>
+                    <div className="schedule-item-block schedule-item-num-block">
+                      <span className="schedule-item-label" title="|hedge IV − short IV| must be at least this.">Hedge IV Diff Min</span>
+                      <CustomInput type="number" min="0" step="0.5" suffix="%" value={s.hedgeIvDiffMin ?? 0} onChange={e => handleChange(s.id, 'hedgeIvDiffMin', Number(e.target.value))} />
+                    </div>
+                    <div className="schedule-item-block schedule-item-num-block">
+                      <span className="schedule-item-label" title="|hedge IV − short IV| must be at most this.">Hedge IV Diff Max</span>
+                      <CustomInput type="number" min="0" step="0.5" suffix="%" value={s.hedgeIvDiffMax ?? 2} onChange={e => handleChange(s.id, 'hedgeIvDiffMax', Number(e.target.value))} />
+                    </div>
+                  </>
                 )}
 
                 <div className="schedule-item-block schedule-item-num-block">
