@@ -11,7 +11,8 @@ import ResultTable from './ResultTable';
 import { normalizeIv, toFiniteNumber, matchesOptionType, pickHedgeStrike } from './scannerUtils';
 import Navbar from './components/PaperTrading/Navbar';
 import CustomSelect from './components/common/CustomSelect';
-import CustomInput from './components/common/CustomInput';
+import { ScannerFilters, ScannerFilterSummary } from './components/scanner/ScannerFilters';
+import { SCANNER_DEFAULTS } from './components/scanner/scannerDefaults';
 import { ChevronDown } from 'lucide-react';
 
 // ── Main Scanner Component ──────────────────────────────────────────────────
@@ -44,31 +45,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
   // Configurable thresholds initialized from localStorage
   const [config, setConfig] = useState(() => {
     const saved = localStorage.getItem('vitti_algo_config');
-    const base = {
-      minStrikeDiff: 800,
-      minIvDiff: 5,
-      maxRatioDeviation: 0.25,
-      minSellPremium: 10,
-      maxNetPremium: 20,
-      minLongDist: 500,
-      maxSellQty: 10,
-      // ATM Edge (P&L) column floors — keep only spreads whose at-ATM P&L and ROI clear
-      // these minimums. Applied live in ResultTable against the ATM-priced P&L/ROI.
-      minAtmPnl: 0,
-      minAtmRoi: 0,
-      atmRatioScaling: false,
-      atmRatioPctCall: 50,
-      atmRatioPctPut: 50,
-      // Hedge leg — each spread's 3rd long: beyond the short, the strike nearest it whose
-      // price is below hedgeMaxPrice and whose |IV − short IV| is in [hedgeIvDiffMin,
-      // hedgeIvDiffMax]; sized as short qty × hedgeLotPct. The same leg paper trading adds
-      // when its window's Hedge toggle is on.
-      hedgeEnabled: false,
-      hedgeLotPct: 50,
-      hedgeMaxPrice: 10,
-      hedgeIvDiffMin: 0,
-      hedgeIvDiffMax: 2
-    };
+    const base = { ...SCANNER_DEFAULTS };
 
     if (saved) {
       try {
@@ -713,173 +690,18 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             </button>
           </div>
 
-          <div className="hide-mobile" style={{ width: 1, height: 24, backgroundColor: 'var(--border)' }}></div>
+          {isFiltersCollapsed && (
+            <ScannerFilterSummary config={config} onOpen={() => setIsFiltersCollapsed(false)} />
+          )}
+
+          <div className="hide-mobile scanner-config-sep" style={{ width: 1, height: 24, backgroundColor: 'var(--border)' }}></div>
 
           <div className={`scanner-filters-container ${isFiltersCollapsed ? 'collapsed' : 'expanded'}`}>
             <span className="scanner-config-title filter-title">FILTERS</span>
-
-            {/* Filters are grouped into clusters (same look as the Paper Trading control
-                panel). On phones each cluster is full width with one "label … input" row per
-                field; toggles use the same pt-switch as paper/live trading. */}
-            <div className="scanner-cluster">
-              <span className="scanner-cluster-head">Spread</span>
-              <div className="scanner-cluster-fields">
-                <div className="form-group row-inline">
-                  <label>Min Spread Width</label>
-                  <CustomInput
-                    type="number" prefix="$" showStepper width={110}
-                    step='50'
-                    value={config.minStrikeDiff}
-                    onChange={e => updateConfig('minStrikeDiff', Number(e.target.value))}
-                  />
-                </div>
-                <div className="form-group row-inline">
-                  <label>Min Spot Distance</label>
-                  <CustomInput
-                    type="number" prefix="$" showStepper width={110}
-                    step='50'
-                    value={config.minLongDist}
-                    onChange={e => updateConfig('minLongDist', Number(e.target.value))}
-                  />
-                </div>
-                <div className="form-group row-inline">
-                  <label>Max Short Ratio</label>
-                  <CustomInput
-                    type="number"
-                    step="0.25" prefix="1:" showStepper width={110}
-                    value={config.maxSellQty}
-                    onChange={e => updateConfig('maxSellQty', Number(e.target.value))}
-                  />
-                </div>
-                <div className="form-group row-inline">
-                  <label>Max Delta Deviation</label>
-                  <CustomInput
-                    type="number"
-                    step="0.01" showStepper width={110}
-                    value={config.maxRatioDeviation}
-                    onChange={e => updateConfig('maxRatioDeviation', Number(e.target.value))}
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="scanner-cluster">
-              <span className="scanner-cluster-head">Premium &amp; IV</span>
-              <div className="scanner-cluster-fields">
-                <div className="form-group row-inline">
-                  <label>Min IV Edge</label>
-                  <CustomInput
-                    type="number" suffix="%" showStepper width={110}
-                    step='0.25'
-                    value={config.minIvDiff}
-                    onChange={e => updateConfig('minIvDiff', Number(e.target.value))}
-                  />
-                </div>
-                <div className="form-group row-inline">
-                  <label>Min Short Premium</label>
-                  <CustomInput
-                    type="number" prefix="$" showStepper width={110}
-                    value={config.minSellPremium}
-                    onChange={e => updateConfig('minSellPremium', Number(e.target.value))}
-                  />
-                </div>
-                <div className="form-group row-inline">
-                  <label>Max Net Debit</label>
-                  <CustomInput
-                    type="number" prefix="$" showStepper width={110}
-                    value={config.maxNetPremium}
-                    onChange={e => updateConfig('maxNetPremium', Number(e.target.value))}
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="scanner-cluster">
-              <span className="scanner-cluster-head">ATM Edge</span>
-              <div className="scanner-cluster-fields">
-                <div className="form-group row-inline">
-                  <label>Min ATM P&amp;L</label>
-                  <CustomInput type="number" prefix="$" step="10" showStepper width={110} value={config.minAtmPnl ?? 0}
-                    onChange={e => updateConfig('minAtmPnl', Number(e.target.value))}
-                  />
-                </div>
-                <div className="form-group row-inline">
-                  <label>Min ATM ROI</label>
-                  <CustomInput type="number" suffix="%" step="1" showStepper width={110} value={config.minAtmRoi ?? 0}
-                    onChange={e => updateConfig('minAtmRoi', Number(e.target.value))}
-                  />
-                </div>
-                <div className="form-group row-inline scanner-switch-row">
-                  <label htmlFor="atmRatioScaling" style={{ cursor: 'pointer', userSelect: 'none' }}>Dynamic ATM Scaling</label>
-                  <label className="pt-switch" title="Scale the short qty toward the ATM ratio">
-                    <input type="checkbox" id="atmRatioScaling" checked={config.atmRatioScaling ?? false}
-                      onChange={e => updateConfig('atmRatioScaling', e.target.checked)} />
-                    <span className="pt-slider"></span>
-                  </label>
-                </div>
-                {config.atmRatioScaling && (
-                  <>
-                    <div className="form-group row-inline">
-                      <label>Call Scaling</label>
-                      <CustomInput type="number" step="5" suffix="%" showStepper width={110} value={config.atmRatioPctCall ?? 50}
-                        onChange={e => updateConfig('atmRatioPctCall', Number(e.target.value))}
-                      />
-                    </div>
-                    <div className="form-group row-inline">
-                      <label>Put Scaling</label>
-                      <CustomInput type="number" step="5" suffix="%" showStepper width={110} value={config.atmRatioPctPut ?? 50}
-                        onChange={e => updateConfig('atmRatioPctPut', Number(e.target.value))}
-                      />
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-
-            <div className="scanner-cluster">
-              <span className="scanner-cluster-head">Hedge Leg</span>
-              <div className="scanner-cluster-fields">
-                <div className="form-group row-inline scanner-switch-row">
-                  <label htmlFor="hedgeEnabled" style={{ cursor: 'pointer', userSelect: 'none' }}>Show Hedge Leg</label>
-                  <label className="pt-switch" title="Show each spread's 3rd long (hedge) leg">
-                    <input type="checkbox" id="hedgeEnabled" checked={config.hedgeEnabled ?? false}
-                      onChange={e => updateConfig('hedgeEnabled', e.target.checked)} />
-                    <span className="pt-slider"></span>
-                  </label>
-                </div>
-                {config.hedgeEnabled && (
-                  <>
-                    <div className="form-group row-inline">
-                      <label>Hedge Lot</label>
-                      <CustomInput type="number" step="5" min="0" max="100" suffix="%" showStepper width={110} value={config.hedgeLotPct ?? 50}
-                        onChange={e => updateConfig('hedgeLotPct', Number(e.target.value))}
-                      />
-                    </div>
-                    <div className="form-group row-inline">
-                      <label>Max Hedge Price</label>
-                      <CustomInput type="number" step="1" min="0" prefix="$" showStepper width={110} value={config.hedgeMaxPrice ?? 10}
-                        onChange={e => updateConfig('hedgeMaxPrice', Number(e.target.value))}
-                      />
-                    </div>
-                    <div className="form-group row-inline">
-                      <label>Hedge IV Diff</label>
-                      <div className="scanner-range-inputs">
-                        <CustomInput type="number" step="0.5" min="0" suffix="%" showStepper width={90} value={config.hedgeIvDiffMin ?? 0}
-                          onChange={e => updateConfig('hedgeIvDiffMin', Number(e.target.value))}
-                        />
-                        <span>to</span>
-                        <CustomInput type="number" step="0.5" min="0" suffix="%" showStepper width={90} value={config.hedgeIvDiffMax ?? 2}
-                          onChange={e => updateConfig('hedgeIvDiffMax', Number(e.target.value))}
-                        />
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
+            <ScannerFilters config={config} updateConfig={updateConfig} />
           </div>
-          {/* Actions for Start/Stop Scan button */}
-          <div>
+          {/* Actions for Start/Stop Scan button — top-right on desktop, below the filters on phones */}
+          <div className="scanner-scan-action">
             <button
               className={`btn-start ${scanning ? 'btn-stop' : ''}`}
               onClick={scanning ? handleStopScan : handleStartScan}
