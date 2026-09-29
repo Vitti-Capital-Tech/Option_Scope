@@ -34,7 +34,7 @@ function HedgeLine({ hedge }) {
   return (
     <div
       style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}
-      title={`Hedge long ${hedge.strike.toLocaleString()} @ $${price.toFixed(2)}${hedge.iv != null ? ` (${Number(hedge.iv).toFixed(1)}% IV)` : ''} × ${hedge.qty} (short qty × hedge lot %)`}
+      title={`Hedge long ${hedge.strike.toLocaleString()} @ $${price.toFixed(2)}${hedge.iv != null ? ` (${Number(hedge.iv).toFixed(1)}% IV)` : ''} × ${hedge.qty} (scaled short qty × hedge lot %)${hedge.atAtm != null ? ` · worth $${Number(hedge.atAtm).toFixed(2)} at ATM` : ''}`}
     >
       H: <span className="scanner-buy">+{hedge.strike.toLocaleString()}</span> @ ${price.toFixed(2)} × {hedge.qty}
     </div>
@@ -227,12 +227,31 @@ export default function ResultTable({
       // the bracket tolerance above uses. Must match engine/lib/utils.js calcMargin().
       const leverage = leverageFor(r.buyLeg?.symbol);
 
+      // Hedge leg (3rd long): qty = the SCALED short qty (after the $195k / leverage cap)
+      // × Hedge Lot %. At ATM it is worth the bid at the ATM-shifted hedge strike (same
+      // shift as the long/short); unquoted there = worthless (whole premium lost). Its
+      // premium adds to margin. Mirrors the engine's ATM P&L gate.
+      const hedgePct = (Number(config?.hedgeLotPct) || 0) / 100;
+      let hedge = null;
+      let hedgeTerm = 0;
+      let hedgeMargin = 0;
+      if (r.hedge) {
+        const hedgeQty = Math.round(adjustedSellQty * hedgePct * 100) / 100;
+        const offset = Number(r.hedge.strike) - Number(r.buyLeg.strike);
+        const hedgeAtAtm = atmStrike != null
+          ? (resolveTickerPrice(atmStrike + offset, type, 'bid').price ?? 0)
+          : 0;
+        hedgeTerm = (hedgeAtAtm - r.hedge.price) * totalSellQty * hedgePct;
+        hedgeMargin = r.hedge.price * adjustedSellQty * hedgePct;
+        hedge = { ...r.hedge, qty: hedgeQty, atAtm: hedgeAtAtm };
+      }
+
       // Compute P&L scaled to the adjusted lot size
       const atAtmPnl = hasAtmData
-        ? ((buyIntrinsic - r.buyPrice) + (r.sellPrice - sellIntrinsic) * totalSellQty) * adjustedLotSize
+        ? ((buyIntrinsic - r.buyPrice) + (r.sellPrice - sellIntrinsic) * totalSellQty + hedgeTerm) * adjustedLotSize
         : null;
 
-      const margin = (r.buyPrice * adjustedLotSize) + (shortValue / leverage);
+      const margin = (r.buyPrice * adjustedLotSize) + (shortValue / leverage) + hedgeMargin;
       const roi = (atAtmPnl != null && margin > 0) ? (atAtmPnl / margin) * 100 : null;
 
       // Net premium is computed in the scanner from the scaled qty.
@@ -260,7 +279,8 @@ export default function ResultTable({
         margin,
         roi,
         roundedAtmRatio,
-        hasAtmData
+        hasAtmData,
+        hedge
       };
     });
 
@@ -446,7 +466,7 @@ export default function ResultTable({
                             ${Math.abs(parseFloat(bestRow.netPremium))}
                           </div>
                           <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-                            {bestRow.ivDiff.toFixed(1)}% IV
+                            {bestRow.ivDiff.toFixed(1)}% IV{bestRow.hedge ? ' · incl. hedge' : ''}
                           </div>
                         </td>
                         <td className="hide-mobile">
@@ -455,7 +475,7 @@ export default function ResultTable({
                             <span className='scanner-sell'>{bestRow.sellLeg.delta?.toFixed(4)}</span>
                           </div>
                           <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-                            N: {bestRow.deltaDiff.toFixed(4)}
+                            N: {bestRow.deltaDiff.toFixed(4)}{bestRow.netDelta3 != null ? ` · 3-leg ${bestRow.netDelta3.toFixed(4)}` : ''}
                           </div>
                         </td>
 
@@ -527,7 +547,7 @@ export default function ResultTable({
                                 ${Math.abs(parseFloat(r.netPremium))}
                               </div>
                               <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-                                {r.ivDiff.toFixed(1)}% IV
+                                {r.ivDiff.toFixed(1)}% IV{r.hedge ? ' · incl. hedge' : ''}
                               </div>
                             </td>
                             <td className="hide-mobile">
@@ -536,7 +556,7 @@ export default function ResultTable({
                                 <span className='scanner-sell'>{r.sellLeg.delta?.toFixed(4)}</span>
                               </div>
                               <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-                                N: {r.deltaDiff.toFixed(4)}
+                                N: {r.deltaDiff.toFixed(4)}{r.netDelta3 != null ? ` · 3-leg ${r.netDelta3.toFixed(4)}` : ''}
                               </div>
                             </td>
 

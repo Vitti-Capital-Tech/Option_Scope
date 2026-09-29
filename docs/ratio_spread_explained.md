@@ -201,9 +201,12 @@ Two threshold filters let you hide spreads whose **projected at-ATM edge** is to
 The **Hedge Leg** checkbox in the filter bar (with **Hedge Lot %**, default 50%) shows each spread's 3rd long: the same leg paper trading adds when a window's Hedge toggle is on.
 
 - **Strike**: one strike-width beyond the short, on the same side. Call: `short + (short − long)`, put: `short − (long − short)`. If that exact strike isn't listed, the nearest listed, quoted strike beyond the short within half a width is used (`pickHedgeStrike` in `src/scannerUtils.js`, the twin of the engine's copy).
-- **Qty**: the spread's (ATM-scaled) short qty × Hedge Lot %.
+- **Qty**: the **scaled** short qty (after the $195k cap / leverage sizing, the same qty shown in *Ratio*) × Hedge Lot %.
 - **Display**: a line `H: +<strike> @ $<ask> × <qty>` under the spread strikes. It appears only when such a strike exists; otherwise nothing is shown.
-- **Display only**: the hedge does not change the scan filters, net premium, ATM P&L or margin columns.
+- **Net premium** (and the **Max Net Debit** filter) use all three legs: `short qty × short bid − long ask − hedge qty × hedge ask` (the cell says `incl. hedge`).
+- **Delta**: the short qty is still sized delta-neutral on the long and short only. The Delta cell adds the net delta of all three legs (`3-leg …`).
+- **ATM P&L / ROI / Req. Margin** include the hedge. At ATM it is worth the bid at the ATM-shifted hedge strike (unquoted = worthless), and its premium is added to margin.
+- **IV edge** is unchanged: `|long IV − short IV|`.
 
 ## Quote Freshness & REST Backfill
 

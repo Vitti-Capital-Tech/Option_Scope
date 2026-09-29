@@ -368,8 +368,9 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
       const sorted = [...tickers].sort((a, b) => a.strike - b.strike);
       const validPairs = [];
 
-      // Hedge leg for a pair (display only): the quoted strike one width beyond the short,
-      // via the same pickHedgeStrike the engine uses. null when off or no such strike.
+      // Hedge leg for a pair: the quoted strike one width beyond the short, via the same
+      // pickHedgeStrike the engine uses. null when off or no such strike. `unitQty` is per
+      // ratio unit (short qty × Hedge Lot %); ResultTable scales it with the short.
       const hedgePool = config.hedgeEnabled ? sorted.filter(t => (t.ask ?? 0) > 0) : [];
       const hedgeFor = (buyLeg, sellLeg, shortQty) => {
         if (!config.hedgeEnabled || !(config.hedgeLotPct > 0)) return null;
@@ -380,7 +381,8 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
           strike: h.strike,
           price: h.ask,
           iv: h.askIv ?? h.iv ?? null,
-          qty: Math.round(shortQty * (config.hedgeLotPct / 100) * 100) / 100,
+          deltaNotional: h.deltaNotional ?? null,
+          unitQty: shortQty * (config.hedgeLotPct / 100),
         };
       };
 
@@ -466,8 +468,16 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             scaledSellQty = Math.max(sellQty, Math.round((sellQty + (pct / 100) * diff) / 0.25) * 0.25);
           }
 
+          // Hedge leg (when the toggle is on and the strike exists). Net premium and net
+          // delta then include all THREE legs, and the max-debit check uses the 3-leg net —
+          // the same gate paper trading applies at entry. IV edge stays long vs short.
+          const hedge = hedgeFor(buyLeg, sellLeg, scaledSellQty);
+
           // Max-debit (maxNetPremium) check on the post-scaling net premium.
-          const netPrem = scaledSellQty * sellPrice - buyPrice;
+          const netPrem = scaledSellQty * sellPrice - buyPrice - (hedge ? hedge.unitQty * hedge.price : 0);
+          const netDelta3 = hedge && hedge.deltaNotional != null
+            ? buyDN - scaledSellQty * sellDN + hedge.unitQty * hedge.deltaNotional
+            : null;
 
           if (netPrem < -config.maxNetPremium) continue;
 
@@ -490,7 +500,8 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             sellIv,
             netPremium: netPrem.toFixed(2),
             deltaDiff,
-            hedge: hedgeFor(buyLeg, sellLeg, scaledSellQty)
+            netDelta3,
+            hedge
           });
         }
       }

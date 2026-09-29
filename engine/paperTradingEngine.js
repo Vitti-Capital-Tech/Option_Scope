@@ -3284,6 +3284,25 @@ async function startSingleAccountEngine(account) {
         return pBelow ?? pAbove;
       }
 
+      // Hedge leg (3rd long) this cycle — PAPER accounts, strategy_version >= 2, window
+      // toggle on and a Hedge Lot % > 0. Shared by the ATM P&L gate and the entry so both see
+      // the SAME strike: the quoted, non-excluded strike one width beyond the short
+      // (pickHedgeStrike). Returns { ticker, ask } or null (→ plain 2-leg spread).
+      const hedgeLotPct = Number(effectiveConfig.hedgeLotPct) || 0;
+      const hedgeOn = accountState.mode !== 'live' && config.strategyVersion >= 2
+        && !!effectiveConfig.hedgeEnabled && hedgeLotPct > 0;
+      function hedgeCandidateFor(spread) {
+        if (!hedgeOn) return null;
+        const type = spread.buyLeg.type;
+        const quote = (t) => t.ask ?? t.lastPrice ?? t.markPrice;
+        const pool = allTickers.filter(t => t.type === type && t.expiry === config.expiry
+          && t.symbol !== spread.buyLeg.symbol && t.symbol !== spread.sellLeg.symbol
+          && !excludedStrikes.has(Number(t.strike)) // user-excluded (paper, migration 040)
+          && quote(t) > 0);
+        const ticker = pickHedgeStrike(pool, type, Number(spread.buyLeg.strike), Number(spread.sellLeg.strike));
+        return ticker ? { ticker, ask: quote(ticker) } : null;
+      }
+
       function calculateAtmPnlAndRoi(spread) {
         const buyIntrinsic = getTickerPrice(atmStrike, spread.buyLeg.type, 'bid', config.expiry);
         const targetSellStrike = spread.buyLeg.type === 'call' ? atmStrike + spread.strikeDiff : atmStrike - spread.strikeDiff;
@@ -3315,11 +3334,27 @@ async function startSingleAccountEngine(account) {
           shortValue = 195000;
         }
 
-        const atmPnl = ((buyIntrinsic - spread.buyPrice) + (spread.sellPrice - sellIntrinsic) * ratioToUse) * adjustedLotSize;
-        const margin = calcMargin(spread.buyPrice, adjustedLotSize, spotPrice, adjustedSellQty, sellLotSize, config.underlying);
+        // Hedge leg in the ATM model: its qty is the short qty × Hedge Lot % (per unit here,
+        // scaled by adjustedLotSize like the short). At ATM it is worth the bid at the
+        // ATM-shifted hedge strike (same shift as the other two legs); unquoted there =
+        // worthless, so the whole premium counts as lost. Its premium is added to margin.
+        const hedge = hedgeCandidateFor(spread);
+        let hedgeTerm = 0;
+        let hedgeMargin = 0;
+        let hedgeAtAtm = null;
+        if (hedge) {
+          const unitQty = ratioToUse * (hedgeLotPct / 100);
+          const offset = Number(hedge.ticker.strike) - Number(spread.buyLeg.strike);
+          hedgeAtAtm = getTickerPrice(atmStrike + offset, spread.buyLeg.type, 'bid', config.expiry) ?? 0;
+          hedgeTerm = (hedgeAtAtm - hedge.ask) * unitQty;
+          hedgeMargin = calcMargin(hedge.ask, adjustedSellQty * (hedgeLotPct / 100), spotPrice, 0, 1, config.underlying);
+        }
+
+        const atmPnl = ((buyIntrinsic - spread.buyPrice) + (spread.sellPrice - sellIntrinsic) * ratioToUse + hedgeTerm) * adjustedLotSize;
+        const margin = calcMargin(spread.buyPrice, adjustedLotSize, spotPrice, adjustedSellQty, sellLotSize, config.underlying) + hedgeMargin;
         const roi = margin > 0 ? (atmPnl / margin) * 100 : 0;
 
-        return { atmPnl, roi, buyIntrinsic, sellIntrinsic, targetSellStrike, atmRatio: entryAtmRatio, ratioToUse };
+        return { atmPnl, roi, buyIntrinsic, sellIntrinsic, targetSellStrike, atmRatio: entryAtmRatio, ratioToUse, hedge, hedgeAtAtm };
       }
 
       // Compute ATM P&L and ROI for each spread in topSpreads, and filter by ATM P&L >= 50.
@@ -3367,7 +3402,7 @@ async function startSingleAccountEngine(account) {
       // Skip the per-spread ATM P&L/ROI compute whenever this cycle can't open an entry
       // (exits-only, paused, or a disabled trading day) — processedSpreads stays empty.
       for (const spread of (wantEntries ? topSpreads : [])) {
-        const { atmPnl, roi, buyIntrinsic, sellIntrinsic, targetSellStrike, atmRatio, ratioToUse } = calculateAtmPnlAndRoi(spread);
+        const { atmPnl, roi, buyIntrinsic, sellIntrinsic, targetSellStrike, atmRatio, ratioToUse, hedge: atmHedge, hedgeAtAtm } = calculateAtmPnlAndRoi(spread);
 
         // ── ATM edge floors (migration 039) ───────────────────────────────────────
         // PAPER accounts read both floors from config; LIVE keeps the historical
@@ -3404,7 +3439,7 @@ async function startSingleAccountEngine(account) {
         // spread, and nothing in the log said WHICH input disagreed. `—` on either intrinsic
         // now means that strike has no fresh quote (candidate skipped, not mis-priced).
         const usd = (v) => (v != null ? `$${v.toFixed(2)}` : '—');
-        log(`[${accountState.name}] Candidate ${spread.buyLeg.type.toUpperCase()} ${spread.buyLeg.strike}/${spread.sellLeg.strike}: ATM P&L = $${atmPnl != null ? atmPnl.toFixed(2) : 'null'} (Min required: $${minAtmPnl.toFixed(2)}), ROI = ${roi != null ? roi.toFixed(2) : 0}% (Min required: ${minAtmRoi.toFixed(2)}%), Passed = ${passed} | ATM ${atmStrike} ${usd(buyIntrinsic)} / ${targetSellStrike} ${usd(sellIntrinsic)} → ratio ${atmRatio ?? '—'} → qty ${spread.sellQty}→${ratioToUse ?? '—'} | legs ${usd(spread.buyPrice)}/${usd(spread.sellPrice)}`);
+        log(`[${accountState.name}] Candidate ${spread.buyLeg.type.toUpperCase()} ${spread.buyLeg.strike}/${spread.sellLeg.strike}: ATM P&L = $${atmPnl != null ? atmPnl.toFixed(2) : 'null'} (Min required: $${minAtmPnl.toFixed(2)}), ROI = ${roi != null ? roi.toFixed(2) : 0}% (Min required: ${minAtmRoi.toFixed(2)}%), Passed = ${passed} | ATM ${atmStrike} ${usd(buyIntrinsic)} / ${targetSellStrike} ${usd(sellIntrinsic)} → ratio ${atmRatio ?? '—'} → qty ${spread.sellQty}→${ratioToUse ?? '—'} | legs ${usd(spread.buyPrice)}/${usd(spread.sellPrice)}${atmHedge ? ` | hedge ${atmHedge.ticker.strike} ${usd(atmHedge.ask)} → ATM ${usd(hedgeAtAtm)} × ${hedgeLotPct}%` : ''}`);
         if (passed) {
           processedSpreads.push({ ...spread, atmPnl, roi });
         }
@@ -4983,21 +5018,16 @@ async function startSingleAccountEngine(account) {
           // cross or expiry (see exit tree). No quoted strike there → plain 2-leg entry.
           let hedgeLeg = null;
           let hedgeMargin = 0;
-          const hedgePct = Number(effectiveConfig.hedgeLotPct) || 0;
-          // Paper accounts only: a live account never gets a hedge leg, whatever its
-          // strategy_version (so a live account bumped to v2 can't send a -HB order).
-          const hedgeEnabled = accountState.mode !== 'live' && config.strategyVersion >= 2
-            && !!effectiveConfig.hedgeEnabled && hedgePct > 0;
-          if (hedgeEnabled) {
-            const hedgeQty = Number((adjustedSellQty * (hedgePct / 100)).toFixed(4));
+          // Paper accounts only (hedgeOn): a live account never gets a hedge leg, whatever
+          // its strategy_version (so a live account bumped to v2 can't send a -HB order).
+          // Same candidate the ATM P&L gate priced (hedgeCandidateFor), re-read now.
+          if (hedgeOn) {
+            // Qty = the FINAL (leverage / $195k-cap scaled) short qty × Hedge Lot %.
+            const hedgeQty = Number((adjustedSellQty * (hedgeLotPct / 100)).toFixed(4));
             if (hedgeQty > 0) {
-              const quote = (t) => t.ask ?? t.lastPrice ?? t.markPrice;
-              const pool = allTickers.filter(t => t.type === spreadType && t.expiry === config.expiry
-                && t.symbol !== spread.buyLeg.symbol && t.symbol !== spread.sellLeg.symbol
-                && !excludedStrikes.has(Number(t.strike)) // user-excluded (paper, migration 040)
-                && quote(t) > 0);
-              const best = pickHedgeStrike(pool, spreadType, bStrike, sStrike);
-              const bestAsk = best ? quote(best) : null;
+              const cand = hedgeCandidateFor(spread);
+              const best = cand ? cand.ticker : null;
+              const bestAsk = cand ? cand.ask : null;
               if (!best) {
                 const width = Math.abs(sStrike - bStrike);
                 const target = spreadType === 'call' ? sStrike + width : sStrike - width;

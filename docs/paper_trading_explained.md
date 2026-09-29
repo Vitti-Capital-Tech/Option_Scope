@@ -1304,7 +1304,8 @@ Replaces the old standalone "hedge overlay" with a **3rd long-only leg baked int
 
 **Config (per window):**
 - **Hedge Leg** (`hedgeEnabled`) — on/off toggle. When on, **every** spread entered in the window (call or put) gets a 3rd leg.
-- **Hedge Lot %** (`hedgeLotPct`, shown when the toggle is on) — 3rd-long qty = **(that spread's own short qty) × pct/100**.
+- **Hedge Lot %** (`hedgeLotPct`, shown when the toggle is on) — 3rd-long qty = **(that spread's own FINAL short qty, after the leverage / $195k-cap sizing) × pct/100**.
+- **ATM P&L gate includes the hedge**: `calculateAtmPnlAndRoi` prices the same hedge the entry will buy (`hedgeCandidateFor`). At ATM it is worth the bid at the ATM-shifted hedge strike (unquoted = worthless), and its premium is added to margin, so ATM P&L and ROI floors are checked on all three legs. The **Max Net Debit** gate at entry also uses all three legs (below). IV edge stays long vs short.
 - **Strike** (no setting) — **one strike-width beyond the short**, on the same side: call `short + (short − long)`, put `short − (long − short)`. E.g. CALL 84800/85800 → hedge 86800, PUT 83000/81500 → hedge 80000. If that exact strike isn't listed, the nearest listed strike beyond the short within half a width is used (ties go to the one nearer the short). Excluded strikes and unquoted strikes are skipped. If none qualifies, the hedge is **skipped** and the spread enters as a plain 2-leg (a warning is logged), so entries are never starved.
 - **Migration**: `041` copied windows that had a hedge type set to `hedge_enabled = true` with the larger of their old call/put % (a former call-only or put-only window now hedges both types). `042` then drops the old columns, and must run only after the new frontend and engine are deployed.
 
