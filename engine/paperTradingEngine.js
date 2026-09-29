@@ -1968,12 +1968,21 @@ async function startSingleAccountEngine(account) {
   const legLastSeenAt = new Map();
   // One admin alert per episode of "positions missing but not yet confirmed".
   let absenceHoldAlerted = false;
+  // Per-position "alert once" latches, keyed `${kind}:${positionId}`. Kept HERE, not on the
+  // position object: fetchActivePositions() rebuilds `positions` from the DB (every 5 min,
+  // and on an expiry/underlying change), which dropped per-object latches and re-sent the
+  // same alert every reload (seen 2026-09-29, Dg short-without-long at 01:39, 01:41, 01:46).
+  // A latch clears when its condition clears, or when the position leaves the book, so a
+  // NEW occurrence alerts again.
+  const onceAlerts = new Set();
+  const onceKey = (kind, pos) => `${kind}:${pos.id}`;
   async function reconcileOrphans() {
     if (!(accountState.mode === 'live' && accountState.live_enabled && !live.dryRun)) return;
     if (reconcileInFlight) return;
     reconcileInFlight = true;
     try {
       await reconcileOrphansPass();
+      pruneOnceAlerts();
     } finally {
       reconcileInFlight = false;
     }
@@ -2225,8 +2234,8 @@ async function startSingleAccountEngine(account) {
         if (danglingLong && ageMs > 90000 && (pos._shortEverOpen || ageMs > 300000) && !pos._danglingLongConverted) {
           const shortProof = await verifyClosedOnDelta(pos, legSpecs(pos).filter(l => l.symbol === pos.sellLeg.symbol));
           if (shortProof !== 'closed') {
-            if (!pos._shortCloseUnverifiedAlerted) {
-              pos._shortCloseUnverifiedAlerted = true;
+            if (!onceAlerts.has(onceKey('short-close-unverified', pos))) {
+              onceAlerts.add(onceKey('short-close-unverified', pos));
               logWarn(`[${accountState.name}] ⏸ Short ${pos.sellLeg.symbol} missing from Delta's positions list but no matching buy-back in order history — NOT converting to long-only; admin alerted.`);
               notifyAdmin({ context: `Short ${pos.sellLeg.symbol} (${pos.type.toUpperCase()} ${pos.buyLeg.strike}/${pos.sellLeg.strike}) is missing from Delta's positions list, but order history shows no matching buy-back. Engine is NOT booking it or touching the long — check on Delta.`, error: { message: 'short-close-unverified' } });
             }
@@ -2244,8 +2253,13 @@ async function startSingleAccountEngine(account) {
         const longGone = longSize === 0
           && ((pos.buyLeg?.lotSize || 0) <= 0 || confirmedAbsent(pos.buyLeg?.symbol));
         const danglingShort = pos.sellQty > 0 && shortSize > 0 && longGone;
-        if (danglingShort && ageMs > 90000 && !pos._danglingShortAlerted) {
-          pos._danglingShortAlerted = true;
+        if (!danglingShort) onceAlerts.delete(onceKey('short-without-long', pos));
+        // The short is open again, so a pending "short close unverified" episode is over.
+        if (shortSize > 0) onceAlerts.delete(onceKey('short-close-unverified', pos));
+        // Legs are visible on Delta again, so a pending "close unverified" episode is over.
+        onceAlerts.delete(onceKey('close-unverified', pos));
+        if (danglingShort && ageMs > 90000 && !onceAlerts.has(onceKey('short-without-long', pos))) {
+          onceAlerts.add(onceKey('short-without-long', pos));
           logWarn(`[${accountState.name}] ⚠ Short ${pos.sellLeg.symbol} is open without its long ${pos.buyLeg.symbol} — NOT closing; admin alerted.`);
           notifyAdmin({ context: `Short ${pos.sellLeg.symbol} (${pos.type.toUpperCase()} ${pos.buyLeg.strike}/${pos.sellLeg.strike}) is open on Delta WITHOUT its long. Engine is NOT closing it — check and act manually.`, error: { message: 'short-without-long' } });
         }
@@ -2275,8 +2289,8 @@ async function startSingleAccountEngine(account) {
       // Fallback proof in order history before anything is booked or cancelled.
       const closeProof = await verifyClosedOnDelta(pos);
       if (closeProof === 'unverified') {
-        if (!pos._closeUnverifiedAlerted) {
-          pos._closeUnverifiedAlerted = true;
+        if (!onceAlerts.has(onceKey('close-unverified', pos))) {
+          onceAlerts.add(onceKey('close-unverified', pos));
           const label = `${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''}`;
           logWarn(`[${accountState.name}] ⏸ ${label} missing from Delta's positions list but no matching closing fill in order history — NOT booking, SL/TP left in place; admin alerted.`);
           notifyAdmin({ context: `${label} is missing from Delta's positions list, but order history shows no matching closing fill. Engine is NOT booking it or cancelling its SL/TP — check on Delta.`, error: { message: 'close-unverified' } });
@@ -2307,10 +2321,10 @@ async function startSingleAccountEngine(account) {
       try {
         await cancelRestingOrders(pos);
         // The label is shared by the history row and the Telegram message below.
-        // _danglingShortAlerted = the long was already gone and the lone short was then closed
-        // (manually or by its SL), so don't call the whole spread a stop loss.
+        // A short-without-long alert was raised = the long was already gone and the lone short
+        // was then closed (manually or by its SL), so don't call the whole spread a stop loss.
         const isTp = pos.sellQty === 0;
-        const label = pos._danglingShortAlerted
+        const label = onceAlerts.has(onceKey('short-without-long', pos))
           ? '🔒 SHORT CLOSED (long was already closed)'
           : (isTp ? '🎯 TAKE PROFIT (long TP)' : '🚨 STOP LOSS (short SL)');
         if (pos._everOpenOnDelta) {
@@ -2341,6 +2355,15 @@ async function startSingleAccountEngine(account) {
         logError(`[${accountState.name}] reconcileOrphans failed for ${pos.id}:`, e);
         notifyFailure({ account: accountState.name, context: `Orphan reconcile FAILED (${pos.id}) — exchange/engine state may be out of sync`, error: e });
       }
+    }
+  }
+
+  // Drop "alert once" latches whose position is no longer tracked (booked / removed).
+  function pruneOnceAlerts() {
+    const ids = new Set(positions.map(p => String(p.id)));
+    for (const k of [...onceAlerts]) {
+      const id = k.slice(k.indexOf(':') + 1);
+      if (!ids.has(id)) onceAlerts.delete(k);
     }
   }
 
