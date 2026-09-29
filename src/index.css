@@ -3456,6 +3456,85 @@ body.light-theme .pt-live-badge {
   }
 }
 
+/* ── Scanner filter clusters (grouped like the Paper Trading control panel) ── */
+.scanner-cluster {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 12px 10px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.scanner-cluster-head {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.scanner-cluster-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  align-items: center;
+}
+
+.scanner-range-inputs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.scanner-range-inputs > span {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.scanner-switch-row .pt-switch {
+  flex-shrink: 0;
+}
+
+/* The switch's hidden checkbox must not pick up the scanner's input sizing rules
+   (.scanner-config-bar … input { padding } / mobile { width: 70px }). */
+.scanner-config-bar .form-group.row-inline .pt-switch input {
+  width: 0;
+  height: 0;
+  padding: 0;
+  opacity: 0;
+}
+
+@media (max-width: 900px) {
+  /* Tall enough for every cluster incl. the optional hedge / scaling rows. */
+  .scanner-filters-container.expanded {
+    max-height: 2000px;
+  }
+
+  .scanner-cluster {
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .scanner-cluster-fields {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .scanner-cluster-fields .form-group.row-inline {
+    display: flex !important;
+    width: 100%;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .scanner-cluster-fields .form-group.row-inline label {
+    white-space: normal;
+  }
+}
+
 /* ── Paper Trading Collapsible Filters ──────── */
 .pt-filters-toggle-btn {
   display: none;
