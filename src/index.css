@@ -3536,15 +3536,21 @@ body.light-theme .pt-live-badge {
 /* Desktop: config row on top with the Start/Stop button on its right, then the four
    filter clusters as equal-width cards (label above each input). */
 @media (min-width: 901px) {
-  /* One compact row: config · active-filter summary · Filters / Start. The open filter
-     panel is a second row in the page flow, above the tables. */
+  /* Row 1: config · saved settings / Reset · Start. Row 2: the four filter cards, always
+     shown on desktop (no Show / Hide toggle here). */
   .scanner-config-bar {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: center;
-    gap: 10px 18px;
-    padding-top: 10px;
+    gap: 8px 16px;
+    padding-top: 8px;
     padding-bottom: 10px;
+  }
+
+  .scanner-config-bar .scanner-toolbar {
+    grid-column: 2;
+    grid-row: 1;
+    justify-content: flex-end;
   }
 
   .scanner-config-main {
@@ -3561,14 +3567,14 @@ body.light-theme .pt-live-badge {
     grid-row: 1;
   }
 
-  .scanner-filters-toggle-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
+  /* Desktop never collapses the filters: no toggle, no collapsed summary. */
+  .scanner-config-bar .scanner-filters-toggle-btn,
+  .scanner-config-bar .scanner-filter-summary {
+    display: none;
   }
 
-  /* Scoped to the bar so it beats the base `display: none` further down. */
-  .scanner-config-bar .scanner-filter-summary {
+  /* (kept for reference: the summary's desktop styling when it was shown in the bar) */
+  .scanner-config-bar .scanner-filter-summary-unused {
     grid-column: 2;
     grid-row: 1;
     display: flex;
@@ -3594,18 +3600,11 @@ body.light-theme .pt-live-badge {
     border-color: var(--accent);
   }
 
-  .scanner-filters-container.collapsed {
-    display: none;
-  }
-
+  .scanner-filters-container,
+  .scanner-filters-container.collapsed,
   .scanner-filters-container.expanded {
     grid-column: 1 / -1;
     grid-row: 2;
-    animation: scannerPanelIn 0.16s ease-out;
-  }
-
-  .scanner-filters-head {
-    grid-column: 1 / -1;
   }
 
   /* Fixed column counts: an auto-fit grid keeps an empty track alive when the header
@@ -3613,8 +3612,17 @@ body.light-theme .pt-live-badge {
   .scanner-filters-container {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 12px;
+    gap: 10px;
     align-items: stretch;
+  }
+
+  .scanner-cluster {
+    gap: 8px;
+    padding: 8px 12px 10px;
+  }
+
+  .scanner-cluster-fields {
+    gap: 8px 12px !important;
   }
 
   .scanner-cluster-fields {
@@ -4059,30 +4067,26 @@ body.light-theme .pt-live-badge {
   white-space: nowrap;
 }
 
-/* Panel header: "Filters · N changed", Reset and close. */
-.scanner-filters-head {
+/* Top-bar toolbar: "N changed", saved settings (apply / delete), + Save, Reset. */
+.scanner-toolbar {
   display: flex;
   align-items: center;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
 }
 
-.scanner-filters-head-title {
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text);
-}
-
-.scanner-filters-head-count {
+.scanner-toolbar-count {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  margin-right: 4px;
   font-size: 11.5px;
   color: var(--text-dim);
+  white-space: nowrap;
 }
 
-.scanner-filters-head-count::before {
+.scanner-toolbar-count::before {
   content: "";
   width: 6px;
   height: 6px;
@@ -4090,11 +4094,95 @@ body.light-theme .pt-live-badge {
   background: #f0b90b;
 }
 
-.scanner-filters-head .scanner-reset-btn {
-  margin-left: auto;
+.scanner-toolbar-label {
+  margin-left: 4px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
 }
 
-.scanner-filters-close {
+.scanner-saved {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  border-radius: 999px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.scanner-saved:hover {
+  border-color: var(--accent);
+}
+
+.scanner-saved.on {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(59, 130, 246, 0.12);
+}
+
+.scanner-saved-apply {
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  padding: 4px 3px 4px 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.scanner-saved-del {
+  display: inline-flex;
+  background: none;
+  border: 0;
+  color: var(--text-dim);
+  padding: 4px 8px 4px 3px;
+  cursor: pointer;
+}
+
+.scanner-saved-del:hover {
+  color: var(--danger);
+}
+
+.scanner-saved-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px dashed var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 4px 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.scanner-saved-add:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.scanner-saved-new {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.scanner-saved-new input {
+  width: 160px;
+  height: 28px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.scanner-icon-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -4102,14 +4190,14 @@ body.light-theme .pt-live-badge {
   height: 28px;
   border-radius: 6px;
   border: 1px solid var(--border);
-  background: transparent;
-  color: var(--text-dim);
+  background: var(--bg3);
+  color: var(--text);
   cursor: pointer;
 }
 
-.scanner-filters-close:hover {
-  color: var(--text);
-  border-color: var(--text-dim);
+.scanner-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .scanner-summary-chip {
@@ -4133,16 +4221,10 @@ body.light-theme .pt-live-badge {
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* The panel's own close button is for desktop; phones use the toggle above the cards. */
-@media (max-width: 900px) {
-  .scanner-filters-close {
-    display: none;
-  }
-}
 
 
-/* Desktop: four cards per row (two on narrow desktop windows). */
-@media (min-width: 1200px) {
+/* Wide desktop: four cards per row. Below 1600px the cards stay 2 × 2. */
+@media (min-width: 1600px) {
   .scanner-filters-container {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }

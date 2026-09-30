@@ -25,3 +25,6 @@ export const SCANNER_DEFAULTS = {
   hedgeIvDiffMin: 0,
   hedgeIvDiffMax: 2,
 };
+
+// The user's saved filter settings (full snapshots of every SCANNER_DEFAULTS key), per browser.
+export const SAVED_SETTINGS_KEY = 'vitti_scanner_presets_v1';

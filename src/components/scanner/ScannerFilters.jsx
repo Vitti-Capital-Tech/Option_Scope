@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
-import { Info, RotateCcw, X } from 'lucide-react';
+import { Info, RotateCcw, X, Plus, Check } from 'lucide-react';
 import CustomInput from '../common/CustomInput';
-import { SCANNER_DEFAULTS } from './scannerDefaults';
+import { SCANNER_DEFAULTS, SAVED_SETTINGS_KEY } from './scannerDefaults';
 
 const FIELD_KEYS = Object.keys(SCANNER_DEFAULTS);
 
@@ -186,10 +186,10 @@ function Switch({ id, checked, onChange, title }) {
 }
 
 /**
- * The scanner's filter panel: a header (Filters · N changed, Reset, close) + four cards.
- * Renders a fragment so each card is a direct grid item of .scanner-filters-container.
+ * The scanner's four filter cards. Renders a fragment so each card is a direct grid item
+ * of .scanner-filters-container. Saved settings / Reset live in ScannerFilterToolbar.
  */
-export function ScannerFilters({ config, updateConfig, onClose }) {
+export function ScannerFilters({ config, updateConfig }) {
   const [openHint, setOpenHint] = useState(null);
 
   const toggleHint = (id) => setOpenHint(h => (h === id ? null : id));
@@ -218,31 +218,8 @@ export function ScannerFilters({ config, updateConfig, onClose }) {
     : netDebit === 0 ? 'No net debit allowed' : `Allows up to $${netDebit} debit`;
 
 
-  const changedCount = FIELD_KEYS.filter(changed).length;
-
   return (
     <>
-      <div className="scanner-filters-head">
-        <span className="scanner-filters-head-title">Filters</span>
-        {changedCount > 0 && (
-          <span className="scanner-filters-head-count">{changedCount} changed from default</span>
-        )}
-        <button
-          type="button"
-          className="scanner-reset-btn"
-          onClick={() => updateConfig({ ...SCANNER_DEFAULTS })}
-          disabled={changedCount === 0}
-          title="Reset every filter to its default"
-        >
-          <RotateCcw size={12} strokeWidth={2.5} /> Reset
-        </button>
-        {onClose && (
-          <button type="button" className="scanner-filters-close" onClick={onClose} aria-label="Close filters" title="Close (Esc)">
-            <X size={14} strokeWidth={2.75} />
-          </button>
-        )}
-      </div>
-
       <Cluster title="Spread">
           <Field {...common('minStrikeDiff')} label="Min Spread Width">
             <CustomInput id="minStrikeDiff" type="number" prefix="$" showStepper width={110} step="50" value={f('minStrikeDiff')} onChange={setNum('minStrikeDiff')} />
@@ -364,6 +341,103 @@ export function ScannerFilters({ config, updateConfig, onClose }) {
           </Field>
       </Cluster>
     </>
+  );
+}
+
+function loadSaved() {
+  try {
+    const raw = localStorage.getItem(SAVED_SETTINGS_KEY);
+    const list = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list) ? list.filter(p => p && p.name && p.values) : [];
+  } catch {
+    return [];
+  }
+}
+
+function storeSaved(list) {
+  try { localStorage.setItem(SAVED_SETTINGS_KEY, JSON.stringify(list)); } catch { /* storage unavailable */ }
+}
+
+/**
+ * Top-bar toolbar: how many filters differ from default, the user's saved settings
+ * (click to apply, × to delete), "+ Save" (name the current filters) and Reset.
+ * Saved settings are a full snapshot of every filter, kept in this browser.
+ */
+export function ScannerFilterToolbar({ config, updateConfig }) {
+  const [saved, setSaved] = useState(loadSaved);
+  const [naming, setNaming] = useState(false);
+  const [name, setName] = useState('');
+
+  const val = (k) => config[k] ?? SCANNER_DEFAULTS[k];
+  const changedCount = FIELD_KEYS.filter(k => !same(val(k), SCANNER_DEFAULTS[k])).length;
+  const isActive = (values) => FIELD_KEYS.every(k => same(val(k), values[k] ?? SCANNER_DEFAULTS[k]));
+
+  const commit = () => {
+    const n = name.trim();
+    if (!n) return;
+    const values = Object.fromEntries(FIELD_KEYS.map(k => [k, val(k)]));
+    const next = [...saved.filter(p => p.name !== n), { name: n, values }];
+    setSaved(next);
+    storeSaved(next);
+    setNaming(false);
+    setName('');
+  };
+  const cancel = () => { setNaming(false); setName(''); };
+  const remove = (n) => {
+    const next = saved.filter(p => p.name !== n);
+    setSaved(next);
+    storeSaved(next);
+  };
+
+  return (
+    <div className="scanner-toolbar">
+      {changedCount > 0 && (
+        <span className="scanner-toolbar-count" title="Filters that differ from the defaults">{changedCount} changed</span>
+      )}
+      {saved.length > 0 && <span className="scanner-toolbar-label">Saved</span>}
+      {saved.map(p => (
+        <span key={p.name} className={`scanner-saved ${isActive(p.values) ? 'on' : ''}`}>
+          <button type="button" className="scanner-saved-apply" onClick={() => updateConfig({ ...SCANNER_DEFAULTS, ...p.values })} title={`Apply "${p.name}"`}>
+            {p.name}
+          </button>
+          <button type="button" className="scanner-saved-del" onClick={() => remove(p.name)} aria-label={`Delete saved settings ${p.name}`} title="Delete">
+            <X size={11} strokeWidth={3} />
+          </button>
+        </span>
+      ))}
+      {naming ? (
+        <span className="scanner-saved-new">
+          <input
+            autoFocus
+            type="text"
+            className="custom-input-field"
+            placeholder="Name these settings"
+            maxLength={24}
+            value={name}
+            onChange={e => setName(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') commit();
+              if (e.key === 'Escape') cancel();
+            }}
+          />
+          <button type="button" className="scanner-icon-btn" onClick={commit} disabled={!name.trim()} aria-label="Save settings"><Check size={13} strokeWidth={3} /></button>
+          <button type="button" className="scanner-icon-btn" onClick={cancel} aria-label="Cancel"><X size={13} strokeWidth={3} /></button>
+        </span>
+      ) : (
+        <button type="button" className="scanner-saved-add" onClick={() => setNaming(true)} title="Save the current filters under a name">
+          <Plus size={12} strokeWidth={3} /> Save
+        </button>
+      )}
+      <button
+        type="button"
+        className="scanner-reset-btn"
+        onClick={() => updateConfig({ ...SCANNER_DEFAULTS })}
+        disabled={changedCount === 0}
+        title="Reset every filter to its default"
+      >
+        <RotateCcw size={12} strokeWidth={2.5} /> Reset
+      </button>
+    </div>
   );
 }
 
