@@ -3474,25 +3474,15 @@ body.light-theme .pt-live-badge {
   border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
 }
 
-/* Card header = a button that collapses / expands the card. */
 .scanner-cluster-head {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  width: 100%;
-  padding: 0;
-  margin: 0;
-  background: none;
-  border: 0;
-  font-family: inherit;
   font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--accent);
-  text-align: left;
-  cursor: pointer;
 }
 
 .scanner-cluster-title {
@@ -3506,86 +3496,6 @@ body.light-theme .pt-live-badge {
   background: var(--border);
 }
 
-/* Collapsed: every condition in the card as plain "Label value" pairs under the title,
-   separated by space. Each pair stays on one line; wrapping happens only between pairs. */
-.scanner-cluster-line {
-  flex-basis: 100%;
-  display: flex;
-  flex-wrap: wrap;
-  column-gap: 18px;
-  row-gap: 0;
-  margin-top: 8px;
-  font-size: 12.5px;
-  line-height: 1.7;
-  font-weight: 500;
-  letter-spacing: normal;
-  text-transform: none;
-  color: var(--text-dim);
-}
-
-.scanner-cluster-line .item {
-  white-space: nowrap;
-}
-
-.scanner-cluster-line .k {
-  color: var(--text-dim);
-}
-
-.scanner-cluster-line .v {
-  margin-left: 5px;
-  color: var(--text);
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-
-/* Amber dot = differs from the default. */
-.scanner-cluster-line .item.changed .k::before {
-  content: "";
-  display: inline-block;
-  width: 5px;
-  height: 5px;
-  margin-right: 6px;
-  border-radius: 50%;
-  background: #f0b90b;
-  vertical-align: middle;
-  position: relative;
-  top: -1px;
-}
-
-.scanner-cluster-line .item.off .v {
-  color: var(--text-dim);
-  font-weight: 600;
-}
-
-/* Desktop: always exactly two lines tall, so every collapsed card has the same height
-   (anything beyond two lines is hidden; the full text shows on hover). */
-@media (min-width: 901px) {
-  .scanner-cluster-line {
-    min-height: calc(1.7em * 2);
-    max-height: calc(1.7em * 2);
-    overflow: hidden;
-    align-content: flex-start;
-  }
-}
-
-.scanner-cluster-chevron {
-  flex-shrink: 0;
-  color: var(--text-dim);
-  transition: transform 0.2s ease, color 0.15s ease;
-}
-
-.scanner-cluster-head:hover .scanner-cluster-chevron {
-  color: var(--accent);
-}
-
-.scanner-cluster.is-collapsed .scanner-cluster-chevron {
-  transform: rotate(-90deg);
-}
-
-/* A collapsed card keeps its own height instead of stretching to its row. */
-.scanner-cluster.is-collapsed {
-  align-self: start;
-}
 
 .scanner-cluster-fields {
   display: flex;
@@ -3626,27 +3536,81 @@ body.light-theme .pt-live-badge {
 /* Desktop: config row on top with the Start/Stop button on its right, then the four
    filter clusters as equal-width cards (label above each input). */
 @media (min-width: 901px) {
+  /* One compact row: config · active-filter summary · Filters / Start. The open filter
+     panel is a second row in the page flow, above the tables. */
   .scanner-config-bar {
     display: grid;
-    grid-template-columns: 1fr auto;
+    grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: center;
-    gap: 14px 24px;
+    gap: 10px 18px;
+    padding-top: 10px;
+    padding-bottom: 10px;
   }
 
-  .scanner-config-sep,
-  .scanner-filters-container .filter-title {
+  .scanner-config-main {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .scanner-config-sep {
     display: none;
   }
 
   .scanner-scan-action {
-    grid-column: 2;
+    grid-column: 3;
     grid-row: 1;
   }
 
-  /* Fixed column counts: an auto-fit grid keeps an empty track alive when the presets
-     bar spans 1 / -1, leaving the cards short of the right edge. */
-  .scanner-filters-container {
+  .scanner-filters-toggle-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  /* Scoped to the bar so it beats the base `display: none` further down. */
+  .scanner-config-bar .scanner-filter-summary {
+    grid-column: 2;
+    grid-row: 1;
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    height: 32px;
+    padding: 0 8px;
+    overflow: hidden;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: inherit;
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+    -webkit-mask-image: linear-gradient(to right, #000 88%, transparent);
+    mask-image: linear-gradient(to right, #000 88%, transparent);
+  }
+
+  .scanner-config-bar .scanner-filter-summary:hover {
+    border-color: var(--accent);
+  }
+
+  .scanner-filters-container.collapsed {
+    display: none;
+  }
+
+  .scanner-filters-container.expanded {
     grid-column: 1 / -1;
+    grid-row: 2;
+    animation: scannerPanelIn 0.16s ease-out;
+  }
+
+  .scanner-filters-head {
+    grid-column: 1 / -1;
+  }
+
+  /* Fixed column counts: an auto-fit grid keeps an empty track alive when the header
+     spans 1 / -1, leaving the cards short of the right edge. */
+  .scanner-filters-container {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 12px;
@@ -3754,120 +3718,7 @@ body.light-theme .pt-live-badge {
   }
 }
 
-/* ── Scanner filters: presets, hints, captions, chips, range slider, summary ── */
-.scanner-presets {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.scanner-presets-label {
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text-dim);
-}
-
-.scanner-presets-list {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  flex: 1;
-  min-width: 0;
-}
-
-.scanner-preset {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  border: 1px solid var(--border);
-  background: var(--bg3);
-  color: var(--text);
-  font-family: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  border-radius: 999px;
-  padding: 4px 12px;
-  cursor: pointer;
-  transition: border-color 0.15s, color 0.15s, background 0.15s;
-}
-
-.scanner-preset:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.scanner-preset.on {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.scanner-preset.add {
-  border-style: dashed;
-  color: var(--text-dim);
-}
-
-.scanner-preset.custom {
-  padding: 0;
-}
-
-.scanner-preset-apply {
-  background: none;
-  border: 0;
-  color: inherit;
-  font: inherit;
-  padding: 4px 2px 4px 12px;
-  cursor: pointer;
-}
-
-.scanner-preset-del {
-  display: inline-flex;
-  background: none;
-  border: 0;
-  color: var(--text-dim);
-  padding: 4px 8px 4px 4px;
-  cursor: pointer;
-}
-
-.scanner-preset-del:hover {
-  color: var(--danger);
-}
-
-.scanner-preset-save {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.scanner-preset-save input {
-  width: 140px;
-  height: 28px;
-  padding: 4px 8px;
-  font-size: 12px;
-}
-
-.scanner-icon-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--bg3);
-  color: var(--text);
-  cursor: pointer;
-}
-
-.scanner-icon-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
+/* ── Scanner filters: header, hints, captions, chips, range slider, summary ── */
 .scanner-reset-btn {
   display: inline-flex;
   align-items: center;
@@ -4208,20 +4059,90 @@ body.light-theme .pt-live-badge {
   white-space: nowrap;
 }
 
-/* Collapsed-panel summary (phones only) */
+/* Panel header: "Filters · N changed", Reset and close. */
+.scanner-filters-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.scanner-filters-head-title {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.scanner-filters-head-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.scanner-filters-head-count::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f0b90b;
+}
+
+.scanner-filters-head .scanner-reset-btn {
+  margin-left: auto;
+}
+
+.scanner-filters-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.scanner-filters-close:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+
+.scanner-summary-chip {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--bg3);
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Collapsed-panel summary (desktop: in the top bar; phones: under it) */
 .scanner-filter-summary {
   display: none;
 }
 
-@media (min-width: 901px) {
-  .scanner-presets {
-    grid-column: 1 / -1;
+@keyframes scannerPanelIn {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* The panel's own close button is for desktop; phones use the toggle above the cards. */
+@media (max-width: 900px) {
+  .scanner-filters-close {
+    display: none;
   }
 }
 
-/* Four cards per row only when each card is wide enough for its two chip columns;
-   below that, two rows of two keep labels from truncating. */
-@media (min-width: 1600px) {
+
+/* Desktop: four cards per row (two on narrow desktop windows). */
+@media (min-width: 1200px) {
   .scanner-filters-container {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
@@ -4249,33 +4170,6 @@ body.light-theme .pt-live-badge {
     cursor: pointer;
   }
 
-  .scanner-summary-chip {
-    font-size: 10.5px;
-    font-weight: 600;
-    color: var(--text);
-    background: var(--bg3);
-    border-radius: 999px;
-    padding: 2px 8px;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .scanner-summary-preset {
-    font-size: 10px;
-    font-weight: 800;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--accent);
-    padding: 2px 4px;
-  }
-
-  .scanner-presets-list {
-    flex-basis: 100%;
-    order: 3;
-  }
-
-  .scanner-reset-btn {
-    margin-left: auto;
-  }
 
   .scanner-field {
     flex-wrap: wrap;

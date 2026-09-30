@@ -13,7 +13,7 @@ import Navbar from './components/PaperTrading/Navbar';
 import CustomSelect from './components/common/CustomSelect';
 import { ScannerFilters, ScannerFilterSummary } from './components/scanner/ScannerFilters';
 import { SCANNER_DEFAULTS } from './components/scanner/scannerDefaults';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown, SlidersHorizontal } from 'lucide-react';
 
 // ── Main Scanner Component ──────────────────────────────────────────────────
 export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
@@ -33,7 +33,11 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
   const [lastRefreshed, setLastRefreshed] = useState(0);
 
   const [activeTableTab, setActiveTableTab] = useState('call');
+  // Filters panel: open by default on desktop, closed by default on phones (where the
+  // stacked cards would push the tables far down). Open, it sits in the page flow above
+  // the tables; closed, only the one-line summary remains in the top bar.
   const [isFiltersCollapsed, setIsFiltersCollapsed] = useState(() => window.innerWidth <= 900);
+
 
   const wsRef = useRef(null);
   const scanIntervalRef = useRef(null);
@@ -677,6 +681,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
               className="scanner-filters-toggle-btn"
               onClick={() => setIsFiltersCollapsed(!isFiltersCollapsed)}
             >
+              <SlidersHorizontal size={13} strokeWidth={2.5} className="scanner-filters-toggle-icon" />
               <span>{isFiltersCollapsed ? 'SHOW FILTERS' : 'HIDE FILTERS'}</span>
               <ChevronDown
                 size={12}
@@ -697,8 +702,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
           <div className="hide-mobile scanner-config-sep" style={{ width: 1, height: 24, backgroundColor: 'var(--border)' }}></div>
 
           <div className={`scanner-filters-container ${isFiltersCollapsed ? 'collapsed' : 'expanded'}`}>
-            <span className="scanner-config-title filter-title">FILTERS</span>
-            <ScannerFilters config={config} updateConfig={updateConfig} />
+            <ScannerFilters config={config} updateConfig={updateConfig} onClose={() => setIsFiltersCollapsed(true)} />
           </div>
           {/* Actions for Start/Stop Scan button — top-right on desktop, below the filters on phones */}
           <div className="scanner-scan-action">

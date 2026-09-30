@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
-import { Info, RotateCcw, Plus, X, Check, ChevronDown } from 'lucide-react';
+import { Info, RotateCcw, X } from 'lucide-react';
 import CustomInput from '../common/CustomInput';
-import { SCANNER_DEFAULTS, BUILTIN_PRESETS, CUSTOM_PRESETS_KEY } from './scannerDefaults';
+import { SCANNER_DEFAULTS } from './scannerDefaults';
 
 const FIELD_KEYS = Object.keys(SCANNER_DEFAULTS);
 
@@ -9,67 +9,15 @@ const same = (a, b) => (typeof a === 'boolean' || typeof b === 'boolean')
   ? !!a === !!b
   : Number(a) === Number(b);
 
-const matches = (config, values) => Object.keys(values).every(k => same(config[k], values[k]));
-
-function loadCustomPresets() {
-  try {
-    const raw = localStorage.getItem(CUSTOM_PRESETS_KEY);
-    const list = raw ? JSON.parse(raw) : [];
-    return Array.isArray(list) ? list.filter(p => p && p.name && p.values) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveCustomPresets(list) {
-  try { localStorage.setItem(CUSTOM_PRESETS_KEY, JSON.stringify(list)); } catch { /* storage unavailable */ }
-}
-
-// Which filter cards are collapsed (per browser). Every card starts open.
-const CARDS_KEY = 'vitti_scanner_cards_v1';
-
-function loadCollapsed() {
-  try {
-    const raw = localStorage.getItem(CARDS_KEY);
-    const v = raw ? JSON.parse(raw) : {};
-    return v && typeof v === 'object' ? v : {};
-  } catch {
-    return {};
-  }
-}
-
-// A filter card whose header toggles it open / closed. Collapsed, the header lists every
-// condition in the card as one or two lines of "Label value   Label value" text (amber dot
-// = changed from default), so the active filters stay readable without opening it.
-function Cluster({ id, title, summary, collapsed, onToggle, children }) {
+// A filter card: accent title with a thin rule, then its fields.
+function Cluster({ title, children }) {
   return (
-    <div className={`scanner-cluster ${collapsed ? 'is-collapsed' : ''}`}>
-      <button
-        type="button"
-        className="scanner-cluster-head"
-        onClick={() => onToggle(id)}
-        aria-expanded={!collapsed}
-        aria-controls={`card-${id}`}
-        title={collapsed ? `Show ${title}` : `Hide ${title}`}
-      >
+    <div className="scanner-cluster">
+      <div className="scanner-cluster-head">
         <span className="scanner-cluster-title">{title}</span>
         <span className="scanner-cluster-rule" />
-        <ChevronDown className="scanner-cluster-chevron" size={14} strokeWidth={2.5} />
-        {collapsed && (
-          <span
-            className="scanner-cluster-line"
-            title={summary.map(i => `${i.label} ${i.value}`).join(' · ')}
-          >
-            {summary.map(i => (
-              <span key={i.label} className={`item ${i.changed ? 'changed' : ''} ${i.off ? 'off' : ''}`}>
-                <span className="k">{i.label}</span>
-                <span className="v">{i.value}</span>
-              </span>
-            ))}
-          </span>
-        )}
-      </button>
-      {!collapsed && <div id={`card-${id}`} className="scanner-cluster-fields">{children}</div>}
+      </div>
+      <div className="scanner-cluster-fields">{children}</div>
     </div>
   );
 }
@@ -238,25 +186,15 @@ function Switch({ id, checked, onChange, title }) {
 }
 
 /**
- * The scanner's filter panel: presets bar + four clusters. Renders a fragment so each
- * cluster is a direct grid item of .scanner-filters-container.
+ * The scanner's filter panel: a header (Filters · N changed, Reset, close) + four cards.
+ * Renders a fragment so each card is a direct grid item of .scanner-filters-container.
  */
-export function ScannerFilters({ config, updateConfig }) {
+export function ScannerFilters({ config, updateConfig, onClose }) {
   const [openHint, setOpenHint] = useState(null);
-  const [customPresets, setCustomPresets] = useState(loadCustomPresets);
-  const [saving, setSaving] = useState(false);
-  const [presetName, setPresetName] = useState('');
-  const [collapsed, setCollapsed] = useState(loadCollapsed);
-  const toggleCard = (id) => setCollapsed(c => {
-    const next = { ...c, [id]: !c[id] };
-    try { localStorage.setItem(CARDS_KEY, JSON.stringify(next)); } catch { /* storage unavailable */ }
-    return next;
-  });
 
   const toggleHint = (id) => setOpenHint(h => (h === id ? null : id));
   const closeHint = React.useCallback(() => setOpenHint(null), []);
   const changed = (k) => !same(config[k], SCANNER_DEFAULTS[k]);
-  const anyChanged = FIELD_KEYS.some(changed);
   const f = (k) => config[k] ?? SCANNER_DEFAULTS[k];
 
   const setNum = (k) => (e) => updateConfig(k, Number(e.target.value));
@@ -279,121 +217,33 @@ export function ScannerFilters({ config, updateConfig }) {
     ? `Needs ≥ $${Math.abs(netDebit)} net credit`
     : netDebit === 0 ? 'No net debit allowed' : `Allows up to $${netDebit} debit`;
 
-  // Collapsed-card chips: full condition names + values. `keys` drive the "changed" dot.
-  const money = (k) => `$${Number(f(k)).toLocaleString()}`;
-  const item = (label, value, keys, extra = {}) => ({ label, value, changed: keys.some(changed), ...extra });
-  const summaries = {
-    spread: [
-      item('Spread Width', `≥ ${money('minStrikeDiff')}`, ['minStrikeDiff']),
-      item('Spot Distance', `≥ ${money('minLongDist')}`, ['minLongDist']),
-      item('Short Ratio', `≤ 1:${f('maxSellQty')}`, ['maxSellQty']),
-      item('Delta Deviation', `≤ ${f('maxRatioDeviation')}`, ['maxRatioDeviation']),
-    ],
-    premium: [
-      item('IV Edge', `≥ ${f('minIvDiff')}%`, ['minIvDiff']),
-      item('Short Premium', `≥ ${money('minSellPremium')}`, ['minSellPremium']),
-      netDebit < 0
-        ? item('Net Credit', `≥ $${Math.abs(netDebit).toLocaleString()}`, ['maxNetPremium'])
-        : item('Net Debit', netDebit === 0 ? 'None allowed' : `≤ ${money('maxNetPremium')}`, ['maxNetPremium']),
-    ],
-    atm: [
-      item('ATM P&L', `≥ ${money('minAtmPnl')}`, ['minAtmPnl']),
-      item('ATM ROI', `≥ ${f('minAtmRoi')}%`, ['minAtmRoi']),
-      scalingOn
-        ? item('Call / Put Scaling', `${f('atmRatioPctCall')}% / ${f('atmRatioPctPut')}%`, ['atmRatioScaling', 'atmRatioPctCall', 'atmRatioPctPut'])
-        : item('ATM Scaling', 'Off', ['atmRatioScaling'], { off: true }),
-    ],
-    hedge: hedgeOn
-      ? [
-        item('Hedge Lot', `${f('hedgeLotPct')}%`, ['hedgeLotPct']),
-        item('Hedge Price', `< ${money('hedgeMaxPrice')}`, ['hedgeMaxPrice']),
-        item('Hedge IV Diff', `${f('hedgeIvDiffMin')}–${f('hedgeIvDiffMax')}%`, ['hedgeIvDiffMin', 'hedgeIvDiffMax']),
-      ]
-      : [item('Hedge Leg', 'Off', ['hedgeEnabled'], { off: true })],
-  };
-  const cardProps = (id, title) => ({ id, title, summary: summaries[id], collapsed: !!collapsed[id], onToggle: toggleCard });
 
-  const activeBuiltin = BUILTIN_PRESETS.find(p => matches(config, p.values))?.id;
-  const activeCustom = customPresets.find(p => matches(config, p.values))?.name;
-
-  const commitPreset = () => {
-    const name = presetName.trim();
-    if (!name) return;
-    const values = Object.fromEntries(FIELD_KEYS.map(k => [k, config[k] ?? SCANNER_DEFAULTS[k]]));
-    const next = [...customPresets.filter(p => p.name !== name), { name, values }];
-    setCustomPresets(next);
-    saveCustomPresets(next);
-    setSaving(false);
-    setPresetName('');
-  };
-  const deletePreset = (name) => {
-    const next = customPresets.filter(p => p.name !== name);
-    setCustomPresets(next);
-    saveCustomPresets(next);
-  };
+  const changedCount = FIELD_KEYS.filter(changed).length;
 
   return (
     <>
-      <div className="scanner-presets">
-        <span className="scanner-presets-label">Presets</span>
-        <div className="scanner-presets-list">
-          {BUILTIN_PRESETS.map(p => (
-            <button
-              key={p.id}
-              type="button"
-              className={`scanner-preset ${activeBuiltin === p.id ? 'on' : ''}`}
-              onClick={() => updateConfig(p.values)}
-              title={`Apply ${p.name} entry filters (toggles unchanged)`}
-            >
-              {p.name}
-            </button>
-          ))}
-          {customPresets.map(p => (
-            <span key={p.name} className={`scanner-preset custom ${activeCustom === p.name ? 'on' : ''}`}>
-              <button type="button" className="scanner-preset-apply" onClick={() => updateConfig(p.values)} title={`Apply "${p.name}"`}>
-                {p.name}
-              </button>
-              <button type="button" className="scanner-preset-del" onClick={() => deletePreset(p.name)} aria-label={`Delete preset ${p.name}`} title="Delete preset">
-                <X size={11} strokeWidth={3} />
-              </button>
-            </span>
-          ))}
-          {saving ? (
-            <span className="scanner-preset-save">
-              <input
-                autoFocus
-                type="text"
-                className="custom-input-field"
-                placeholder="Preset name"
-                maxLength={24}
-                value={presetName}
-                onChange={e => setPresetName(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter') commitPreset();
-                  if (e.key === 'Escape') { setSaving(false); setPresetName(''); }
-                }}
-              />
-              <button type="button" className="scanner-icon-btn" onClick={commitPreset} disabled={!presetName.trim()} aria-label="Save preset"><Check size={13} strokeWidth={3} /></button>
-              <button type="button" className="scanner-icon-btn" onClick={() => { setSaving(false); setPresetName(''); }} aria-label="Cancel"><X size={13} strokeWidth={3} /></button>
-            </span>
-          ) : (
-            <button type="button" className="scanner-preset add" onClick={() => setSaving(true)} title="Save the current filters as a preset">
-              <Plus size={12} strokeWidth={3} /> Save
-            </button>
-          )}
-        </div>
+      <div className="scanner-filters-head">
+        <span className="scanner-filters-head-title">Filters</span>
+        {changedCount > 0 && (
+          <span className="scanner-filters-head-count">{changedCount} changed from default</span>
+        )}
         <button
           type="button"
           className="scanner-reset-btn"
           onClick={() => updateConfig({ ...SCANNER_DEFAULTS })}
-          disabled={!anyChanged}
+          disabled={changedCount === 0}
           title="Reset every filter to its default"
         >
           <RotateCcw size={12} strokeWidth={2.5} /> Reset
         </button>
+        {onClose && (
+          <button type="button" className="scanner-filters-close" onClick={onClose} aria-label="Close filters" title="Close (Esc)">
+            <X size={14} strokeWidth={2.75} />
+          </button>
+        )}
       </div>
 
-      <Cluster {...cardProps('spread', 'Spread')}>
+      <Cluster title="Spread">
           <Field {...common('minStrikeDiff')} label="Min Spread Width">
             <CustomInput id="minStrikeDiff" type="number" prefix="$" showStepper width={110} step="50" value={f('minStrikeDiff')} onChange={setNum('minStrikeDiff')} />
           </Field>
@@ -408,7 +258,7 @@ export function ScannerFilters({ config, updateConfig }) {
           </Field>
       </Cluster>
 
-      <Cluster {...cardProps('premium', 'Premium & IV')}>
+      <Cluster title="Premium & IV">
           <Field {...common('minIvDiff')} label="Min IV Edge">
             <CustomInput id="minIvDiff" type="number" suffix="%" showStepper width={110} step="0.25" value={f('minIvDiff')} onChange={setNum('minIvDiff')} />
           </Field>
@@ -420,7 +270,7 @@ export function ScannerFilters({ config, updateConfig }) {
           </Field>
       </Cluster>
 
-      <Cluster {...cardProps('atm', 'ATM Edge')}>
+      <Cluster title="ATM Edge">
           <Field {...common('minAtmPnl')} label="Min ATM P&L">
             <CustomInput id="minAtmPnl" type="number" prefix="$" step="10" showStepper width={110} value={f('minAtmPnl')} onChange={setNum('minAtmPnl')} />
           </Field>
@@ -438,7 +288,7 @@ export function ScannerFilters({ config, updateConfig }) {
           </Field>
       </Cluster>
 
-      <Cluster {...cardProps('hedge', 'Hedge Leg')}>
+      <Cluster title="Hedge Leg">
           <Field {...common('hedgeEnabled')} label="Show Hedge Leg" className="scanner-switch-row">
             <Switch id="hedgeEnabled" checked={hedgeOn} onChange={v => updateConfig('hedgeEnabled', v)} title="Show each spread's 3rd long (hedge) leg" />
           </Field>
@@ -518,13 +368,12 @@ export function ScannerFilters({ config, updateConfig }) {
 }
 
 /**
- * One-line summary of the active filters, shown on phones while the panel is collapsed.
- * Tapping it opens the panel.
+ * One-line summary of the active filters, shown while the panel is closed (in the top bar
+ * on desktop, under it on phones). Clicking it opens the panel.
  */
 export function ScannerFilterSummary({ config, onOpen }) {
   const c = { ...SCANNER_DEFAULTS, ...config };
   const net = Number(c.maxNetPremium);
-  const preset = BUILTIN_PRESETS.find(p => matches(c, p.values))?.name;
   const parts = [
     `Width ≥$${c.minStrikeDiff}`,
     `Spot ≥$${c.minLongDist}`,
@@ -538,7 +387,6 @@ export function ScannerFilterSummary({ config, onOpen }) {
   ].filter(Boolean);
   return (
     <button type="button" className="scanner-filter-summary" onClick={onOpen} title="Show filters">
-      {preset && <span className="scanner-summary-preset">{preset}</span>}
       {parts.map(p => <span key={p} className="scanner-summary-chip">{p}</span>)}
     </button>
   );
