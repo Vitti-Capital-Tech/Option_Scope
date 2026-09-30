@@ -1269,7 +1269,10 @@ All other filter settings (like `minSellPremium`, `maxRatioDeviation`, etc.) def
 
 ### Layout & UI
 - **Compact List Style**: The configuration interface (`SchedulePanel.jsx`) features a compact, horizontal, inline-editable list. Users can edit window names, times, and overrides directly within the row.
-- **Visual Timeline**: A 24-hour horizontal bar visualizes active windows, gaps, and overrides. The timeline boundary starts/ends at `05:30` IST (representing the `00:00` UTC Delta Exchange daily rollover/day boundary). This ensures that any empty slots wrap around `05:30` IST and display at the end of the bar.
+- **Visual Timeline**: A 24-hour horizontal bar visualizes active windows, gaps, and overrides. The timeline boundary starts/ends at `17:30` IST (the `12:00` UTC Delta Exchange daily rollover/day boundary), so empty slots wrap around `17:30` IST and display at the end of the bar.
+- **Sorted by Start Time**: Windows are listed in start-time order within the session (from `17:30` IST) and numbered `Window 1…N` by position; the timeline labels use the same numbers. Sorting happens on load and on Apply (not while typing).
+- **Copy from Account**: Replaces this account's windows with a one-time copy of another account's (clients: own accounts; admins: any). Nothing is saved until **Apply**; **Cancel** restores the saved windows. With open positions, Apply asks for confirmation first. Copying into a live account turns the hedge leg off. New accounts can also start from a copy via **Copy Schedule Windows From** in the Create Account modal.
+- **Load Scanner Filters**: Each window's scanner icon loads the Ratio Spread Scanner's current filters, or one of its saved settings, into that window (Min Spread Width, Min Spot Distance, Min IV Edge, Max Net Debit, ATM Scaling; hedge fields on v2 paper). Scanner-only filters are not copied. Click Apply to save. The scanner's **Send to window** button does the same from the scanner side: it opens the chosen account here with the window filled in and highlighted, unsaved until Apply.
 - **Permanent Activation**: All configured schedule windows are permanently active/enabled (`is_active = true`), and the checkbox toggle has been removed.
 - **Max Margin Utilised (%)**: Displays the historical peak margin utilized as a percentage of allocated balance (`(peak margin / allocated balance) × 100`) for active positions open at any single instant during the session for that schedule window. Hover tooltip shows exact peak margin ($) vs allocated balance ($).
 
@@ -1279,7 +1282,7 @@ All other filter settings (like `minSellPremium`, `maxRatioDeviation`, etc.) def
 - **Engine Comparison**: The backend trading engine evaluates schedule matches against the current time translated to IST (UTC + 5:30).
 - **Overnight Windows**: The engine correctly handles overnight ranges in IST (e.g. `22:29` to `06:30` IST) by splitting/wrapping time comparisons relative to the 24-hour cycle.
 - **Fallback Behavior**: If the current IST time does not fall into any active scheduled window, the engine automatically falls back to using the base account configuration parameters.
-- **Live Auto-Sync & Real-time Updates**: Changes made in the UI are automatically synced (debounced auto-save) to Supabase. The background engine subscribes to real-time postgres changes on `paper_trading_schedules` and reloads them instantly upon edits.
+- **Apply & Real-time Updates**: Changes made in the UI are saved to Supabase when you click **Apply**. The background engine subscribes to real-time postgres changes on `paper_trading_schedules` and reloads them instantly upon edits.
 
 ### Trading Days (Day-of-Week Entry Filter)
 

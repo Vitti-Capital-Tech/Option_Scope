@@ -31,6 +31,9 @@ export default function ControlPanel({
   onApplySchedules,
   onCancelSchedules,
   onResetSchedules,
+  copySources = [],
+  onImportSchedules,
+  scheduleFocus,
   positions,
   tradeHistory,
   historyFilterDate,
@@ -264,6 +267,9 @@ export default function ControlPanel({
           onApply={onApplySchedules}
           onCancel={onCancelSchedules}
           onReset={onResetSchedules}
+          copySources={copySources}
+          onImportSchedules={onImportSchedules}
+          focus={scheduleFocus}
           isDirty={isSchedulesDirty}
           isSaving={isSavingSchedules}
           positions={positions}

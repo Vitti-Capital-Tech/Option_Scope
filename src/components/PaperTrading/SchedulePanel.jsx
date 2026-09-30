@@ -1,7 +1,83 @@
-import React, { useState, useCallback } from 'react';
-import { Plus, AlertTriangle, Lock, X, Trash2 } from 'lucide-react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { Plus, AlertTriangle, Lock, X, Trash2, Copy, ScanSearch, ChevronDown } from 'lucide-react';
 import CustomInput from '../common/CustomInput';
 import CustomSelect from '../common/CustomSelect';
+import { loadScannerFilterSources } from '../scanner/scannerDefaults';
+import { scannerToWindowFields } from './scheduleShared';
+
+// A button that opens a small list of choices (reuses CustomSelect's menu styling).
+// `getItems` runs on open, so the list is always current.
+function PickerButton({ label, icon, title, getItems, emptyText, onPick, iconOnly = false }) {
+  const [open, setOpen] = useState(false);
+  const [items, setItems] = useState([]);
+  const [coords, setCoords] = useState({ top: 0, left: 0 });
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const place = () => {
+      const r = ref.current?.getBoundingClientRect();
+      if (r) setCoords({ top: r.bottom + 6, left: Math.max(8, Math.min(r.left, window.innerWidth - 248)) });
+    };
+    place();
+    document.addEventListener('mousedown', close);
+    window.addEventListener('resize', place);
+    document.addEventListener('scroll', place, true);
+    return () => {
+      document.removeEventListener('mousedown', close);
+      window.removeEventListener('resize', place);
+      document.removeEventListener('scroll', place, true);
+    };
+  }, [open]);
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button
+        type="button"
+        title={title}
+        aria-label={title}
+        onClick={() => { if (!open) setItems(getItems()); setOpen(o => !o); }}
+        style={iconOnly ? {
+          background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer',
+          display: 'flex', alignItems: 'center', padding: 8, borderRadius: 5, transition: 'all 0.15s',
+        } : {
+          display: 'flex', alignItems: 'center', gap: 4,
+          background: 'transparent', border: '1px solid var(--border)',
+          color: 'var(--text-dim)', padding: '4px 10px', borderRadius: 5,
+          fontSize: 11, fontWeight: 600, cursor: 'pointer', transition: 'all 0.15s',
+        }}
+        onMouseOver={e => { e.currentTarget.style.color = '#3b82f6'; }}
+        onMouseOut={e => { e.currentTarget.style.color = 'var(--text-dim)'; }}
+      >
+        {icon}
+        {!iconOnly && <>{label}<ChevronDown size={11} strokeWidth={2.5} /></>}
+      </button>
+      {open && (
+        <div className="custom-dropdown-menu" style={{ position: 'fixed', top: coords.top, left: coords.left, width: 240, zIndex: 10000 }}>
+          <div className="custom-dropdown-list">
+            {items.length === 0 && (
+              <div style={{ padding: '8px 12px', fontSize: 11, color: 'var(--text-dim)' }}>{emptyText}</div>
+            )}
+            {items.map(item => (
+              <button
+                key={item.key}
+                type="button"
+                className="custom-dropdown-item"
+                onClick={() => { setOpen(false); onPick(item); }}
+              >
+                <div className="custom-dropdown-item-left" style={{ justifyContent: 'space-between', width: '100%' }}>
+                  <span>{item.label}</span>
+                  {item.sub && <span style={{ fontSize: 10, color: 'var(--text-dim)', textTransform: 'uppercase' }}>{item.sub}</span>}
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 const DEFAULT_WINDOW = {
   label: 'Window',
@@ -161,6 +237,9 @@ export default function SchedulePanel({
   onReset,
   isDirty,
   isSaving,
+  copySources = [],
+  onImportSchedules,
+  focus = null,
   positions = [],
   tradeHistory = [],
   historyFilterDate,
@@ -350,6 +429,56 @@ export default function SchedulePanel({
   }, [positions, tradeHistory, schedules, currentUnderlying, historyFilterDate, now, allocatedBalance]);
 
   const [deletingId, setDeletingId] = useState(null); // id of schedule window pending deletion
+  const [notice, setNotice] = useState(null);           // unsaved copy/load message shown above the list
+  const [importedFrom, setImportedFrom] = useState(null); // source account name while an import is unsaved
+  const [confirmApply, setConfirmApply] = useState(false);
+  const [highlightId, setHighlightId] = useState(null);     // window filled from the scanner, until applied
+
+  // Once the edits are saved or cancelled (dirty → clean) there's nothing pending to
+  // describe. Adjust-state-during-render: the guard makes it run once per transition.
+  const [wasDirty, setWasDirty] = useState(isDirty);
+  if (wasDirty !== isDirty) {
+    setWasDirty(isDirty);
+    if (!isDirty) { setNotice(null); setImportedFrom(null); setHighlightId(null); }
+  }
+
+  // Scanner "Send to window" landed here: show its message and highlight + scroll to the
+  // filled window until the edit is applied or cancelled.
+  const [focusToken, setFocusToken] = useState(null);
+  if (focus && focus.token !== focusToken) {
+    setFocusToken(focus.token);
+    setNotice(focus.text);
+    setHighlightId(focus.windowId);
+  }
+  const itemRefs = useRef({});
+  useEffect(() => {
+    if (focusToken && highlightId) itemRefs.current[highlightId]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [focusToken, highlightId]);
+
+  const handleImport = useCallback(async (item) => {
+    try {
+      const ok = await onImportSchedules(item.key);
+      if (!ok) { setNotice(`"${item.label}" has no schedule windows to copy.`); return; }
+      setImportedFrom(item.label);
+      setNotice(`Copied windows from "${item.label}". This account's windows are replaced only after you click Apply — Cancel restores them.`);
+    } catch (e) {
+      console.error('Import schedules error', e);
+      setNotice(`Couldn't copy windows from "${item.label}": ${e.message}`);
+    }
+  }, [onImportSchedules]);
+
+  const allowHedge = isPaper && strategyVersion >= 2;
+  const handleLoadScanner = useCallback((id, windowNo, item) => {
+    setSchedules(prev => prev.map(s => s.id === id ? { ...s, ...scannerToWindowFields(item.values, allowHedge) } : s));
+    setNotice(`Loaded "${item.label}" into Window ${windowNo}. Click Apply to save.`);
+  }, [setSchedules, allowHedge]);
+
+  // Applying an imported set swaps every window at once, which immediately changes caps and
+  // exits for positions already open — so ask first in that case.
+  const handleApplyClick = () => {
+    if (importedFrom && positions.length > 0) setConfirmApply(true);
+    else onApply();
+  };
 
   const handleAdd = useCallback(() => {
     const slots = getUnoccupiedSlots(schedules);
@@ -539,6 +668,17 @@ export default function SchedulePanel({
         <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: 1 }}>
           Time Schedules <span style={{ color: '#3b82f6', fontWeight: 600 }}>(IST)</span>
         </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        {onImportSchedules && (
+          <PickerButton
+            label="Copy from account"
+            icon={<Copy size={11} strokeWidth={2.5} />}
+            title="Replace these windows with a copy of another account's windows (saved only on Apply)"
+            emptyText="No other accounts to copy from"
+            getItems={() => copySources.map(a => ({ key: a.id, label: a.name, sub: a.mode }))}
+            onPick={handleImport}
+          />
+        )}
         <button
           type="button"
           onClick={handleAdd}
@@ -554,7 +694,18 @@ export default function SchedulePanel({
           <Plus size={11} strokeWidth={3} />
           Add Window
         </button>
+        </div>
       </div>
+
+      {notice && (
+        <div style={{
+          fontSize: 11, color: '#3b82f6', background: 'rgba(59,130,246,0.08)',
+          border: '1px solid rgba(59,130,246,0.3)', borderRadius: 5,
+          padding: '6px 10px', marginBottom: 8,
+        }}>
+          {notice}
+        </div>
+      )}
 
       {/* 24h Timeline */}
       {schedules.length > 0 && renderTimeline()}
@@ -599,8 +750,9 @@ export default function SchedulePanel({
           const overlapWindow = checkOverlap(schedules, s);
 
           return (
-            <div key={s.id} className={`schedule-item ${s.isActive ? '' : 'inactive'}`} style={{
+            <div key={s.id} ref={el => { itemRefs.current[s.id] = el; }} className={`schedule-item ${s.isActive ? '' : 'inactive'}`} style={{
               border: `1.5px solid ${s.isActive ? color : 'var(--border)'}`,
+              ...(s.id === highlightId ? { boxShadow: '0 0 0 3px rgba(59,130,246,0.45)' } : {}),
             }}>
 
 
@@ -850,9 +1002,17 @@ export default function SchedulePanel({
                   </div>
                 )}
 
-                {/* Lock (Window 1) or delete button inline */}
-                <div className="schedule-item-block" style={{ flex: '0 0 50px', width: '50px', justifyContent: 'flex-end', height: '56px', boxSizing: 'border-box', paddingBottom: '8px', alignItems: 'center' }}>
-                  <div style={{ height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                {/* Load scanner filters + lock (Window 1) or delete button inline */}
+                <div className="schedule-item-block" style={{ flex: '0 0 84px', width: '84px', justifyContent: 'flex-end', height: '56px', boxSizing: 'border-box', paddingBottom: '8px', alignItems: 'center' }}>
+                  <div style={{ height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2 }}>
+                    <PickerButton
+                      iconOnly
+                      icon={<ScanSearch size={15} strokeWidth={2.5} />}
+                      title="Load Ratio Spread Scanner filters into this window"
+                      emptyText="No scanner filters found"
+                      getItems={() => loadScannerFilterSources().map(src => ({ key: src.name, label: src.name, values: src.values }))}
+                      onPick={item => handleLoadScanner(s.id, i + 1, item)}
+                    />
                     {i === 0 ? (
                       <div
                         title="Window 1 is permanent and cannot be deleted (it holds the account's default filters). You can still edit its time and values."
@@ -910,7 +1070,7 @@ export default function SchedulePanel({
           <button
             type="button"
             className={`pt-btn-filter pt-btn-apply ${isDirty && !hasOverlap ? 'active' : ''}`}
-            onClick={onApply}
+            onClick={handleApplyClick}
             disabled={!isDirty || hasOverlap || isSaving}
             style={{ minWidth: 100 }}
           >
@@ -936,6 +1096,37 @@ export default function SchedulePanel({
           >
             Reset
           </button>
+        </div>
+      )}
+
+      {/* Apply-imported-windows confirmation (only when positions are open) */}
+      {confirmApply && (
+        <div className="modal-overlay-wrapper" style={{ animation: 'fadeIn 0.15s ease-out' }}>
+          <div className="modal-container-delete" style={{ maxWidth: 380, margin: 'auto' }}>
+            <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: '#f0a020', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <AlertTriangle size={16} strokeWidth={2.5} style={{ transform: 'translateY(-1px)' }} />
+              Apply Copied Windows?
+            </h3>
+            <p style={{ margin: 0, fontSize: '13px', lineHeight: '1.5', color: 'var(--text)' }}>
+              This account has <strong>{positions.length} open position{positions.length === 1 ? '' : 's'}</strong>. Applying the windows copied from <strong>"{importedFrom}"</strong> replaces all current windows, so caps and exit rules change for them straight away.
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '6px' }}>
+              <button
+                type="button"
+                onClick={() => setConfirmApply(false)}
+                style={{ padding: '7px 14px', borderRadius: '6px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--text)', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}
+              >
+                Go Back
+              </button>
+              <button
+                type="button"
+                onClick={() => { setConfirmApply(false); onApply(); }}
+                style={{ padding: '7px 14px', borderRadius: '6px', border: 'none', background: '#3b82f6', color: '#ffffff', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}
+              >
+                Apply Anyway
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

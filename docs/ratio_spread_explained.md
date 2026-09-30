@@ -65,6 +65,9 @@ When you select an underlying (BTC/ETH) and expiry date, and click **▶ START S
 
 Unlike Paper Trading parameters which are synchronized with Supabase databases, the Ratio Spread Scanner configuration operates as a **completely standalone client-side component**:
 * **Storage Location**: The settings (such as filter thresholds and scaling options) are saved directly in the user's browser `localStorage` under the key `vitti_algo_config`.
+* **Saved Settings**: Named full snapshots of the filters (**+ Save** in the toolbar) are stored under `vitti_scanner_presets_v1`.
+* **Copy into a Trading Window**: In Paper/Live Trading, each schedule window's scanner icon loads the current scanner filters or a saved setting into that window (the fields that exist per window: spread width, spot distance, IV edge, max net debit, ATM scaling, and hedge on v2 paper). Because this reads `localStorage`, it only sees scanner filters from the same browser.
+* **Send to Window (from the scanner)**: The toolbar's **Send to window** button lists your accounts (paper and live; admins see all) and the chosen account's saved windows (in start-time order). **Open in Window** switches to that account's Paper/Live Trading page and fills the current filters into the window as an **unsaved edit** — the window is highlighted and nothing is saved until you click **Apply** there (Cancel discards it). Unsaved schedule edits on a different account on that page are discarded by the account switch.
 * **Zero Database Overhead**: This prevents network roundtrips to database servers and avoids permission boundaries, making configuration updates instantaneous and persistent across browser sessions for the local device.
 
 ---

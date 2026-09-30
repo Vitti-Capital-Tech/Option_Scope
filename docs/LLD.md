@@ -29,7 +29,7 @@ This document is the authoritative implementation reference for every module, en
 | `engine/proxyServer.js` | Optional engine-hosted proxy forwarding `/v2/*` from a whitelisted IP (credential-verification Option B). |
 | `src/deltaAuth.js` | Browser-side `verifyDeltaCredentials` — Web Crypto HMAC-SHA256 test-signs `GET /v2/wallet/balances` (front-end verification path). |
 | `src/components/PaperTrading/ControlPanel.jsx` | Global-filter Control Panel (Apply/Reset over global filters + Trading Days toggle). |
-| `src/components/PaperTrading/SchedulePanel.jsx` | Per-window schedule editor (timeline, per-window overrides, upsert-prune auto-save). |
+| `src/components/PaperTrading/SchedulePanel.jsx` | Per-window schedule editor (timeline, per-window overrides, Apply/Cancel/Reset, copy-from-account, load-scanner-filters). |
 | `src/components/PaperTrading/TradingWorkspace.jsx` | Exchange-style tabbed panel: Positions / Open Orders / Stop Orders / Fills / Order History / Risk & Margin. |
 | `src/components/PaperTrading/TradeHistoryTable.jsx` | Trade history table + Window Capacity row. |
 | `ecosystem.config.cjs` | PM2 config pinning the engine to a single process (`exec_mode: 'fork'`, `instances: 1`, long `kill_timeout`). |
@@ -801,7 +801,7 @@ Table: `paper_trading_schedules`
 
 RLS Policies:
 - Enable select/view and insert operations for authenticated users (`auth.uid() = user_id`) to support client-side fallback insertion.
-- Enable public `SELECT` read access (`Allow public read on schedules` policy using `true` check) to allow the unauthenticated background engine process (which uses `SUPABASE_ANON_KEY`) to load schedules successfully.
+- ~~Public `SELECT` read (`Allow public read on schedules`)~~ — dropped by migration `036`; migration `016`'s owner-or-admin `FOR ALL` policy covers reads, and the engine uses `service_role`.
 
 ### 2. Engine Evaluation Loop Overrides
 - **State management**: The engine maintains a local `schedules = []` array.
@@ -824,9 +824,15 @@ RLS Policies:
 - **CRUD Operations**:
   - Users edit schedule labels, time inputs (in IST), and strategy override parameters (`maxCombinedPositions`, `combinedSplitPct`, `minLongDist`, `minStrikeDiff`, …) directly in inline-editable fields.
   - The "Enabled" checkbox has been removed, making all schedule windows permanently active (`isActive = true`).
-  - **Add Window**: Appends a new default window to the state.
-  - **Delete Window**: Removes the window from the state (Window 1 is not deletable).
-  - **Live Auto-Sync**: Updates are automatically saved to Supabase after a 1.2-second debounce, provided there are no active time overlaps. The "Save Schedules" button acts as a live sync indicator showing `✓ Live Synced`, `Syncing...`, or `Overlap Detected`.
+  - **Add Window**: Appends a new default window (first free slot) to the state.
+  - **Delete Window**: Removes the window from the state (the first window is not deletable).
+  - **Apply / Cancel / Reset**: Edits stay local until **Apply** (`saveSupabaseSchedules`, disabled while windows overlap); **Cancel** refetches the saved windows; **Reset** returns to a single seeded Window 1.
+  - **Ordering & numbering**: `sortSchedulesByStart` (`PaperTrading.jsx`) orders windows by start time relative to the `17:30` IST session start (stable for equal starts) and renumbers `label` to `Window 1…N`. It runs on fetch and on save (so `sort_order` is persisted in time order) — not while typing, so rows don't jump mid-edit. The timeline, overlap tooltip and delete prompt use the same positional names; colours follow list position. Order never affects the engine (it selects by time).
+  - **Row mapping**: `mapScheduleRow` (DB → UI) and `toScheduleRow` (UI → DB, mints a UUID for non-UUID ids) are shared by fetch, save and copy.
+  - **Copy from account** (`copySchedulesFrom` + `handleImportSchedules`): reads the source account's rows, maps them, gives each a fresh `new-copy-*` id (so saving inserts new rows and prunes the target's old ones — the source is never touched), sets `hedgeEnabled = false` when the target is live, and replaces local state. Nothing is written until Apply; a banner explains this. If the target has open positions, Apply shows an **Apply Copied Windows?** confirmation. Sources (`copySources`) are fetched across both modes; clients are filtered to their own accounts and RLS enforces owner-or-admin, so no schema change was needed.
+  - **Create Account → Copy Schedule Windows From** (optional `copySchedulesFromId`): after the account and config rows are created, the source's windows are copied and inserted with `toScheduleRow(…, newAccountId, i)`. A failed copy leaves the account intact and alerts the user to import later.
+  - **Load scanner filters** (per window, scanner icon): `loadScannerFilterSources()` (`scannerDefaults.js`) reads the scanner's current filters (`SCANNER_CONFIG_KEY` = `vitti_algo_config`) and saved settings (`vitti_scanner_presets_v1`) from `localStorage` at click time; `scannerToWindowFields` copies `minStrikeDiff`, `minLongDist`, `minIvDiff`, `maxNetPremium`, `atmRatioScaling`, `atmRatioPctCall/Put`, plus the hedge fields only when the window shows them (paper, v2+). Scanner-only filters (ratio deviation, min short premium, max short ratio, ATM P&L/ROI floors) have no per-window field and are skipped. Saved on Apply.
+  - **Scanner → Send to window** (`scanner/SendToWindow.jsx`): the scanner toolbar modal reads accounts and the chosen account's windows from Supabase (normal RLS) and calls `onSendToWindow({ mode, accountId, windowId, values, sourceName })`. `main.jsx` stamps a `token`, stores it as `scannerFill` and switches to the matching page. `PaperTrading.jsx` then, once per token (adjust-state-during-render): opens the target account, waits until `schedulesAccountId` shows that account's windows are loaded, merges `scannerToWindowFields` into the window (hedge only for paper v2+), and passes `scheduleFocus` so `SchedulePanel` shows the message, highlights and scrolls to the window. It's an ordinary unsaved edit — Apply saves, Cancel discards. `sortSchedulesByStart` and `scannerToWindowFields` live in `PaperTrading/scheduleShared.js`, shared by both sides.
   - **Upsert-then-prune (never DELETE-all)**: each window carries a stable UUID; the save **upserts** all windows (`onConflict:'id'`) and only **after success prunes** removed windows (`delete … where id not in (keptIds)`). This fixes the old failure mode where a failed post-DELETE insert left zero rows and reseeded a lone Window 1 from base config ("filters changed by themselves"). A `paper_trading_schedules` Realtime subscription re-syncs across devices, skipped while the local save is in flight / edits are dirty.
 
 ---

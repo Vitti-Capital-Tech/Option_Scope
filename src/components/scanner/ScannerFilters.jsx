@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { Info, RotateCcw, X, Plus, Check } from 'lucide-react';
 import CustomInput from '../common/CustomInput';
 import { SCANNER_DEFAULTS, SAVED_SETTINGS_KEY } from './scannerDefaults';
+import SendToWindow from './SendToWindow';
 
 const FIELD_KEYS = Object.keys(SCANNER_DEFAULTS);
 
@@ -363,7 +364,7 @@ function storeSaved(list) {
  * (click to apply, × to delete), "+ Save" (name the current filters) and Reset.
  * Saved settings are a full snapshot of every filter, kept in this browser.
  */
-export function ScannerFilterToolbar({ config, updateConfig }) {
+export function ScannerFilterToolbar({ config, updateConfig, onSendToWindow }) {
   const [saved, setSaved] = useState(loadSaved);
   const [naming, setNaming] = useState(false);
   const [name, setName] = useState('');
@@ -428,6 +429,7 @@ export function ScannerFilterToolbar({ config, updateConfig }) {
           <Plus size={12} strokeWidth={3} /> Save
         </button>
       )}
+      {onSendToWindow && <SendToWindow config={config} onSendToWindow={onSendToWindow} />}
       <button
         type="button"
         className="scanner-reset-btn"

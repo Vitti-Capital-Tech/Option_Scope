@@ -7,6 +7,7 @@ import {
 import { normalizeIv, toFiniteNumber, matchesOptionType, formatTime, formatDateTime, leverageFor } from './scannerUtils';
 import { useTabListener } from './useTabSync';
 import { supabase } from './supabase';
+import { sortSchedulesByStart, scannerToWindowFields } from './components/PaperTrading/scheduleShared';
 import { Loader2, AlertTriangle } from 'lucide-react';
 
 import Navbar from './components/PaperTrading/Navbar';
@@ -89,19 +90,93 @@ const genScheduleId = () => {
 };
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-// Order schedule windows by start time within the trading session, which begins at
-// 17:30 IST (matches the timeline) — so 17:30 comes before 09:00. Stable sort keeps
-// windows with the same start in their existing order. Display/persistence only: the
-// engine picks the active window by time, not by sort_order. Labels are renumbered to
-// match the new position so the timeline, list, history and engine logs all agree.
-const sortSchedulesByStart = (list) => {
-  const key = (t) => {
-    const [h, m] = String(t || '00:00').split(':').map(Number);
-    return (((h || 0) * 60 + (m || 0)) - 1050 + 1440) % 1440;
-  };
-  return [...list]
-    .sort((a, b) => key(a.startTime) - key(b.startTime))
-    .map((s, i) => ({ ...s, label: `Window ${i + 1}` }));
+// paper_trading_schedules row → UI window. Shared by fetch and copy-from-account.
+const mapScheduleRow = (s) => ({
+  id: s.id,
+  label: s.label || 'Window',
+  startTime: s.start_time ? s.start_time.substring(0, 5) : '17:30',
+  endTime: s.end_time ? s.end_time.substring(0, 5) : '17:29',
+  maxCombinedPositions: s.max_combined_positions ?? 4,
+  allSameType: s.all_same_type ?? false,
+  sameType: s.same_type ?? 'call',
+  combinedSplitPct: s.combined_split_pct ?? 70,
+  minLongDist: s.min_long_dist ?? 500,
+  minStrikeDiff: s.min_strike_diff ?? 800,
+  minIvDiff: s.min_iv_diff ?? 5,
+  atmRatioScaling: s.atm_ratio_scaling ?? true,
+  atmRatioPctCall: s.atm_ratio_distance_call ?? 50,
+  atmRatioPctPut: s.atm_ratio_distance_put ?? 25,
+  maxNetPremium: s.max_net_premium ?? 20,
+  exitType: s.exit_type ?? 'ATM',
+  exitPoints: s.exit_points ?? 0,
+  slTpDecoyDiff: s.sl_tp_decoy_diff ?? 0,
+  shortExitPrice: s.short_exit_price ?? 1.1,
+  variableExitSlices: s.variable_exit_slices ?? false,
+  longExitSlices: s.long_exit_slices ?? 10,
+  daysToExpiry: s.days_to_expiry ?? 0,
+  hedgeEnabled: s.hedge_enabled ?? false,
+  hedgeLotPct: s.hedge_lot_pct ?? 0,
+  hedgeMaxPrice: s.hedge_max_price ?? 10,
+  hedgeIvDiffMin: s.hedge_iv_diff_min ?? 0,
+  hedgeIvDiffMax: s.hedge_iv_diff_max ?? 2,
+  isActive: s.is_active ?? true,
+  sort_order: s.sort_order ?? 0,
+});
+
+// UI window → paper_trading_schedules row. Shared by save and create-account copy.
+const toScheduleRow = (s, accountId, i) => ({
+  id: UUID_RE.test(String(s.id)) ? s.id : genScheduleId(),
+  account_id: accountId,
+  label: s.label || 'Window',
+  start_time: s.startTime,
+  end_time: s.endTime,
+  max_combined_positions: s.maxCombinedPositions ?? 4,
+  all_same_type: s.allSameType ?? false,
+  same_type: s.sameType ?? 'call',
+  combined_split_pct: s.combinedSplitPct ?? 70,
+  min_long_dist: s.minLongDist ?? 500,
+  min_strike_diff: s.minStrikeDiff ?? 800,
+  min_iv_diff: s.minIvDiff ?? 5,
+  atm_ratio_scaling: s.atmRatioScaling ?? true,
+  atm_ratio_distance_call: s.atmRatioPctCall ?? 50,
+  atm_ratio_distance_put: s.atmRatioPctPut ?? 25,
+  max_net_premium: s.maxNetPremium ?? 20,
+  exit_type: s.exitType ?? 'ATM',
+  exit_points: s.exitPoints ?? 0,
+  sl_tp_decoy_diff: s.slTpDecoyDiff ?? 0,
+  short_exit_price: s.shortExitPrice ?? 1.1,
+  variable_exit_slices: s.variableExitSlices ?? false,
+  long_exit_slices: s.longExitSlices ?? 10,
+  days_to_expiry: s.daysToExpiry ?? 0,
+  hedge_enabled: s.hedgeEnabled ?? false,
+  hedge_lot_pct: s.hedgeLotPct ?? 0,
+  hedge_max_price: s.hedgeMaxPrice ?? 10,
+  hedge_iv_diff_min: s.hedgeIvDiffMin ?? 0,
+  hedge_iv_diff_max: s.hedgeIvDiffMax ?? 2,
+  is_active: s.isActive ?? true,
+  sort_order: i,
+  updated_at: new Date().toISOString(),
+});
+
+// One-time copy of another account's windows (a snapshot, not a link — both accounts
+// stay independently editable afterwards). Copies get fresh non-uuid ids so saving
+// inserts new rows instead of touching the source's. The hedge leg is paper-only, so
+// it's switched off when the target is a live account. RLS limits sources to accounts
+// the user owns (admins: any account).
+const copySchedulesFrom = async (sourceAccountId, targetMode) => {
+  const { data, error } = await supabase
+    .from('paper_trading_schedules')
+    .select('*')
+    .eq('account_id', sourceAccountId)
+    .order('sort_order', { ascending: true });
+  if (error) throw error;
+  const stamp = Date.now();
+  return sortSchedulesByStart((data || []).map((row, i) => ({
+    ...mapScheduleRow(row),
+    id: `new-copy-${stamp}-${i}`,
+    isNew: true,
+    ...(targetMode === 'live' ? { hedgeEnabled: false } : {}),
+  })));
 };
 
 // Window 1 — the permanent, non-deletable first window. Auto-created (seeded from
@@ -164,7 +239,7 @@ const findActiveSchedule = (schedules, nowMs) => {
 };
 
 
-export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'paper' }) {
+export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'paper', scannerFill = null }) {
   // Which dashboard this instance is: 'paper' (Paper Trading) or 'live' (Live
   // Trading). The two tabs mount separate instances of this same component; they
   // share all logic but each only ever sees, manages and syncs accounts whose
@@ -196,6 +271,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
 
   // Time-based schedule windows
   const [schedules, setSchedules] = useState([]);
+  const [schedulesAccountId, setSchedulesAccountId] = useState(null); // account the loaded `schedules` belong to
   const [isSavingSchedules, setIsSavingSchedules] = useState(false);
 
   const {
@@ -237,7 +313,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       maxCombinedPositions: 4,
       combinedSplitPct: 70,
       entryBuyOffset: 10,
-      entrySellOffset: 3
+      entrySellOffset: 3,
+      copySchedulesFromId: ''
     }
   });
 
@@ -761,6 +838,19 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     };
   }, [fetchAccounts]);
 
+  // Accounts whose schedule windows can be copied — across BOTH paper and live (unlike
+  // `accounts`, which is filtered to this dashboard's mode). Clients see only their own.
+  const [copySources, setCopySources] = useState([]);
+  useEffect(() => {
+    if (!userProfile) return;
+    let query = supabase.from('paper_trading_accounts').select('id, name, mode');
+    if (userProfile.role === 'client') query = query.eq('user_id', session?.user?.id);
+    query.order('created_at', { ascending: true }).then(({ data, error }) => {
+      if (error) console.error('Fetch copy sources error:', error);
+      else setCopySources((data || []).map(a => ({ id: a.id, name: a.name, mode: a.mode === 'live' ? 'live' : 'paper' })));
+    });
+  }, [userProfile, session, accounts]);
+
   const handleModalSubmit = async (data) => {
     const trimmedName = data.name.trim();
     const accountMode = data.mode === 'live' ? 'live' : 'paper';
@@ -867,6 +957,22 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           }
         }
 
+        // Optional: start the new account with a copy of another account's windows.
+        if (data.copySchedulesFromId) {
+          try {
+            const copied = await copySchedulesFrom(data.copySchedulesFromId, accountMode);
+            if (copied.length > 0) {
+              const { error: schErr } = await supabase
+                .from('paper_trading_schedules')
+                .insert(copied.map((s, i) => toScheduleRow(s, accData.id, i)));
+              if (schErr) throw schErr;
+            }
+          } catch (schErr) {
+            console.error('Failed to copy schedules:', schErr);
+            alert(`Account created, but copying schedule windows failed: ${schErr.message}\nYou can import them later from the Time Schedules panel.`);
+          }
+        }
+
         // Manually fetch accounts first to update state instantly!
         await fetchAccounts();
 
@@ -912,7 +1018,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       balanceAllocationPct: config.balanceAllocationPct ?? 90,
       initialBalance: config.initialBalance ?? 3000,
       maxCombinedPositions: config.maxCombinedPositions ?? 4,
-      combinedSplitPct: config.combinedSplitPct ?? 70
+      combinedSplitPct: config.combinedSplitPct ?? 70,
+      copySchedulesFromId: ''
     });
     setIsCreateModalOpen(true);
   };
@@ -1509,37 +1616,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         .order('sort_order', { ascending: true });
       if (error) console.error('Fetch schedules error:', error);
       if (data) {
-        const mapped = sortSchedulesByStart(data.map(s => ({
-          id: s.id,
-          label: s.label || 'Window',
-          startTime: s.start_time ? s.start_time.substring(0, 5) : '17:30',
-          endTime: s.end_time ? s.end_time.substring(0, 5) : '17:29',
-          maxCombinedPositions: s.max_combined_positions ?? 4,
-          allSameType: s.all_same_type ?? false,
-          sameType: s.same_type ?? 'call',
-          combinedSplitPct: s.combined_split_pct ?? 70,
-          minLongDist: s.min_long_dist ?? 500,
-          minStrikeDiff: s.min_strike_diff ?? 800,
-          minIvDiff: s.min_iv_diff ?? 5,
-          atmRatioScaling: s.atm_ratio_scaling ?? true,
-          atmRatioPctCall: s.atm_ratio_distance_call ?? 50,
-          atmRatioPctPut: s.atm_ratio_distance_put ?? 25,
-          maxNetPremium: s.max_net_premium ?? 20,
-          exitType: s.exit_type ?? 'ATM',
-          exitPoints: s.exit_points ?? 0,
-          slTpDecoyDiff: s.sl_tp_decoy_diff ?? 0,
-          shortExitPrice: s.short_exit_price ?? 1.1,
-          variableExitSlices: s.variable_exit_slices ?? false,
-          longExitSlices: s.long_exit_slices ?? 10,
-          daysToExpiry: s.days_to_expiry ?? 0,
-          hedgeEnabled: s.hedge_enabled ?? false,
-          hedgeLotPct: s.hedge_lot_pct ?? 0,
-          hedgeMaxPrice: s.hedge_max_price ?? 10,
-          hedgeIvDiffMin: s.hedge_iv_diff_min ?? 0,
-          hedgeIvDiffMax: s.hedge_iv_diff_max ?? 2,
-          isActive: s.is_active ?? true,
-          sort_order: s.sort_order ?? 0,
-        })));
+        const mapped = sortSchedulesByStart(data.map(mapScheduleRow));
         // Guarantee a permanent Window 1. Accounts with no windows get one
         // seeded from base config (so the initial values are visible/editable);
         // it persists on the next auto-save (lastSaved snapshot excludes it).
@@ -1547,6 +1624,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           ? mapped
           : [makeFirstWindow(cfgForSeed ?? configRef.current)];
         setSchedules(finalList);
+        setSchedulesAccountId(activeAccountId);
         lastSavedSchedulesRef.current = JSON.stringify(mapped.map(s => ({
           label: s.label,
           startTime: s.startTime,
@@ -1590,39 +1668,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       // can NEVER leave the account with zero rows (which would reseed Window 1 from
       // base config and silently reset the user's filters).
       const sorted = sortSchedulesByStart(schedules);
-      const rows = sorted.map((s, i) => ({
-        id: UUID_RE.test(String(s.id)) ? s.id : genScheduleId(),
-        account_id: activeAccountId,
-        label: s.label || 'Window',
-        start_time: s.startTime,
-        end_time: s.endTime,
-        max_combined_positions: s.maxCombinedPositions ?? 4,
-        all_same_type: s.allSameType ?? false,
-        same_type: s.sameType ?? 'call',
-        combined_split_pct: s.combinedSplitPct ?? 70,
-        min_long_dist: s.minLongDist ?? 500,
-        min_strike_diff: s.minStrikeDiff ?? 800,
-        min_iv_diff: s.minIvDiff ?? 5,
-        atm_ratio_scaling: s.atmRatioScaling ?? true,
-        atm_ratio_distance_call: s.atmRatioPctCall ?? 50,
-        atm_ratio_distance_put: s.atmRatioPctPut ?? 25,
-        max_net_premium: s.maxNetPremium ?? 20,
-        exit_type: s.exitType ?? 'ATM',
-        exit_points: s.exitPoints ?? 0,
-        sl_tp_decoy_diff: s.slTpDecoyDiff ?? 0,
-        short_exit_price: s.shortExitPrice ?? 1.1,
-        variable_exit_slices: s.variableExitSlices ?? false,
-        long_exit_slices: s.longExitSlices ?? 10,
-        days_to_expiry: s.daysToExpiry ?? 0,
-        hedge_enabled: s.hedgeEnabled ?? false,
-        hedge_lot_pct: s.hedgeLotPct ?? 0,
-        hedge_max_price: s.hedgeMaxPrice ?? 10,
-        hedge_iv_diff_min: s.hedgeIvDiffMin ?? 0,
-        hedge_iv_diff_max: s.hedgeIvDiffMax ?? 2,
-        is_active: s.isActive ?? true,
-        sort_order: i,
-        updated_at: new Date().toISOString(),
-      }));
+      const rows = sorted.map((s, i) => toScheduleRow(s, activeAccountId, i));
 
       // 1) Upsert every current window. If this fails we RETURN without deleting
       //    anything — the existing rows stay intact (no wipe → no reseed).
@@ -1723,6 +1769,46 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   const handleResetSchedules = useCallback(() => {
     setSchedules([makeFirstWindow(configRef.current)]);
   }, []);
+
+  // Replace this account's windows with a copy of another account's. Only local state
+  // changes here — nothing is saved until Apply, and Cancel restores the saved windows.
+  // Returns false when the source has no windows (so the panel can say so).
+  const handleImportSchedules = useCallback(async (sourceAccountId) => {
+    const targetMode = accounts.find(a => a.id === activeAccountId)?.mode === 'live' ? 'live' : 'paper';
+    const copied = await copySchedulesFrom(sourceAccountId, targetMode);
+    if (copied.length === 0) return false;
+    setSchedules(copied);
+    return true;
+  }, [accounts, activeAccountId]);
+
+  // Scanner "Send to window" (see main.jsx). Two steps, each once per send (`token`),
+  // using adjust-state-during-render: 1) open the target account; 2) once that
+  // account's windows have loaded, merge the scanner values into the chosen window as
+  // an unsaved edit — nothing is written until the user clicks Apply.
+  const [fillOpened, setFillOpened] = useState(null);
+  const [fillApplied, setFillApplied] = useState(null);
+  const [scheduleFocus, setScheduleFocus] = useState(null); // { token, windowId, text } for SchedulePanel
+  if (scannerFill && fillOpened !== scannerFill.token) {
+    setFillOpened(scannerFill.token);
+    if (activeAccountId !== scannerFill.accountId) setActiveAccountId(scannerFill.accountId);
+  }
+  if (scannerFill && fillApplied !== scannerFill.token
+      && activeAccountId === scannerFill.accountId && schedulesAccountId === scannerFill.accountId) {
+    setFillApplied(scannerFill.token);
+    const target = schedules.find(s => s.id === scannerFill.windowId);
+    if (target) {
+      const allowHedge = mode !== 'live' && (config.strategyVersion ?? 1) >= 2;
+      setSchedules(prev => prev.map(s => s.id === scannerFill.windowId
+        ? { ...s, ...scannerToWindowFields(scannerFill.values, allowHedge) } : s));
+    }
+    setScheduleFocus({
+      token: scannerFill.token,
+      windowId: target ? scannerFill.windowId : null,
+      text: target
+        ? `Loaded "${scannerFill.sourceName}" from the scanner into ${target.label}. Review it and click Apply to save — Cancel discards it.`
+        : `The window picked in the scanner no longer exists on this account, so nothing was loaded.`,
+    });
+  }
 
   // Cross-tab / cross-device schedule sync. Without this, a second open tab (or
   // phone) keeps a STALE copy of the schedules; the next local edit there re-saves
@@ -3006,6 +3092,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
               onApplySchedules={saveSupabaseSchedules}
               onCancelSchedules={handleCancelSchedules}
               onResetSchedules={handleResetSchedules}
+              copySources={copySources.filter(a => a.id !== activeAccountId)}
+              onImportSchedules={handleImportSchedules}
+              scheduleFocus={scheduleFocus}
               positions={positions}
               tradeHistory={tradeHistory}
               historyFilterDate={historyFilterDate}
@@ -3117,6 +3206,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         setValue={setValueCreate}
         watch={watchCreate}
         mode={dashboardMode}
+        copySources={copySources}
       />
 
       <DeleteAccountModal

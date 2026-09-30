@@ -26,5 +26,24 @@ export const SCANNER_DEFAULTS = {
   hedgeIvDiffMax: 2,
 };
 
+// The scanner's live filter config, per browser.
+export const SCANNER_CONFIG_KEY = 'vitti_algo_config';
+
 // The user's saved filter settings (full snapshots of every SCANNER_DEFAULTS key), per browser.
 export const SAVED_SETTINGS_KEY = 'vitti_scanner_presets_v1';
+
+// Filter sets a schedule window can copy from: the scanner's current filters first,
+// then each saved setting. Read fresh on each call so it reflects the scanner right now.
+export function loadScannerFilterSources() {
+  const read = (key) => {
+    try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch { return null; }
+  };
+  const current = read(SCANNER_CONFIG_KEY);
+  const saved = read(SAVED_SETTINGS_KEY);
+  return [
+    { name: 'Current scanner filters', values: { ...SCANNER_DEFAULTS, ...(current || {}) } },
+    ...(Array.isArray(saved) ? saved : [])
+      .filter(p => p && p.name && p.values)
+      .map(p => ({ name: p.name, values: { ...SCANNER_DEFAULTS, ...p.values } })),
+  ];
+}

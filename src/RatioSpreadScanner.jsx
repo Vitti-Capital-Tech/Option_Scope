@@ -12,11 +12,11 @@ import { normalizeIv, toFiniteNumber, matchesOptionType, pickHedgeStrike } from 
 import Navbar from './components/PaperTrading/Navbar';
 import CustomSelect from './components/common/CustomSelect';
 import { ScannerFilters, ScannerFilterSummary, ScannerFilterToolbar } from './components/scanner/ScannerFilters';
-import { SCANNER_DEFAULTS } from './components/scanner/scannerDefaults';
+import { SCANNER_DEFAULTS, SCANNER_CONFIG_KEY } from './components/scanner/scannerDefaults';
 import { ChevronDown, SlidersHorizontal } from 'lucide-react';
 
 // ── Main Scanner Component ──────────────────────────────────────────────────
-export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
+export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onSendToWindow }) {
   const [underlying, setUnderlying] = useState('BTC');
   const [products, setProducts] = useState([]);
   const [expiries, setExpiries] = useState([]);
@@ -47,7 +47,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
 
   // Configurable thresholds initialized from localStorage
   const [config, setConfig] = useState(() => {
-    const saved = localStorage.getItem('vitti_algo_config');
+    const saved = localStorage.getItem(SCANNER_CONFIG_KEY);
     const base = { ...SCANNER_DEFAULTS };
 
     if (saved) {
@@ -609,7 +609,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
       const updates = typeof keyOrObj === 'object' ? keyOrObj : { [keyOrObj]: value };
       const newConfig = { ...c, ...updates };
       try {
-        localStorage.setItem('vitti_algo_config', JSON.stringify(newConfig));
+        localStorage.setItem(SCANNER_CONFIG_KEY, JSON.stringify(newConfig));
       } catch (err) {
         console.error('Failed to save config to localStorage:', err);
       }
@@ -694,7 +694,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme }) {
             </button>
           </div>
 
-          <ScannerFilterToolbar config={config} updateConfig={updateConfig} />
+          <ScannerFilterToolbar config={config} updateConfig={updateConfig} onSendToWindow={onSendToWindow} />
 
           {isFiltersCollapsed && (
             <ScannerFilterSummary config={config} onOpen={() => setIsFiltersCollapsed(false)} />

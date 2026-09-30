@@ -49,16 +49,25 @@ function Root() {
 
   const toggleTheme = () => setTheme(prev => prev === 'dark' ? 'light' : 'dark');
 
+  // Scanner "Send to window": hand the filters to the matching trading dashboard, which
+  // opens that account and fills the window as an unsaved edit (saved only on Apply).
+  // `token` makes each send distinct, so the dashboard applies it exactly once.
+  const [scannerFill, setScannerFill] = useState(null);
+  const sendToWindow = (fill) => {
+    setScannerFill({ ...fill, token: Date.now() });
+    setPage(fill.mode === 'live' ? 'live' : 'trading');
+  };
+
   return (
     <>
       <div style={{ display: page === 'scanner' ? 'block' : 'none', height: '100%', width: '100%' }}>
-        <RatioSpreadScanner onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} broadcast={broadcast} />
+        <RatioSpreadScanner onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} broadcast={broadcast} onSendToWindow={sendToWindow} />
       </div>
       <div style={{ display: page === 'trading' ? 'block' : 'none', height: '100%', width: '100%' }}>
-        <PaperTrading mode="paper" onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} broadcast={broadcast} />
+        <PaperTrading mode="paper" onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} broadcast={broadcast} scannerFill={scannerFill?.mode === 'paper' ? scannerFill : null} />
       </div>
       <div style={{ display: page === 'live' ? 'block' : 'none', height: '100%', width: '100%' }}>
-        <PaperTrading mode="live" onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} broadcast={broadcast} />
+        <PaperTrading mode="live" onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} broadcast={broadcast} scannerFill={scannerFill?.mode === 'live' ? scannerFill : null} />
       </div>
     </>
   );

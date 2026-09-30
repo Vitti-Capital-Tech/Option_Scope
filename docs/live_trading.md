@@ -64,6 +64,8 @@ the testbed. Full mechanism:
 > 2. **All Positions Same Type (`all_same_type` & `same_type`)** can be enabled per schedule window to dedicate 100% of that window's combined capacity strictly to Calls or Puts (e.g. `4C / 0P` or `0C / 4P`), bypassing `Split %`. Live execution filters candidates to only open the selected type.
 > 
 > The hedge overlay (migration `022`) remains a paper-only v2 experiment until similarly promoted.
+>
+> Schedule windows copied into a live account (Schedule Panel **Copy from account**, or **Copy Schedule Windows From** at account creation) always arrive with the hedge leg **off**. Applying a copied set replaces every window at once, so with open positions the UI asks for confirmation first — caps and exit rules change immediately.
 
 ## Credential storage & security model
 

@@ -17,7 +17,8 @@ export default function CreateAccountModal({
   userRole,
   setValue,
   watch,
-  mode = 'paper'
+  mode = 'paper',
+  copySources = []
 }) {
   if (!isOpen) return null;
 
@@ -100,6 +101,24 @@ export default function CreateAccountModal({
                     ...profiles.map(p => ({ label: p.email, value: p.id }))
                   ]}
                 />
+              </div>
+            )}
+
+            {/* Optional one-time copy of another account's schedule windows */}
+            {copySources.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-dim)' }}>Copy Schedule Windows From</label>
+                <CustomSelect
+                  value={watch('copySchedulesFromId') || ''}
+                  onChange={val => setValue('copySchedulesFromId', val)}
+                  options={[
+                    { label: 'None (default Window 1)', value: '' },
+                    ...copySources.map(a => ({ label: `${a.name} (${a.mode === 'live' ? 'Live' : 'Paper'})`, value: a.id }))
+                  ]}
+                />
+                {mode === 'live' && watch('copySchedulesFromId') && (
+                  <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>Hedge leg is paper-only, so it will be switched off in the copied windows.</span>
+                )}
               </div>
             )}
 
