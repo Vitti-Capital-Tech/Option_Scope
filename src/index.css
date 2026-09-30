@@ -3421,8 +3421,9 @@ body.light-theme .pt-live-badge {
       border-color 0.35s ease;
   }
 
+  /* Tall enough for every filter incl. the optional scaling / hedge rows. */
   .scanner-filters-container.expanded {
-    max-height: 500px;
+    max-height: 2000px;
     opacity: 1;
     border-top: 1px solid var(--border);
     padding-top: 12px;
