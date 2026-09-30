@@ -661,6 +661,9 @@ async function startSingleAccountEngine(account) {
           hedgeMaxPrice: s.hedge_max_price ?? 10,
           hedgeIvDiffMin: s.hedge_iv_diff_min ?? 0,
           hedgeIvDiffMax: s.hedge_iv_diff_max ?? 2,
+          // Shared Long Strikes (migration 044, paper v2): how many near-ATM long strikes may
+          // carry two spreads. 0 = off.
+          sharedLongStrikes: s.shared_long_strikes ?? 0,
           isActive: s.is_active ?? true,
         }));
 
@@ -688,7 +691,8 @@ async function startSingleAccountEngine(account) {
                 'combinedSplitPct', 'minLongDist', 'minStrikeDiff', 'minIvDiff', 'atmRatioScaling',
                 'atmRatioPctCall', 'atmRatioPctPut', 'maxNetPremium', 'exitType', 'exitPoints',
                 'slTpDecoyDiff', 'shortExitPrice', 'variableExitSlices', 'longExitSlices', 'daysToExpiry',
-                'hedgeEnabled', 'hedgeLotPct', 'hedgeMaxPrice', 'hedgeIvDiffMin', 'hedgeIvDiffMax'
+                'hedgeEnabled', 'hedgeLotPct', 'hedgeMaxPrice', 'hedgeIvDiffMin', 'hedgeIvDiffMax',
+                'sharedLongStrikes'
               ];
               fieldsToCompare.forEach(f => {
                 if (oldWin[f] !== newWin[f] && oldWin[f] !== undefined) {
@@ -3078,10 +3082,24 @@ async function startSingleAccountEngine(account) {
               hedgeMaxPrice: activeSchedule.hedgeMaxPrice ?? 10,
               hedgeIvDiffMin: activeSchedule.hedgeIvDiffMin ?? 0,
               hedgeIvDiffMax: activeSchedule.hedgeIvDiffMax ?? 2,
+              sharedLongStrikes: activeSchedule.sharedLongStrikes ?? 0,
             }
             : {}),
         }
         : { ...config };
+
+      // ── Shared Long Strikes (migration 044) — PAPER v2 only ────────────────────────
+      // Normally a strike hosts one leg per account. With N > 0, the N long strikes nearest
+      // ATM (calls + puts together, chosen below from this cycle's candidates) may each carry
+      // TWO spreads: same long, the two valid shorts nearest ATM. Each is a separate position
+      // (own cap slot + margin). Shorts stay one-per-strike, and a long can never be shorted.
+      // Live and v1 always 0 → every path below behaves exactly as before.
+      const sharedLongCount = (accountState.mode !== 'live' && config.strategyVersion >= 2)
+        ? Math.max(0, Math.floor(Number(effectiveConfig.sharedLongStrikes) || 0))
+        : 0;
+      const MAX_SPREADS_PER_SHARED_LONG = 2;
+      let sharedLongKeys = new Set(); // `${type}|${strike}` — filled once candidates are grouped
+      const isSharedLong = (type, strike) => sharedLongKeys.has(`${type}|${Number(strike)}`);
 
       // if (activeSchedule) {
       //   log(`[${accountState.name}] Schedule active: "${activeSchedule.label}" — Calls: ${activeSchedule.numberOfCalls}, Puts: ${activeSchedule.numberOfPuts}, LongDist: ${activeSchedule.minLongDist}, StrikeDiff: ${activeSchedule.minStrikeDiff}`);
@@ -3155,7 +3173,9 @@ async function startSingleAccountEngine(account) {
         if (!(p.sellQty > 0)) continue;                       // long-only → replaceable, keep
         const set = occupiedStrikes[p.type];
         if (!set) continue;
-        if (!p.buyLeg?.isHedge && (p.buyLeg?.lotSize ?? 1) > 0 && p.buyLeg?.strike != null) {
+        // Shared Long Strikes: a held long may take a second spread, so it must stay in the
+        // pool; the grouping/entry checks below still stop anything from SHORTING it.
+        if (sharedLongCount === 0 && !p.buyLeg?.isHedge && (p.buyLeg?.lotSize ?? 1) > 0 && p.buyLeg?.strike != null) {
           set.add(Number(p.buyLeg.strike));
         }
         if (p.sellLeg?.strike != null) set.add(Number(p.sellLeg.strike));
@@ -3492,8 +3512,58 @@ async function startSingleAccountEngine(account) {
         });
       };
 
+      // Shared Long Strikes: pick the N candidate long strikes nearest ATM, calls and puts
+      // together. A long already held by a LONG-ONLY remnant is left to the normal path
+      // (its replacement/upgrade logic), so it is not eligible for sharing.
+      if (sharedLongCount > 0) {
+        const heldLongOnly = (type, strike) => positions.some(p =>
+          p.underlying === underlying && p.type === type && p.expiry === config.expiry
+          && p.sellQty === 0 && (p.buyLeg?.lotSize ?? 0) > 0 && !p.buyLeg?.isHedge
+          && Number(p.buyLeg?.strike) === Number(strike));
+        const longs = [
+          ...Object.keys(callGroups).map(k => ({ type: 'call', strike: Number(k) })),
+          ...Object.keys(putGroups).map(k => ({ type: 'put', strike: Number(k) })),
+        ].filter(l => !heldLongOnly(l.type, l.strike));
+        longs.sort((a, b) => Math.abs(a.strike - spotPrice) - Math.abs(b.strike - spotPrice));
+        sharedLongKeys = new Set(longs.slice(0, sharedLongCount).map(l => `${l.type}|${l.strike}`));
+        if (!onlyExits && sharedLongKeys.size > 0) {
+          log(`[${accountState.name}] ⇉ Shared long strikes (up to ${MAX_SPREADS_PER_SHARED_LONG} spreads each): ${[...sharedLongKeys].map(k => k.replace('|', ' ').toUpperCase()).join(', ')}`);
+        }
+      }
+
+      // Full spreads already open on this long strike (same expiry/type) — for a shared long.
+      const fullSpreadsOnLong = (type, strike) => positions.filter(p =>
+        p.underlying === underlying && p.type === type && p.expiry === config.expiry
+        && p.sellQty > 0 && !p.buyLeg?.isHedge && (p.buyLeg?.lotSize ?? 1) > 0
+        && Number(p.buyLeg?.strike) === Number(strike));
+
+      // Shared long: the free slots on this long filled with the valid shorts NEAREST ATM
+      // (not best ROI). A short is valid if no open position uses it (long or active short)
+      // and it isn't the short of a spread already on this long.
+      const pickSharedLongSpreads = (group) => {
+        const type = group[0].buyLeg.type;
+        const strike = Number(group[0].buyLeg.strike);
+        const onLong = fullSpreadsOnLong(type, strike);
+        const slots = MAX_SPREADS_PER_SHARED_LONG - onLong.length;
+        if (slots <= 0) return [];
+        const longShorted = positions.some(p => p.underlying === underlying && p.type === type
+          && p.sellQty > 0 && Number(p.sellLeg?.strike) === strike);
+        if (longShorted) return []; // another spread is SHORT this strike — can't go long on it
+        const shortFree = (s) => !positions.some(p => {
+          if (p.underlying !== underlying || p.type !== type) return false;
+          const occ = [Number(p.buyLeg.strike)];
+          if (p.sellQty > 0 && p.sellLeg?.strike != null) occ.push(Number(p.sellLeg.strike));
+          return occ.includes(Number(s.sellLeg.strike));
+        });
+        return group
+          .filter(shortFree)
+          .sort((a, b) => Math.abs(a.sellLeg.strike - spotPrice) - Math.abs(b.sellLeg.strike - spotPrice))
+          .slice(0, slots);
+      };
+
       const uniqueCalls = [];
       for (const group of Object.values(callGroups)) {
+        if (isSharedLong('call', group[0].buyLeg.strike)) { uniqueCalls.push(...pickSharedLongSpreads(group)); continue; }
         group.sort((a, b) => b.roi - a.roi);
         const primary = group[0];
         uniqueCalls.push(primary);
@@ -3505,6 +3575,7 @@ async function startSingleAccountEngine(account) {
 
       const uniquePuts = [];
       for (const group of Object.values(putGroups)) {
+        if (isSharedLong('put', group[0].buyLeg.strike)) { uniquePuts.push(...pickSharedLongSpreads(group)); continue; }
         group.sort((a, b) => b.roi - a.roi);
         const primary = group[0];
         uniquePuts.push(primary);
@@ -4523,12 +4594,17 @@ async function startSingleAccountEngine(account) {
         // a slot with no qualifying candidate stays empty.
         const simCounts = { call: 0, put: 0 };
         let simCombined = 0;
-        const occupied = { call: new Set(), put: new Set() };
+        // Longs are counted (a shared long may hold two spreads); shorts are one-per-strike.
+        const longUses = { call: new Map(), put: new Map() };
+        const shorts = { call: new Set(), put: new Set() };
         openHere.forEach(p => {
           if (p.sellQty > 0 && (p.type === 'call' || p.type === 'put')) { simCounts[p.type]++; simCombined++; }
           if (p.expiry === config.expiry && (p.type === 'call' || p.type === 'put')) {
-            if (!p.buyLeg?.isHedge && (p.buyLeg?.lotSize ?? 1) > 0 && p.buyLeg?.strike != null) occupied[p.type].add(Number(p.buyLeg.strike));
-            if (p.sellQty > 0 && p.sellLeg?.strike != null) occupied[p.type].add(Number(p.sellLeg.strike));
+            if (!p.buyLeg?.isHedge && (p.buyLeg?.lotSize ?? 1) > 0 && p.buyLeg?.strike != null) {
+              const k = Number(p.buyLeg.strike);
+              longUses[p.type].set(k, (longUses[p.type].get(k) || 0) + 1);
+            }
+            if (p.sellQty > 0 && p.sellLeg?.strike != null) shorts[p.type].add(Number(p.sellLeg.strike));
           }
         });
         let openable = 0;
@@ -4539,8 +4615,12 @@ async function startSingleAccountEngine(account) {
           const b = Number(sp.buyLeg.strike), s = Number(sp.sellLeg.strike);
           const tCap = derivedTypeCap(effectiveConfig, t);
           if (tCap === 0 || simCounts[t] >= tCap) continue;
-          if (occupied[t].has(b) || occupied[t].has(s)) continue; // either leg on an occupied strike (cross-role)
-          occupied[t].add(b); occupied[t].add(s);
+          // Either leg on an occupied strike (cross-role) blocks — except a shared long
+          // with a free spread slot.
+          const longLimit = isSharedLong(t, b) ? MAX_SPREADS_PER_SHARED_LONG : 1;
+          if (shorts[t].has(b) || (longUses[t].get(b) || 0) >= longLimit) continue;
+          if (shorts[t].has(s) || (longUses[t].get(s) || 0) > 0) continue;
+          longUses[t].set(b, (longUses[t].get(b) || 0) + 1); shorts[t].add(s);
           simCounts[t]++; simCombined++; openable++;
         }
         if (openable > 0) {
@@ -4768,10 +4848,26 @@ async function startSingleAccountEngine(account) {
             ...remaining.filter(p => p.expiry === config.expiry && p.underlying === underlying && p.type === spreadType),
             ...newEntries.filter(p => p.underlying === underlying && p.type === spreadType),
           ];
-          const conflictClashes = conflictScope.filter(p => {
+          let conflictClashes = conflictScope.filter(p => {
             const occ = strikesOccupiedBy(p);
             return occ.includes(bStrike) || occ.includes(sStrike);
           });
+
+          // Shared Long Strikes (paper v2): on a shared long, full spreads that merely share
+          // this LONG (their short is elsewhere and they don't hold our short) are not a
+          // conflict while fewer than MAX_SPREADS_PER_SHARED_LONG use it. Any other clash —
+          // a short on our long, our short taken, or a long-only remnant — still blocks.
+          if (isSharedLong(spreadType, bStrike) && conflictClashes.length > 0) {
+            const longMates = conflictClashes.filter(p =>
+              p.sellQty > 0 && !p.buyLeg?.isHedge
+              && Number(p.buyLeg?.strike) === bStrike
+              && Number(p.sellLeg?.strike) !== bStrike
+              && !strikesOccupiedBy(p).includes(sStrike));
+            if (longMates.length === conflictClashes.length && longMates.length < MAX_SPREADS_PER_SHARED_LONG) {
+              log(`[${accountState.name}] ⇉ Shared long ${spreadType.toUpperCase()} ${bStrike}: adding spread ${bStrike}/${sStrike} alongside ${longMates.map(p => `${p.id} (${bStrike}/${p.sellLeg.strike})`).join(', ')}.`);
+              conflictClashes = [];
+            }
+          }
 
           // ── Replacement diagnostic (paper, log-only) ───────────────────────────────
           // Replacement is eligible when an active long-only position holds EITHER the candidate's buy strike (bStrike) or short strike (sStrike)
@@ -5425,18 +5521,33 @@ async function startSingleAccountEngine(account) {
             // duplicate through to real order placement — the unique index would then reject
             // the insert AFTER the Delta orders are live, orphaning them (the 65500/67000
             // incident). Skip the entry on a query error.
-            const { data: buyConflict, error: buyConflictError } = await supabase.from('active_positions').select('id')
+            const { data: buyConflict, error: buyConflictError } = await supabase.from('active_positions')
+              // long_share_slot only exists after migration 044 — read it only when sharing
+              // is on, so a not-yet-migrated DB never fails every account's guard.
+              .select(sharedLongCount > 0 ? 'id, buy_strike, sell_strike, sell_qty, long_share_slot' : 'id, buy_strike, sell_strike, sell_qty')
               .eq('account_id', accountState.id)
               .eq('underlying', underlying).eq('type', t.type)
               .eq('expiry', config.expiry)
-              .or(`buy_strike.eq.${t.buyLeg.strike},and(sell_strike.eq.${t.buyLeg.strike},sell_qty.gt.0)`).limit(1);
+              .or(`buy_strike.eq.${t.buyLeg.strike},and(sell_strike.eq.${t.buyLeg.strike},sell_qty.gt.0)`).limit(MAX_SPREADS_PER_SHARED_LONG + 1);
             if (buyConflictError) {
               logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} skipped — buy-strike uniqueness check failed (${buyConflictError.message}); failing safe.`);
               continue;
             }
+            // Shared Long Strikes (migration 044): the long may already hold full spreads with
+            // OTHER shorts — allowed while a slot (0/1) is free. The row takes the free slot,
+            // so the (…, buy_strike, long_share_slot) unique index caps a long at two spreads.
+            t.longShareSlot = 0;
             if (buyConflict && buyConflict.length > 0) {
-              logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} blocked. Long strike ${t.buyLeg.strike} already occupied (open long or active short).`);
-              continue;
+              const sharable = isSharedLong(t.type, t.buyLeg.strike) && buyConflict.every(r =>
+                Number(r.buy_strike) === Number(t.buyLeg.strike) && Number(r.sell_qty) > 0
+                && Number(r.sell_strike) !== Number(t.sellLeg.strike));
+              const usedSlots = new Set(buyConflict.map(r => Number(r.long_share_slot ?? 0)));
+              const freeSlot = [0, 1].find(slot => !usedSlots.has(slot));
+              if (!sharable || buyConflict.length >= MAX_SPREADS_PER_SHARED_LONG || freeSlot == null) {
+                logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} blocked. Long strike ${t.buyLeg.strike} already occupied (open long or active short).`);
+                continue;
+              }
+              t.longShareSlot = freeSlot;
             }
 
             // Sell strike must be FREE — not occupied by any ACTIVE short (sell_strike WHERE
@@ -5680,6 +5791,7 @@ async function startSingleAccountEngine(account) {
               entry_spot_price: t.entrySpotPrice,
               margin: t.margin, entry_fee: t.entryFee, accumulated_sell_pnl: 0,
               buy_strike: t.buyLeg.strike, sell_strike: t.sellLeg.strike,
+              ...(sharedLongCount > 0 ? { long_share_slot: t.longShareSlot ?? 0 } : {}),
               real_exit_level: realExitLvl, decoy_exit_level: bracketLevel,
               account_id: accountState.id,
             }]);

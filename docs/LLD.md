@@ -794,6 +794,7 @@ Table: `paper_trading_schedules`
 - `short_exit_price`, `variable_exit_slices`, `long_exit_slices` (migration `033`, per-window exit ladder controls)
 - `min_days_to_expiry` (migration `019`, **paper v2** — the traded expiry follows the active window)
 - `hedge_enabled` (BOOLEAN, default `false`), `hedge_lot_pct` (NUMERIC 0–100, default `0`) (Hedge Leg, migration `041`; the old migration-`022` hedge columns are dropped by `042`)
+- `shared_long_strikes` (INTEGER ≥ 0, default `0`, migration `044`, **paper v2 only**) — the N long strikes nearest ATM (calls + puts together) may each carry two spreads (same long, the two valid shorts nearest ATM). Pairs with `active_positions.long_share_slot` (0/1), now part of `idx_active_positions_buy_strike_unique`, so at most two positions share one long. Engine: `sharedLongCount` / `sharedLongKeys` in `evaluateStrategy`; exemptions in the scan pool, grouping (`pickSharedLongSpreads`), full-deploy simulation, entry strike-conflict check and the DB buy-strike guard. Live/v1 → 0, behaviour unchanged.
 - `is_active` (BOOLEAN, default `true`, permanently active — the Enabled checkbox was removed)
 - `created_at` (TIMESTAMPTZ, default `now()`)
 

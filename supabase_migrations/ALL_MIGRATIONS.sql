@@ -1400,3 +1400,37 @@ BEGIN
       CHECK (hedge_max_price >= 0 AND hedge_iv_diff_min >= 0 AND hedge_iv_diff_max >= hedge_iv_diff_min);
   END IF;
 END $$;
+
+-- ─── 044_shared_long_strikes.sql ───
+-- Migration 044: Shared Long Strikes (paper v2) — one long strike may carry TWO spreads.
+ALTER TABLE public.paper_trading_schedules
+  ADD COLUMN IF NOT EXISTS shared_long_strikes INTEGER NOT NULL DEFAULT 0;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'paper_trading_schedules_shared_long_strikes_check'
+  ) THEN
+    ALTER TABLE public.paper_trading_schedules
+      ADD CONSTRAINT paper_trading_schedules_shared_long_strikes_check
+      CHECK (shared_long_strikes >= 0);
+  END IF;
+END $$;
+
+ALTER TABLE public.active_positions
+  ADD COLUMN IF NOT EXISTS long_share_slot SMALLINT NOT NULL DEFAULT 0;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'active_positions_long_share_slot_check'
+  ) THEN
+    ALTER TABLE public.active_positions
+      ADD CONSTRAINT active_positions_long_share_slot_check
+      CHECK (long_share_slot IN (0, 1));
+  END IF;
+END $$;
+
+DROP INDEX IF EXISTS public.idx_active_positions_buy_strike_unique;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_active_positions_buy_strike_unique
+    ON public.active_positions(account_id, underlying, type, expiry, buy_strike, long_share_slot);

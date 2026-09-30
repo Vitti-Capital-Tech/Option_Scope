@@ -106,6 +106,7 @@ const DEFAULT_WINDOW = {
   hedgeMaxPrice: 10,
   hedgeIvDiffMin: 0,
   hedgeIvDiffMax: 2,
+  sharedLongStrikes: 0,
   isActive: true,
 };
 
@@ -971,6 +972,16 @@ export default function SchedulePanel({
                       <CustomInput type="number" min="0" step="0.5" suffix="%" value={s.hedgeIvDiffMax ?? 2} onChange={e => handleChange(s.id, 'hedgeIvDiffMax', Number(e.target.value))} />
                     </div>
                   </>
+                )}
+
+                {/* Shared Long Strikes (migration 044) — paper v2 only. The N long strikes
+                    nearest ATM (calls + puts together) may each carry two spreads: same
+                    long, the two valid shorts nearest ATM. Each is its own position. */}
+                {isPaper && strategyVersion >= 2 && (
+                  <div className="schedule-item-block schedule-item-num-block">
+                    <span className="schedule-item-label" title="How many long strikes nearest ATM (calls and puts together) may each be used by two spreads — same long, the two valid shorts nearest ATM. Each spread is a separate position with its own slot and margin. 0 = off (one spread per long strike).">Shared Long Strikes</span>
+                    <CustomInput type="number" min="0" step="1" value={s.sharedLongStrikes ?? 0} onChange={e => handleChange(s.id, 'sharedLongStrikes', Math.max(0, Math.floor(Number(e.target.value) || 0)))} />
+                  </div>
                 )}
 
                 <div className="schedule-item-block schedule-item-num-block">

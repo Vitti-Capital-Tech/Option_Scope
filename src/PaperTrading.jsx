@@ -119,6 +119,7 @@ const mapScheduleRow = (s) => ({
   hedgeMaxPrice: s.hedge_max_price ?? 10,
   hedgeIvDiffMin: s.hedge_iv_diff_min ?? 0,
   hedgeIvDiffMax: s.hedge_iv_diff_max ?? 2,
+  sharedLongStrikes: s.shared_long_strikes ?? 0,
   isActive: s.is_active ?? true,
   sort_order: s.sort_order ?? 0,
 });
@@ -153,6 +154,7 @@ const toScheduleRow = (s, accountId, i) => ({
   hedge_max_price: s.hedgeMaxPrice ?? 10,
   hedge_iv_diff_min: s.hedgeIvDiffMin ?? 0,
   hedge_iv_diff_max: s.hedgeIvDiffMax ?? 2,
+  shared_long_strikes: Math.max(0, Math.floor(Number(s.sharedLongStrikes) || 0)),
   is_active: s.isActive ?? true,
   sort_order: i,
   updated_at: new Date().toISOString(),
@@ -160,8 +162,8 @@ const toScheduleRow = (s, accountId, i) => ({
 
 // One-time copy of another account's windows (a snapshot, not a link — both accounts
 // stay independently editable afterwards). Copies get fresh non-uuid ids so saving
-// inserts new rows instead of touching the source's. The hedge leg is paper-only, so
-// it's switched off when the target is a live account. RLS limits sources to accounts
+// inserts new rows instead of touching the source's. The hedge leg and Shared Long
+// Strikes are paper-only, so they're switched off when the target is a live account. RLS limits sources to accounts
 // the user owns (admins: any account).
 const copySchedulesFrom = async (sourceAccountId, targetMode) => {
   const { data, error } = await supabase
@@ -175,7 +177,7 @@ const copySchedulesFrom = async (sourceAccountId, targetMode) => {
     ...mapScheduleRow(row),
     id: `new-copy-${stamp}-${i}`,
     isNew: true,
-    ...(targetMode === 'live' ? { hedgeEnabled: false } : {}),
+    ...(targetMode === 'live' ? { hedgeEnabled: false, sharedLongStrikes: 0 } : {}),
   })));
 };
 
@@ -212,6 +214,7 @@ const makeFirstWindow = (cfg = {}) => ({
   hedgeMaxPrice: 10,
   hedgeIvDiffMin: 0,
   hedgeIvDiffMax: 2,
+  sharedLongStrikes: 0,
   isActive: true,
   sort_order: 0,
 });
@@ -1652,6 +1655,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           hedgeMaxPrice: s.hedgeMaxPrice,
           hedgeIvDiffMin: s.hedgeIvDiffMin,
           hedgeIvDiffMax: s.hedgeIvDiffMax,
+          sharedLongStrikes: s.sharedLongStrikes,
           isActive: s.isActive
         })));
       }
@@ -1714,6 +1718,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         hedgeMaxPrice: s.hedgeMaxPrice,
         hedgeIvDiffMin: s.hedgeIvDiffMin,
         hedgeIvDiffMax: s.hedgeIvDiffMax,
+        sharedLongStrikes: s.sharedLongStrikes,
         isActive: s.isActive
       })));
       lastSavedSchedulesRef.current = savedJson;
@@ -1753,6 +1758,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       hedgeMaxPrice: s.hedgeMaxPrice,
       hedgeIvDiffMin: s.hedgeIvDiffMin,
       hedgeIvDiffMax: s.hedgeIvDiffMax,
+      sharedLongStrikes: s.sharedLongStrikes,
       isActive: s.isActive
     })));
     return lastSavedSchedulesRef.current !== currentJson;

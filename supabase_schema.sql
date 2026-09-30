@@ -195,6 +195,9 @@ CREATE TABLE IF NOT EXISTS public.paper_trading_schedules (
     hedge_max_price NUMERIC NOT NULL DEFAULT 10,
     hedge_iv_diff_min NUMERIC NOT NULL DEFAULT 0,
     hedge_iv_diff_max NUMERIC NOT NULL DEFAULT 2,
+    -- Shared Long Strikes (migration 044, paper v2): the N long strikes nearest ATM may each
+    -- carry two spreads (same long, the two valid shorts nearest ATM). 0 = off.
+    shared_long_strikes INTEGER NOT NULL DEFAULT 0 CHECK (shared_long_strikes >= 0),
     is_active BOOLEAN NOT NULL DEFAULT true,
     sort_order INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -264,6 +267,9 @@ CREATE TABLE IF NOT EXISTS public.active_positions (
     -- in the harder-to-trigger direction (call +diff, put −diff). Live rows stay NULL.
     real_exit_level NUMERIC DEFAULT NULL,
     decoy_exit_level NUMERIC DEFAULT NULL,
+    -- Migration 044: 0 for every normal position; 1 for the second spread on a shared long
+    -- strike (paper v2). Part of the buy-strike unique index, so at most two share a long.
+    long_share_slot SMALLINT NOT NULL DEFAULT 0 CHECK (long_share_slot IN (0, 1)),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
@@ -302,7 +308,7 @@ CREATE INDEX IF NOT EXISTS idx_active_positions_type ON public.active_positions(
 -- without expiry made the second insert collide with 23505 — the "DB Guard: Duplicate strike
 -- entry blocked" false positive. (See migration 025.)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_active_positions_buy_strike_unique
-    ON public.active_positions(account_id, underlying, type, expiry, buy_strike);
+    ON public.active_positions(account_id, underlying, type, expiry, buy_strike, long_share_slot);
 -- The sell-strike index is PARTIAL (WHERE sell_qty > 0, migration 026): only positions with
 -- an ACTIVE short reserve a sell strike. A long-only remnant (short bought back, sell_qty = 0)
 -- keeps its sell_strike populated but holds no active short, so it must NOT block a new spread

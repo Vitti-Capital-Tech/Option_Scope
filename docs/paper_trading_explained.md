@@ -1259,7 +1259,21 @@ The following parameters are scheduled per window:
 16. **Days to Expiry** (`daysToExpiry`) — **v2 (experimental paper) accounts only** (migration `019`). The window's value guards its own entries; the account-global traded expiry **follows the active window** as **(current date + that window's DTE)**, re-selected in ~realtime as windows change (smallest DTE wins on overlap). On v1 (live) this stays an account-level Control Panel field and is **not** shown per window. See [Strategy Versioning](#strategy-versioning-paper-vs-live).
 17. **Hedge Leg** (`hedgeEnabled` + `hedgeLotPct`) — **v2 (experimental paper) accounts only** (config migration `041`, leg column `023`). Adds a per-spread 3rd long-only leg (long/short/long triplet). See [Hedge Leg](#hedge-leg--per-spread-3rd-long-long--short--long-triplet).
 
+18. **Shared Long Strikes** (`sharedLongStrikes`, default `0` = off) — **v2 (experimental paper) accounts only** (migration `044`). See [Shared Long Strikes](#shared-long-strikes-paper-v2).
+
 All other filter settings (like `minSellPremium`, `maxRatioDeviation`, etc.) default back to the base account config.
+
+### Shared Long Strikes (paper v2)
+
+**File**: [paperTradingEngine.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js) (`sharedLongCount`, `pickSharedLongSpreads`) · **Columns**: `paper_trading_schedules.shared_long_strikes`, `active_positions.long_share_slot` · **Migration**: `044`
+
+Normally a strike hosts one leg per account. With **Shared Long Strikes = N**, each cycle the engine takes this cycle's candidate long strikes, ranks them by distance to spot (calls and puts together) and marks the **N nearest ATM** as shared. A shared long may carry **two spreads**: the same long with the **two valid shorts nearest ATM** (not ranked by ROI). If one spread is already open on that long, only one more (the nearest free short) is added.
+
+- **Separate positions**: each spread takes its own combined/per-type cap slot and its own margin part, and exits independently.
+- **Still blocked**: shorts are one-per-strike; a shared long can't be used if another spread is **short** that strike; a long held by a **long-only remnant** isn't shared (the normal replacement path handles it).
+- **DB guard**: the buy-strike check allows the second spread only when every existing row on that long is a full spread with a different short. The new row takes the free `long_share_slot` (0 or 1), and the unique index `(account_id, underlying, type, expiry, buy_strike, long_share_slot)` caps a long at two positions.
+- **Logs**: `⇉ Shared long strikes (up to 2 spreads each): …` and `⇉ Shared long CALL 77000: adding spread 77000/79000 alongside …`.
+- **Off by default** and ignored by live and v1 accounts, so their one-leg-per-strike behaviour is unchanged. Run migration `044` before deploying the new frontend (it saves the new column); the engine only reads/writes `long_share_slot` while the setting is on.
 
 > [!NOTE]
 > **Min IV Edge, Max Net Debit, Exit Type and Exit Points moved out of the Control Panel** into each window for all accounts. The account-level values remain only as the **gap fallback**. Because Exit Type is active-window-governed: the engine's paper exit check and live spot-cross catch-all both read the currently-active window's exit type each cycle. **Live exchange SL/TP brackets are placed at entry from the then-active window and are NOT auto-moved when the window flips** (they stay as an engine-down backstop; the running engine's catch-all enforces the active window).
