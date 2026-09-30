@@ -422,7 +422,7 @@ export default function SchedulePanel({
             const capLine = s.allSameType
               ? `Combined: ${Math.max(0, Math.floor(s.maxCombinedPositions ?? 4))} (${capInfo.text} [All ${(s.sameType || 'call').toUpperCase()}])`
               : `Combined: ${Math.max(0, Math.floor(s.maxCombinedPositions ?? 4))} (${capInfo.text} @ ${s.combinedSplitPct ?? 70}%)`;
-            const tooltip = `${s.label || 'Window'} (${cleanTime(s.startTime)} - ${cleanTime(s.endTime)})\n${capLine}\nStrike Diff: ${s.minStrikeDiff} | Long Dist: ${s.minLongDist} | Min IV: ${s.minIvDiff ?? 5}%\nScaling: ${(s.atmRatioScaling ?? true) ? 'ON' : 'OFF'} (C: ${s.atmRatioPctCall ?? 50}%, P: ${s.atmRatioPctPut ?? 25}%)`;
+            const tooltip = `Window ${i + 1} (${cleanTime(s.startTime)} - ${cleanTime(s.endTime)})\n${capLine}\nStrike Diff: ${s.minStrikeDiff} | Long Dist: ${s.minLongDist} | Min IV: ${s.minIvDiff ?? 5}%\nScaling: ${(s.atmRatioScaling ?? true) ? 'ON' : 'OFF'} (C: ${s.atmRatioPctCall ?? 50}%, P: ${s.atmRatioPctPut ?? 25}%)`;
 
             if (isSplit) {
               return (
@@ -441,7 +441,7 @@ export default function SchedulePanel({
                     }}
                   >
                     <span style={{ fontSize: 9, fontWeight: 800, color: '#000', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {s.label} ({cleanTime(s.startTime)} - {cleanTime(s.endTime)})
+                      Window {i + 1} ({cleanTime(s.startTime)} - {cleanTime(s.endTime)})
                     </span>
                   </div>
                   <div
@@ -458,7 +458,7 @@ export default function SchedulePanel({
                     }}
                   >
                     <span style={{ fontSize: 9, fontWeight: 800, color: '#000', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {s.label} ({cleanTime(s.startTime)} - {cleanTime(s.endTime)})
+                      Window {i + 1} ({cleanTime(s.startTime)} - {cleanTime(s.endTime)})
                     </span>
                   </div>
                 </React.Fragment>
@@ -481,7 +481,7 @@ export default function SchedulePanel({
                 }}
               >
                 <span style={{ fontSize: 9, fontWeight: 800, color: '#000', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {s.label} ({cleanTime(s.startTime)} - {cleanTime(s.endTime)})
+                  Window {i + 1} ({cleanTime(s.startTime)} - {cleanTime(s.endTime)})
                 </span>
               </div>
             );
@@ -948,7 +948,7 @@ export default function SchedulePanel({
               Delete Schedule Window
             </h3>
             <p style={{ margin: 0, fontSize: '13px', lineHeight: '1.5', color: 'var(--text)' }}>
-              Are you sure you want to delete the schedule window <strong>"{schedules.find(s => s.id === deletingId)?.label || 'this window'}"</strong>?
+              Are you sure you want to delete the schedule window <strong>"Window {schedules.findIndex(s => s.id === deletingId) + 1}"</strong>?
             </p>
             <p style={{ margin: 0, fontSize: '11px', color: 'var(--text-dim)', lineHeight: '1.4' }}>
               This action will discard the window locally. Note that changes are permanent only after you click <strong>"Save Schedules"</strong>.

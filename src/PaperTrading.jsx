@@ -89,6 +89,21 @@ const genScheduleId = () => {
 };
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// Order schedule windows by start time within the trading session, which begins at
+// 17:30 IST (matches the timeline) — so 17:30 comes before 09:00. Stable sort keeps
+// windows with the same start in their existing order. Display/persistence only: the
+// engine picks the active window by time, not by sort_order. Labels are renumbered to
+// match the new position so the timeline, list, history and engine logs all agree.
+const sortSchedulesByStart = (list) => {
+  const key = (t) => {
+    const [h, m] = String(t || '00:00').split(':').map(Number);
+    return (((h || 0) * 60 + (m || 0)) - 1050 + 1440) % 1440;
+  };
+  return [...list]
+    .sort((a, b) => key(a.startTime) - key(b.startTime))
+    .map((s, i) => ({ ...s, label: `Window ${i + 1}` }));
+};
+
 // Window 1 — the permanent, non-deletable first window. Auto-created (seeded from
 // the account's base/initial config) for any account that has no windows yet, so
 // the initial sizing/scaling values are always visible and editable. Spans the
@@ -1494,7 +1509,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         .order('sort_order', { ascending: true });
       if (error) console.error('Fetch schedules error:', error);
       if (data) {
-        const mapped = data.map(s => ({
+        const mapped = sortSchedulesByStart(data.map(s => ({
           id: s.id,
           label: s.label || 'Window',
           startTime: s.start_time ? s.start_time.substring(0, 5) : '17:30',
@@ -1524,7 +1539,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           hedgeIvDiffMax: s.hedge_iv_diff_max ?? 2,
           isActive: s.is_active ?? true,
           sort_order: s.sort_order ?? 0,
-        }));
+        })));
         // Guarantee a permanent Window 1. Accounts with no windows get one
         // seeded from base config (so the initial values are visible/editable);
         // it persists on the next auto-save (lastSaved snapshot excludes it).
@@ -1574,7 +1589,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       // lets us UPSERT in place instead of DELETE-all-then-INSERT — so a failed write
       // can NEVER leave the account with zero rows (which would reseed Window 1 from
       // base config and silently reset the user's filters).
-      const rows = schedules.map((s, i) => ({
+      const sorted = sortSchedulesByStart(schedules);
+      const rows = sorted.map((s, i) => ({
         id: UUID_RE.test(String(s.id)) ? s.id : genScheduleId(),
         account_id: activeAccountId,
         label: s.label || 'Window',
@@ -1625,7 +1641,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       const { error: delErr } = await delQuery;
       if (delErr) console.error('Prune removed schedules error:', delErr);
 
-      const savedJson = JSON.stringify(schedules.map(s => ({
+      const savedJson = JSON.stringify(sorted.map(s => ({
         label: s.label,
         startTime: s.startTime,
         endTime: s.endTime,
