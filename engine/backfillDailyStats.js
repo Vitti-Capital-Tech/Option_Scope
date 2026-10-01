@@ -149,8 +149,15 @@ async function backfillAccount(acct, lastDate) {
       }
       // Only days fully inside the history Delta returned have a trustworthy total.
       const oldest = items.length ? Math.min(...items.map(o => fillTimeMs(o)).filter(Number.isFinite)) : null;
-      deltaFromDate = complete ? firstDate : (Number.isFinite(oldest) ? nextDate(nextDate(tradeDateOf(oldest))) : lastDate);
-      console.log(`   order history: ${items.length} orders${complete ? '' : ` (history stops at ${Number.isFinite(oldest) ? new Date(oldest).toISOString() : '?'} — Delta P&L only from ${deltaFromDate})`}`);
+      // Delta's history only covers days after its oldest order. Running out of pages
+      // ("complete") does NOT mean it reaches back to the first trade — Delta may simply keep
+      // less history — so days before the oldest order fall back to trade_history instead of
+      // being read as "no P&L, no fees". (+2 days: an order created then can close later.)
+      const reachesBack = Number.isFinite(oldest) && oldest <= rangeStart - 2 * DAY_MS;
+      deltaFromDate = complete && (reachesBack || items.length === 0)
+        ? firstDate
+        : (Number.isFinite(oldest) ? nextDate(nextDate(tradeDateOf(oldest))) : lastDate);
+      console.log(`   order history: ${items.length} orders${deltaFromDate > firstDate ? ` (Delta's history starts ${Number.isFinite(oldest) ? new Date(oldest).toISOString() : '?'} — Delta P&L/fees only from ${deltaFromDate}; earlier days use trade_history and the fee estimate)` : ''}`);
     } catch (e) { console.log(`   ⚠ order history fetch failed (${e.message}) — realized P&L from trade_history, actual fees left empty`); }
     try {
       // Look further back than the range so the first day's opening balance (the last
@@ -224,7 +231,10 @@ async function backfillAccount(acct, lastDate) {
     if (old.closing_balance == null && fresh.closing_balance != null) patch.closing_balance = fresh.closing_balance;
     const filledMeasured = Object.keys(patch).length > 2;
     // Derived P&L: Delta's figures replace whatever was there (incl. trade_history-based ones).
-    if (dg) {
+    // Rows this script wrote are re-derived from the best source every run — so a day an
+    // earlier run read as "0 fees" (before Delta's history) goes back to the trade_history
+    // P&L with no actual-fee figure.
+    if (dg || old.is_backfilled) {
       if (num(old.realized_gross_pnl) !== fresh.realized_gross_pnl) patch.realized_gross_pnl = fresh.realized_gross_pnl;
       if (num(old.fees_actual) !== fresh.fees_actual) patch.fees_actual = fresh.fees_actual;
       if ((old.fills_count ?? 0) !== fresh.fills_count) patch.fills_count = fresh.fills_count;
