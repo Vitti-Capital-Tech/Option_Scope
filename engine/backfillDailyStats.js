@@ -159,12 +159,16 @@ async function backfillAccount(acct, lastDate) {
       // ("complete") does NOT mean it reaches back to the first trade — Delta may simply keep
       // less history — so days before the oldest order fall back to trade_history instead of
       // being read as "no P&L, no fees". (+2 days: an order created then can close later.)
-      // Complete when the oldest order is no later than the account's first trade: nothing
-      // older can exist to close inside the range.
-      const reachesBack = Number.isFinite(oldest) && (oldest <= firstMs || oldest <= rangeStart - 2 * DAY_MS);
+      // Complete when the oldest order is from the account's first trade: nothing older can
+      // exist to close inside the range. The engine stamps a position's entry_time just
+      // BEFORE it sends the order, so the first order is seconds after the first entry_time —
+      // hence the tolerance.
+      const START_TOLERANCE_MS = 6 * 60 * 60 * 1000;
+      const reachesBack = Number.isFinite(oldest) && (oldest <= firstMs + START_TOLERANCE_MS || oldest <= rangeStart - 2 * DAY_MS);
       deltaFromDate = complete && (reachesBack || items.length === 0)
         ? firstDate
         : (Number.isFinite(oldest) ? nextDate(nextDate(tradeDateOf(oldest))) : lastDate);
+      console.log(`   first trade ${new Date(firstMs).toISOString()} · oldest Delta order ${Number.isFinite(oldest) ? new Date(oldest).toISOString() : '—'}`);
       console.log(`   order history: ${items.length} orders${deltaFromDate > firstDate ? ` (Delta's history starts ${Number.isFinite(oldest) ? new Date(oldest).toISOString() : '?'} — Delta P&L/fees only from ${deltaFromDate}; earlier days: realized P&L from trade_history (est.), fees from the wallet ledger)` : ''}`);
     } catch (e) { console.log(`   ⚠ order history fetch failed (${e.message}) — realized P&L from trade_history, actual fees left empty`); }
     try {
