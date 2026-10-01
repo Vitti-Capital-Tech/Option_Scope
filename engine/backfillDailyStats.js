@@ -236,8 +236,18 @@ async function backfillAccount(acct, lastDate) {
     }
   }
   if (DRY_RUN || upserts.length === 0) return;
-  for (let i = 0; i < upserts.length; i += 200) {
-    const { error } = await supabase.from('live_daily_stats').upsert(upserts.slice(i, i + 200), { onConflict: 'account_id,trade_date' });
+  // New days are full rows → batched upsert. Existing days are PARTIAL patches → one
+  // UPDATE each: a mixed-shape batch makes PostgREST send NULL for every column a row
+  // lacks, which would wipe (or violate NOT NULL on) the row's recorded values.
+  const fresh = upserts.filter(u => !existing.has(u.trade_date));
+  const patches = upserts.filter(u => existing.has(u.trade_date));
+  for (let i = 0; i < fresh.length; i += 200) {
+    const { error } = await supabase.from('live_daily_stats').upsert(fresh.slice(i, i + 200), { onConflict: 'account_id,trade_date' });
+    if (error) throw error;
+  }
+  for (const { account_id, trade_date, ...fields } of patches) {
+    const { error } = await supabase.from('live_daily_stats').update(fields)
+      .eq('account_id', account_id).eq('trade_date', trade_date);
     if (error) throw error;
   }
   console.log('   ✓ written');
