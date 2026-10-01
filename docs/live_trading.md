@@ -69,7 +69,7 @@ the testbed. Full mechanism:
 
 ## Daily report (`live_daily_stats`, migration 045)
 
-One row per live account per trading day (17:30 → 17:30 IST, named for the end date), shown in the **Daily Report** tab with CSV / Excel export. Written by `engine/lib/dailyStats.js`, fed from `publishLiveSnapshot` (~every 10s, armed live accounts, dry-run included):
+One row per live account per day — **Delta's day, 00:00 → 24:00 UTC (05:30 → 05:30 IST)**, not the app's 17:30 IST trading day, so each day's realized P&L and fees match Delta's own daily figures — shown in the **Daily Report** tab with CSV / Excel export. Written by `engine/lib/dailyStats.js`, fed from `publishLiveSnapshot` (~every 10s, armed live accounts, dry-run included):
 
 | Column | Source |
 |---|---|
@@ -81,7 +81,7 @@ One row per live account per trading day (17:30 → 17:30 IST, named for the end
 | `net_deposits` (migration 048) | Σ signed `amount` of that day's wallet-ledger `deposit` / `withdrawal` / `transfer` entries — moves the balance, never counted as P&L |
 | `net_pnl`, `return_pct` | `realized_gross_pnl − (fees_actual ?? fees_estimated)`; `net_pnl ÷ (opening_balance + max(0, net_deposits)) × 100`. The tab's range total uses first-day opening + Σ `net_deposits` as its base |
 
-Totals are recomputed every 5 min. When the day rolls over the finished day is recomputed and marked `is_final`; on engine start a missing or unfinished previous day is finalized too (its margin peak stays empty if the engine was down all day). Deposits/withdrawals move the balances but not `net_pnl` (they're shown separately in `net_deposits`).
+Totals are recomputed every 5 min. When the day rolls over (00:00 UTC) the finished day is recomputed and marked `is_final`; on engine start a missing or unfinished previous day is finalized too (its margin peak stays empty if the engine was down all day). Deposits/withdrawals move the balances but not `net_pnl` (they're shown separately in `net_deposits`).
 
 **Backfill (migration 046, `engine/backfillDailyStats.js`)** — one-time fill of the days before live tracking. Run on the server from `engine/`: `node backfillDailyStats.js --dry-run` first, then without `--dry-run` (optional `--account <id|name>`, `--from YYYY-MM-DD`). For each live account it writes every past day with activity, up to yesterday:
 - realized P&L and actual fees — Delta order history (`meta_data.pnl`, `paid_commission`), as far back as it reaches. Days before it: realized falls back to `trade_history`'s P&L, flagged `pnl_is_estimate` (migration 047, *est.* in the tab), and fees come from the wallet ledger's `commission` entries (which matched order history and fills exactly), else the engine estimate;
@@ -90,7 +90,7 @@ Totals are recomputed every 5 min. When the day rolls over the finished day is r
 - opening/closing balance — Delta wallet transactions' running balance, if the API provides one (else empty, and so is return %);
 - **max margin — an estimate** (`margin_is_estimate = true`, shown as *est.* in the tab): the peak sum of `trade_history.margin` over full spreads open at the same moment (entry → short close). Unrealized P&L at close can't be rebuilt and stays empty.
 
-Existing rows keep every measured value (balances, live-sampled margin) — only empty ones are filled (e.g. the margin of a day the engine was down). Realized P&L, fees, net and return are rewritten from Delta wherever its history covers the day, which also corrects rows written from `trade_history` earlier. New rows are `is_backfilled` + `is_final`; re-running is safe.
+`--rebuild` deletes the account's rows (from `--from`/first trade, incl. today) and rebuilds them — used for the switch to Delta's UTC day; stop the engine before and start it after. Existing rows keep every measured value (balances, live-sampled margin) — only empty ones are filled (e.g. the margin of a day the engine was down). Realized P&L, fees, net and return are rewritten from Delta wherever its history covers the day, which also corrects rows written from `trade_history` earlier. New rows are `is_backfilled` + `is_final`; re-running is safe.
 
 ## Credential storage & security model
 

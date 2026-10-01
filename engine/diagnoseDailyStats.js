@@ -5,7 +5,7 @@
  * Usage (on the server, from the engine directory — Delta only answers the whitelisted IP):
  *     node diagnoseDailyStats.js --account "Dg" --date 2026-09-28
  *
- * For that trading day (17:30 → 17:30 IST, named for the end date) it prints, side by side:
+ * For that day (Delta's day: 00:00 → 24:00 UTC = 05:30 → 05:30 IST) it prints, side by side:
  *   1. Order history — Σ meta_data.pnl and every commission-like field, plus which fields exist.
  *   2. Fills        — Σ commission per fill.
  *   3. Wallet ledger — Σ amount per transaction_type, and the balance at the start and end.
@@ -60,7 +60,7 @@ async function main() {
   if (!cr?.[0]?.api_key) { console.log('No Delta credentials for this account.'); process.exit(1); }
   const creds = { apiKey: cr[0].api_key, apiSecret: cr[0].api_secret };
 
-  const end = Date.parse(`${DATE}T12:00:00.000Z`);
+  const end = Date.parse(`${DATE}T00:00:00.000Z`) + DAY_MS;
   const start = end - DAY_MS;
   const inDay = (t) => t != null && t >= start && t < end;
   console.log(`${acct.name} — trading day ${DATE} (${new Date(start).toISOString()} → ${new Date(end).toISOString()})\n`);

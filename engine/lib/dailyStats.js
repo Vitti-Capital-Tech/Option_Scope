@@ -13,11 +13,11 @@
  *     fee estimate from trade_history.
  *   • deposits / withdrawals (migration 048) from the wallet ledger in the same pass; they
  *     move the balance but aren't P&L, and return % = net ÷ (opening + money added that day).
- * When the trading day ends (17:30 IST = 12:00 UTC) the finished day is recomputed once
+ * When the day ends (00:00 UTC = 05:30 IST — Delta's own daily reset) the finished day is recomputed once
  * more and marked final; on start, a missed or unfinished previous day is finalized too.
  *
- * Trading day = the date it ENDS on: tradeDateOf(ts) = UTC date of (ts + 12h), the same
- * rule as `(exit_time + interval '12 hours')::date` used elsewhere.
+ * Report day = the UTC calendar date (00:00 → 24:00 UTC = 05:30 → 05:30 IST), Delta's own
+ * daily boundary — NOT the app's 17:30 IST trading day — so per-day figures match Delta.
  */
 import { supabase } from './supabase.js';
 import { logWarn } from './utils.js';
@@ -28,8 +28,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const SAVE_EVERY_MS = 60 * 1000;
 const TOTALS_EVERY_MS = 5 * 60 * 1000;
 
-export const tradeDateOf = (ms) => new Date(ms + 12 * 3600 * 1000).toISOString().slice(0, 10);
-const dayEndMs = (tradeDate) => Date.parse(`${tradeDate}T12:00:00.000Z`);
+// Report day = Delta's day: the UTC date, 00:00 → 24:00 UTC (05:30 → 05:30 IST), so each
+// day's realized P&L and fees match Delta's own daily figures.
+export const tradeDateOf = (ms) => new Date(ms).toISOString().slice(0, 10);
+const dayEndMs = (tradeDate) => Date.parse(`${tradeDate}T00:00:00.000Z`) + DAY_MS;
 const prevDate = (tradeDate) => new Date(Date.parse(`${tradeDate}T00:00:00.000Z`) - DAY_MS).toISOString().slice(0, 10);
 // null/undefined stay null — Number(null) is 0, which would read an EMPTY balance as $0.
 const num = (v) => { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; };

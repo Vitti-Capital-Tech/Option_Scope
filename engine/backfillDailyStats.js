@@ -6,8 +6,15 @@
  *     node backfillDailyStats.js --dry-run              # print what would be written
  *     node backfillDailyStats.js                        # write
  *     node backfillDailyStats.js --account "Live 1" --from 2026-08-01
+ *     node backfillDailyStats.js --rebuild              # delete the account's rows and rebuild them
  *
- * Per live account and trading day (17:30 → 17:30 IST, named for the end date), up to
+ * --rebuild is for a change in how days are cut (e.g. the switch to Delta's UTC day): it
+ * deletes every row of the account from --from (or its first trade) INCLUDING today, then
+ * rebuilds up to yesterday. Stop the engine first and start it after, so today's row is
+ * recreated by the live tracker on the new boundary. Live-sampled margin of rebuilt days is
+ * replaced by the trade-history estimate.
+ *
+ * Per live account and day (Delta's day: 00:00 → 24:00 UTC = 05:30 → 05:30 IST), up to
  * YESTERDAY (today belongs to the live tracker):
  *   • realized P&L + actual fees — Delta's own figures from order history (meta_data.pnl,
  *     paid_commission; the numbers the Live dashboard shows), as far back as Delta's history
@@ -36,8 +43,9 @@ import { supabase, hasServiceRole } from './lib/supabase.js';
 import { getOrderHistorySinceFull, getWalletTransactionsSince, fillTimeMs, orderTimeMs, orderPnlAndFee, capitalFlowsByDay, returnBase } from './lib/deltaTradeApi.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const tradeDateOf = (ms) => new Date(ms + 12 * 3600 * 1000).toISOString().slice(0, 10);
-const dayEndMs = (d) => Date.parse(`${d}T12:00:00.000Z`);
+// Report day = Delta's day (UTC date), same as lib/dailyStats.js.
+const tradeDateOf = (ms) => new Date(ms).toISOString().slice(0, 10);
+const dayEndMs = (d) => Date.parse(`${d}T00:00:00.000Z`) + DAY_MS;
 const nextDate = (d) => new Date(Date.parse(`${d}T00:00:00.000Z`) + DAY_MS).toISOString().slice(0, 10);
 const num = (v) => { const n = Number(v); return v == null || !Number.isFinite(n) ? null : n; };
 const round = (v, dp = 4) => (v == null ? null : Number(v.toFixed(dp)));
@@ -45,6 +53,7 @@ const round = (v, dp = 4) => (v == null ? null : Number(v.toFixed(dp)));
 const args = process.argv.slice(2);
 const argVal = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : null; };
 const DRY_RUN = args.includes('--dry-run');
+const REBUILD = args.includes('--rebuild');
 const ONLY_ACCOUNT = argVal('--account');
 const FROM = argVal('--from');
 
@@ -200,7 +209,17 @@ async function backfillAccount(acct, lastDate) {
   }
 
   const lives = lifetimes(history, open || []);
-  const existing = new Map((await selectAll(() => supabase.from('live_daily_stats').select('*')
+  if (REBUILD) {
+    if (DRY_RUN) {
+      console.log(`   --rebuild: would delete every row from ${firstDate} on (incl. today) and rebuild`);
+    } else {
+      const { error: delErr } = await supabase.from('live_daily_stats').delete()
+        .eq('account_id', acct.id).gte('trade_date', firstDate);
+      if (delErr) throw delErr;
+      console.log(`   --rebuild: deleted rows from ${firstDate} on (incl. today)`);
+    }
+  }
+  const existing = REBUILD ? new Map() : new Map((await selectAll(() => supabase.from('live_daily_stats').select('*')
     .eq('account_id', acct.id).gte('trade_date', firstDate).lte('trade_date', lastDate)))
     .map(r => [r.trade_date, r]));
 

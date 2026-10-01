@@ -6,11 +6,11 @@ import { supabase } from './supabase';
 import { exportCsv, exportXlsx } from './exportTable';
 
 // Daily Report — one row per LIVE account per trading day from `live_daily_stats`
-// (migration 045, written by the engine). A trading day runs 17:30 → 17:30 IST and is
-// named for the date it ends on.
+// (migration 045, written by the engine). A day is Delta's day — the UTC date, 00:00 → 24:00
+// UTC (05:30 → 05:30 IST) — so each day's figures match Delta's own daily view.
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const tradeDateOf = (ms) => new Date(ms + 12 * 3600 * 1000).toISOString().slice(0, 10);
+const tradeDateOf = (ms) => new Date(ms).toISOString().slice(0, 10);
 const shiftDate = (d, days) => new Date(Date.parse(`${d}T00:00:00Z`) + days * DAY_MS).toISOString().slice(0, 10);
 const num = (v) => { const n = Number(v); return v == null || !Number.isFinite(n) ? null : n; };
 const r2 = (v) => (v == null ? null : Math.round(v * 100) / 100);
@@ -47,7 +47,7 @@ const SCREEN_COLUMNS = COLUMNS.filter(c => !c.exportOnly);
 const PNL_KEYS = new Set(['realizedGross', 'netPnl', 'returnPct']);
 
 export default function DailyReport({ onNavigate, theme, toggleTheme, active }) {
-  // Current trading day; refreshed with each load so the range/status roll over at 17:30 IST.
+  // Current day; refreshed with each load so the range/status roll over at 05:30 IST (00:00 UTC).
   const [today, setToday] = useState(() => tradeDateOf(Date.now()));
   const [session, setSession] = useState(undefined); // undefined = still checking
   const [accounts, setAccounts] = useState([]);
@@ -195,7 +195,7 @@ export default function DailyReport({ onNavigate, theme, toggleTheme, active }) 
     }
     // Today's day is still running: its "closing" is the latest balance, not the day-end one.
     if (c.key === 'closingBalance' && r.status === 'In progress' && v != null) {
-      return <span title="Latest Delta balance — becomes the closing balance when the day ends at 17:30 IST">{fmtUsd(v)} <span className="dr-live">live</span></span>;
+      return <span title="Latest Delta balance — becomes the closing balance when the day ends at 05:30 IST (00:00 UTC)">{fmtUsd(v)} <span className="dr-live">live</span></span>;
     }
     // Before Delta's order history: realized (and so net / return) is the engine's estimate.
     if (r.pnlEstimate && PNL_KEYS.has(c.key) && v != null) {
@@ -326,8 +326,8 @@ export default function DailyReport({ onNavigate, theme, toggleTheme, active }) 
             </div>
 
             <p className="dr-note">
-              Trading day = 17:30 → 17:30 IST, named for the end date. For the day in progress, closing balance, P&amp;L and
-              return are live (so far) and become final at 17:30 IST. Realized P&amp;L and fees are Delta's own figures (order
+              Day = Delta's day, 05:30 → 05:30 IST (00:00 UTC), so each day matches Delta. For the day in progress, closing
+              balance, P&amp;L and return are live (so far) and become final at 05:30 IST. Realized P&amp;L and fees are Delta's own figures (order
               history, as on the Live dashboard). Net P&amp;L = realized P&amp;L − fees (the engine's fee estimate is used only if
               Delta's isn't available). Return = Net P&amp;L ÷ (opening balance + money deposited that
               day); the total uses the first day's opening + all deposits − withdrawals in the range. Deposits / withdrawals move the
