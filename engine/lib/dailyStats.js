@@ -29,7 +29,9 @@ const TOTALS_EVERY_MS = 5 * 60 * 1000;
 export const tradeDateOf = (ms) => new Date(ms + 12 * 3600 * 1000).toISOString().slice(0, 10);
 const dayEndMs = (tradeDate) => Date.parse(`${tradeDate}T12:00:00.000Z`);
 const prevDate = (tradeDate) => new Date(Date.parse(`${tradeDate}T00:00:00.000Z`) - DAY_MS).toISOString().slice(0, 10);
-const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+// null/undefined stay null — Number(null) is 0, which would read an EMPTY balance as $0.
+const num = (v) => { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
+const positive = (v) => (v != null && v > 0 ? v : null);
 const round = (v, dp = 4) => (v == null ? null : Number(v.toFixed(dp)));
 
 export function createDailyStatsTracker({ accountState, live }) {
@@ -50,8 +52,10 @@ export function createDailyStatsTracker({ accountState, live }) {
 
   async function loadDay(date) {
     const row = await loadRow(date);
-    let opening = num(row?.opening_balance);
-    if (opening == null) opening = num((await loadRow(prevDate(date)))?.closing_balance);
+    // A $0 opening can't be real for a trading account — it's an empty value saved as 0 by
+    // an earlier version — so it's treated as missing and re-derived.
+    let opening = positive(num(row?.opening_balance));
+    if (opening == null) opening = positive(num((await loadRow(prevDate(date)))?.closing_balance));
     return {
       date,
       opening,
@@ -158,7 +162,11 @@ export function createDailyStatsTracker({ accountState, live }) {
 
     const w = extractWalletSnapshot(snap?.balances);
     if (w && Number.isFinite(w.balance)) {
-      if (day.opening == null) day.opening = w.balance;
+      if (day.opening == null) {
+        // Prefer yesterday's closing if it has appeared since (e.g. filled by the backfill).
+        day.opening = positive(num((await loadRow(prevDate(day.date)))?.closing_balance)) ?? w.balance;
+        dirty = true;
+      }
       if (day.closing !== w.balance) { day.closing = w.balance; dirty = true; }
       if (w.available != null) {
         const used = Math.max(0, w.balance - w.available);
