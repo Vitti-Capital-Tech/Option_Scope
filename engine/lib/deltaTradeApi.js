@@ -233,14 +233,24 @@ async function pageBackSince(creds, path, sinceMs, { pageSize = 100, maxPages = 
   return { items: items.filter(x => (fillTimeMs(x) ?? 0) >= sinceMs), complete };
 }
 
-/** Every fill at or after `sinceMs`, newest first (daily report's actual-commission total). */
-export async function getFillsSince(creds, sinceMs, opts) {
-  return (await pageBackSince(creds, '/v2/fills', sinceMs, opts)).items;
+/**
+ * Order history (filled + cancelled) created since `sinceMs`, as { items, complete }. Each
+ * closing order carries Delta's own realized P&L (meta_data.pnl) and paid_commission — the
+ * numbers the Live dashboard shows — so the daily report uses these, not trade_history.
+ */
+export function getOrderHistorySinceFull(creds, sinceMs, opts) {
+  return pageBackSince(creds, '/v2/orders/history', sinceMs, opts);
 }
 
-/** Fills since `sinceMs` plus whether the history reached back that far ({ items, complete }). */
-export function getFillsSinceFull(creds, sinceMs, opts) {
-  return pageBackSince(creds, '/v2/fills', sinceMs, opts);
+/** When an order last changed (its fill / close time), in ms. */
+export function orderTimeMs(o) {
+  return fillTimeMs({ created_at: o?.updated_at ?? o?.created_at });
+}
+
+/** Delta's realized P&L and commission for one order-history record (0 when absent). */
+export function orderPnlAndFee(o) {
+  const n = (v) => { const x = Number(v); return Number.isFinite(x) ? x : 0; };
+  return { pnl: n(o?.meta_data?.pnl), fee: n(o?.paid_commission ?? o?.commission) };
 }
 
 /**

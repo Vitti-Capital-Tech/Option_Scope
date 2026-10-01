@@ -7,8 +7,10 @@
  *     the row is reloaded on start.
  *   • opening balance = the previous day's closing balance (else the first one seen today);
  *     closing balance and open-position unrealized P&L = the latest sample.
- *   • every 5 min the day's totals are recomputed: realized P&L and estimated fees from
- *     trade_history, actual commission from Delta's fills.
+ *   • every 5 min the day's totals are recomputed: realized P&L and commission from Delta's
+ *     order history (meta_data.pnl / paid_commission — the numbers the Live dashboard shows;
+ *     trade_history's engine-side P&L doesn't match Delta for live), exits and the engine's
+ *     fee estimate from trade_history.
  * When the trading day ends (17:30 IST = 12:00 UTC) the finished day is recomputed once
  * more and marked final; on start, a missed or unfinished previous day is finalized too.
  *
@@ -18,7 +20,7 @@
 import { supabase } from './supabase.js';
 import { logWarn } from './utils.js';
 import { extractWalletSnapshot } from './liveExecution.js';
-import { fillTimeMs } from './deltaTradeApi.js';
+import { orderTimeMs, orderPnlAndFee } from './deltaTradeApi.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SAVE_EVERY_MS = 60 * 1000;
@@ -64,12 +66,14 @@ export function createDailyStatsTracker({ accountState, live }) {
         feesActual: num(row.fees_actual),
         tradesClosed: row.trades_closed ?? 0,
         fillsCount: row.fills_count ?? 0,
+        fromDelta: row.fees_actual != null,
       } : null,
     };
   }
 
-  // Realized P&L + estimated fees from trade_history; actual commission from Delta fills.
-  // A failed fills read keeps the previous actual-fee figure rather than writing a wrong one.
+  // Delta's realized P&L + commission from order history (orders that closed/filled in the
+  // window); exits + the engine's fee estimate from trade_history. A failed Delta read keeps
+  // the previous Delta figures; with none yet, realized falls back to trade_history.
   async function computeTotals(date, previous) {
     const end = dayEndMs(date);
     const start = end - DAY_MS;
@@ -80,18 +84,26 @@ export function createDailyStatsTracker({ accountState, live }) {
       .lt('exit_time', new Date(end).toISOString())
       .limit(10000);
     if (error) throw error;
-    const realizedGross = (rows || []).reduce((s, r) => s + (num(r.realized_gross_pnl) ?? 0), 0);
+    const historyGross = (rows || []).reduce((s, r) => s + (num(r.realized_gross_pnl) ?? 0), 0);
     const feesEstimated = (rows || []).reduce((s, r) => s + (num(r.total_fees) ?? 0), 0);
 
+    let realizedGross = previous?.fromDelta ? previous.realizedGross : historyGross;
     let feesActual = previous?.feesActual ?? null;
     let fillsCount = previous?.fillsCount ?? 0;
-    const fills = await live.fillsSince(start);
-    if (fills) {
-      const inDay = fills.filter(f => { const t = fillTimeMs(f); return t != null && t >= start && t < end; });
-      feesActual = inDay.reduce((s, f) => s + (num(f.commission ?? f.paid_commission) ?? 0), 0);
-      fillsCount = inDay.length;
+    let fromDelta = !!previous?.fromDelta;
+    // Orders are listed by creation time; one created up to 2 days earlier can close today.
+    const orders = await live.orderHistorySince(start - 2 * DAY_MS);
+    if (orders) {
+      const inDay = orders.filter(o => { const t = orderTimeMs(o); return t != null && t >= start && t < end; });
+      realizedGross = 0; feesActual = 0; fillsCount = 0;
+      for (const o of inDay) {
+        const { pnl, fee } = orderPnlAndFee(o);
+        realizedGross += pnl; feesActual += fee;
+        if (pnl !== 0 || fee !== 0) fillsCount += 1;
+      }
+      fromDelta = true;
     }
-    return { realizedGross, feesEstimated, feesActual, tradesClosed: (rows || []).length, fillsCount };
+    return { realizedGross, feesEstimated, feesActual, tradesClosed: (rows || []).length, fillsCount, fromDelta };
   }
 
   async function save(d, isFinal = false) {

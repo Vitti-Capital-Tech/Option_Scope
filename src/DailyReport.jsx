@@ -303,8 +303,9 @@ export default function DailyReport({ onNavigate, theme, toggleTheme, active }) 
             </div>
 
             <p className="dr-note">
-              Trading day = 17:30 → 17:30 IST, named for the end date. Net P&amp;L = realized P&amp;L − fees (Delta's actual
-              commission; the engine estimate is used only if Delta's isn't available). Return = Net P&amp;L ÷ opening balance.
+              Trading day = 17:30 → 17:30 IST, named for the end date. Realized P&amp;L and fees are Delta's own figures (order
+              history, as on the Live dashboard). Net P&amp;L = realized P&amp;L − fees (the engine's fee estimate is used only if
+              Delta's isn't available). Return = Net P&amp;L ÷ opening balance.
               Max margin = the highest margin Delta blocked during the day; days marked <em>est.</em> were filled in later from trade
               history (sum of margins of spreads open at the same time). Backfilled rows predate live tracking.
             </p>

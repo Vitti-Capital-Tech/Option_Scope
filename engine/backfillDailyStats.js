@@ -9,24 +9,27 @@
  *
  * Per live account and trading day (17:30 → 17:30 IST, named for the end date), up to
  * YESTERDAY (today belongs to the live tracker):
- *   • realized P&L, estimated fees, exits — trade_history rows exited that day.
- *   • actual fees — Σ commission of Delta fills that day, as far back as Delta's fill
- *     history reaches (older days get no actual-fee figure; net P&L then uses the estimate).
+ *   • realized P&L + actual fees — Delta's own figures from order history (meta_data.pnl,
+ *     paid_commission; the numbers the Live dashboard shows), as far back as Delta's history
+ *     reaches. Older days fall back to trade_history's P&L and the engine's fee estimate.
+ *   • exits, estimated fees — trade_history rows exited that day.
  *   • opening / closing balance — from Delta wallet transactions, IF they carry a running
  *     balance; otherwise left empty (and return % with it).
  *   • max margin — an ESTIMATE (margin_is_estimate = true): the peak sum of margins of
  *     full spreads open at the same moment, from trade_history (+ still-open positions).
  *     A position counts with its full-spread margin from entry until its short closed.
  *
- * Never overwrites live-recorded values: a day that already has a row only gets its EMPTY
- * fields filled (e.g. the margin of a day the engine was down). New rows are written with
+ * Existing rows keep every MEASURED value (balances, live-sampled margin) — only empty ones
+ * are filled (e.g. the margin of a day the engine was down). The DERIVED P&L figures
+ * (realized, fees, net, return) are rewritten from Delta wherever its history covers the day,
+ * which also corrects rows written from trade_history earlier. New rows are written with
  * is_backfilled = true, is_final = true. Re-running is safe.
  */
 import 'dotenv/config';
 import dns from 'node:dns';
 dns.setDefaultResultOrder('ipv4first');
 import { supabase, hasServiceRole } from './lib/supabase.js';
-import { getFillsSinceFull, getWalletTransactionsSince, fillTimeMs } from './lib/deltaTradeApi.js';
+import { getOrderHistorySinceFull, getWalletTransactionsSince, fillTimeMs, orderTimeMs, orderPnlAndFee } from './lib/deltaTradeApi.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const tradeDateOf = (ms) => new Date(ms + 12 * 3600 * 1000).toISOString().slice(0, 10);
@@ -123,27 +126,32 @@ async function backfillAccount(acct, lastDate) {
   const rangeStart = dayEndMs(firstDate) - DAY_MS;
   console.log(`   days ${firstDate} → ${lastDate}, ${history.length} trade_history rows`);
 
-  // Delta: actual commission (fills) and running balances (wallet transactions).
+  // Delta: realized P&L + commission (order history) and running balances (wallet transactions).
   const creds = await loadCreds(acct.id);
-  let feesByDay = null; let feesFromDate = null;
+  let pnlByDay = null; let deltaFromDate = null;
   let balances = null;
   if (!creds) {
-    console.log('   ⚠ no Delta credentials — actual fees and balances left empty');
+    console.log('   ⚠ no Delta credentials — realized P&L from trade_history; actual fees and balances left empty');
   } else {
     try {
-      const { items, complete } = await getFillsSinceFull(creds, rangeStart, { maxPages: 500 });
-      feesByDay = new Map();
-      for (const f of items) {
-        const d = tradeDateOf(fillTimeMs(f));
-        const e = feesByDay.get(d) || { fees: 0, count: 0 };
-        e.fees += num(f.commission ?? f.paid_commission) ?? 0; e.count += 1;
-        feesByDay.set(d, e);
+      // Orders are listed by creation; one created up to 2 days earlier can close in range.
+      const { items, complete } = await getOrderHistorySinceFull(creds, rangeStart - 2 * DAY_MS, { maxPages: 500 });
+      pnlByDay = new Map();
+      for (const o of items) {
+        const t = orderTimeMs(o);
+        if (t == null) continue;
+        const { pnl, fee } = orderPnlAndFee(o);
+        if (pnl === 0 && fee === 0) continue;
+        const d = tradeDateOf(t);
+        const e = pnlByDay.get(d) || { pnl: 0, fees: 0, count: 0 };
+        e.pnl += pnl; e.fees += fee; e.count += 1;
+        pnlByDay.set(d, e);
       }
       // Only days fully inside the history Delta returned have a trustworthy total.
-      const oldest = items.length ? Math.min(...items.map(fillTimeMs)) : null;
-      feesFromDate = complete ? firstDate : (oldest != null ? nextDate(tradeDateOf(oldest)) : lastDate);
-      console.log(`   fills: ${items.length}${complete ? '' : ` (history stops at ${oldest ? new Date(oldest).toISOString() : '?'} — actual fees only from ${feesFromDate})`}`);
-    } catch (e) { console.log(`   ⚠ fills fetch failed (${e.message}) — actual fees left empty`); }
+      const oldest = items.length ? Math.min(...items.map(o => fillTimeMs(o)).filter(Number.isFinite)) : null;
+      deltaFromDate = complete ? firstDate : (Number.isFinite(oldest) ? nextDate(nextDate(tradeDateOf(oldest))) : lastDate);
+      console.log(`   order history: ${items.length} orders${complete ? '' : ` (history stops at ${Number.isFinite(oldest) ? new Date(oldest).toISOString() : '?'} — Delta P&L only from ${deltaFromDate})`}`);
+    } catch (e) { console.log(`   ⚠ order history fetch failed (${e.message}) — realized P&L from trade_history, actual fees left empty`); }
     try {
       // Look further back than the range so the first day's opening balance (the last
       // running balance before it) is found even after a quiet spell.
@@ -172,9 +180,10 @@ async function backfillAccount(acct, lastDate) {
   for (let d = firstDate; d <= lastDate; d = nextDate(d)) {
     const end = dayEndMs(d); const start = end - DAY_MS;
     const rows = history.filter(r => { const t = Date.parse(r.exit_time); return t >= start && t < end; });
-    const realizedGross = rows.reduce((s, r) => s + (num(r.realized_gross_pnl) ?? 0), 0);
+    const historyGross = rows.reduce((s, r) => s + (num(r.realized_gross_pnl) ?? 0), 0);
     const feesEstimated = rows.reduce((s, r) => s + (num(r.total_fees) ?? 0), 0);
-    const fe = feesByDay && feesFromDate && d >= feesFromDate ? (feesByDay.get(d) || { fees: 0, count: 0 }) : null;
+    const dg = pnlByDay && deltaFromDate && d >= deltaFromDate ? (pnlByDay.get(d) || { pnl: 0, fees: 0, count: 0 }) : null;
+    const realizedGross = dg ? dg.pnl : historyGross;
     const closing = balanceAtEnd(d);
     const opening = prevClosing ?? balanceAtEnd(new Date(Date.parse(`${d}T00:00:00Z`) - DAY_MS).toISOString().slice(0, 10));
     prevClosing = closing;
@@ -182,20 +191,20 @@ async function backfillAccount(acct, lastDate) {
     const marginBase = closing ?? opening;
 
     const old = existing.get(d);
-    if (!old && rows.length === 0 && peak === 0 && !(fe && fe.count > 0)) continue; // no activity → no row
+    if (!old && rows.length === 0 && peak === 0 && !(dg && dg.count > 0)) continue; // no activity → no row
 
-    const fees = fe ? fe.fees : feesEstimated;
+    const fees = dg ? dg.fees : feesEstimated;
     const net = realizedGross - fees;
     const fresh = {
       account_id: acct.id, trade_date: d,
       opening_balance: round(opening), closing_balance: round(closing),
-      realized_gross_pnl: round(realizedGross), fees_actual: fe ? round(fe.fees) : null,
+      realized_gross_pnl: round(realizedGross), fees_actual: dg ? round(dg.fees) : null,
       fees_estimated: round(feesEstimated), net_pnl: round(net),
       return_pct: opening > 0 ? round((net / opening) * 100) : null,
       max_margin_used: round(peak), max_margin_at: at ? new Date(at).toISOString() : null,
       max_margin_pct: marginBase > 0 ? round((peak / marginBase) * 100) : null,
       margin_is_estimate: true,
-      trades_closed: rows.length, fills_count: fe ? fe.count : 0,
+      trades_closed: rows.length, fills_count: dg ? dg.count : 0,
       is_final: true, is_backfilled: true, updated_at: new Date().toISOString(),
     };
 
@@ -213,24 +222,30 @@ async function backfillAccount(acct, lastDate) {
     }
     if (old.opening_balance == null && fresh.opening_balance != null) patch.opening_balance = fresh.opening_balance;
     if (old.closing_balance == null && fresh.closing_balance != null) patch.closing_balance = fresh.closing_balance;
-    if (old.fees_actual == null && fresh.fees_actual != null) patch.fees_actual = fresh.fees_actual;
+    const filledMeasured = Object.keys(patch).length > 2;
+    // Derived P&L: Delta's figures replace whatever was there (incl. trade_history-based ones).
+    if (dg) {
+      if (num(old.realized_gross_pnl) !== fresh.realized_gross_pnl) patch.realized_gross_pnl = fresh.realized_gross_pnl;
+      if (num(old.fees_actual) !== fresh.fees_actual) patch.fees_actual = fresh.fees_actual;
+      if ((old.fills_count ?? 0) !== fresh.fills_count) patch.fills_count = fresh.fills_count;
+    }
     if (Object.keys(patch).length > 2) {
       const o = { ...old, ...patch };
       const oFees = num(o.fees_actual) ?? num(o.fees_estimated) ?? 0;
       patch.net_pnl = round((num(o.realized_gross_pnl) ?? 0) - oFees);
       patch.return_pct = num(o.opening_balance) > 0 ? round((patch.net_pnl / num(o.opening_balance)) * 100) : null;
-      patch.is_backfilled = true;
+      if (filledMeasured || old.is_backfilled) patch.is_backfilled = true;
       patch.updated_at = new Date().toISOString();
       upserts.push(patch);
     }
   }
 
   const created = upserts.filter(u => !existing.has(u.trade_date)).length;
-  console.log(`   ${created} new day(s), ${upserts.length - created} existing day(s) with empty fields filled`);
+  console.log(`   ${created} new day(s), ${upserts.length - created} existing day(s) updated`);
   for (const u of upserts.slice(-5)) {
     if (existing.has(u.trade_date)) {
       const filled = Object.keys(u).filter(k => !['account_id', 'trade_date', 'updated_at', 'is_backfilled', 'net_pnl', 'return_pct'].includes(k));
-      console.log(`     ${u.trade_date}: filled ${filled.join(', ')}`);
+      console.log(`     ${u.trade_date}: updated ${filled.join(', ')}`);
     } else {
       console.log(`     ${u.trade_date}: net ${u.net_pnl} | return ${u.return_pct ?? '—'}% | fees ${u.fees_actual ?? `${u.fees_estimated} (est.)`} | max margin ~${u.max_margin_used}`);
     }
