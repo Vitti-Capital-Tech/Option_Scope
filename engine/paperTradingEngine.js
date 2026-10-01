@@ -17,6 +17,7 @@ import { supabase, hasServiceRole } from './lib/supabase.js';
 import { createHeartbeat } from './lib/heartbeat.js';
 import { createLiveExecutor, isLiveDryRun, longContracts, shortContracts, extractBalance } from './lib/liveExecution.js';
 import { reserveSpread as governorReserveSpread } from './lib/entryGovernor.js';
+import { createDailyStatsTracker } from './lib/dailyStats.js';
 import { notifyLiveFailure, notifyLiveTrade, sendTelegramMessage } from './lib/telegram.js';
 import { getBalance } from './lib/deltaTradeApi.js';
 import {
@@ -354,6 +355,10 @@ async function startSingleAccountEngine(account) {
     creds: liveCreds,
     telegramChatId: accountState.telegram_chat_id,
   }));
+
+  // Daily report (migration 045): live P&L, fees and peak margin per trading day, fed by
+  // the live snapshot below.
+  const dailyStats = createDailyStatsTracker({ accountState, live });
 
   // Ask for another entry pass inside the CURRENT minute after an attempt aborted on a
   // leg that could not fill. Called only for genuine fill failures — a submit-time
@@ -6375,6 +6380,7 @@ async function startSingleAccountEngine(account) {
       snapTick++;
       const snap = await live.snapshot({ includeHistory });
       if (!snap) return;
+      dailyStats.onSnapshot(snap); // fire-and-forget; never throws, skips if still busy
       if (includeHistory && Array.isArray(snap.orderHistory)) cachedOrderHistory = snap.orderHistory;
       snap.orderHistory = cachedOrderHistory; // reuse cache on non-history ticks
       const sig = snapSignature(snap);

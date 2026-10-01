@@ -30,6 +30,8 @@ This document is the authoritative implementation reference for every module, en
 | `src/deltaAuth.js` | Browser-side `verifyDeltaCredentials` — Web Crypto HMAC-SHA256 test-signs `GET /v2/wallet/balances` (front-end verification path). |
 | `src/components/PaperTrading/ControlPanel.jsx` | Global-filter Control Panel (Apply/Reset over global filters + Trading Days toggle). |
 | `src/components/PaperTrading/SchedulePanel.jsx` | Per-window schedule editor (timeline, per-window overrides, Apply/Cancel/Reset, copy-from-account, load-scanner-filters). |
+| `src/DailyReport.jsx` | **Daily Report** tab: per-day live P&L, % return, fees, max margin from `live_daily_stats`; account/date filters, totals, CSV/Excel export (`src/exportTable.js`, dependency-free .xlsx writer). |
+| `engine/lib/dailyStats.js` | Per-live-account tracker writing `live_daily_stats` (migration 045) from the live snapshot; see `docs/live_trading.md` → Daily report. |
 | `src/components/PaperTrading/TradingWorkspace.jsx` | Exchange-style tabbed panel: Positions / Open Orders / Stop Orders / Fills / Order History / Risk & Margin. |
 | `src/components/PaperTrading/TradeHistoryTable.jsx` | Trade history table + Window Capacity row. |
 | `ecosystem.config.cjs` | PM2 config pinning the engine to a single process (`exec_mode: 'fork'`, `instances: 1`, long `kill_timeout`). |

@@ -16,7 +16,7 @@
  * `sellQty` for the short). Validate the dry-run order log against your intended
  * real sizes BEFORE arming an account.
  */
-import { placeOrder, cancelOrder, editOrder, editBracket, placeBracketOrder, closeAllPositions, getLivePositions, getBalance, getLiveOrders, getFills, getOrderHistory } from './deltaTradeApi.js';
+import { placeOrder, cancelOrder, editOrder, editBracket, placeBracketOrder, closeAllPositions, getLivePositions, getBalance, getLiveOrders, getFills, getFillsSince, getOrderHistory } from './deltaTradeApi.js';
 import { log, logWarn, logError } from './utils.js';
 import { notifyLiveFailure } from './telegram.js';
 
@@ -771,6 +771,22 @@ export function createLiveExecutor(getCtx) {
       } catch (e) {
         logWarn(`[${accountName}] fills() fetch failed: ${e.message}`);
         return [];
+      }
+    },
+
+    /**
+     * Every fill since `sinceMs` (armed accounts only, else []). NULL on a fetch failure so
+     * the daily report keeps its last known fee total instead of writing a wrong one.
+     */
+    async fillsSince(sinceMs) {
+      if (!armed()) return [];
+      const { accountName, creds } = getCtx();
+      if (!creds?.apiKey) return [];
+      try {
+        return await getFillsSince(creds, sinceMs);
+      } catch (e) {
+        logWarn(`[${accountName}] fillsSince() fetch failed: ${e.message}`);
+        return null;
       }
     },
 

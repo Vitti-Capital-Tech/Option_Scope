@@ -1,5 +1,5 @@
 import React from 'react';
-import { TrendingUp, Target, Columns, Radio, Sun, Moon } from 'lucide-react';
+import { TrendingUp, Target, Columns, Radio, FileSpreadsheet, Sun, Moon } from 'lucide-react';
 
 export default function Navbar({
   activeTab,
@@ -43,6 +43,14 @@ export default function Navbar({
             <span className="nav-tab-icon" aria-hidden="true">
               <Radio size={14} />
             </span> <span className="nav-tab-text">Live Trading</span>
+          </button>
+          <button
+            className={`nav-tab ${activeTab === 'report' ? 'active' : ''}`}
+            onClick={() => onNavigate('report')}
+          >
+            <span className="nav-tab-icon" aria-hidden="true">
+              <FileSpreadsheet size={14} />
+            </span> <span className="nav-tab-text">Daily Report</span>
           </button>
         </div>
 
@@ -89,6 +97,15 @@ export default function Navbar({
             <Radio size={18} />
           </span>
           <span className="mobile-bottom-text">Live Trading</span>
+        </button>
+        <button
+          className={`mobile-bottom-tab ${activeTab === 'report' ? 'active' : ''}`}
+          onClick={() => onNavigate('report')}
+        >
+          <span className="mobile-bottom-icon">
+            <FileSpreadsheet size={18} />
+          </span>
+          <span className="mobile-bottom-text">Daily Report</span>
         </button>
       </div>
     </>

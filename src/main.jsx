@@ -3,12 +3,13 @@ import { useState, useEffect } from 'react'
 import './index.css'
 import RatioSpreadScanner from './RatioSpreadScanner.jsx'
 import PaperTrading from './PaperTrading.jsx'
+import DailyReport from './DailyReport.jsx'
 import { useTabSync } from './useTabSync.js'
 
 function Root() {
   const [page, setPage] = useState(() => {
     const path = window.location.pathname.replace(/^\//, '') || 'scanner';
-    return ['scanner', 'trading', 'live'].includes(path) ? path : 'scanner';
+    return ['scanner', 'trading', 'live', 'report'].includes(path) ? path : 'scanner';
   });
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
 
@@ -27,7 +28,7 @@ function Root() {
   useEffect(() => {
     const handlePopState = () => {
       const path = window.location.pathname.replace(/^\//, '') || 'scanner';
-      const validPages = ['scanner', 'trading', 'live'];
+      const validPages = ['scanner', 'trading', 'live', 'report'];
       if (validPages.includes(path)) {
         setPage(path);
       } else {
@@ -68,6 +69,9 @@ function Root() {
       </div>
       <div style={{ display: page === 'live' ? 'block' : 'none', height: '100%', width: '100%' }}>
         <PaperTrading mode="live" onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} broadcast={broadcast} scannerFill={scannerFill?.mode === 'live' ? scannerFill : null} />
+      </div>
+      <div style={{ display: page === 'report' ? 'block' : 'none', height: '100%', width: '100%' }}>
+        <DailyReport onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} active={page === 'report'} />
       </div>
     </>
   );

@@ -210,6 +210,60 @@ export async function getFills(creds, { pageSize = 50 } = {}) {
 }
 
 /**
+ * Walk a cursor-paginated (meta.after) history endpoint newest-first until a page reaches
+ * back past `sinceMs` (or `maxPages` runs out). Returns { items, complete } where items are
+ * only those at/after `sinceMs`, and `complete` is false when maxPages ran out first (so a
+ * caller knows its coverage stops at the oldest item it got).
+ */
+async function pageBackSince(creds, path, sinceMs, { pageSize = 100, maxPages = 20 } = {}) {
+  const items = [];
+  let after = null;
+  let complete = false;
+  for (let i = 0; i < maxPages; i++) {
+    const params = new URLSearchParams();
+    params.set('page_size', String(pageSize));
+    if (after) params.set('after', after);
+    const { result, meta } = await signedRequestFull(creds, 'GET', path, { query: `?${params.toString()}` });
+    const page = Array.isArray(result) ? result : [];
+    items.push(...page);
+    const oldest = page.length ? fillTimeMs(page[page.length - 1]) : null;
+    after = meta?.after || null;
+    if (!after || page.length === 0 || (oldest != null && oldest < sinceMs)) { complete = true; break; }
+  }
+  return { items: items.filter(x => (fillTimeMs(x) ?? 0) >= sinceMs), complete };
+}
+
+/** Every fill at or after `sinceMs`, newest first (daily report's actual-commission total). */
+export async function getFillsSince(creds, sinceMs, opts) {
+  return (await pageBackSince(creds, '/v2/fills', sinceMs, opts)).items;
+}
+
+/** Fills since `sinceMs` plus whether the history reached back that far ({ items, complete }). */
+export function getFillsSinceFull(creds, sinceMs, opts) {
+  return pageBackSince(creds, '/v2/fills', sinceMs, opts);
+}
+
+/**
+ * Wallet transactions (deposits, withdrawals, commissions, P&L …) since `sinceMs`, as
+ * { items, complete }. Used by the daily-stats backfill to rebuild end-of-day balances.
+ */
+export function getWalletTransactionsSince(creds, sinceMs, opts) {
+  return pageBackSince(creds, '/v2/wallet/transactions', sinceMs, opts);
+}
+
+/** A fill's execution time in ms — Delta sends ISO `created_at` (or a µs timestamp). */
+export function fillTimeMs(f) {
+  const v = f?.created_at ?? f?.timestamp;
+  if (v == null) return null;
+  if (typeof v === 'number' || /^\d+$/.test(String(v))) {
+    const n = Number(v);
+    return n > 1e14 ? Math.floor(n / 1000) : n; // µs → ms
+  }
+  const t = Date.parse(v);
+  return Number.isFinite(t) ? t : null;
+}
+
+/**
  * Order history — every past order for the account (filled + cancelled), newest
  * first. This is Delta's Order History feed. Delta paginates this endpoint with a
  * cursor (meta.after), so a single page only returns the most recent slice — we

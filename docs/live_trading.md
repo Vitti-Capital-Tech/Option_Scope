@@ -67,6 +67,29 @@ the testbed. Full mechanism:
 >
 > Schedule windows copied into a live account (Schedule Panel **Copy from account**, or **Copy Schedule Windows From** at account creation) always arrive with the hedge leg **off**. Applying a copied set replaces every window at once, so with open positions the UI asks for confirmation first — caps and exit rules change immediately.
 
+## Daily report (`live_daily_stats`, migration 045)
+
+One row per live account per trading day (17:30 → 17:30 IST, named for the end date), shown in the **Daily Report** tab with CSV / Excel export. Written by `engine/lib/dailyStats.js`, fed from `publishLiveSnapshot` (~every 10s, armed live accounts, dry-run included):
+
+| Column | Source |
+|---|---|
+| `opening_balance` | Previous day's `closing_balance`, else the first wallet balance seen that day |
+| `closing_balance`, `unrealized_pnl` | Latest snapshot (wallet balance; Σ `unrealized_pnl` of Delta positions) |
+| `max_margin_used` / `_at` / `_pct` | Peak of `balance − available_balance` (what Delta blocks for positions + orders); saved as it rises, at most once a minute, and reloaded on restart |
+| `realized_gross_pnl`, `fees_estimated`, `trades_closed` | That day's `trade_history` rows (`exit_time` in the window) |
+| `fees_actual`, `fills_count` | Σ `commission` of that day's Delta fills (`getFillsSince`, cursor-paginated) |
+| `net_pnl`, `return_pct` | `realized_gross_pnl − (fees_actual ?? fees_estimated)`; `net_pnl ÷ opening_balance × 100` |
+
+Totals are recomputed every 5 min. When the day rolls over the finished day is recomputed and marked `is_final`; on engine start a missing or unfinished previous day is finalized too (its margin peak stays empty if the engine was down all day). Deposits/withdrawals move the balances but not `net_pnl`.
+
+**Backfill (migration 046, `engine/backfillDailyStats.js`)** — one-time fill of the days before live tracking. Run on the server from `engine/`: `node backfillDailyStats.js --dry-run` first, then without `--dry-run` (optional `--account <id|name>`, `--from YYYY-MM-DD`). For each live account it writes every past day with activity, up to yesterday:
+- realized P&L, estimated fees, exits — from `trade_history`;
+- actual fees — Delta fills, as far back as Delta's fill history reaches (earlier days fall back to the estimate);
+- opening/closing balance — Delta wallet transactions' running balance, if the API provides one (else empty, and so is return %);
+- **max margin — an estimate** (`margin_is_estimate = true`, shown as *est.* in the tab): the peak sum of `trade_history.margin` over full spreads open at the same moment (entry → short close). Unrealized P&L at close can't be rebuilt and stays empty.
+
+Existing rows keep every live-measured value — only empty fields are filled (e.g. the margin of a day the engine was down). New rows are `is_backfilled` + `is_final`; re-running is safe.
+
 ## Credential storage & security model
 
 Credentials live in a dedicated `delta_credentials` table (one row per account):
