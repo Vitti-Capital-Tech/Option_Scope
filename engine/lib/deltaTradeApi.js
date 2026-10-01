@@ -254,6 +254,42 @@ export function orderPnlAndFee(o) {
 }
 
 /**
+ * Classify a wallet-ledger entry for the daily report: commission (a fee) or a capital flow
+ * (deposit / withdrawal / transfer — moves the balance but isn't P&L). `amount` keeps
+ * Delta's sign: + money in, − money out.
+ */
+export function ledgerEntry(t) {
+  const type = String(t?.transaction_type || '');
+  const amount = Number(t?.amount);
+  if (!Number.isFinite(amount)) return { kind: null, amount: 0 };
+  if (/commission/i.test(type)) return { kind: 'fee', amount };
+  if (/deposit|withdraw|transfer/i.test(type)) return { kind: 'capital', amount };
+  return { kind: null, amount };
+}
+
+/** Σ deposits/withdrawals/transfers per trade date from ledger entries. */
+export function capitalFlowsByDay(txns, tradeDateOf) {
+  const out = new Map();
+  for (const t of txns || []) {
+    const { kind, amount } = ledgerEntry(t);
+    const ms = fillTimeMs(t);
+    if (kind !== 'capital' || ms == null) continue;
+    const d = tradeDateOf(ms);
+    out.set(d, (out.get(d) || 0) + amount);
+  }
+  return out;
+}
+
+/**
+ * Return % base: opening balance plus money added that day (withdrawals don't shrink it).
+ * On an account's first day the opening may be empty and the deposit is the whole base.
+ */
+export function returnBase(opening, netDeposits) {
+  const base = (opening > 0 ? opening : 0) + Math.max(0, netDeposits || 0);
+  return base > 0 ? base : null;
+}
+
+/**
  * Wallet transactions (deposits, withdrawals, commissions, P&L …) since `sinceMs`, as
  * { items, complete }. Used by the daily-stats backfill to rebuild end-of-day balances.
  */

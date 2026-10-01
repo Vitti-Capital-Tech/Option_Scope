@@ -11,6 +11,8 @@
  *     order history (meta_data.pnl / paid_commission — the numbers the Live dashboard shows;
  *     trade_history's engine-side P&L doesn't match Delta for live), exits and the engine's
  *     fee estimate from trade_history.
+ *   • deposits / withdrawals (migration 048) from the wallet ledger in the same pass; they
+ *     move the balance but aren't P&L, and return % = net ÷ (opening + money added that day).
  * When the trading day ends (17:30 IST = 12:00 UTC) the finished day is recomputed once
  * more and marked final; on start, a missed or unfinished previous day is finalized too.
  *
@@ -20,7 +22,7 @@
 import { supabase } from './supabase.js';
 import { logWarn } from './utils.js';
 import { extractWalletSnapshot } from './liveExecution.js';
-import { orderTimeMs, orderPnlAndFee } from './deltaTradeApi.js';
+import { orderTimeMs, orderPnlAndFee, capitalFlowsByDay, returnBase } from './deltaTradeApi.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SAVE_EVERY_MS = 60 * 1000;
@@ -70,8 +72,10 @@ export function createDailyStatsTracker({ accountState, live }) {
         feesActual: num(row.fees_actual),
         tradesClosed: row.trades_closed ?? 0,
         fillsCount: row.fills_count ?? 0,
-        fromDelta: row.fees_actual != null,
+        fromDelta: row.fees_actual != null && !row.pnl_is_estimate,
+        netDeposits: num(row.net_deposits),
       } : null,
+      pnlWasEstimate: !!row?.pnl_is_estimate,
     };
   }
 
@@ -107,7 +111,11 @@ export function createDailyStatsTracker({ accountState, live }) {
       }
       fromDelta = true;
     }
-    return { realizedGross, feesEstimated, feesActual, tradesClosed: (rows || []).length, fillsCount, fromDelta };
+    // Deposits / withdrawals / transfers that day (kept from before if the ledger read fails).
+    let netDeposits = previous?.netDeposits ?? null;
+    const txns = await live.walletTransactionsSince(start);
+    if (txns) netDeposits = capitalFlowsByDay(txns, tradeDateOf).get(date) ?? 0;
+    return { realizedGross, feesEstimated, feesActual, tradesClosed: (rows || []).length, fillsCount, fromDelta, netDeposits };
   }
 
   async function save(d, isFinal = false) {
@@ -123,17 +131,23 @@ export function createDailyStatsTracker({ accountState, live }) {
       fees_actual: round(t.feesActual),
       fees_estimated: round(t.feesEstimated),
       net_pnl: round(net),
-      return_pct: d.opening > 0 ? round((net / d.opening) * 100) : null,
+      return_pct: (() => { const base = returnBase(d.opening, t.netDeposits); return base ? round((net / base) * 100) : null; })(),
+      // Sent only once known, so a DB without migration 048 keeps working until then.
+      ...(t.netDeposits != null ? { net_deposits: round(t.netDeposits) } : {}),
       unrealized_pnl: round(d.unrealized),
       max_margin_used: round(d.maxMargin),
       max_margin_at: d.maxAt,
       max_margin_pct: round(d.maxPct),
       trades_closed: t.tradesClosed,
       fills_count: t.fillsCount,
+      // Realized from trade_history (no Delta read yet) → "est." in the report (migration
+      // 047). Sent only when it's set or needs clearing, so a DB without 047 keeps working.
+      ...(t.fromDelta === false ? { pnl_is_estimate: true } : d.pnlWasEstimate ? { pnl_is_estimate: false } : {}),
       is_final: isFinal,
       updated_at: new Date().toISOString(),
     }, { onConflict: 'account_id,trade_date' });
     if (error) throw error;
+    d.pnlWasEstimate = t.fromDelta === false;
   }
 
   // Recompute a finished day's totals and mark it final (keeps its sampled margin/balances).

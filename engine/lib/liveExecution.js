@@ -16,7 +16,7 @@
  * `sellQty` for the short). Validate the dry-run order log against your intended
  * real sizes BEFORE arming an account.
  */
-import { placeOrder, cancelOrder, editOrder, editBracket, placeBracketOrder, closeAllPositions, getLivePositions, getBalance, getLiveOrders, getFills, getOrderHistory, getOrderHistorySinceFull } from './deltaTradeApi.js';
+import { placeOrder, cancelOrder, editOrder, editBracket, placeBracketOrder, closeAllPositions, getLivePositions, getBalance, getLiveOrders, getFills, getOrderHistory, getOrderHistorySinceFull, getWalletTransactionsSince } from './deltaTradeApi.js';
 import { log, logWarn, logError } from './utils.js';
 import { notifyLiveFailure } from './telegram.js';
 
@@ -786,6 +786,22 @@ export function createLiveExecutor(getCtx) {
         return (await getOrderHistorySinceFull(creds, sinceMs, { maxPages: 50 })).items;
       } catch (e) {
         logWarn(`[${accountName}] orderHistorySince() fetch failed: ${e.message}`);
+        return null;
+      }
+    },
+
+    /**
+     * Wallet-ledger entries since `sinceMs` (armed accounts only, else []). NULL on a fetch
+     * failure so the daily report keeps its last known deposit total.
+     */
+    async walletTransactionsSince(sinceMs) {
+      if (!armed()) return [];
+      const { accountName, creds } = getCtx();
+      if (!creds?.apiKey) return [];
+      try {
+        return (await getWalletTransactionsSince(creds, sinceMs, { maxPages: 50 })).items;
+      } catch (e) {
+        logWarn(`[${accountName}] walletTransactionsSince() fetch failed: ${e.message}`);
         return null;
       }
     },

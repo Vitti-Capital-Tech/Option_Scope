@@ -27,6 +27,7 @@ const COLUMNS = [
   { key: 'account', label: 'Account' },
   { key: 'openingBalance', label: 'Opening Balance ($)', usd: true },
   { key: 'closingBalance', label: 'Closing Balance ($)', usd: true },
+  { key: 'netDeposits', label: 'Deposits / Withdrawals ($)', usd: true, signed: true },
   { key: 'realizedGross', label: 'Realized P&L ($)', usd: true, signed: true },
   { key: 'feesActual', label: 'Fees Paid — Delta ($)', usd: true },
   { key: 'feesEstimated', label: 'Fees — Engine Est. ($)', usd: true },
@@ -36,12 +37,14 @@ const COLUMNS = [
   { key: 'maxMargin', label: 'Max Margin Used ($)', usd: true },
   { key: 'maxMarginPct', label: 'Max Margin (% of balance)', pct: true },
   { key: 'maxMarginAt', label: 'Max Margin Time (IST)' },
+  { key: 'pnlSource', label: 'P&L Source', exportOnly: true },       // on screen: the "est." tag
   { key: 'marginSource', label: 'Margin Source', exportOnly: true }, // on screen: the "est." tag
   { key: 'exits', label: 'Exits' },
   { key: 'status', label: 'Status' },
 ];
 
 const SCREEN_COLUMNS = COLUMNS.filter(c => !c.exportOnly);
+const PNL_KEYS = new Set(['realizedGross', 'netPnl', 'returnPct']);
 
 export default function DailyReport({ onNavigate, theme, toggleTheme, active }) {
   // Current trading day; refreshed with each load so the range/status roll over at 17:30 IST.
@@ -118,6 +121,7 @@ export default function DailyReport({ onNavigate, theme, toggleTheme, active }) 
     accountId: r.account_id,
     openingBalance: num(r.opening_balance),
     closingBalance: num(r.closing_balance),
+    netDeposits: num(r.net_deposits),
     realizedGross: num(r.realized_gross_pnl),
     feesActual: num(r.fees_actual),
     feesEstimated: num(r.fees_estimated),
@@ -128,14 +132,17 @@ export default function DailyReport({ onNavigate, theme, toggleTheme, active }) 
     maxMarginPct: num(r.max_margin_pct),
     maxMarginAtRaw: r.max_margin_at,
     maxMarginAt: fmtIstTime(r.max_margin_at),
+    pnlEstimate: !!r.pnl_is_estimate,
+    pnlSource: r.pnl_is_estimate ? 'Estimate (trade history)' : 'Delta',
     marginSource: r.max_margin_used == null ? '' : (r.margin_is_estimate ? 'Estimate (trade history)' : 'Delta'),
     marginEstimate: !!r.margin_is_estimate,
     exits: r.trades_closed ?? 0,
     status: r.is_backfilled ? 'Backfilled' : r.is_final ? 'Final' : (r.trade_date === today ? 'In progress' : 'Not final'),
   })), [rows, nameOf, today]);
 
-  // Totals: $ columns summed; return = total net ÷ each account's first opening balance in
-  // the range; peak margin = the highest single-day peak.
+  // Totals: $ columns summed; return = total net ÷ capital put in over the range (each
+  // account's first opening balance + all its deposits − withdrawals in the range); peak
+  // margin = the highest single-day peak.
   const totals = useMemo(() => {
     if (table.length === 0) return null;
     const sum = (k) => table.reduce((s, r) => s + (r[k] ?? 0), 0);
@@ -143,11 +150,12 @@ export default function DailyReport({ onNavigate, theme, toggleTheme, active }) 
     [...table].sort((a, b) => a.date.localeCompare(b.date)).forEach(r => {
       if (firstOpening[r.accountId] == null && r.openingBalance != null) firstOpening[r.accountId] = r.openingBalance;
     });
-    const base = Object.values(firstOpening).reduce((s, v) => s + v, 0);
+    const base = Object.values(firstOpening).reduce((s, v) => s + v, 0) + sum('netDeposits');
     const net = sum('netPnl');
     const peak = table.reduce((best, r) => (r.maxMargin != null && (best == null || r.maxMargin > best.maxMargin) ? r : best), null);
     return {
       realizedGross: sum('realizedGross'),
+      netDeposits: table.some(r => r.netDeposits != null) ? sum('netDeposits') : null,
       feesActual: table.some(r => r.feesActual != null) ? sum('feesActual') : null,
       feesEstimated: sum('feesEstimated'),
       netPnl: net,
@@ -155,6 +163,7 @@ export default function DailyReport({ onNavigate, theme, toggleTheme, active }) 
       maxMargin: peak?.maxMargin ?? null,
       maxMarginPct: peak?.maxMarginPct ?? null,
       maxMarginEstimate: !!peak?.marginEstimate,
+      pnlEstimate: table.some(r => r.pnlEstimate),
       exits: sum('exits'),
       days: new Set(table.map(r => r.date)).size,
     };
@@ -168,9 +177,10 @@ export default function DailyReport({ onNavigate, theme, toggleTheme, active }) 
     if (totals) {
       out.push({
         date: 'TOTAL', account: accountId === 'all' ? 'All live accounts' : (nameOf[accountId] ?? ''),
-        realizedGross: r2(totals.realizedGross), feesActual: r2(totals.feesActual), feesEstimated: r2(totals.feesEstimated),
+        netDeposits: r2(totals.netDeposits), realizedGross: r2(totals.realizedGross), feesActual: r2(totals.feesActual), feesEstimated: r2(totals.feesEstimated),
         netPnl: r2(totals.netPnl), returnPct: r2(totals.returnPct), maxMargin: r2(totals.maxMargin),
         maxMarginPct: r2(totals.maxMarginPct), exits: totals.exits,
+        pnlSource: totals.pnlEstimate ? 'Includes estimates' : 'Delta',
         marginSource: totals.maxMarginEstimate ? 'Estimate (trade history)' : (totals.maxMargin != null ? 'Delta' : ''),
       });
     }
@@ -186,6 +196,14 @@ export default function DailyReport({ onNavigate, theme, toggleTheme, active }) 
     // Today's day is still running: its "closing" is the latest balance, not the day-end one.
     if (c.key === 'closingBalance' && r.status === 'In progress' && v != null) {
       return <span title="Latest Delta balance — becomes the closing balance when the day ends at 17:30 IST">{fmtUsd(v)} <span className="dr-live">live</span></span>;
+    }
+    // Before Delta's order history: realized (and so net / return) is the engine's estimate.
+    if (r.pnlEstimate && PNL_KEYS.has(c.key) && v != null) {
+      return (
+        <span className={tone(v)} title="Estimated from trade history (engine-side P&L) — this day is older than Delta's order history, so Delta's own realized P&L isn't available">
+          {c.pct ? fmtPct(v) : fmtUsd(v)} <span className="dr-est">est.</span>
+        </span>
+      );
     }
     if (c.usd) return <span className={c.signed ? tone(v) : ''}>{fmtUsd(v)}</span>;
     if (c.pct) return <span className={c.signed ? tone(v) : ''}>{fmtPct(v)}</span>;
@@ -251,8 +269,8 @@ export default function DailyReport({ onNavigate, theme, toggleTheme, active }) 
 
             {totals && (
               <div className="dr-summary">
-                <div className="dr-stat"><span>Net P&amp;L</span><strong className={tone(totals.netPnl)}>{fmtUsd(totals.netPnl)}</strong></div>
-                <div className="dr-stat" title="Total net P&L ÷ each account's opening balance on its first day in the range"><span>Return</span><strong className={tone(totals.returnPct)}>{fmtPct(totals.returnPct)}</strong></div>
+                <div className="dr-stat" title={totals.pnlEstimate ? "Includes days estimated from trade history (before Delta's order history)" : undefined}><span>Net P&amp;L</span><strong className={tone(totals.netPnl)}>{fmtUsd(totals.netPnl)}{totals.pnlEstimate && <em className="dr-est"> incl. est.</em>}</strong></div>
+                <div className="dr-stat" title="Total net P&L ÷ capital in the range (first day's opening balance + deposits − withdrawals)"><span>Return</span><strong className={tone(totals.returnPct)}>{fmtPct(totals.returnPct)}</strong></div>
                 <div className="dr-stat"><span>Fees Paid (Delta)</span><strong>{fmtUsd(totals.feesActual)}</strong></div>
                 <div className="dr-stat"><span>Peak Margin Used</span><strong>{totals.maxMarginEstimate ? '~' : ''}{fmtUsd(totals.maxMargin)}{totals.maxMarginPct != null && <em> · {fmtPct(totals.maxMarginPct)}</em>}{totals.maxMarginEstimate && <em className="dr-est"> est.</em>}</strong></div>
                 <div className="dr-stat"><span>Days</span><strong>{totals.days}</strong></div>
@@ -287,10 +305,11 @@ export default function DailyReport({ onNavigate, theme, toggleTheme, active }) 
                           <td>{totals.days} day{totals.days === 1 ? '' : 's'}</td>
                           <td className="r">—</td>
                           <td className="r">—</td>
-                          <td className="r"><span className={tone(totals.realizedGross)}>{fmtUsd(totals.realizedGross)}</span></td>
+                          <td className="r"><span className={tone(totals.netDeposits)}>{fmtUsd(totals.netDeposits)}</span></td>
+                          <td className="r"><span className={tone(totals.realizedGross)}>{fmtUsd(totals.realizedGross)}</span>{totals.pnlEstimate && <span className="dr-est"> incl. est.</span>}</td>
                           <td className="r">{fmtUsd(totals.feesActual)}</td>
                           <td className="r">{fmtUsd(totals.feesEstimated)}</td>
-                          <td className="r"><span className={tone(totals.netPnl)}>{fmtUsd(totals.netPnl)}</span></td>
+                          <td className="r"><span className={tone(totals.netPnl)}>{fmtUsd(totals.netPnl)}</span>{totals.pnlEstimate && <span className="dr-est"> incl. est.</span>}</td>
                           <td className="r"><span className={tone(totals.returnPct)}>{fmtPct(totals.returnPct)}</span></td>
                           <td className="r">—</td>
                           <td className="r">{totals.maxMarginEstimate ? '~' : ''}{fmtUsd(totals.maxMargin)}{totals.maxMarginEstimate && <span className="dr-est"> est.</span>}</td>
@@ -310,9 +329,12 @@ export default function DailyReport({ onNavigate, theme, toggleTheme, active }) 
               Trading day = 17:30 → 17:30 IST, named for the end date. For the day in progress, closing balance, P&amp;L and
               return are live (so far) and become final at 17:30 IST. Realized P&amp;L and fees are Delta's own figures (order
               history, as on the Live dashboard). Net P&amp;L = realized P&amp;L − fees (the engine's fee estimate is used only if
-              Delta's isn't available). Return = Net P&amp;L ÷ opening balance.
+              Delta's isn't available). Return = Net P&amp;L ÷ (opening balance + money deposited that
+              day); the total uses the first day's opening + all deposits − withdrawals in the range. Deposits / withdrawals move the
+              balance but are never counted as P&amp;L.
               Max margin = the highest margin Delta blocked during the day; days marked <em>est.</em> were filled in later from trade
               history (sum of margins of spreads open at the same time). Backfilled rows predate live tracking.
+              Realized / Net / Return marked <em>est.</em> come from trade history because the day is older than Delta's order history.
             </p>
           </>
         )}

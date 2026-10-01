@@ -1484,3 +1484,13 @@ CREATE POLICY "Service role full access on live daily stats"
 ALTER TABLE public.live_daily_stats
   ADD COLUMN IF NOT EXISTS is_backfilled BOOLEAN NOT NULL DEFAULT false,
   ADD COLUMN IF NOT EXISTS margin_is_estimate BOOLEAN NOT NULL DEFAULT false;
+
+-- ─── 047_live_daily_stats_pnl_estimate.sql ───
+-- Migration 047: pnl_is_estimate on live_daily_stats (migrations 045/046).
+ALTER TABLE public.live_daily_stats
+  ADD COLUMN IF NOT EXISTS pnl_is_estimate BOOLEAN NOT NULL DEFAULT false;
+
+-- ─── 048_live_daily_stats_deposits.sql ───
+-- Migration 048: net_deposits on live_daily_stats (migrations 045–047).
+ALTER TABLE public.live_daily_stats
+  ADD COLUMN IF NOT EXISTS net_deposits NUMERIC;

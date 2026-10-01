@@ -663,6 +663,8 @@ CREATE TABLE IF NOT EXISTS public.live_daily_stats (
     is_final           BOOLEAN NOT NULL DEFAULT false,
     is_backfilled      BOOLEAN NOT NULL DEFAULT false,  -- migration 046: filled by engine/backfillDailyStats.js
     margin_is_estimate BOOLEAN NOT NULL DEFAULT false,  -- migration 046: max margin estimated from trade_history
+    pnl_is_estimate    BOOLEAN NOT NULL DEFAULT false,  -- migration 047: realized P&L from trade_history (before Delta's order history)
+    net_deposits       NUMERIC,                         -- migration 048: Σ deposits − withdrawals/transfers that day (wallet ledger); NULL = unknown
     updated_at         TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     PRIMARY KEY (account_id, trade_date)
 );

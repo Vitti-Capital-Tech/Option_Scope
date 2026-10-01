@@ -78,12 +78,14 @@ One row per live account per trading day (17:30 → 17:30 IST, named for the end
 | `max_margin_used` / `_at` / `_pct` | Peak of `balance − available_balance` (what Delta blocks for positions + orders); saved as it rises, at most once a minute, and reloaded on restart |
 | `realized_gross_pnl`, `fees_actual`, `fills_count` | **Delta's own figures** from order history: Σ `meta_data.pnl` and `paid_commission` of orders that closed/filled in the window (`getOrderHistorySinceFull`) — the same numbers the Live dashboard shows. `trade_history`'s engine-side P&L does not match Delta for live, so it's only a fallback before the first successful Delta read. |
 | `fees_estimated`, `trades_closed` | That day's `trade_history` rows (`exit_time` in the window) |
-| `net_pnl`, `return_pct` | `realized_gross_pnl − (fees_actual ?? fees_estimated)`; `net_pnl ÷ opening_balance × 100` |
+| `net_deposits` (migration 048) | Σ signed `amount` of that day's wallet-ledger `deposit` / `withdrawal` / `transfer` entries — moves the balance, never counted as P&L |
+| `net_pnl`, `return_pct` | `realized_gross_pnl − (fees_actual ?? fees_estimated)`; `net_pnl ÷ (opening_balance + max(0, net_deposits)) × 100`. The tab's range total uses first-day opening + Σ `net_deposits` as its base |
 
-Totals are recomputed every 5 min. When the day rolls over the finished day is recomputed and marked `is_final`; on engine start a missing or unfinished previous day is finalized too (its margin peak stays empty if the engine was down all day). Deposits/withdrawals move the balances but not `net_pnl`.
+Totals are recomputed every 5 min. When the day rolls over the finished day is recomputed and marked `is_final`; on engine start a missing or unfinished previous day is finalized too (its margin peak stays empty if the engine was down all day). Deposits/withdrawals move the balances but not `net_pnl` (they're shown separately in `net_deposits`).
 
 **Backfill (migration 046, `engine/backfillDailyStats.js`)** — one-time fill of the days before live tracking. Run on the server from `engine/`: `node backfillDailyStats.js --dry-run` first, then without `--dry-run` (optional `--account <id|name>`, `--from YYYY-MM-DD`). For each live account it writes every past day with activity, up to yesterday:
-- realized P&L and actual fees — Delta order history (`meta_data.pnl`, `paid_commission`), as far back as it reaches (earlier days fall back to `trade_history`'s P&L and the fee estimate);
+- realized P&L and actual fees — Delta order history (`meta_data.pnl`, `paid_commission`), as far back as it reaches. Days before it: realized falls back to `trade_history`'s P&L, flagged `pnl_is_estimate` (migration 047, *est.* in the tab), and fees come from the wallet ledger's `commission` entries (which matched order history and fills exactly), else the engine estimate;
+- `meta_data.pnl` **excludes** fees (verified with `engine/diagnoseDailyStats.js` against the wallet ledger), so `net_pnl = realized − fees`. A day's balance change equals net P&L only when nothing is left open at day end — premium of positions still open also moves the balance;
 - exits and estimated fees — from `trade_history`;
 - opening/closing balance — Delta wallet transactions' running balance, if the API provides one (else empty, and so is return %);
 - **max margin — an estimate** (`margin_is_estimate = true`, shown as *est.* in the tab): the peak sum of `trade_history.margin` over full spreads open at the same moment (entry → short close). Unrealized P&L at close can't be rebuilt and stays empty.
