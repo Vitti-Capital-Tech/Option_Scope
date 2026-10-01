@@ -206,6 +206,11 @@ async function backfillAccount(acct, lastDate) {
     if (old.max_margin_used == null) {
       Object.assign(patch, { max_margin_used: fresh.max_margin_used, max_margin_at: fresh.max_margin_at, max_margin_pct: fresh.max_margin_pct, margin_is_estimate: true });
     }
+    // A row written on an earlier run without balances (e.g. Delta unreachable) gets its
+    // margin % once a balance is known.
+    if (old.max_margin_used != null && old.max_margin_pct == null && marginBase > 0) {
+      patch.max_margin_pct = round((num(old.max_margin_used) / marginBase) * 100);
+    }
     if (old.opening_balance == null && fresh.opening_balance != null) patch.opening_balance = fresh.opening_balance;
     if (old.closing_balance == null && fresh.closing_balance != null) patch.closing_balance = fresh.closing_balance;
     if (old.fees_actual == null && fresh.fees_actual != null) patch.fees_actual = fresh.fees_actual;
