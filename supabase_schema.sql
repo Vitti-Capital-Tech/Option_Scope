@@ -665,6 +665,7 @@ CREATE TABLE IF NOT EXISTS public.live_daily_stats (
     margin_is_estimate BOOLEAN NOT NULL DEFAULT false,  -- migration 046: max margin estimated from trade_history
     pnl_is_estimate    BOOLEAN NOT NULL DEFAULT false,  -- migration 047: realized P&L from trade_history (before Delta's order history)
     net_deposits       NUMERIC,                         -- migration 048: Σ deposits − withdrawals/transfers that day (wallet ledger); NULL = unknown
+    day_basis          TEXT NOT NULL DEFAULT 'ist1730', -- migration 049: 'utc' = Delta's day (current); 'ist1730' = old 17:30 IST cut, rebuilt automatically
     updated_at         TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     PRIMARY KEY (account_id, trade_date)
 );

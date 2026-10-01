@@ -8,11 +8,12 @@
  *     node backfillDailyStats.js --account "Live 1" --from 2026-08-01
  *     node backfillDailyStats.js --rebuild              # delete the account's rows and rebuild them
  *
- * --rebuild is for a change in how days are cut (e.g. the switch to Delta's UTC day): it
- * deletes every row of the account from --from (or its first trade) INCLUDING today, then
- * rebuilds up to yesterday. Stop the engine first and start it after, so today's row is
- * recreated by the live tracker on the new boundary. Live-sampled margin of rebuilt days is
- * replaced by the trade-history estimate.
+ * Rows built on the old 17:30 IST cut (day_basis 'ist1730', migration 049) are always
+ * rebuilt on Delta's UTC day — or deleted if that day has no activity — so a normal run
+ * handles the switch, with the engine running. Today's row is the live tracker's (it rebuilds
+ * an old-cut row itself after its next restart).
+ * --rebuild additionally rebuilds the account's NEW-cut rows from --from (or its first
+ * trade) up to yesterday from scratch; their live-sampled margin becomes the estimate.
  *
  * Per live account and day (Delta's day: 00:00 → 24:00 UTC = 05:30 → 05:30 IST), up to
  * YESTERDAY (today belongs to the live tracker):
@@ -209,19 +210,13 @@ async function backfillAccount(acct, lastDate) {
   }
 
   const lives = lifetimes(history, open || []);
-  if (REBUILD) {
-    if (DRY_RUN) {
-      console.log(`   --rebuild: would delete every row from ${firstDate} on (incl. today) and rebuild`);
-    } else {
-      const { error: delErr } = await supabase.from('live_daily_stats').delete()
-        .eq('account_id', acct.id).gte('trade_date', firstDate);
-      if (delErr) throw delErr;
-      console.log(`   --rebuild: deleted rows from ${firstDate} on (incl. today)`);
-    }
-  }
-  const existing = REBUILD ? new Map() : new Map((await selectAll(() => supabase.from('live_daily_stats').select('*')
-    .eq('account_id', acct.id).gte('trade_date', firstDate).lte('trade_date', lastDate)))
-    .map(r => [r.trade_date, r]));
+  const stored = await selectAll(() => supabase.from('live_daily_stats').select('*')
+    .eq('account_id', acct.id).gte('trade_date', firstDate).lte('trade_date', lastDate));
+  // Old-cut rows (and, with --rebuild, every row) are rebuilt from scratch: they're absent for
+  // the merge below; whatever this run doesn't rewrite is deleted at the end.
+  const replace = new Set(stored.filter(r => REBUILD || r.day_basis !== 'utc').map(r => r.trade_date));
+  const existing = new Map(stored.filter(r => !replace.has(r.trade_date)).map(r => [r.trade_date, r]));
+  if (replace.size) console.log(`   ${replace.size} row(s) to rebuild on Delta's UTC day${REBUILD ? ' (--rebuild)' : ' (old 17:30 IST cut)'}`);
 
   // Closing balance for a day = last running balance at or before its end.
   const balanceAtEnd = (() => {
@@ -266,7 +261,7 @@ async function backfillAccount(acct, lastDate) {
       max_margin_pct: marginBase > 0 ? round((peak / marginBase) * 100) : null,
       margin_is_estimate: true,
       trades_closed: rows.length, fills_count: dg ? dg.count : 0,
-      is_final: true, is_backfilled: true, updated_at: new Date().toISOString(),
+      unrealized_pnl: null, is_final: true, is_backfilled: true, day_basis: 'utc', updated_at: new Date().toISOString(),
     };
 
     if (!old) { upserts.push(fresh); continue; }
@@ -318,7 +313,15 @@ async function backfillAccount(acct, lastDate) {
       console.log(`     ${u.trade_date}: net ${u.net_pnl} | return ${u.return_pct ?? '—'}% | fees ${u.fees_actual ?? `${u.fees_estimated} (est.)`} | max margin ~${u.max_margin_used}`);
     }
   }
-  if (DRY_RUN || upserts.length === 0) return;
+  const written = new Set(upserts.map(u => u.trade_date));
+  const stale = [...replace].filter(d => !written.has(d)); // old-cut rows with no activity on the new day
+  if (stale.length) console.log(`   ${stale.length} old row(s) with no activity on Delta's day — ${DRY_RUN ? 'would be ' : ''}deleted: ${stale.join(', ')}`);
+  if (DRY_RUN) return;
+  for (const d of stale) {
+    const { error } = await supabase.from('live_daily_stats').delete().eq('account_id', acct.id).eq('trade_date', d);
+    if (error) throw error;
+  }
+  if (upserts.length === 0) return;
   // New days are full rows → batched upsert. Existing days are PARTIAL patches → one
   // UPDATE each: a mixed-shape batch makes PostgREST send NULL for every column a row
   // lacks, which would wipe (or violate NOT NULL on) the row's recorded values.

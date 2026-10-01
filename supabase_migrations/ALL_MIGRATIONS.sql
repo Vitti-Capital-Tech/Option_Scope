@@ -1494,3 +1494,8 @@ ALTER TABLE public.live_daily_stats
 -- Migration 048: net_deposits on live_daily_stats (migrations 045–047).
 ALTER TABLE public.live_daily_stats
   ADD COLUMN IF NOT EXISTS net_deposits NUMERIC;
+
+-- ─── 049_live_daily_stats_day_basis.sql ───
+-- Migration 049: day_basis on live_daily_stats.
+ALTER TABLE public.live_daily_stats
+  ADD COLUMN IF NOT EXISTS day_basis TEXT NOT NULL DEFAULT 'ist1730';

@@ -47,15 +47,24 @@ export function createDailyStatsTracker({ accountState, live }) {
   let lastTotalsAt = 0;
   let dirty = false;
 
-  async function loadRow(date) {
+  // A row built on the old 17:30 IST cut (day_basis 'ist1730', migration 049 — incl. rows an
+  // engine on the old code may still be writing) covers a different window: treat it as
+  // absent, so this day is rebuilt on Delta's UTC day and overwritten on the next save.
+  async function loadRawRow(date) {
     const { data, error } = await supabase.from('live_daily_stats').select('*')
       .eq('account_id', accountState.id).eq('trade_date', date).maybeSingle();
     if (error) throw error;
     return data;
   }
+  async function loadRow(date) {
+    const data = await loadRawRow(date);
+    return data && data.day_basis === 'utc' ? data : null;
+  }
 
   async function loadDay(date) {
-    const row = await loadRow(date);
+    const raw = await loadRawRow(date);
+    const row = raw && raw.day_basis === 'utc' ? raw : null;
+    const replacesLegacy = !!raw && !row;
     // A $0 opening can't be real for a trading account — it's an empty value saved as 0 by
     // an earlier version — so it's treated as missing and re-derived.
     let opening = positive(num(row?.opening_balance));
@@ -78,6 +87,7 @@ export function createDailyStatsTracker({ accountState, live }) {
         netDeposits: num(row.net_deposits),
       } : null,
       pnlWasEstimate: !!row?.pnl_is_estimate,
+      replacesLegacy,
     };
   }
 
@@ -146,10 +156,18 @@ export function createDailyStatsTracker({ accountState, live }) {
       // 047). Sent only when it's set or needs clearing, so a DB without 047 keeps working.
       ...(t.fromDelta === false ? { pnl_is_estimate: true } : d.pnlWasEstimate ? { pnl_is_estimate: false } : {}),
       is_final: isFinal,
+      day_basis: 'utc',
+      // First save over an old-cut row: clear the flags/values only the old row carried.
+      ...(d.replacesLegacy ? {
+        is_backfilled: false, margin_is_estimate: false,
+        ...(t.fromDelta === false ? {} : { pnl_is_estimate: false }),
+        ...(t.netDeposits != null ? {} : { net_deposits: null }),
+      } : {}),
       updated_at: new Date().toISOString(),
     }, { onConflict: 'account_id,trade_date' });
     if (error) throw error;
     d.pnlWasEstimate = t.fromDelta === false;
+    d.replacesLegacy = false;
   }
 
   // Recompute a finished day's totals and mark it final (keeps its sampled margin/balances).
