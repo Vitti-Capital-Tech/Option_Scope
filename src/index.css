@@ -6627,3 +6627,11 @@ body.light-theme .dr-date {
   background: rgba(59, 130, 246, 0.12);
   color: #3b82f6;
 }
+
+.dr-live {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #0ecb81;
+}

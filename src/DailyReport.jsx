@@ -183,6 +183,10 @@ export default function DailyReport({ onNavigate, theme, toggleTheme, active }) 
     if (c.key === 'maxMargin' && r.marginEstimate && v != null) {
       return <span title="Estimated from trade history (sum of margins of spreads open at the same time) — recorded before live tracking started">~{fmtUsd(v)} <span className="dr-est">est.</span></span>;
     }
+    // Today's day is still running: its "closing" is the latest balance, not the day-end one.
+    if (c.key === 'closingBalance' && r.status === 'In progress' && v != null) {
+      return <span title="Latest Delta balance — becomes the closing balance when the day ends at 17:30 IST">{fmtUsd(v)} <span className="dr-live">live</span></span>;
+    }
     if (c.usd) return <span className={c.signed ? tone(v) : ''}>{fmtUsd(v)}</span>;
     if (c.pct) return <span className={c.signed ? tone(v) : ''}>{fmtPct(v)}</span>;
     if (c.key === 'date') return fmtDate(v);
@@ -303,7 +307,8 @@ export default function DailyReport({ onNavigate, theme, toggleTheme, active }) 
             </div>
 
             <p className="dr-note">
-              Trading day = 17:30 → 17:30 IST, named for the end date. Realized P&amp;L and fees are Delta's own figures (order
+              Trading day = 17:30 → 17:30 IST, named for the end date. For the day in progress, closing balance, P&amp;L and
+              return are live (so far) and become final at 17:30 IST. Realized P&amp;L and fees are Delta's own figures (order
               history, as on the Live dashboard). Net P&amp;L = realized P&amp;L − fees (the engine's fee estimate is used only if
               Delta's isn't available). Return = Net P&amp;L ÷ opening balance.
               Max margin = the highest margin Delta blocked during the day; days marked <em>est.</em> were filled in later from trade
