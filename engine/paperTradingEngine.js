@@ -5162,9 +5162,14 @@ async function startSingleAccountEngine(account) {
             // Combined-premium gate: the Max Net Debit now applies to ALL THREE legs.
             // Adding a long makes the debit larger, so the triplet gate is stricter than
             // the 2-leg scan gate. netPrem convention: credit +, debit −.
-            const combinedNet = adjustedSellQty * entrySellPrice - entryBuyPrice - hedgeQty * bestAsk;
+            // Per 1-long UNIT, like the scan gate and the scanner: 1 long : ratioToUse short :
+            // ratioToUse × Hedge Lot % hedge. (adjustedSellQty / hedgeQty are already scaled by
+            // the position size while entryBuyPrice is per 1 lot — mixing them overstated the
+            // long's cost by 1/scale and rejected every sized-down hedged spread.)
+            const unitHedgeQty = ratioToUse * (hedgeLotPct / 100);
+            const combinedNet = ratioToUse * entrySellPrice - entryBuyPrice - unitHedgeQty * bestAsk;
             if (combinedNet < -effectiveConfig.maxNetPremium) {
-              log(`[${accountState.name}] ⛔ ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: combined 3-leg net $${combinedNet.toFixed(2)} exceeds max debit $${effectiveConfig.maxNetPremium} (hedge ${best.strike} @ $${bestAsk} × ${hedgeQty}).`);
+              log(`[${accountState.name}] ⛔ ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: combined 3-leg net $${combinedNet.toFixed(2)} per unit (1 : ${ratioToUse} : ${Number(unitHedgeQty.toFixed(4))}) below the Max Net Debit floor ($${effectiveConfig.maxNetPremium}) (hedge ${best.strike} @ $${bestAsk}).`);
               continue;
             }
             const hedgeCV = liveArmed ? (symbolMeta[best.symbol]?.contractValue ?? null) : null;
