@@ -6635,3 +6635,364 @@ body.light-theme .dr-date {
   text-transform: uppercase;
   color: #0ecb81;
 }
+
+/* ── Daily Report: summary, charts, cards ── */
+.dr-seg {
+  display: inline-flex;
+  height: 34px;
+  padding: 3px;
+  gap: 2px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.dr-seg button {
+  padding: 0 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  cursor: pointer;
+}
+
+.dr-seg button:hover {
+  color: var(--text);
+}
+
+.dr-seg button.on {
+  background: var(--bg2);
+  color: var(--text);
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+.dr-btn.small {
+  height: 30px;
+  font-size: 11px;
+}
+
+.dr-btn.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.dr-summary {
+  grid-template-columns: minmax(240px, 1fr) 2.6fr;
+  align-items: stretch;
+}
+
+.dr-hero {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px 18px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.dr-hero-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.dr-hero-value {
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--text);
+}
+
+.dr-hero-value.positive { color: var(--call); }
+.dr-hero-value.negative { color: var(--put); }
+
+.dr-hero-sub {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.dr-pill {
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--bg3);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.dr-pill.positive { background: rgba(14, 203, 129, 0.12); color: var(--call); }
+.dr-pill.negative { background: rgba(246, 70, 93, 0.12); color: var(--put); }
+
+.dr-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+.dr-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 14px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: 0;
+}
+
+.dr-tile > span {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.dr-tile strong {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.dr-tile > em {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dr-tile .positive { color: var(--call); }
+.dr-tile .negative { color: var(--put); }
+
+.dr-charts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.dr-chart,
+.dr-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: 0;
+}
+
+.dr-card {
+  overflow: hidden;
+}
+
+.dr-chart-head,
+.dr-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 10px 14px 0;
+}
+
+.dr-card-head {
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.dr-chart-title,
+.dr-card-title {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.dr-chart-sub,
+.dr-card-sub {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.dr-card-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.dr-card-tools .dr-seg {
+  height: 30px;
+}
+
+.dr-chart-body {
+  position: relative;
+  padding: 4px 0 6px;
+  min-height: 200px;
+}
+
+.dr-chart-body svg {
+  display: block;
+  touch-action: pan-y;
+}
+
+.dr-axis text {
+  fill: var(--text-dim);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.dr-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+  opacity: 0.6;
+}
+
+.dr-zero {
+  stroke: var(--text-dim);
+  stroke-width: 1;
+  opacity: 0.6;
+}
+
+.dr-bar.pos { fill: var(--call); }
+.dr-bar.neg { fill: var(--put); }
+.dr-bar { transition: opacity 0.12s; }
+.dr-bar.dim { opacity: 0.35; }
+
+.dr-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.dr-area {
+  fill: var(--accent);
+  opacity: 0.1;
+}
+
+.dr-cross {
+  stroke: var(--text-dim);
+  stroke-width: 1;
+  opacity: 0.5;
+}
+
+.dr-dot {
+  fill: var(--accent);
+  stroke: var(--bg2);
+  stroke-width: 2;
+}
+
+.dr-tip {
+  position: absolute;
+  top: 6px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 150px;
+  padding: 8px 10px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+  font-size: 11px;
+  color: var(--text-dim);
+  pointer-events: none;
+  z-index: 3;
+}
+
+.dr-tip b {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.dr-tip span {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dr-tip strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.dr-tip .positive { color: var(--call); }
+.dr-tip .negative { color: var(--put); }
+
+.dr-breakdown .dr-click {
+  cursor: pointer;
+}
+
+.dr-table tbody tr.dr-today td {
+  background: rgba(59, 130, 246, 0.05);
+}
+
+.dr-table thead th {
+  font-size: 10px;
+}
+
+details.dr-note summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--text-dim);
+}
+
+details.dr-note p {
+  margin: 6px 0 0;
+}
+
+@media (max-width: 1100px) {
+  .dr-summary {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  .dr-charts {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .dr-hero-value {
+    font-size: 28px;
+  }
+
+  .dr-card-tools {
+    margin-left: 0;
+    width: 100%;
+    flex-wrap: wrap;
+  }
+}
+
+/* Sections keep their natural height; the page scrolls instead of squashing the tables. */
+.dr-body > * {
+  flex-shrink: 0;
+}
+
+.dr-card .pt-table-scroll {
+  min-height: 220px;
+  max-height: min(640px, 70vh);
+}
+
+.dr-card:has(.dr-breakdown) .pt-table-scroll {
+  min-height: 0;
+  max-height: 360px;
+}

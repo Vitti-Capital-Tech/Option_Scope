@@ -30,7 +30,8 @@ This document is the authoritative implementation reference for every module, en
 | `src/deltaAuth.js` | Browser-side `verifyDeltaCredentials` — Web Crypto HMAC-SHA256 test-signs `GET /v2/wallet/balances` (front-end verification path). |
 | `src/components/PaperTrading/ControlPanel.jsx` | Global-filter Control Panel (Apply/Reset over global filters + Trading Days toggle). |
 | `src/components/PaperTrading/SchedulePanel.jsx` | Per-window schedule editor (timeline, per-window overrides, Apply/Cancel/Reset, copy-from-account, load-scanner-filters). |
-| `src/DailyReport.jsx` | **Daily Report** tab: per-day live P&L, % return, fees, max margin from `live_daily_stats`; account/date filters, totals, CSV/Excel export (`src/exportTable.js`, dependency-free .xlsx writer). |
+| `src/DailyReport.jsx` | **Daily Report** tab: per-day live P&L, % return, fees, max margin from `live_daily_stats`; account/date filters + range presets, range summary (`summarize`), combined-per-day rows for *All live accounts* (`combineByDate`, with a *Per account* toggle), *By account* comparison table, *More columns* toggle, totals, CSV/Excel export (`src/exportTable.js`, dependency-free .xlsx writer). |
+| `src/components/DailyReport/ReportCharts.jsx` | Dependency-free SVG charts for the Daily Report: `DailyPnlChart` (net P&L columns around zero) and `CumulativePnlChart` (running net P&L line), both with hover tooltips and theme-token colours. |
 | `engine/lib/dailyStats.js` | Per-live-account tracker writing `live_daily_stats` (migration 045) from the live snapshot; see `docs/live_trading.md` → Daily report. |
 | `src/components/PaperTrading/TradingWorkspace.jsx` | Exchange-style tabbed panel: Positions / Open Orders / Stop Orders / Fills / Order History / Risk & Margin. |
 | `src/components/PaperTrading/TradeHistoryTable.jsx` | Trade history table + Window Capacity row. |
