@@ -117,6 +117,14 @@ export default function AccountGroupsModal({
         <div className="ag-section-title">New group</div>
         <div className="ag-create">
           <input className="ag-input" placeholder="Group name" value={name} onChange={e => setName(e.target.value)} />
+          <div className="ag-pick-head">
+            <span>Accounts · {picked.length} selected</span>
+            {accounts.length > 0 && (
+              <button type="button" onClick={() => setPicked(picked.length === accounts.length ? [] : accounts.map(a => a.id))}>
+                {picked.length === accounts.length ? 'Clear' : 'Select all'}
+              </button>
+            )}
+          </div>
           <div className="ag-pick">
             {accounts.map(a => (
               <label key={a.id} className={`ag-pick-item${picked.includes(a.id) ? ' on' : ''}`}>

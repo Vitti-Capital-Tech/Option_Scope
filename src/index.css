@@ -7203,27 +7203,85 @@ details.dr-note p {
   font-size: 12px;
 }
 
-.ag-pick {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 6px;
-}
-
-.ag-pick-item {
+.ag-pick-head {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  font-size: 12px;
-  cursor: pointer;
-  min-width: 0;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-dim);
 }
 
-.ag-pick-item.on { border-color: rgba(59, 130, 246, 0.6); background: rgba(59, 130, 246, 0.06); }
-.ag-pick-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ag-pick-item em { margin-left: auto; font-style: normal; font-size: 10px; color: var(--text-dim); white-space: nowrap; }
+.ag-pick-head button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ag-pick {
+  display: flex;
+  flex-direction: column;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg2);
+}
+
+.ag-pick .ag-pick-item {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  width: 100%;
+  margin: 0;
+  padding: 9px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  font-size: 13px;
+  text-align: left;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.ag-pick .ag-pick-item:last-child { border-bottom: 0; }
+.ag-pick .ag-pick-item:hover { background: rgba(255, 255, 255, 0.03); }
+.ag-pick .ag-pick-item.on { background: rgba(59, 130, 246, 0.08); }
+
+.ag-pick .ag-pick-item input[type="checkbox"] {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.ag-pick .ag-pick-item span {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.ag-pick .ag-pick-item em {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid rgba(163, 113, 247, 0.4);
+  border-radius: 4px;
+  font-style: normal;
+  font-size: 10px;
+  color: #a371f7;
+  white-space: nowrap;
+}
 
 .ag-source {
   display: flex;
