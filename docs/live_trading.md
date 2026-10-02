@@ -251,6 +251,7 @@ Telegram outage can never crash or block the engine.
 | --- | --- | --- |
 | `TELEGRAM_BOT_TOKEN` | yes | Bot token from **@BotFather** (one bot serves every chat) |
 | `TELEGRAM_CHAT_ID` | no | **Default/fallback** chat id — used for accounts without their own (per-account) chat id |
+| `TELEGRAM_ERROR_CHAT_ID` | no | **Dedicated error channel.** When set, every 🚨 LIVE TRADING FAILURE alert (incl. admin alerts) goes **only** here, so account / default chats get trade entries and exits only. Add the bot as an admin of the channel. Unset = errors go to the account / default chat |
 | `TELEGRAM_DEDUPE_MS` | no (default `60000`) | Suppress identical **failure** alerts within this window (trade events are never deduped) |
 | `TELEGRAM_MIN_GAP_MS` | no (default `1200`) | Minimum gap between two sends to the **same** chat |
 | `TELEGRAM_GLOBAL_GAP_MS` | no (default `150`) | Minimum gap between **any** two sends, bot-wide across every chat |

@@ -10,6 +10,11 @@
  *   TELEGRAM_BOT_TOKEN  — from @BotFather (one bot serves every chat)
  *   TELEGRAM_CHAT_ID    — the DEFAULT chat/channel/group id (fallback when an account
  *                         has no per-account chat id of its own)
+ *   TELEGRAM_ERROR_CHAT_ID — (optional) a dedicated channel for ERRORS: when set, every
+ *                         notifyLiveFailure alert (incl. the engine's admin alerts) goes
+ *                         ONLY there, so the account / default chats carry trades only.
+ *                         The bot must be an admin of that channel. Unset = errors go to
+ *                         the account / default chat as before.
  *   TELEGRAM_DEDUPE_MS  — (optional) suppress identical alerts within this window (default 60000)
  *   TELEGRAM_MIN_GAP_MS — (optional) minimum gap between two sends to the SAME chat (default 1200)
  *   TELEGRAM_GLOBAL_GAP_MS — (optional) minimum gap between ANY two sends, bot-wide (default 150)
@@ -27,6 +32,7 @@ import { log, logError } from './utils.js';
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
+const ERROR_CHAT_ID = process.env.TELEGRAM_ERROR_CHAT_ID || '';
 // The bot token is what fundamentally enables Telegram; a destination can come from
 // the env default OR a per-account chat id passed at call time.
 const ENABLED = !!TOKEN;
@@ -263,13 +269,18 @@ async function sendTelegram(text, chatId) {
  * @param {string} p.context  short description of what failed
  * @param {any}    [p.error]  Error object or message string
  * @param {string} [p.extra]  optional extra line (e.g. strikes / order id)
- * @param {string} [p.chatId] per-account Telegram chat id (falls back to env default)
+ * @param {string} [p.chatId] per-account Telegram chat id (falls back to env default);
+ *                            ignored when TELEGRAM_ERROR_CHAT_ID is set — errors then go
+ *                            only to that channel
  */
 export function notifyLiveFailure({ account = '—', context = 'Live failure', error = '', extra = '', chatId = '' } = {}) {
   if (!ENABLED) return;
   const errMsg = error?.message ?? (error ? String(error) : '');
   const now = Date.now();
-  const dedupeKey = `${chatId || CHAT_ID}|${account}|${context}|${errMsg}`;
+  // Dedicated error channel wins; the key uses the final destination, so an alert sent
+  // "to the account and to the default chat" (notifyAdmin) reaches the channel once.
+  const dest = ERROR_CHAT_ID || chatId || CHAT_ID;
+  const dedupeKey = `${dest}|${account}|${context}|${errMsg}`;
   const prev = lastSent.get(dedupeKey);
   if (prev != null && now - prev < DEDUPE_MS) return; // duplicate burst — skip
   lastSent.set(dedupeKey, now);
@@ -291,8 +302,8 @@ export function notifyLiveFailure({ account = '—', context = 'Live failure', e
   ].filter(Boolean);
 
   // Fire-and-forget — never block the engine on the network round-trip. Routes to the
-  // account's own chat when a chatId is supplied, else the global default.
-  sendTelegram(lines.join('\n'), chatId).catch(() => {});
+  // error channel when configured, else the account's own chat, else the global default.
+  sendTelegram(lines.join('\n'), dest).catch(() => {});
 }
 
 /**
