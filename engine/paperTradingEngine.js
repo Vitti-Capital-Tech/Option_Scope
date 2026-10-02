@@ -3320,10 +3320,17 @@ async function startSingleAccountEngine(account) {
       // toggle on and a Hedge Lot % > 0. Shared by the ATM P&L gate and the entry so both see
       // the SAME strike: the non-excluded strike beyond the short, nearest it, whose price is
       // below Max Hedge Price and whose |IV − short IV| is inside the window's range
-      // (pickHedgeStrike). Returns { ticker, ask } or null (→ plain 2-leg spread).
+      // (pickHedgeStrike). Returns { ticker, ask } or null.
+      // With the window's Hedge toggle on, the hedge is REQUIRED: a spread with no qualifying
+      // hedge strike is rejected (never entered as a plain 2-leg), and a Hedge Lot % of 0
+      // blocks entries for that window instead of silently trading unhedged.
       const hedgeLotPct = Number(effectiveConfig.hedgeLotPct) || 0;
-      const hedgeOn = accountState.mode !== 'live' && config.strategyVersion >= 2
-        && !!effectiveConfig.hedgeEnabled && hedgeLotPct > 0;
+      const hedgeRequired = accountState.mode !== 'live' && config.strategyVersion >= 2
+        && !!effectiveConfig.hedgeEnabled;
+      const hedgeOn = hedgeRequired && hedgeLotPct > 0;
+      if (hedgeRequired && !hedgeOn && wantEntries) {
+        logWarn(`[${accountState.name}] Hedge Leg is on but Hedge Lot % is 0 — no entries this window until a Hedge Lot % is set.`);
+      }
       const hedgeFilters = {
         maxPrice: Number(effectiveConfig.hedgeMaxPrice ?? 10),
         ivMin: Number(effectiveConfig.hedgeIvDiffMin ?? 0),
@@ -3469,7 +3476,9 @@ async function startSingleAccountEngine(account) {
         }
         const minAtmRoi = isPaperAccount ? (effectiveConfig.minAtmRoi ?? 2) : 0;
 
-        const passed = (atmPnl != null && atmPnl >= minAtmPnl && (roi ?? 0) >= minAtmRoi);
+        // Hedge on → a candidate without a qualifying hedge strike is not eligible.
+        const hedgeMissing = hedgeRequired && !atmHedge;
+        const passed = !hedgeMissing && (atmPnl != null && atmPnl >= minAtmPnl && (roi ?? 0) >= minAtmRoi);
         // Loop only runs when wantEntries, so this always logs during an entry-eligible cycle.
         // The intrinsics are logged alongside the verdict because the ATM P&L is only ever
         // as good as the two prices it came from. Without them a wrong number is unfalsifiable:
@@ -3477,7 +3486,7 @@ async function startSingleAccountEngine(account) {
         // spread, and nothing in the log said WHICH input disagreed. `—` on either intrinsic
         // now means that strike has no fresh quote (candidate skipped, not mis-priced).
         const usd = (v) => (v != null ? `$${v.toFixed(2)}` : '—');
-        log(`[${accountState.name}] Candidate ${spread.buyLeg.type.toUpperCase()} ${spread.buyLeg.strike}/${spread.sellLeg.strike}: ATM P&L = $${atmPnl != null ? atmPnl.toFixed(2) : 'null'} (Min required: $${minAtmPnl.toFixed(2)}), ROI = ${roi != null ? roi.toFixed(2) : 0}% (Min required: ${minAtmRoi.toFixed(2)}%), Passed = ${passed} | ATM ${atmStrike} ${usd(buyIntrinsic)} / ${targetSellStrike} ${usd(sellIntrinsic)} → ratio ${atmRatio ?? '—'} → qty ${spread.sellQty}→${ratioToUse ?? '—'} | legs ${usd(spread.buyPrice)}/${usd(spread.sellPrice)}${atmHedge ? ` | hedge ${atmHedge.ticker.strike} ${usd(atmHedge.ask)} → ATM ${usd(hedgeAtAtm)} × ${hedgeLotPct}%` : ''}`);
+        log(`[${accountState.name}] Candidate ${spread.buyLeg.type.toUpperCase()} ${spread.buyLeg.strike}/${spread.sellLeg.strike}: ATM P&L = $${atmPnl != null ? atmPnl.toFixed(2) : 'null'} (Min required: $${minAtmPnl.toFixed(2)}), ROI = ${roi != null ? roi.toFixed(2) : 0}% (Min required: ${minAtmRoi.toFixed(2)}%), Passed = ${passed} | ATM ${atmStrike} ${usd(buyIntrinsic)} / ${targetSellStrike} ${usd(sellIntrinsic)} → ratio ${atmRatio ?? '—'} → qty ${spread.sellQty}→${ratioToUse ?? '—'} | legs ${usd(spread.buyPrice)}/${usd(spread.sellPrice)}${atmHedge ? ` | hedge ${atmHedge.ticker.strike} ${usd(atmHedge.ask)} → ATM ${usd(hedgeAtAtm)} × ${hedgeLotPct}%` : ''}${hedgeMissing ? ` | no hedge strike (price < $${hedgeFilters.maxPrice}, |IV − short IV| in [${hedgeFilters.ivMin}, ${hedgeFilters.ivMax}]) → rejected` : ''}`);
         if (passed) {
           processedSpreads.push({ ...spread, atmPnl, roi });
         }
@@ -5129,41 +5138,44 @@ async function startSingleAccountEngine(account) {
           // width, put: short − width; nearest listed strike, pickHedgeStrike) and is sized as
           // THIS spread's own short qty × Hedge Lot %. Attached to this position (persisted in
           // hedge_leg); it rides the triplet and exits only on the main long's ATM/ITM/OTM
-          // cross or expiry (see exit tree). No quoted strike there → plain 2-leg entry.
+          // cross or expiry (see exit tree). No qualifying strike / zero hedge qty → the
+          // spread is SKIPPED (hedge on means hedged entries only, never a plain 2-leg).
           let hedgeLeg = null;
           let hedgeMargin = 0;
           // Paper accounts only (hedgeOn): a live account never gets a hedge leg, whatever
           // its strategy_version (so a live account bumped to v2 can't send a -HB order).
           // Same candidate the ATM P&L gate priced (hedgeCandidateFor), re-read now.
-          if (hedgeOn) {
+          if (hedgeRequired) {
             // Qty = the FINAL (leverage / $195k-cap scaled) short qty × Hedge Lot %.
-            const hedgeQty = Number((adjustedSellQty * (hedgeLotPct / 100)).toFixed(4));
-            if (hedgeQty > 0) {
-              const cand = hedgeCandidateFor(spread);
-              const best = cand ? cand.ticker : null;
-              const bestAsk = cand ? cand.ask : null;
-              if (!best) {
-                logWarn(`[${accountState.name}] Hedge ${spreadType} skipped for ${bStrike}/${sStrike}: no strike beyond the short with price < $${hedgeFilters.maxPrice} and |IV − short IV| in [${hedgeFilters.ivMin}, ${hedgeFilters.ivMax}] — entering as plain 2-leg.`);
-              } else {
-                // Combined-premium gate: the Max Net Debit now applies to ALL THREE legs.
-                // Adding a long makes the debit larger, so the triplet gate is stricter than
-                // the 2-leg scan gate. netPrem convention: credit +, debit −.
-                const combinedNet = adjustedSellQty * entrySellPrice - entryBuyPrice - hedgeQty * bestAsk;
-                if (combinedNet < -effectiveConfig.maxNetPremium) {
-                  log(`[${accountState.name}] ⛔ ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: combined 3-leg net $${combinedNet.toFixed(2)} exceeds max debit $${effectiveConfig.maxNetPremium} (hedge ${best.strike} @ $${bestAsk} × ${hedgeQty}).`);
-                  continue;
-                }
-                const hedgeCV = liveArmed ? (symbolMeta[best.symbol]?.contractValue ?? null) : null;
-                hedgeLeg = {
-                  symbol: best.symbol, strike: best.strike, type: spreadType, expiry: config.expiry,
-                  lotSize: hedgeQty, originalLotSize: liveArmed ? (hedgeCV ?? 1) : 1,
-                  entryPrice: bestAsk, entryIv: best.askIv ?? best.iv ?? null,
-                  entryFee: calculateFee(bestAsk, spotPrice, hedgeQty, 1),
-                  contractValue: hedgeCV,
-                };
-                hedgeMargin = calcMargin(bestAsk, hedgeQty, spotPrice, 0, 1, config.underlying);
-              }
+            const hedgeQty = hedgeOn ? Number((adjustedSellQty * (hedgeLotPct / 100)).toFixed(4)) : 0;
+            if (!(hedgeQty > 0)) {
+              logWarn(`[${accountState.name}] ⛔ ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Hedge Leg is on but the hedge qty is 0 (short qty ${adjustedSellQty} × Hedge Lot % ${hedgeLotPct}).`);
+              continue;
             }
+            const cand = hedgeCandidateFor(spread);
+            const best = cand ? cand.ticker : null;
+            const bestAsk = cand ? cand.ask : null;
+            if (!best) {
+              logWarn(`[${accountState.name}] ⛔ ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Hedge Leg is on but no strike beyond the short has price < $${hedgeFilters.maxPrice} and |IV − short IV| in [${hedgeFilters.ivMin}, ${hedgeFilters.ivMax}] — not entering unhedged.`);
+              continue;
+            }
+            // Combined-premium gate: the Max Net Debit now applies to ALL THREE legs.
+            // Adding a long makes the debit larger, so the triplet gate is stricter than
+            // the 2-leg scan gate. netPrem convention: credit +, debit −.
+            const combinedNet = adjustedSellQty * entrySellPrice - entryBuyPrice - hedgeQty * bestAsk;
+            if (combinedNet < -effectiveConfig.maxNetPremium) {
+              log(`[${accountState.name}] ⛔ ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: combined 3-leg net $${combinedNet.toFixed(2)} exceeds max debit $${effectiveConfig.maxNetPremium} (hedge ${best.strike} @ $${bestAsk} × ${hedgeQty}).`);
+              continue;
+            }
+            const hedgeCV = liveArmed ? (symbolMeta[best.symbol]?.contractValue ?? null) : null;
+            hedgeLeg = {
+              symbol: best.symbol, strike: best.strike, type: spreadType, expiry: config.expiry,
+              lotSize: hedgeQty, originalLotSize: liveArmed ? (hedgeCV ?? 1) : 1,
+              entryPrice: bestAsk, entryIv: best.askIv ?? best.iv ?? null,
+              entryFee: calculateFee(bestAsk, spotPrice, hedgeQty, 1),
+              contractValue: hedgeCV,
+            };
+            hedgeMargin = calcMargin(bestAsk, hedgeQty, spotPrice, 0, 1, config.underlying);
           }
 
           const id = `T${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
