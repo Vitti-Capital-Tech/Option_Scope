@@ -205,7 +205,8 @@ The **Hedge Leg** checkbox in the filter bar (with **Hedge Lot %**, default 50%)
 
 - **Strike**: among strikes beyond the short on the same side, the one nearest the short whose price is below **Max Hedge Price** (default $10) and whose **|hedge IV − short IV|** is inside the **Hedge IV Diff** range (default 0 to 2). Uses `pickHedgeStrike` in `src/scannerUtils.js`, the twin of the engine's copy.
 - **Qty**: the **scaled** short qty (after the $195k cap / leverage sizing, the same qty shown in *Ratio*) × Hedge Lot %.
-- **Display**: a line `H: +<strike> @ $<ask> × <qty>` under the spread strikes. It appears only when such a strike exists; otherwise nothing is shown.
+- **Display**: a line `H: +<strike> @ $<ask> × <qty>` under the spread strikes.
+- **Hedged spreads only**: with the toggle on, a spread with no qualifying hedge strike is **not listed** (and a Hedge Lot % of 0 lists nothing), matching paper trading, which never enters a plain 2-leg while its window's hedge is on. So the list with the toggle on is not the toggle-off list plus hedge lines: spreads without a hedge drop out, and the hedge's cost (in net premium, ATM P&L / ROI and margin) can push others past Max Net Debit or the ATM edge floors.
 - **Net premium** (and the **Max Net Debit** filter) use all three legs: `short qty × short bid − long ask − hedge qty × hedge ask` (the cell says `incl. hedge`).
 - **Delta**: the short qty is still sized delta-neutral on the long and short only. The Delta cell adds the net delta of all three legs (`3-leg …`).
 - **ATM P&L / ROI / Req. Margin** include the hedge. At ATM it is worth the bid at the ATM-shifted hedge strike (unquoted = worthless), and its premium is added to margin.

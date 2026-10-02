@@ -354,7 +354,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
       const validPairs = [];
 
       // Hedge leg for a pair: the strike beyond the short that passes the price and IV-diff
-      // filters, nearest the short, via the same pickHedgeStrike the engine uses. null when off or no such strike. `unitQty` is per
+      // filters, nearest the short, via the same pickHedgeStrike the engine uses. null when off or no such strike (with the toggle on, such pairs are dropped). `unitQty` is per
       // ratio unit (short qty × Hedge Lot %); ResultTable scales it with the short.
       const hedgePool = config.hedgeEnabled ? sorted.filter(t => (t.ask ?? 0) > 0) : [];
       const hedgeFor = (buyLeg, sellLeg, shortQty) => {
@@ -461,6 +461,8 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
           // delta then include all THREE legs, and the max-debit check uses the 3-leg net —
           // the same gate paper trading applies at entry. IV edge stays long vs short.
           const hedge = hedgeFor(buyLeg, sellLeg, scaledSellQty);
+          // Hedge on → hedged spreads only, as paper trading enters them (no plain 2-leg fallback).
+          if (config.hedgeEnabled && !hedge) continue;
 
           // Max-debit (maxNetPremium) check on the post-scaling net premium.
           const netPrem = scaledSellQty * sellPrice - buyPrice - (hedge ? hedge.unitQty * hedge.price : 0);

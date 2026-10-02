@@ -31,7 +31,7 @@ export function leverageFor(underlyingOrSymbol) {
  * (|hedge IV − short IV|), then pick the one NEAREST the short (the most protective).
  * `candidates` are same-type, same-expiry tickers the caller has already filtered (not
  * excluded, not the spread's own legs). Price = ask (fallback last / mark), IV = ask IV
- * (fallback iv). Returns the ticker, or null if none qualifies (→ plain 2-leg spread).
+ * (fallback iv). Returns the ticker, or null if none qualifies (→ with Hedge on, the spread is dropped / not entered).
  *
  * Twin of engine/lib/utils.js pickHedgeStrike — keep the two identical.
  */
