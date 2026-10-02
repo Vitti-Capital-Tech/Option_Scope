@@ -1630,3 +1630,14 @@ flowchart TD
 | Exit Type | ATM | Default option exit type parameter (`ATM`, `ITM`, or `OTM`) |
 | Exit Points | 0 | Default points distance threshold for ITM/OTM exits |
 | Leg Swap Net Premium | 0 | ⚠️ Deprecated/unused — leg swaps removed (config still loaded for back-compat) |
+
+## Account Groups (migration 050)
+
+Several accounts can share **one set of settings** while still trading on their own.
+
+- **What is shared**: everything you set — Control Panel filters, exits, trade days, full deploy, excluded strikes, allocation % / entry offsets / position caps, and all schedule windows (with their hedge, caps and exit overrides).
+- **What stays per account**: balance and initial balance, open positions, P&L and history, strategy version, credentials, Start Live / Disarm, Pause and Telegram. Sizing still uses each account's own balance.
+- **How it works**: settings are still saved per account. When you save a change on any grouped account (Apply filters, Apply schedules, Edit account), the same settings are copied to every other member at once (`sync_account_group`). The engine sees each member's settings change exactly as if you had edited it.
+- **Rules**: same mode (paper or live), same strategy version, same owner. An account can be in one group at a time.
+- **Managing**: **Groups** button next to *New Account*. Create a group from two or more accounts and choose whose settings to copy. Adding an account replaces its settings with the group's. Removing an account, or deleting the group, leaves the accounts with their current settings; they just stop syncing.
+- Grouped accounts show a purple group badge in the account selector, and a banner above the Control Panel lists the other members.

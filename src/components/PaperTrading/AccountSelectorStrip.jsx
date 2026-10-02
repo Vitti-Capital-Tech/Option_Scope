@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { User, ChevronDown, Columns, Check, Edit, Plus, Trash2, LogOut } from 'lucide-react';
+import { User, ChevronDown, Columns, Check, Edit, Plus, Trash2, LogOut, Users } from 'lucide-react';
 
 function LiveBadge({ account }) {
   if (!account || account.mode !== 'live') return null;
@@ -40,6 +40,26 @@ function PausedBadge({ account }) {
   );
 }
 
+// Account group (migration 050): the account shares its settings with the group's members.
+function GroupBadge({ account, groups }) {
+  const group = account?.group_id ? groups.find(g => g.id === account.group_id) : null;
+  if (!group) return null;
+  return (
+    <span
+      title={`In group "${group.name}" — settings are shared with the group's other accounts`}
+      style={{
+        fontSize: 9, fontWeight: 700, letterSpacing: '0.04em',
+        padding: '1px 5px', borderRadius: 4, marginLeft: 6,
+        color: '#a371f7', background: 'transparent', border: '1px solid #a371f7',
+        display: 'inline-flex', alignItems: 'center', gap: 3, maxWidth: 120,
+        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+      }}
+    >
+      <Users size={9} strokeWidth={2.5} /> {group.name}
+    </span>
+  );
+}
+
 const ctrlBtn = (bg, color) => ({
   padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)',
   background: bg, color, cursor: 'pointer', fontSize: 11, fontWeight: 600,
@@ -57,6 +77,8 @@ export default function AccountSelectorStrip({
   triggerPauseAccount,
   triggerResumeAccount,
   triggerEditAccount,
+  groups = [],
+  triggerManageGroups,
   engineDryRun,
   userProfile,
   session,
@@ -103,6 +125,7 @@ export default function AccountSelectorStrip({
               {activeAccount?.paused
                 ? <PausedBadge account={activeAccount} />
                 : <LiveBadge account={activeAccount} />}
+              <GroupBadge account={activeAccount} groups={groups} />
             </div>
             <ChevronDown 
               className="account-chevron-icon" 
@@ -137,6 +160,7 @@ export default function AccountSelectorStrip({
                         {acc.paused
                           ? <PausedBadge account={acc} />
                           : <LiveBadge account={acc} />}
+                        <GroupBadge account={acc} groups={groups} />
                       </div>
                       {isSelected && (
                         <Check className="account-selected-checkmark" size={14} strokeWidth={3} stroke="var(--accent)" />
@@ -168,6 +192,18 @@ export default function AccountSelectorStrip({
           <Plus size={12} strokeWidth={2.5} />
           New Account
         </button>
+
+        {triggerManageGroups && (
+          <button
+            type="button"
+            onClick={triggerManageGroups}
+            className="account-selector-btn"
+            title="Group accounts so they share the same settings"
+          >
+            <Users size={12} strokeWidth={2.5} />
+            Groups
+          </button>
+        )}
 
         {accounts.length > 1 && (
           <button

@@ -8,7 +8,7 @@ import { normalizeIv, toFiniteNumber, matchesOptionType, formatTime, formatDateT
 import { useTabListener } from './useTabSync';
 import { supabase } from './supabase';
 import { sortSchedulesByStart, scannerToWindowFields } from './components/PaperTrading/scheduleShared';
-import { Loader2, AlertTriangle } from 'lucide-react';
+import { Loader2, AlertTriangle, Users } from 'lucide-react';
 
 import Navbar from './components/PaperTrading/Navbar';
 import LoginCard from './components/PaperTrading/LoginCard';
@@ -19,6 +19,7 @@ import KpiDashboard from './components/PaperTrading/KpiDashboard';
 import TradingWorkspace from './components/PaperTrading/TradingWorkspace';
 import CreateAccountModal from './components/PaperTrading/CreateAccountModal';
 import EditAccountModal from './components/PaperTrading/EditAccountModal';
+import AccountGroupsModal from './components/PaperTrading/AccountGroupsModal';
 import DeleteAccountModal from './components/PaperTrading/DeleteAccountModal';
 import ConfirmExitModal from './components/PaperTrading/ConfirmExitModal';
 
@@ -854,6 +855,94 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     });
   }, [userProfile, session, accounts]);
 
+  // ── Account groups (migration 050) ──────────────────────────────────────
+  // Members share every strategy setting. Settings stay stored per account; each save on a
+  // grouped account is copied to the other members by the sync_account_group RPC.
+  const [groups, setGroups] = useState([]);
+  const [isGroupsModalOpen, setIsGroupsModalOpen] = useState(false);
+  const [groupsBusy, setGroupsBusy] = useState(false);
+  const [groupsError, setGroupsError] = useState('');
+
+  const fetchGroups = useCallback(async () => {
+    if (!userProfile) return;
+    const { data, error } = await supabase.from('account_groups').select('*')
+      .eq('mode', dashboardMode).order('created_at', { ascending: true });
+    if (error) { console.error('Fetch account groups error:', error); return; } // e.g. migration 050 not run yet
+    setGroups(data || []);
+  }, [userProfile, dashboardMode]);
+
+  useEffect(() => { fetchGroups(); }, [fetchGroups, accounts]);
+
+  // Group of the active account, read by the save paths (kept in a ref so the save
+  // callbacks don't change identity whenever the accounts list refreshes).
+  const activeGroupIdRef = useRef(null);
+  useEffect(() => {
+    activeGroupIdRef.current = accounts.find(a => a.id === activeAccountId)?.group_id ?? null;
+  }, [accounts, activeAccountId]);
+
+  // Copy the active account's settings to the rest of its group. what: 'config' | 'schedules' | 'all'.
+  const syncActiveGroup = useCallback(async (what) => {
+    if (!activeAccountId || !activeGroupIdRef.current) return;
+    const { error } = await supabase.rpc('sync_account_group', { p_source: activeAccountId, p_what: what });
+    if (error) {
+      console.error('Group settings sync error:', error);
+      alert(`Saved on this account, but copying the settings to the rest of its group failed: ${error.message}`);
+    }
+  }, [activeAccountId]);
+
+  const runGroupOp = async (fn) => {
+    setGroupsBusy(true);
+    setGroupsError('');
+    try { await fn(); return true; }
+    catch (e) { console.error('Account group error:', e); setGroupsError(e.message || String(e)); return false; }
+    finally {
+      setGroupsBusy(false);
+      await fetchAccounts();
+      await fetchGroups();
+    }
+  };
+
+  const handleCreateGroup = (name, accountIds, sourceId) => runGroupOp(async () => {
+    const members = accounts.filter(a => accountIds.includes(a.id));
+    const owner = members[0]?.user_id;
+    if (members.some(m => m.user_id !== owner)) throw new Error('All accounts in a group must belong to the same user.');
+    const { data: group, error } = await supabase.from('account_groups')
+      .insert({ name, user_id: owner, mode: dashboardMode }).select().single();
+    if (error) throw error;
+    const { error: joinErr } = await supabase.from('paper_trading_accounts').update({ group_id: group.id }).in('id', accountIds);
+    if (joinErr) {
+      await supabase.from('account_groups').delete().eq('id', group.id);
+      throw joinErr;
+    }
+    const { error: syncErr } = await supabase.rpc('sync_account_group', { p_source: sourceId, p_what: 'all' });
+    if (syncErr) throw new Error(`Group created, but copying the settings failed: ${syncErr.message}`);
+  });
+
+  const handleAddGroupMember = (groupId, accountId) => runGroupOp(async () => {
+    const source = accounts.find(a => a.group_id === groupId && a.id !== accountId);
+    const { error } = await supabase.from('paper_trading_accounts').update({ group_id: groupId }).eq('id', accountId);
+    if (error) throw error;
+    if (source) {
+      const { error: syncErr } = await supabase.rpc('sync_account_group', { p_source: source.id, p_what: 'all' });
+      if (syncErr) throw new Error(`Added, but copying the group's settings failed: ${syncErr.message}`);
+    }
+  });
+
+  const handleRemoveGroupMember = (accountId) => runGroupOp(async () => {
+    const { error } = await supabase.from('paper_trading_accounts').update({ group_id: null }).eq('id', accountId);
+    if (error) throw error;
+  });
+
+  const handleRenameGroup = (groupId, name) => runGroupOp(async () => {
+    const { error } = await supabase.from('account_groups').update({ name, updated_at: new Date().toISOString() }).eq('id', groupId);
+    if (error) throw error;
+  });
+
+  const handleDeleteGroup = (groupId) => runGroupOp(async () => {
+    const { error } = await supabase.from('account_groups').delete().eq('id', groupId);
+    if (error) throw error;
+  });
+
   const handleModalSubmit = async (data) => {
     const trimmedName = data.name.trim();
     const accountMode = data.mode === 'live' ? 'live' : 'paper';
@@ -1105,6 +1194,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           updated_at: new Date().toISOString(),
         })
         .eq('account_id', activeAccountId);
+      await syncActiveGroup('config'); // allocation % + entry offsets are group settings
 
       // If live and a new key/secret were entered, replace stored credentials.
       if (accountMode === 'live' && data.apiKey?.trim() && data.apiSecret?.trim()) {
@@ -1328,13 +1418,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         console.error('[saveSupabaseConfig] supabase error:', error);
       } else {
         console.log('[saveSupabaseConfig] success:', data);
+        await syncActiveGroup('config');
       }
     } catch (e) {
       console.error('[saveSupabaseConfig] exception:', e);
     } finally {
       isSavingConfigRef.current = false;
     }
-  }, [activeAccountId, configDbId]);
+  }, [activeAccountId, configDbId, syncActiveGroup]);
 
   // The 8 sizing/scaling fields (calls/puts, spread width, spot distance, ATM
   // scaling + call/put %, re-entry step) are not shown in the Control Panel.
@@ -1690,6 +1781,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       if (keepIds.length > 0) delQuery = delQuery.not('id', 'in', `(${keepIds.map(id => `"${id}"`).join(',')})`);
       const { error: delErr } = await delQuery;
       if (delErr) console.error('Prune removed schedules error:', delErr);
+      await syncActiveGroup('schedules');
 
       const savedJson = JSON.stringify(sorted.map(s => ({
         label: s.label,
@@ -1727,7 +1819,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       await fetchSupabaseSchedules();
     } catch (e) { console.error('Schedule save error', e); }
     finally { setIsSavingSchedules(false); isSavingSchedulesRef.current = false; }
-  }, [activeAccountId, schedules, fetchSupabaseSchedules]);
+  }, [activeAccountId, schedules, fetchSupabaseSchedules, syncActiveGroup]);
 
   const isSchedulesDirty = React.useMemo(() => {
     if (!schedules || lastSavedSchedulesRef.current === null) return false;
@@ -3066,11 +3158,29 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
               triggerPauseAccount={triggerPauseAccount}
               triggerResumeAccount={triggerResumeAccount}
               triggerEditAccount={triggerEditAccount}
+              groups={groups}
+              triggerManageGroups={() => { setGroupsError(''); setIsGroupsModalOpen(true); }}
               engineDryRun={engineDryRun}
               userProfile={userProfile}
               session={session}
               handleLogout={handleLogout}
             />
+
+            {(() => {
+              const group = activeAccount?.group_id ? groups.find(g => g.id === activeAccount.group_id) : null;
+              if (!group) return null;
+              const others = accounts.filter(a => a.group_id === group.id && a.id !== activeAccountId).map(a => a.name);
+              return (
+                <div className="ag-banner">
+                  <Users size={14} strokeWidth={2.5} />
+                  <span>
+                    <b>Group “{group.name}”</b> — settings are shared with {others.length ? others.join(', ') : 'no other account yet'}.
+                    Changes you save here apply to all {others.length + 1} accounts. Balance, positions and P&amp;L stay per account.
+                  </span>
+                  <button type="button" onClick={() => { setGroupsError(''); setIsGroupsModalOpen(true); }}>Manage</button>
+                </div>
+              );
+            })()}
 
             <ControlPanel
               underlying={underlying}
@@ -3247,6 +3357,21 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         telegramBusy={telegramBusy}
         onTelegramConnect={() => handleTelegramConnect(activeAccountId)}
         onTelegramDisconnect={() => handleTelegramDisconnect(activeAccountId)}
+      />
+
+      <AccountGroupsModal
+        isOpen={isGroupsModalOpen}
+        onClose={() => setIsGroupsModalOpen(false)}
+        mode={dashboardMode}
+        groups={groups}
+        accounts={accounts}
+        busy={groupsBusy}
+        error={groupsError}
+        onCreate={handleCreateGroup}
+        onAddMember={handleAddGroupMember}
+        onRemoveMember={handleRemoveGroupMember}
+        onRename={handleRenameGroup}
+        onDelete={handleDeleteGroup}
       />
 
       <ConfirmExitModal
