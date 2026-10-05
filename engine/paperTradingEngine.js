@@ -4942,6 +4942,19 @@ async function startSingleAccountEngine(account) {
             }
           }
 
+          // Fix B — symbol collision with an existing Delta/tracked position on EITHER leg
+          // (see heldSymbols above; armed live only). Catches what the strike checks miss —
+          // e.g. shorting a strike that another spread already holds LONG, or a position
+          // opened outside the engine (same Delta product) → bracket_order_position_exists.
+          // Without it the entry buys the long, the short is rejected, the long is unwound,
+          // and the same doomed entry repeats every cycle. (Restored: it was dropped by
+          // accident with the paper long-only replacement change, c439bdd.)
+          if (heldSymbols && (heldSymbols.has(spread.buyLeg.symbol) || heldSymbols.has(spread.sellLeg.symbol))) {
+            const clash = heldSymbols.has(spread.sellLeg.symbol) ? spread.sellLeg.symbol : spread.buyLeg.symbol;
+            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: position already exists on ${clash} — would collide with an existing bracket/position on Delta (reconcile will clear any stuck leg).`);
+            continue;
+          }
+
           // Diversification guard removed
 
           // Entry pricing
