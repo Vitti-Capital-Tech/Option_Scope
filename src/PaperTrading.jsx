@@ -2087,7 +2087,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     try {
       let query = supabase
         .from('trade_history')
-        .select('id, trade_id, underlying, expiry, type, buy_leg, sell_leg, sell_qty, strike_diff, entry_time, exit_time, entry_buy_price, entry_sell_price, exit_buy_price, exit_sell_price, entry_spot_price, exit_spot_price, margin, realized_gross_pnl, realized_net_pnl, exit_fee, total_fees, exit_reason, is_partial, lot_size, account_id')
+        .select('id, trade_id, underlying, expiry, type, buy_leg, sell_leg, hedge_leg, sell_qty, strike_diff, entry_time, exit_time, entry_buy_price, entry_sell_price, exit_buy_price, exit_sell_price, entry_spot_price, exit_spot_price, margin, realized_gross_pnl, realized_net_pnl, exit_fee, total_fees, exit_reason, is_partial, lot_size, account_id')
         .eq('account_id', activeAccountId)
         .eq('underlying', underlying)
         .order('exit_time', { ascending: false });
@@ -2312,6 +2312,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
             id: t.trade_id || t.id,
             underlying: t.underlying, expiry: t.expiry, type: t.type,
             buyLeg: parsedBuyLeg, sellLeg: parsedSellLeg,
+            hedgeLeg: safeParseLeg(t.hedge_leg),
             sellQty: t.sell_qty, strikeDiff: t.strike_diff,
             entryTime: new Date(t.entry_time), exitTime: new Date(t.exit_time),
             entryBuyPrice: t.entry_buy_price, entrySellPrice: t.entry_sell_price,

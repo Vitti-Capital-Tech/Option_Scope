@@ -347,9 +347,22 @@ export default function TradeHistoryTable({
                       </div>
                       <span className="pt-cell-sub">exit <b>{exitText}</b>{t._isPartial ? ' (partial)' : ''}</span>
                     </td>
-                    {/* Strikes (stacked) + spot in/out */}
+                    {/* Strikes (stacked) + hedge strike (3rd long) + spot in/out */}
                     <td>
-                      {legStack(t.buyLeg.strike.toLocaleString(), hasShort ? t.sellLeg.strike.toLocaleString() : null)}
+                      {isHedgeRow ? (
+                        <div className="pt-legstack">
+                          <span className="pt-ls-l" title="Hedge leg (3rd long)">H {t.buyLeg?.strike != null ? Number(t.buyLeg.strike).toLocaleString() : '—'}</span>
+                        </div>
+                      ) : (
+                        <>
+                          {legStack(t.buyLeg.strike.toLocaleString(), hasShort ? t.sellLeg.strike.toLocaleString() : null)}
+                          {t.hedgeLeg?.strike != null && (
+                            <span className="pt-cell-sub" title="Hedge leg (3rd long)">
+                              hedge <b>{Number(t.hedgeLeg.strike).toLocaleString()}</b>{t.hedgeLeg.entryPrice != null ? ` @ $${Number(t.hedgeLeg.entryPrice).toFixed(2)}` : ''}
+                            </span>
+                          )}
+                        </>
+                      )}
                       <span className="pt-cell-sub">spot {t.entrySpotPrice ? t.entrySpotPrice.toLocaleString() : '—'} → {t.exitSpotPrice ? t.exitSpotPrice.toLocaleString() : '—'}</span>
                     </td>
                     {/* Entry: prem stacked + IV + ATM ratio */}
