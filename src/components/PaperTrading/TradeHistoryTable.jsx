@@ -39,9 +39,11 @@ export default function TradeHistoryTable({
   const kStrike = (s) => Number(s).toLocaleString();
   const instrumentName = (t) => {
     const base = `${t.underlying}-${t.type.toUpperCase()}`;
+    const hedge = t.hedgeLeg?.strike != null && !/^Hedge Exit/i.test(t.exitReason || '')
+      ? ` +H ${kStrike(t.hedgeLeg.strike)}` : '';
     return t.sellLeg?.strike
-      ? `${base} ${kStrike(t.buyLeg.strike)}/${kStrike(t.sellLeg.strike)}`
-      : `${base} ${kStrike(t.buyLeg.strike)}`;
+      ? `${base} ${kStrike(t.buyLeg.strike)}/${kStrike(t.sellLeg.strike)}${hedge}`
+      : `${base} ${kStrike(t.buyLeg.strike)}${hedge}`;
   };
 
   // A long/short value pair, stacked vertically (long on top green, short below
@@ -360,15 +362,15 @@ export default function TradeHistoryTable({
                     <td>
                       {isHedgeRow ? (
                         <div className="pt-legstack">
-                          <span className="pt-ls-l" title="Hedge leg (3rd long)">H {t.buyLeg?.strike != null ? Number(t.buyLeg.strike).toLocaleString() : '—'}</span>
+                          <span className="pt-ls-h" title="Hedge leg (3rd long)">H {t.buyLeg?.strike != null ? Number(t.buyLeg.strike).toLocaleString() : '—'}</span>
                         </div>
                       ) : (
                         <>
                           {legStack(t.buyLeg.strike.toLocaleString(), hasShort ? t.sellLeg.strike.toLocaleString() : null)}
                           {t.hedgeLeg?.strike != null && (
-                            <span className="pt-cell-sub" title="Hedge leg (3rd long)">
-                              hedge <b>{Number(t.hedgeLeg.strike).toLocaleString()}</b>{t.hedgeLeg.entryPrice != null ? ` @ $${Number(t.hedgeLeg.entryPrice).toFixed(2)}` : ''}
-                            </span>
+                            <div className="pt-legstack" title={`Hedge leg (3rd long)${t.hedgeLeg.entryPrice != null ? ` · entry $${Number(t.hedgeLeg.entryPrice).toFixed(2)}` : ''}${t.hedgeLeg.lotSize != null ? ` · qty ${t.hedgeLeg.lotSize}` : ''}`}>
+                              <span className="pt-ls-h">H {Number(t.hedgeLeg.strike).toLocaleString()}</span>
+                            </div>
                           )}
                         </>
                       )}

@@ -5981,6 +5981,12 @@ body.light-theme .pt-btn-apply.active {
   font-weight: 600;
 }
 
+/* Hedge leg (3rd long) strike in the trade-history strike stack */
+.pt-legstack .pt-ls-h {
+  color: #a371f7;
+  font-weight: 600;
+}
+
 .pt-legstack.dim span {
   color: var(--text-dim);
   font-weight: 500;
