@@ -263,7 +263,16 @@ export default function TradeHistoryTable({
               <th>Exit Reason</th>
             </tr></thead>
             <tbody>
-              {filteredTradeHistory.map((t, i) => {
+              {(() => {
+                // Older partial rows (and full exits, whose hedge is booked in its own -HX row)
+                // carry no hedge_leg: take it from another row of the SAME position (trade ids
+                // are `${positionId}-…`) or from the still-open position.
+                const posBase = (id) => String(id ?? '').split('-')[0];
+                const hedgeByPos = new Map();
+                for (const p of positions) if (p.hedgeLeg?.strike != null) hedgeByPos.set(posBase(p.id), p.hedgeLeg);
+                for (const r of filteredTradeHistory) if (r.hedgeLeg?.strike != null) hedgeByPos.set(posBase(r.id), r.hedgeLeg);
+                return filteredTradeHistory.map((t0) => (t0.hedgeLeg?.strike != null ? t0 : { ...t0, hedgeLeg: hedgeByPos.get(posBase(t0.id)) ?? t0.hedgeLeg }));
+              })().map((t, i) => {
                 const pnlValue = includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || 0);
                 const pnlClass = pnlValue > 0 ? 'positive' : pnlValue < 0 ? 'negative' : 'zero';
                 const durationMs = t.exitTime && t.entryTime ? (t.exitTime - t.entryTime) : 0;
