@@ -52,6 +52,23 @@ import {
 // the real book had run past 210, so ZERO contracts filled and the entry aborted; the same
 // (larger) order then filled instantly a minute later at 221, ~25 pts/contract worse. The
 // percentage term keeps the cross meaningful at every premium level.
+// Live entry fill (armed real; replaces the fill-maximising chase for entries). Each leg is
+// a limit order that, while not fully filled, is MODIFIED every ENTRY_FILL_WAIT_MS — sell to
+// ENTRY_SELL_MODIFY_PX ($1), buy to mark + ENTRY_BUY_MARK_PLUS (+50) — ENTRY_MODIFY_TRIES
+// times (5s × 6 = 30s). No cancel, no market order; only an order still unfilled after the
+// last modify (empty book) is cancelled as a last resort. Long first; a partial long gets a
+// short sized to it, a partial short cuts the long to the ratio, no short closes the long.
+const ENTRY_FILL_WAIT_MS = Math.max(1000, Number(process.env.ENTRY_FILL_WAIT_MS ?? 5000));
+const ENTRY_MODIFY_TRIES = Math.max(1, Number(process.env.ENTRY_MODIFY_TRIES ?? 6));
+const ENTRY_SELL_MODIFY_PX = Math.max(0.05, Number(process.env.ENTRY_SELL_MODIFY_PX ?? 1));
+const ENTRY_BUY_MARK_PLUS = Math.max(0, Number(process.env.ENTRY_BUY_MARK_PLUS ?? 50));
+// Upper bound on one leg (waits + modifies + reads) — used to extend the hang guard.
+const ENTRY_LEG_MAX_MS = ENTRY_FILL_WAIT_MS * ENTRY_MODIFY_TRIES + 20000;
+// After Delta rejects an entry leg for a reason OTHER than margin (e.g. it cannot open the
+// position: bracket_order_position_exists), that symbol is kept out of new live entries for
+// this long and the master is alerted, so the same doomed entry can't repeat every minute
+// (Biswal Holdings, 2026-10-05). Margin rejections are re-sized instead (see below).
+const LIVE_REJECT_BLOCK_MS = Math.max(60000, Number(process.env.LIVE_REJECT_BLOCK_MS ?? 1800000));
 const ENTRY_CHASE = {
   attempts: Math.max(0, Number(process.env.ENTRY_CHASE_ATTEMPTS ?? 2)),
   pollMs: Math.max(200, Number(process.env.ENTRY_CHASE_POLL_MS ?? 1200)),
@@ -328,6 +345,11 @@ async function startSingleAccountEngine(account) {
   let entryRetriesUsed = 0;
   let isEvaluating = false;
   let evaluationStart = 0;
+  let liveEntryInFlight = false; // a live openSpread is placing / waiting on orders
+  let liveEntryBlockLogged = false; // last logged "live not armed → no entries" state
+  // symbol → until (ms): Delta rejected an entry leg on it for a non-margin reason
+  // (LIVE_REJECT_BLOCK_MS). Armed real live only.
+  const rejectBlockedSymbols = new Map();
   let lastWsReconnectTime = 0;
   // Paper 4:30 AM IST full-deployment fill (paper only). `lastEntryIstMin` tracks the
   // previous entry-eligible cycle's IST minute so we can detect the upward crossing of
@@ -1608,6 +1630,7 @@ async function startSingleAccountEngine(account) {
     const untrackedShortOpen = livePos.some(p => (Number(p.size) || 0) < 0
       && p.product_symbol && !tracked.has(p.product_symbol));
 
+
     const liveOrphanSymbols = new Set();
     for (const p of livePos) {
       const size = Number(p.size) || 0;
@@ -1770,6 +1793,7 @@ async function startSingleAccountEngine(account) {
     }
     log(`[${accountState.name}] ⊕ ADOPTED orphan long ${symbol} (${contracts} contract(s) @ entry ${entryPx}) as long-only [${pos.id}] — managing via TP bracket + spot-cross/expiry catch-all (no scale-out ladder).`);
     notifyTrade({ title: '🧬 ORPHAN ADOPTED', detail: `Long ${meta.strike} · ${symbol} · ${contracts} contract(s) @ entry ${entryPx} → managed as long-only (TP bracket + catch-all, no ladder)` });
+    notifyFailure({ account: accountState.name, context: `Untracked long ${symbol} (${contracts} contract(s)) found on Delta with no engine row — adopted and now managed as long-only. Check how it was opened.`, error: { message: 'orphan-adopted' } });
     return true;
   }
 
@@ -2951,7 +2975,11 @@ async function startSingleAccountEngine(account) {
   async function evaluateStrategy(onlyExits = false) {
     if (isEvaluating) {
       const evalDuration = Date.now() - evaluationStart;
-      if (evaluationStart > 0 && evalDuration > EVAL_HANG_MS) {
+      // A live entry legitimately runs up to ~2 × ENTRY_LEG_MAX_MS (long, then short).
+      // Fencing the cycle mid-order would leave positions on Delta with no row, so the
+      // limit is extended while one is in flight.
+      const hangLimit = liveEntryInFlight ? EVAL_HANG_MS + 2 * ENTRY_LEG_MAX_MS + 30000 : EVAL_HANG_MS;
+      if (evaluationStart > 0 && evalDuration > hangLimit) {
         // ── HANG RECOVERY, SCOPED TO THIS ACCOUNT ──────────────────────────────
         // This used to call process.exit(1) and let PM2 restart everything. Every
         // account engine lives in ONE process, so a single account stuck on one
@@ -3234,7 +3262,15 @@ async function startSingleAccountEngine(account) {
       //    entry minute after the cap is raised (it is re-read every cycle).
       const dayAllowsEntry = isTradingDayEnabled();
       const capAllowsEntry = activeCombinedCap() > 0;
-      const wantEntries = !onlyExits && !accountState.paused && dayAllowsEntry && capAllowsEntry;
+      // LIVE accounts never simulate: entries only when armed (Start Live) with real orders
+      // (dry-run off). A disarmed / dry-run live account used to "enter" in the DB only, and
+      // arming it later left phantom positions that Delta never had (Prasham, 2026-10-06).
+      const liveEntryBlocked = accountState.mode === 'live' && (!accountState.live_enabled || !!live.dryRun);
+      if (!onlyExits && liveEntryBlocked !== liveEntryBlockLogged) {
+        if (liveEntryBlocked) log(`[${accountState.name}] Live account not armed${live.dryRun ? ' / engine in dry-run' : ''} — no entries (Start Live places real orders on Delta).`);
+        liveEntryBlockLogged = liveEntryBlocked;
+      }
+      const wantEntries = !onlyExits && !accountState.paused && dayAllowsEntry && capAllowsEntry && !liveEntryBlocked;
 
       // scanTickers is an O(n²) pass over every strike pair, per type — tens of ms per
       // account, and it holds the event loop the whole time (every account engine shares
@@ -4733,7 +4769,7 @@ async function startSingleAccountEngine(account) {
         }
       }
 
-      if (!onlyExits && !paused && dayAllowsEntry && capAllowsEntry) {
+      if (!onlyExits && !paused && dayAllowsEntry && capAllowsEntry && !liveEntryBlocked) {
         // Fix B — pre-entry symbol guard (live armed). Delta treats each option contract as
         // ONE product, so if a position already exists on a candidate leg's symbol (e.g.
         // another spread's long at the strike we want to short, or a stuck half-open leg),
@@ -4938,6 +4974,18 @@ async function startSingleAccountEngine(account) {
               const strikeClash = conflictClashes[0];
               const clashDesc = `${strikeClash.buyLeg.strike}${strikeClash.sellQty > 0 ? '/' + strikeClash.sellLeg.strike : ' (long-only)'}`;
               logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: strike conflict with ${strikeClash.id} (${clashDesc}) — one leg per strike (cross-role).`);
+              continue;
+            }
+          }
+
+          // Live: a symbol Delta recently refused to open (non-margin rejection) is ignored
+          // for LIVE_REJECT_BLOCK_MS, so the same entry can't be retried every minute.
+          if (liveArmed) {
+            const nowMs = Date.now();
+            const blockedSym = [spread.sellLeg.symbol, spread.buyLeg.symbol]
+              .find(sym => sym && (rejectBlockedSymbols.get(sym) ?? 0) > nowMs);
+            if (blockedSym) {
+              logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: ${blockedSym} ignored until ${new Date(rejectBlockedSymbols.get(blockedSym)).toISOString().slice(11, 16)} UTC after a Delta rejection.`);
               continue;
             }
           }
@@ -5683,6 +5731,37 @@ async function startSingleAccountEngine(account) {
               }
             }
 
+            // Pre-order position check (armed real live): read Delta's positions RIGHT before
+            // sending and enter only if neither leg's symbol already holds a position. Runs
+            // after a leg swap has flattened its old long, so swaps pass; anything else open
+            // there (another leg, an untracked/manual position) would make Delta reject the
+            // order. Positions unreadable → skip this entry (can't verify).
+            if (liveArmed && !live.dryRun) {
+              const livePosNow = await live.positions();
+              if (livePosNow == null) {
+                logWarn(`[${accountState.name}] Entry ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} skipped: could not read Delta positions to verify the strikes are free.`);
+                continue;
+              }
+              const legSyms = [t.buyLeg.symbol, t.sellQty > 0 ? t.sellLeg.symbol : null].filter(Boolean);
+              const findOccupied = (rows) => rows.find(p => legSyms.includes(p.product_symbol) && (Number(p.size) || 0) !== 0);
+              let occupied = findOccupied(livePosNow);
+              // Leg swap: the old long-only was market-closed a moment ago, and Delta's list can
+              // lag that close by a second. Re-read a few times before calling it occupied, so a
+              // swap isn't left half-done (old long closed, new pair skipped).
+              const swapSym = t._replaceableLongOnlyPos?.buyLeg?.symbol ?? null;
+              for (let i = 0; occupied && swapSym && occupied.product_symbol === swapSym && i < 3; i++) {
+                await new Promise(r => setTimeout(r, 1000));
+                const again = await live.positions();
+                if (again == null) break;
+                occupied = findOccupied(again);
+              }
+              if (occupied) {
+                logWarn(`[${accountState.name}] Entry ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} skipped: Delta already has a position on ${occupied.product_symbol} (size ${occupied.size}).`);
+                continue;
+              }
+            }
+
+            liveEntryInFlight = true;
             const liveEntry = await live.openSpread(t, {
               long: longContracts(t.buyLeg),
               short: shortContracts(t.sellQty),
@@ -5690,6 +5769,12 @@ async function startSingleAccountEngine(account) {
               sellPrice: Math.max(0.05, t.entrySellPrice - sellOff),
               longTp: bracketLevel,
               shortSl: bracketLevel,
+              // Fixed fill timeline per leg (see ENTRY_FILL_*); replaces the chase below.
+              timing: {
+                waitMs: ENTRY_FILL_WAIT_MS, pollMs: 1000, tries: ENTRY_MODIFY_TRIES,
+                sellPx: ENTRY_SELL_MODIFY_PX, buyMarkPlus: ENTRY_BUY_MARK_PLUS,
+                quote: (sym) => tickerData[sym],
+              },
               // Chase each leg to a full fill; unwind + abort if it can't complete.
               chase: {
                 attempts: ENTRY_CHASE.attempts,
@@ -5701,13 +5786,14 @@ async function startSingleAccountEngine(account) {
                 quote: (sym) => tickerData[sym],
               },
             });
+            liveEntryInFlight = false;
             if (!liveEntry.ok) {
               // Distinguish a submit-time rejection (Delta refused the order — e.g. bracket
               // conflict) from a genuine chase timeout (accepted but never fully filled), so
               // the alert names the real cause instead of always saying "chase exhausted".
               const failMode = liveEntry.rejected
                 ? `rejected by Delta at submit (${liveEntry.error})`
-                : 'could not fill (chase exhausted)';
+                : 'could not fill after modifies';
               logError(`[${accountState.name}] LIVE entry aborted (${liveEntry.legFailed} leg: ${liveEntry.error}) — not persisting ${t.buyLeg.strike}/${t.sellLeg.strike}`);
               // Delta needed more margin than was available. Retry: the retry re-reads Delta's
               // available balance and sizes the order to it. After LIVE_MARGIN_MAX_RESIZE_RETRIES
@@ -5728,15 +5814,40 @@ async function startSingleAccountEngine(account) {
                   requestEntryRetry(`${t.type?.toUpperCase?.() || ''} ${t.buyLeg.strike}/${t.sellLeg.strike} margin rejection — re-sizing to Delta's available balance`);
                 }
               }
-              notifyFailure({ account: accountState.name, context: `Entry ABORTED — ${liveEntry.legFailed} leg ${failMode}; position unwound, account left flat${pauseNote}`, error: liveEntry.error, extra: `${t.type?.toUpperCase?.() || ''} ${t.buyLeg.strike}/${t.sellLeg.strike}` });
-              // A leg that couldn't FILL is a transient market condition — the same spread is
-              // usually fillable moments later, so queue a short-cooldown retry instead of
-              // burning the rest of the minute. A submit-time REJECTION is structural
-              // (bracket conflict, bad schema) and would repeat verbatim, so it never does.
-              if (!liveEntry.rejected) {
-                requestEntryRetry(`${t.type?.toUpperCase?.() || ''} ${t.buyLeg.strike}/${t.sellLeg.strike} ${liveEntry.legFailed} leg unfilled`);
+              // Non-margin rejection (Delta cannot open the position — e.g. one already exists
+              // on the symbol): ignore that symbol for LIVE_REJECT_BLOCK_MS and tell the master
+              // (the alert below goes to the error channel). Local "no-price"/"no-credentials"
+              // refusals are not Delta's, so they don't block.
+              const localRefusal = /^(no-price|no-credentials)$/i.test(String(liveEntry.error ?? ''));
+              if (liveEntry.rejected && !marginReject && !localRefusal) {
+                const badSym = liveEntry.legFailed === 'buy' ? t.buyLeg.symbol : t.sellLeg.symbol;
+                if (badSym) {
+                  rejectBlockedSymbols.set(badSym, Date.now() + LIVE_REJECT_BLOCK_MS);
+                  pauseNote += ` — ${badSym} ignored for new entries for ${Math.round(LIVE_REJECT_BLOCK_MS / 60000)} min; check Delta for a position / order on it`;
+                }
               }
+              notifyFailure({ account: accountState.name, context: `Entry ABORTED — ${liveEntry.legFailed} leg ${failMode}; position unwound, account left flat${pauseNote}`, error: liveEntry.error, extra: `${t.type?.toUpperCase?.() || ''} ${t.buyLeg.strike}/${t.sellLeg.strike}` });
+              // No same-minute retry: the timed fill already waited its full window (we are
+              // not trying to maximise fills). The next minute's scan re-evaluates normally.
               continue;
+            }
+            // The timed fill may have opened LESS than planned (partial long → smaller short;
+            // partial short → long cut back to the ratio). Book exactly what is open on Delta.
+            if (liveArmed && liveEntry.longContracts != null) {
+              const plannedLong = longContracts(t.buyLeg);
+              const plannedShort = t.sellQty > 0 ? shortContracts(t.sellQty) : 0;
+              const gotLong = liveEntry.longContracts;
+              const gotShort = liveEntry.shortContracts ?? plannedShort;
+              if (gotLong !== plannedLong || gotShort !== plannedShort) {
+                const cv = t.buyLeg.originalLotSize || t.buyLeg.contractValue || 1;
+                const lot = Number((cv * gotLong).toFixed(4));
+                t.buyLeg = { ...t.buyLeg, lotSize: lot, initialScaledLotSize: lot };
+                t.sellQty = gotShort;
+                const f = plannedShort > 0 ? gotShort / plannedShort : gotLong / plannedLong;
+                t.margin = (t.margin || 0) * f;
+                t.entryFee = (t.entryFee || 0) * f;
+                logWarn(`[${accountState.name}] ◐ LIVE entry ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} filled smaller than planned: long ${plannedLong}→${gotLong}, short ${plannedShort}→${gotShort}.`);
+              }
             }
             // Draw the cycle's free margin down so a second entry this cycle is checked
             // against what this one just consumed.
@@ -5910,6 +6021,7 @@ async function startSingleAccountEngine(account) {
       if (!stale()) {
         isEvaluating = false;
         evaluationStart = 0;
+        liveEntryInFlight = false;
       }
       // NB: no entry-minute stamp here — it is claimed on START (see above) so a long
       // cycle can never consume the minute it never scanned.
@@ -6103,6 +6215,9 @@ async function startSingleAccountEngine(account) {
         startWebSocket();
         tickerData = await backfillTickers(config.underlying, symbolMeta, tickerData);
       }
+
+      // Report the (possibly new) allocation % now rather than on the next 60s heartbeat.
+      heartbeat.update({ allocation_pct: config.balanceAllocationPct ?? 90 });
 
       // Modify open positions' resting orders to match the new effective exit config.
       await resyncRestingOrders();
@@ -6331,6 +6446,15 @@ async function startSingleAccountEngine(account) {
   // dashboard via the heartbeat (Wallet / Allocated / per-position figures).
   const balanceTimer = setInterval(async () => {
     try {
+      // Fallback for a missed realtime config event: re-read the allocation % (one cheap
+      // query a minute) so a change saved in the UI always reaches sizing within ~60s.
+      const { data: allocRow } = await supabase.from('paper_trading_config')
+        .select('balance_allocation_pct').eq('account_id', accountState.id).maybeSingle();
+      const dbAlloc = allocRow?.balance_allocation_pct != null ? Number(allocRow.balance_allocation_pct) : null;
+      if (dbAlloc != null && Number.isFinite(dbAlloc) && dbAlloc !== config.balanceAllocationPct) {
+        log(`[${accountState.name}] Allocation % updated from the database: ${config.balanceAllocationPct}% → ${dbAlloc}%`);
+        config.balanceAllocationPct = dbAlloc;
+      }
       if (accountState.mode === 'live' && accountState.live_enabled) {
         const bal = await live.walletBalance();
         // Publish the SAME max-positions the engine uses for sizing (the ACTIVE window's

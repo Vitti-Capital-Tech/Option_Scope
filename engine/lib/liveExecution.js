@@ -268,6 +268,100 @@ export function createLiveExecutor(getCtx) {
   }
 
   /**
+   * Entry fill by MODIFYING the same limit order (no cancel, no market order):
+   *   place the limit (with its bracket) → every `waitMs`, while not fully filled, edit its
+   *   price — sell → `sellPx` (default $1, i.e. take any bid), buy → mark + `buyMarkPlus`
+   *   (default +50, re-read from the latest mark each time) — `tries` times in all (default
+   *   6 → 5s … 30s). Editing keeps the order id AND its bracket.
+   * Only if it is STILL not fully filled after the last edit (an empty book) is the rest
+   * cancelled, as a last resort: a resting entry order that fills later would open a position
+   * the engine doesn't know about (that is how Biswal's untracked short was created).
+   * Returns { ok, filled, unfilled, id, productId, order, rejected?, unknown?, lastResortCancel? }.
+   */
+  async function submitTimed({ symbol, side, contracts, price, tag, bracket = null, timing }) {
+    const first = await submit({ symbol, side, contracts, price, reduceOnly: false, tag, bracket });
+    if (!first.ok) return { ok: false, error: first.error, filled: 0, rejected: true };
+    if (first.dryRun || first.skipped) return { ok: true, order: first.order, filled: contracts };
+
+    const { accountName, creds } = getCtx();
+    const total = Math.max(1, Math.round(contracts));
+    const id = first.order?.id;
+    const productId = first.order?.product_id;
+    let unfilled = Number(first.order?.unfilled_size);
+    if (!Number.isFinite(unfilled)) unfilled = total;
+    if (unfilled === 0 || String(first.order?.state) === 'closed') {
+      return { ok: true, order: first.order, id, productId, filled: total, unfilled: 0 };
+    }
+
+    const waitMs = Math.max(1000, timing?.waitMs ?? 5000);
+    const pollMs = Math.max(250, timing?.pollMs ?? 1000);
+    const tries = Math.max(1, Math.round(timing?.tries ?? 6));
+    const sellPx = Number(timing?.sellPx ?? 1);
+    const buyMarkPlus = Number(timing?.buyMarkPlus ?? 50);
+
+    // Wait `ms`, polling; true as soon as the order is fully filled.
+    const waitForFill = async (ms) => {
+      const t0 = Date.now();
+      while (Date.now() - t0 < ms) {
+        await sleep(Math.min(pollMs, Math.max(0, ms - (Date.now() - t0))));
+        const u = await unfilledContracts(creds, id);
+        if (u === 0) return true;
+        if (u != null) unfilled = u;
+      }
+      return false;
+    };
+
+    for (let k = 1; k <= tries; k++) {
+      if (await waitForFill(waitMs)) return { ok: true, order: first.order, id, productId, filled: total, unfilled: 0 };
+      let target;
+      if (side === 'sell') {
+        target = sellPx;
+      } else {
+        const q = timing?.quote?.(symbol) || {};
+        const mark = Number(q.markPrice ?? q.lastPrice ?? q.ask ?? price);
+        target = (Number.isFinite(mark) ? mark : Number(price)) + buyMarkPlus;
+      }
+      const newPx = cleanLimitPrice(Math.max(0.05, target));
+      if (!newPx) continue;
+      try {
+        // Original total size: Delta keeps the filled part and re-rests the rest.
+        await editOrder(creds, { id, product_id: productId, limit_price: newPx, size: total });
+        log(`[${accountName}] ➤ ENTRY ${side} ${symbol}: ${unfilled} unfilled → modify ${k}/${tries} to ${newPx}${side === 'buy' ? ` (mark + ${buyMarkPlus})` : ''} [${tag}]`);
+      } catch (e) {
+        logWarn(`[${accountName}] entry modify ${k}/${tries} failed for ${symbol} [${tag}]: ${e.message}`);
+      }
+    }
+    // A last short wait for the final modify to land.
+    if (await waitForFill(Math.min(waitMs, 3000))) return { ok: true, order: first.order, id, productId, filled: total, unfilled: 0 };
+
+    // LAST RESORT (empty book after every modify): cancel the rest so it can't fill later as
+    // an untracked position, and read what DID fill.
+    let filled = null;
+    try {
+      const c = await cancelOrder(creds, { id, product_id: productId });
+      const sz = Number(c?.size);
+      const uf = Number(c?.unfilled_size);
+      if (Number.isFinite(sz) && Number.isFinite(uf)) filled = Math.max(0, Math.round(sz - uf));
+    } catch { /* already closed (filled), or a transient failure — fall through */ }
+    if (filled == null) {
+      const u = await unfilledContracts(creds, id);
+      if (u != null && u > 0) await cancelOrder(creds, { id, product_id: productId }).catch(() => {});
+      let rows = null;
+      for (let i = 0; i < 3 && rows == null; i++) {
+        if (i > 0) await sleep(500);
+        try { const r = await getLivePositions(creds); rows = Array.isArray(r) ? r : null; } catch { rows = null; }
+      }
+      if (rows == null) {
+        return { ok: false, unknown: true, id, productId, order: first.order, filled: 0, unfilled: total, error: 'final fill unreadable after cancel' };
+      }
+      const size = Number(rows.find((r) => r.product_symbol === symbol)?.size) || 0;
+      filled = Math.min(total, side === 'buy' ? Math.max(0, size) : Math.max(0, -size));
+    }
+    logWarn(`[${accountName}] ⏱ ENTRY ${side} ${symbol}: only ${filled}/${total} filled after ${tries} modifies — rest cancelled (last resort, empty book) [${tag}]`);
+    return { ok: filled >= total, order: first.order, id, productId, filled, unfilled: total - filled, lastResortCancel: filled < total };
+  }
+
+  /**
    * Place a marketable limit and CHASE it to a full fill: if it doesn't fill
    * immediately, re-price it in place (edit — keeps the order id AND any attached
    * bracket) toward the market a few times. Returns
@@ -392,9 +486,79 @@ export function createLiveExecutor(getCtx) {
      * Returns { ok }. On any abort the caller must NOT persist the position; the
      * account is left flat (no manual reconciliation needed).
      */
-    async openSpread(pos, { long, short, buyPrice, sellPrice, longTp = null, shortSl = null, chase = null }) {
+    async openSpread(pos, { long, short, buyPrice, sellPrice, longTp = null, shortSl = null, chase = null, timing = null }) {
       if (!armed()) return { ok: true, skipped: true };
       const { accountName, creds } = getCtx();
+
+      // ── Timed entry (see submitTimed): long first, then short, each a limit order that is
+      // MODIFIED every 5s (sell → $1, buy → mark + 50), 6 times. Partial long → short sized to
+      // it. Partial short → long cut to the ratio. No short at all → exit (close the long).
+      // Returns the FINAL contracts.
+      if (timing) {
+        const buyBracketT = (longTp != null && Number.isFinite(longTp))
+          ? { bracket_take_profit_price: String(longTp), bracket_stop_trigger_method: 'spot_price' }
+          : null;
+        const buy = await submitTimed({
+          symbol: pos.buyLeg.symbol, side: 'buy', contracts: long,
+          price: buyPrice ?? pos.entryBuyPrice, tag: `${pos.id}-EB`, bracket: buyBracketT,
+          timing,
+        });
+        if (buy.rejected) return { ok: false, legFailed: 'buy', error: buy.error, rejected: true };
+        if (buy.unknown) {
+          logWarn(`[${accountName}] ⚠ Entry BUY state UNREADABLE for ${pos.id} — cancelling and reduce-only closing ${long} to guarantee flat.`);
+          if (buy.id) await cancelOrder(creds, { id: buy.id, product_id: buy.productId }).catch(() => {});
+          await marketClose({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: long, tag: `${pos.id}-EAB` }).catch(() => {});
+          return { ok: false, legFailed: 'buy', error: buy.error };
+        }
+        const longFilled = Math.min(Math.round(long), buy.filled || 0);
+        if (longFilled <= 0) {
+          return { ok: false, legFailed: 'buy', error: 'long not filled after modifies' };
+        }
+        if (!(short > 0)) return { ok: true, buyOrder: buy.order, longContracts: longFilled, shortContracts: 0 };
+
+        // Short sized to the long that actually filled (same 1:ratio).
+        const ratio = short / long;
+        const shortTarget = longFilled === Math.round(long) ? Math.round(short) : Math.round(longFilled * ratio);
+        if (shortTarget < 1) {
+          logWarn(`[${accountName}] ⚠ Entry for ${pos.id}: only ${longFilled} long filled — too small for a short at 1:${ratio.toFixed(2)}; closing the long.`);
+          await marketClose({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: longFilled, tag: `${pos.id}-EAB` }).catch(() => {});
+          return { ok: false, legFailed: 'buy', error: 'partial long too small for a short' };
+        }
+        if (longFilled < Math.round(long)) {
+          log(`[${accountName}] ◐ Entry ${pos.id}: long ${longFilled}/${Math.round(long)} filled — short sized to ${shortTarget}.`);
+        }
+
+        const sellBracketT = (shortSl != null && Number.isFinite(shortSl))
+          ? { bracket_stop_loss_price: String(shortSl), bracket_stop_trigger_method: 'spot_price' }
+          : null;
+        const sell = await submitTimed({
+          symbol: pos.sellLeg.symbol, side: 'sell', contracts: shortTarget,
+          price: sellPrice ?? pos.entrySellPrice, tag: `${pos.id}-ES`, bracket: sellBracketT,
+          timing,
+        });
+        if (sell.rejected || sell.unknown || !(sell.filled > 0)) {
+          // No short (rejected / nothing filled / unreadable) → exit: close the long.
+          if (sell.unknown) {
+            if (sell.id) await cancelOrder(creds, { id: sell.id, product_id: sell.productId }).catch(() => {});
+            await marketClose({ symbol: pos.sellLeg.symbol, side: 'buy', contracts: shortTarget, tag: `${pos.id}-EAS` }).catch(() => {});
+          }
+          logError(`[${accountName}] ⚠ Entry SELL ${sell.rejected ? 'rejected' : sell.unknown ? 'state unreadable' : 'not filled'} for ${pos.id} — closing the long (${longFilled}) to exit.`);
+          await marketClose({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: longFilled, tag: `${pos.id}-EAB` }).catch(() => {});
+          return { ok: false, legFailed: 'sell', error: sell.error || 'short not filled', rejected: !!sell.rejected, buyOrder: buy.order };
+        }
+
+        // Partial short → cut the long back to the ratio (sell only the excess long).
+        let longKeep = longFilled;
+        if (sell.filled < shortTarget) {
+          longKeep = Math.min(longFilled, Math.max(1, Math.round(sell.filled / ratio)));
+          const excess = longFilled - longKeep;
+          if (excess > 0) {
+            await marketClose({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: excess, tag: `${pos.id}-EADJ` }).catch(() => {});
+          }
+          logWarn(`[${accountName}] ◐ Entry ${pos.id}: short ${sell.filled}/${shortTarget} filled — long adjusted ${longFilled}→${longKeep} to keep 1:${ratio.toFixed(2)}.`);
+        }
+        return { ok: true, buyOrder: buy.order, sellOrder: sell.order, longContracts: longKeep, shortContracts: sell.filled };
+      }
 
       const buyBracket = (longTp != null && Number.isFinite(longTp))
         ? { bracket_take_profit_price: String(longTp), bracket_stop_trigger_method: 'spot_price' }

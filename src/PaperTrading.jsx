@@ -417,6 +417,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   const [engineDryRun, setEngineDryRun] = useState(null); // engine execution mode: true=sim, false=real, null=unknown
   const [engineMaxPositions, setEngineMaxPositions] = useState(null); // engine's max positions (base + windows)
   const [engineAllocationPct, setEngineAllocationPct] = useState(null); // engine's live allocation %
+  // Allocation just saved from Edit Account: shown on the cards straight away instead of
+  // waiting for the engine's heartbeat (~60s), until the engine reports the same value.
+  const [pendingAlloc, setPendingAlloc] = useState(null); // { accountId, pct, until }
   const [liveExchangeState, setLiveExchangeState] = useState(null); // real Delta snapshot (live accounts only)
   // On reload the live-vs-paper decision (mode + engineDryRun + snapshot) resolves
   // async, so the paper tables briefly flash before the live tables. Track whether
@@ -1185,7 +1188,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       }
 
       // Mirror allocation + entry offsets into paper_trading_config so the engine reads them live.
-      await supabase.from('paper_trading_config')
+      const { error: cfgErr } = await supabase.from('paper_trading_config')
         .update({
           balance_allocation_pct: allocPct,
           initial_balance: initBal,
@@ -1194,6 +1197,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           updated_at: new Date().toISOString(),
         })
         .eq('account_id', activeAccountId);
+      if (cfgErr) {
+        console.error('Failed to update account config:', cfgErr);
+        alert(`Account saved, but the engine settings (allocation %, entry offsets) could not be updated: ${cfgErr.message}`);
+      } else {
+        setPendingAlloc({ accountId: activeAccountId, pct: allocPct, until: Date.now() + 180000 });
+        fetchHeartbeat();
+      }
       await syncActiveGroup('config'); // allocation % + entry offsets are group settings
 
       // If live and a new key/secret were entered, replace stored credentials.
@@ -2363,6 +2373,16 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     };
   }, [fetchSupabaseActivePositions, fetchSupabaseTradeHistory, fetchHistoryStats, fetchSupabaseConfig, applyPositionRealtimeChange, fetchBlockNotifications, pushToast, activeAccountId]);
 
+  // Allocation % shown on the cards: a just-saved value wins until the engine reports it
+  // (or 3 min pass); otherwise the engine's live value, else the account's saved default.
+  const pendingAllocActive = pendingAlloc && pendingAlloc.accountId === activeAccountId && now < pendingAlloc.until;
+  const shownAllocationPct = pendingAllocActive
+    ? pendingAlloc.pct
+    : (engineAllocationPct ?? accounts.find(a => a.id === activeAccountId)?.default_config?.balanceAllocationPct ?? 90);
+  useEffect(() => {
+    if (pendingAlloc && engineAllocationPct === pendingAlloc.pct) setPendingAlloc(null); // engine confirmed
+  }, [pendingAlloc, engineAllocationPct]);
+
   // ── Engine heartbeat ──────────────────────────────────────────────────
   const fetchHeartbeat = useCallback(async () => {
     if (!activeAccountId) return;
@@ -3216,7 +3236,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
               historyFilterDate={historyFilterDate}
               now={now}
               strategyVersion={config.strategyVersion ?? 1}
-              balanceAllocationPct={engineAllocationPct ?? activeAccount?.default_config?.balanceAllocationPct ?? 90}
+              balanceAllocationPct={shownAllocationPct}
               initialBalance={config.initialBalance ?? activeAccount?.default_config?.initialBalance ?? 3000}
               walletBalance={walletBalance}
               totalRealizedPnl={totalRealizedPnl}
@@ -3241,7 +3261,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
               totalMargin={totalMargin}
               isLive={activeAccount?.mode === 'live'}
               walletBalance={walletBalance}
-              allocationPct={engineAllocationPct ?? activeAccount?.default_config?.balanceAllocationPct ?? 90}
+              allocationPct={shownAllocationPct}
               isPaper={activeAccount?.mode !== 'live'}
               paperEquity={activeAccount?.mode !== 'live'
                 ? (config.initialBalance ?? activeAccount?.default_config?.initialBalance ?? 3000) + (totalRealizedPnl || 0)

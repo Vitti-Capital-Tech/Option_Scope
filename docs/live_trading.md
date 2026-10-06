@@ -910,6 +910,51 @@ fill: **buy at ask + `entry_buy_offset`** (default 10), **sell at bid −
 Create/Edit modal. The offsets affect only the order limit price sent to Delta — the
 stored entry price (used for PnL/margin) remains the ask/bid. Paper ignores them.
 
+### No simulation on live accounts (2026-10-06)
+
+A **live** account opens positions **only** when it is armed (**Start Live**, `live_enabled`) and the engine is not in
+dry-run. Disarmed (or dry-run) live accounts make **no entries at all** — they used to "enter" in the database only, and
+arming the account later left phantom positions that never existed on Delta (Prasham, 2026-10-06: armed at 02:57, reconcile
+then found none of the 4 tracked legs). Open positions are still managed; the engine logs once
+`Live account not armed … — no entries`. Paper trading is unaffected.
+
+### Entry fill: modify the limit, no cancel (2026-10-06 — replaces the chase for live entries)
+
+We are **not trying to maximise fills**, and the entry order is **never cancelled or replaced** in the normal flow.
+Each live entry leg (`submitTimed` in `liveExecution.js`, `openSpread(..., timing)`), long first, then short:
+
+1. Place the **limit** at the normal entry price (long: ask + `entry_buy_offset`, short: bid − `entry_sell_offset`),
+   with its bracket. Filled at once → done.
+2. Every **`ENTRY_FILL_WAIT_MS` (5s)** while it isn't fully filled, **modify the same order** (same id, bracket kept):
+   **sell → `ENTRY_SELL_MODIFY_PX` ($1)**, i.e. take any bid; **buy → latest mark + `ENTRY_BUY_MARK_PLUS` (50)**.
+   **`ENTRY_MODIFY_TRIES` (6)** modifies in all (5s, 10s … 30s), returning the moment it is fully filled.
+3. **Last resort only:** still not fully filled after the last modify (an empty book) → the rest is cancelled and what
+   filled is read. Left resting, it could fill later as a position the engine doesn't track (how Biswal's untracked
+   short was created).
+
+Outcome (if the leg can't fill everything):
+
+| Long | Short | Result |
+|---|---|---|
+| 0 | — | No entry (nothing open) |
+| partial | — | Short sized to the filled long (same ratio) |
+| full / partial | **0** (or rejected) | **Exit**: the long is market-closed |
+| full / partial | partial | Long cut back to the ratio (excess sold, tag `-EADJ`); position saved at the filled sizes |
+| full / partial | full | Position saved at the filled sizes |
+
+The engine books exactly what is open (`lotSize`, `sell_qty`, margin and entry fee scaled) and logs
+`◐ LIVE entry … filled smaller than planned`. A failed entry is **not** retried within the minute. While an entry is in
+flight the hang guard is extended (`EVAL_HANG_MS + 2 × (ENTRY_FILL_WAIT_MS × ENTRY_MODIFY_TRIES + 20s) + 30s`); this account's exit ticks wait
+for those few seconds (exchange-side SL/TP brackets still protect open positions). The chase below is still used for the
+paper-only hedge leg.
+
+| Env | Default | |
+|---|---|---|
+| `ENTRY_FILL_WAIT_MS` | `5000` | Gap between modifies |
+| `ENTRY_MODIFY_TRIES` | `6` | Modifies of the entry order (6 × 5s = 30s) |
+| `ENTRY_SELL_MODIFY_PX` | `1` | Short leg modify price ($) |
+| `ENTRY_BUY_MARK_PLUS` | `50` | Long leg modify price = mark + this |
+
 ### Entry chase-fill
 
 A marketable limit usually fills instantly, but a fast/wide quote can leave a leg
@@ -1233,6 +1278,22 @@ live and a paper account chasing the same book contend with each other.
   > self-healing — it can only cause an *extra* block, never an over-fill.
 
 ### Same-product collision guard & stuck-leg recovery
+
+> **Current behaviour (2026-10-06).** The broad pre-entry symbol guard ("Fix B" below) is **not** active — restored on
+> 2026-10-05 and reverted because it also blocked leg swaps. In its place (armed live only):
+>
+> - **Pre-order position check.** Right before each entry's orders are sent — after a leg swap has flattened its old
+>   long — the engine reads Delta's positions and skips the entry if either leg's symbol already holds a position
+>   (`skipped: Delta already has a position on …`). If positions can't be read, the entry is skipped (can't verify).
+> - **Rejection by reason.** Margin rejections (`insufficient_margin` / `insufficient_commission`) re-size to Delta's
+>   available balance and retry (after 3 in a row, live entries pause 10 min) — unchanged. **Any other** Delta rejection
+>   (e.g. `bracket_order_position_exists`) blocks that symbol for `LIVE_REJECT_BLOCK_MS` (default 30 min) and alerts the
+>   master via the error channel. Local refusals (`no-price`, `no-credentials`) don't block.
+>
+> Untracked positions always raise an error-channel alert for manual handling (the engine never closes an untracked
+> short): untracked short, untracked long next to an untracked short, unprotected / colliding longs, failed reduce-only
+> closes, and (new) an **adopted** orphan long.
+
 
 Delta treats **each option contract as one product**: an account holds a single net position
 per symbol, and a bracket is a **position-level** construct. So two engine-logical legs on the
