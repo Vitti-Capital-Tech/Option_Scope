@@ -137,8 +137,7 @@ BEGIN
        SET default_config = COALESCE(t.default_config, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object(
              'balanceAllocationPct', s.default_config -> 'balanceAllocationPct',
              'entryBuyOffset', s.default_config -> 'entryBuyOffset',
-             'entrySellOffset', s.default_config -> 'entrySellOffset')),
-           updated_at = NOW()
+             'entrySellOffset', s.default_config -> 'entrySellOffset'))
       FROM public.paper_trading_accounts s
      WHERE s.id = p_source AND t.id = ANY(v_members);
   END IF;
