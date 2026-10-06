@@ -117,12 +117,6 @@ const LIVE_FILL_STALE_MS = Math.max(5000, Number(process.env.LIVE_FILL_STALE_MS 
 // retries lost ~$6-9 per attempt on 2026-09-23).
 const LIVE_MARGIN_MAX_RESIZE_RETRIES = 2;
 const LIVE_MARGIN_COOLDOWN_MS = Math.max(60000, Number(process.env.LIVE_MARGIN_COOLDOWN_MS ?? 600000));
-// After Delta rejects an entry leg at submit with a bracket conflict
-// (bracket_order_position_exists / bracket_order_exists), that leg's symbol is kept out of
-// new live entries for this long. The pre-entry guard only sees open POSITIONS; this catches
-// whatever else Delta is holding on the product, so a structural rejection can't loop every
-// minute (each attempt buys the long and market-sells it again).
-const LIVE_BRACKET_BLOCK_MS = Math.max(60000, Number(process.env.LIVE_BRACKET_BLOCK_MS ?? 1800000));
 // Reconcile books a tracked leg as "closed on Delta" only after it has been missing from
 // Delta's positions list for this many consecutive successful snapshots AND this long.
 // A single snapshot is never enough: on 2026-09-24 (08:59–09:03 UTC) Delta returned lists
@@ -344,8 +338,6 @@ async function startSingleAccountEngine(account) {
   // Epoch ms until which new live entries are paused after an insufficient_margin /
   // insufficient_commission rejection (LIVE_MARGIN_COOLDOWN_MS).
   let liveMarginCooldownUntil = 0;
-  // symbol → ms timestamp until which new live entries must not use it (see LIVE_BRACKET_BLOCK_MS).
-  const bracketBlockedSymbols = new Map();
   // Consecutive margin rejections since the last successful live entry.
   let liveMarginRejects = 0;
   // True while the active window's max positions is 0 and entry cycles are being skipped,
@@ -4765,12 +4757,6 @@ async function startSingleAccountEngine(account) {
             if (p.buyLeg?.symbol && (p.buyLeg.lotSize || 0) > 0) heldSymbols.add(p.buyLeg.symbol);
             if (p.sellLeg?.symbol && p.sellQty > 0) heldSymbols.add(p.sellLeg.symbol);
           }
-          // Symbols Delta recently rejected with a bracket conflict (still blocked).
-          const nowMs = Date.now();
-          for (const [sym, until] of bracketBlockedSymbols) {
-            if (until > nowMs) heldSymbols.add(sym);
-            else bracketBlockedSymbols.delete(sym);
-          }
         }
         for (const spread of uniqueTopSpreads) {
           const bStrike = Number(spread.buyLeg.strike);
@@ -4954,19 +4940,6 @@ async function startSingleAccountEngine(account) {
               logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: strike conflict with ${strikeClash.id} (${clashDesc}) — one leg per strike (cross-role).`);
               continue;
             }
-          }
-
-          // Fix B — symbol collision with an existing Delta/tracked position on EITHER leg
-          // (see heldSymbols above; armed live only). Catches what the strike checks miss —
-          // e.g. shorting a strike that another spread already holds LONG, or a position
-          // opened outside the engine (same Delta product) → bracket_order_position_exists.
-          // Without it the entry buys the long, the short is rejected, the long is unwound,
-          // and the same doomed entry repeats every cycle. (Restored: it was dropped by
-          // accident with the paper long-only replacement change, c439bdd.)
-          if (heldSymbols && (heldSymbols.has(spread.buyLeg.symbol) || heldSymbols.has(spread.sellLeg.symbol))) {
-            const clash = heldSymbols.has(spread.sellLeg.symbol) ? spread.sellLeg.symbol : spread.buyLeg.symbol;
-            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: position already exists on ${clash} — would collide with an existing bracket/position on Delta (reconcile will clear any stuck leg).`);
-            continue;
           }
 
           // Diversification guard removed
@@ -5753,16 +5726,6 @@ async function startSingleAccountEngine(account) {
                   pauseNote = ` — retrying with an order re-sized to Delta's current available balance`;
                   logWarn(`[${accountState.name}] Delta rejected on ${liveEntry.error} (${liveMarginRejects}/${LIVE_MARGIN_MAX_RESIZE_RETRIES}) — retrying with an order re-sized to Delta's current available balance.`);
                   requestEntryRetry(`${t.type?.toUpperCase?.() || ''} ${t.buyLeg.strike}/${t.sellLeg.strike} margin rejection — re-sizing to Delta's available balance`);
-                }
-              }
-              // Bracket conflict on submit: Delta already holds something on that product.
-              // Block the rejected leg's symbol so the same entry isn't retried every cycle.
-              if (liveEntry.rejected && /bracket_order(_position)?_exists/i.test(String(liveEntry.error ?? ''))) {
-                const badSym = liveEntry.legFailed === 'buy' ? t.buyLeg.symbol : t.sellLeg.symbol;
-                if (badSym) {
-                  bracketBlockedSymbols.set(badSym, Date.now() + LIVE_BRACKET_BLOCK_MS);
-                  pauseNote += ` — ${badSym} blocked for new entries for ${Math.round(LIVE_BRACKET_BLOCK_MS / 60000)} min (check Delta for an existing position / bracket / stop order on it)`;
-                  logWarn(`[${accountState.name}] ${badSym} blocked for new live entries for ${Math.round(LIVE_BRACKET_BLOCK_MS / 60000)} min after Delta rejected it with ${liveEntry.error}.`);
                 }
               }
               notifyFailure({ account: accountState.name, context: `Entry ABORTED — ${liveEntry.legFailed} leg ${failMode}; position unwound, account left flat${pauseNote}`, error: liveEntry.error, extra: `${t.type?.toUpperCase?.() || ''} ${t.buyLeg.strike}/${t.sellLeg.strike}` });

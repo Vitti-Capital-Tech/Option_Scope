@@ -1253,12 +1253,6 @@ doomed entry — a **repeating failure loop** every few minutes. Three coordinat
   is never placed. Symbols opened earlier in the **same** cycle are reserved too. Paper/disarmed
   accounts are unaffected (gated on armed-live).
 
-- **Bracket-rejection block (2026-10-05).** The symbol guard only sees open *positions*. If Delta still rejects an entry leg at submit with
-  `bracket_order_position_exists` / `bracket_order_exists` (it holds something else on that product, e.g. a stray bracket or stop order),
-  that leg's symbol joins the guard's set for **30 min** (`LIVE_BRACKET_BLOCK_MS`, default 1800000) for that account, and the abort
-  alert says so. Without it the same entry repeated every minute, each time buying the long and market-selling it again.
-  (The guard's skip check itself was accidentally dropped in July with the paper long-only replacement change (c439bdd) and restored on 2026-10-05.)
-
 - **Dangling short: alert only (Fix A, revised 2026-09-24).** A **half-open** spread is one where the short is still open and its partner long is gone. Reconcile detects it when `sellQty > 0`, the short has size, the long is gone and the position is older than 90 s. The long counts as gone if the engine zeroed it on purpose (manual leg close), or if it is **confirmed** missing (see the next item). The engine then sends **one admin alert** and does **not** close the short. The "once" latch lives at engine level, keyed by position id (`onceAlerts`), so the 5-minute position reload doesn't re-send it. It clears when the condition clears or the position leaves the book, so a new occurrence alerts again. The same latch covers the `close-unverified` and `short-close-unverified` alerts. It used to market-close it (`${id}-DANGX`). The admin decides what to do, and the position is booked once the short goes flat.
 
 - **Absence confirmation, not a single snapshot (2026-09-24).** On 24 Sep, `GET /v2/positions/margined` timed out for four accounts at 08:58:25 UTC. In the next few minutes it returned lists without open positions on three of them. Reconcile booked those spreads as closed, and the engine then market-closed the still-open shorts as "naked". Now:
