@@ -254,6 +254,7 @@ export default function TradeHistoryTable({
             <thead><tr>
               <th>Time<span className="pt-th-sub">in · out</span></th>
               <th>Position</th>
+              <th>Qty<span className="pt-th-sub">orig · ours · exit</span></th>
               <th>Strikes<span className="pt-th-sub">spot in/out</span></th>
               <th>Entry<span className="pt-th-sub">prem · iv · atm</span></th>
               <th>Exit<span className="pt-th-sub">prem · iv · atm</span></th>
@@ -277,6 +278,29 @@ export default function TradeHistoryTable({
                 const initSellQty = t.buyLeg?.initialScaledLotSize !== undefined && t.buyLeg?.originalSellQty !== undefined
                   ? (t.buyLeg.initialScaledLotSize * t.buyLeg.originalSellQty)
                   : t.sellQty;
+                // Our traded size. Live legs are on the contract-value basis (lot = value ×
+                // contracts), so show CONTRACTS there; paper shows its notional lots.
+                const cv = t.buyLeg?.contractValue;
+                const ourLong = cv ? Math.round(initBuyQty / cv) : initBuyQty;
+                const ourShort = cv ? Math.round(ourLong * (t.buyLeg?.originalSellQty ?? 0)) || t.sellQty : initSellQty;
+                const fmtQty = (v) => {
+                  if (v == null || !Number.isFinite(Number(v))) return '—';
+                  const n = Number(v);
+                  return Number.isInteger(n) ? String(n) : n.toFixed(Math.abs(n) >= 1 ? 2 : 4).replace(/0+$/, '').replace(/\.$/, '');
+                };
+                // What THIS row closed. Short exits book the short (sell_qty) and leave the long;
+                // long exits (ladder / scale-down / reduction) book sell_qty 0 with the slice in
+                // the row's buy-leg lot; a hedge row's buy leg is the hedge; a full exit closes both.
+                const rowLot = t.buyLeg?.lotSize ?? t._exitedBuyQty ?? 0;
+                const rowLong = cv ? Math.round(rowLot / cv) : rowLot;
+                const isHedgeRow = /^Hedge Exit/i.test(t.exitReason || '');
+                const exitText = isHedgeRow
+                  ? `hedge ${fmtQty(rowLong)}`
+                  : !t._isPartial
+                    ? `${fmtQty(rowLong)}L${(t.sellQty || 0) > 0 ? ` / ${fmtQty(t.sellQty)}S` : ''}`
+                    : (t.sellQty || 0) > 0
+                      ? `${fmtQty(t.sellQty)}S`
+                      : `${fmtQty(rowLong)}L`;
                 const atmFull = (ratio, buy, sell) => ratio != null
                   ? `${ratio.toFixed(2)} (${buy != null ? buy.toFixed(2) : '—'} / ${sell != null ? sell.toFixed(2) : '—'})`
                   : '—';
@@ -310,10 +334,18 @@ export default function TradeHistoryTable({
                             <span className="pt-pos-note">spread · {fmtExpiry(t.expiry)}</span>
                           </span>
                           <span className="pt-cell-sub">
-                            ratio <b>{renderRatio(t)}</b> · orig 1:{displayOrigSellQty.toFixed(2)} · init {initBuyQty.toFixed(2)}L/{initSellQty.toFixed(2)}S
+                            ratio <b>{renderRatio(t)}</b>
                           </span>
                         </div>
                       </div>
+                    </td>
+                    {/* Qty: original ratio (before sizing) / our traded size */}
+                    <td title={`Original ratio from the scan, before ATM scaling and sizing · our size at entry · what this row closed${cv ? ' (contracts)' : ' (lots)'}`}>
+                      <div className="pt-legstack">
+                        <span className="pt-dim">orig 1:{displayOrigSellQty.toFixed(2)}</span>
+                        <span>ours {fmtQty(ourLong)}L / {fmtQty(ourShort)}S</span>
+                      </div>
+                      <span className="pt-cell-sub">exit <b>{exitText}</b>{t._isPartial ? ' (partial)' : ''}</span>
                     </td>
                     {/* Strikes (stacked) + spot in/out */}
                     <td>
