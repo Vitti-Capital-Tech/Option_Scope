@@ -23,6 +23,7 @@ export default function ActivePositionsTable({
   exitPoints = 0,
   onExitPosition,
   embedded = false,
+  showQtyColumn = true,       // per-leg qty + net premium column — paper accounts only
   legFilter = 'all',          // 'all' | 'spread' | 'long'
   title = 'Open Positions',
   emptyTitle = 'No Active Positions',
@@ -198,6 +199,7 @@ export default function ActivePositionsTable({
             <thead><tr>
               <th>Position</th>
               <th>Strikes<span className="pt-th-sub">spot</span></th>
+              {showQtyColumn && <th>Qty<span className="pt-th-sub">per leg · net prem</span></th>}
               <th>Entry<span className="pt-th-sub">prem · iv</span></th>
               <th>Mark<span className="pt-th-sub">prem · iv</span></th>
               <th>Dist. to Exit</th>
@@ -239,6 +241,23 @@ export default function ActivePositionsTable({
                 const initSellQty = p.buyLeg?.initialScaledLotSize !== undefined && p.buyLeg?.originalSellQty !== undefined
                   ? (p.buyLeg.initialScaledLotSize * p.buyLeg.originalSellQty)
                   : p.sellQty;
+
+                // ── Traded qty per leg + premium paid/received at entry ──
+                // Same units the P&L uses: long = buyLeg.lotSize, short = sellQty × sellLeg.lotSize,
+                // hedge = hedgeLeg.lotSize. Long/hedge premium is a debit (−), short a credit (+).
+                const qtyLong = p.buyLeg?.lotSize || 0;
+                const qtyShort = isLongOnly ? 0 : (p.sellQty || 0) * (p.sellLeg?.lotSize || 1);
+                const qtyHedge = hasHedge ? (p.hedgeLeg?.lotSize || 0) : 0;
+                const premLong = -(p.entryBuyPrice || 0) * qtyLong;
+                const premShort = isLongOnly ? 0 : (p.entrySellPrice || 0) * qtyShort;
+                const premHedge = hasHedge ? -(Number(p.hedgeLeg?.entryPrice) || 0) * qtyHedge : 0;
+                const netPrem = premLong + premShort + premHedge;
+                const fmtQ = (v) => {
+                  const n = Number(v) || 0;
+                  return Number.isInteger(n) ? n.toLocaleString() : n.toFixed(Math.abs(n) >= 1 ? 2 : 4).replace(/0+$/, '').replace(/\.$/, '');
+                };
+                const fmtPrem = (v) => `${v >= 0 ? '+' : '−'}$${Math.abs(v).toFixed(2)}`;
+                const qtyLine = (q, prem) => `${fmtQ(q)} · ${fmtPrem(prem)}`;
 
                 // ── Distance-to-exit meter (spot vs the buy-strike trigger) ──
                 const { distPct, away } = exitMeter(p);
@@ -287,6 +306,19 @@ export default function ActivePositionsTable({
                       {legStack(p.buyLeg.strike.toLocaleString(), isLongOnly ? null : p.sellLeg.strike.toLocaleString(), { longOnly: isLongOnly, h: hasHedge ? p.hedgeLeg.strike.toLocaleString() : null })}
                       <span className="pt-cell-sub">spot {p.entrySpotPrice ? p.entrySpotPrice.toLocaleString() : '—'}</span>
                     </td>
+                    {/* Qty per leg (same order as Strikes) + premium at entry, and the net credit/debit */}
+                    {showQtyColumn && (
+                    <td title={`Qty traded per leg and premium at entry (long/hedge paid −, short received +). Contracts: ${buyContracts}${isLongOnly ? '' : `/${sellContracts}`}${hasHedge ? ` + ${hedgeContracts}H` : ''}`}>
+                      {legStack(
+                        isHedgeOnly ? null : qtyLine(qtyLong, premLong),
+                        isLongOnly ? null : qtyLine(qtyShort, premShort),
+                        { longOnly: isLongOnly, h: hasHedge ? qtyLine(qtyHedge, premHedge) : null },
+                      )}
+                      <span className="pt-cell-sub">
+                        net <b className={netPrem >= 0 ? 'pt-prem-cr' : 'pt-prem-dr'}>{netPrem >= 0 ? 'CR' : 'DR'} ${Math.abs(netPrem).toFixed(2)}</b>
+                      </span>
+                    </td>
+                    )}
                     {/* Entry premium (stacked) + entry IV */}
                     <td>
                       {legStack(p.entryBuyPrice != null ? p.entryBuyPrice.toFixed(2) : null, p.entrySellPrice != null ? p.entrySellPrice.toFixed(2) : null, { longOnly: isLongOnly, h: hasHedge && p.hedgeLeg.entryPrice != null ? Number(p.hedgeLeg.entryPrice).toFixed(2) : null })}

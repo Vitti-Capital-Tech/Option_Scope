@@ -910,6 +910,14 @@ fill: **buy at ask + `entry_buy_offset`** (default 10), **sell at bid −
 Create/Edit modal. The offsets affect only the order limit price sent to Delta — the
 stored entry price (used for PnL/margin) remains the ask/bid. Paper ignores them.
 
+### Excluded strikes on live (2026-10-07)
+
+The Control Panel's **Excluded Strikes** filter (migration 040, `paper_trading_config.excluded_strikes`) now applies to
+**live accounts too**: the listed strikes are dropped from the entry scan pool for calls and puts alike, so no new entry
+leg (long or short) lands on them. Open positions on an excluded strike are untouched, and ATM / intrinsic pricing still
+reads the full chain. The per-minute `Evaluating N candidate spreads…` log lists the active exclusions. Shared by account
+groups like the other filters.
+
 ### No simulation on live accounts (2026-10-06)
 
 A **live** account opens positions **only** when it is armed (**Start Live**, `live_enabled`) and the engine is not in

@@ -1125,6 +1125,7 @@ export default function TradingWorkspace(props) {
                 engineStatusLabel={props.engineStatusLabel}
                 calculatePositionMargin={props.calculatePositionMargin}
                 contractValue={props.contractValue}
+                showQtyColumn={!isLiveAccount}
                 totalMargin={props.totalMargin}
                 exitType={props.exitType}
                 exitPoints={props.exitPoints}
@@ -1158,6 +1159,7 @@ export default function TradingWorkspace(props) {
                 engineStatusLabel={props.engineStatusLabel}
                 calculatePositionMargin={props.calculatePositionMargin}
                 contractValue={props.contractValue}
+                showQtyColumn={!isLiveAccount}
                 totalMargin={props.totalMargin}
                 exitType={props.exitType}
                 exitPoints={props.exitPoints}

@@ -342,7 +342,7 @@ The `scanTickers()` function is the **spread finder**. It works like this:
 Two kinds of strike are removed from both pools before the scan:
 
 - **Occupied strikes**: strikes already held by one of this account's full spreads (one leg per strike).
-- **Excluded strikes** (`excluded_strikes`, **paper only**, migration 040): a global, account-level list the user sets in the Control Panel's *Excluded Strikes* cluster. They can pick strikes from the current expiry's chain in a multi-select dropdown, or type them in manually (comma separated). An excluded strike is dropped for **calls and puts alike**, so neither the long nor the short can land on it. The v2 hedge-leg picker skips it too. The ATM strike and intrinsic pricing still read the full chain, because they only *price* candidates. Open positions on an excluded strike are left alone; the list gates **new entries only**. Live accounts ignore it. The per-minute `Evaluating N candidate spreads…` log line lists the active exclusions.
+- **Excluded strikes** (`excluded_strikes`, migration 040; **paper and live** since 2026-10-07): a global, account-level list the user sets in the Control Panel's *Excluded Strikes* cluster. They can pick strikes from the current expiry's chain in a multi-select dropdown, or type them in manually (comma separated). An excluded strike is dropped for **calls and puts alike**, so neither the long nor the short can land on it. The v2 hedge-leg picker skips it too. The ATM strike and intrinsic pricing still read the full chain, because they only *price* candidates. Open positions on an excluded strike are left alone; the list gates **new entries only**. The per-minute `Evaluating N candidate spreads…` log line lists the active exclusions.
 
 ### Step 2: O(N²) pair scan
 

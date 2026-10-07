@@ -7298,3 +7298,7 @@ details.dr-note p {
 }
 
 .ag-source .ag-input { flex: 1; }
+
+/* Active positions: net entry premium (credit / debit) */
+.pt-prem-cr { color: var(--call); }
+.pt-prem-dr { color: var(--put); }

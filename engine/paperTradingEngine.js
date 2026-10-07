@@ -529,7 +529,7 @@ async function startSingleAccountEngine(account) {
           atm_ratio_scaling: true,
           min_atm_pnl: 50,          // migration 039 — paper-only ATM edge floors
           min_atm_roi: 2,
-          excluded_strikes: [],     // migration 040 — paper-only strike blacklist
+          excluded_strikes: [],     // migration 040 — strike blacklist (paper + live)
           atm_ratio_distance_call: 50,
           atm_ratio_distance_put: 25,
           days_to_expiry: 0,
@@ -3214,15 +3214,13 @@ async function startSingleAccountEngine(account) {
         if (p.sellLeg?.strike != null) set.add(Number(p.sellLeg.strike));
       }
 
-      // ── User-excluded strikes (migration 040) — PAPER only ─────────────────────
+      // ── User-excluded strikes (migration 040; paper AND live since 2026-10-07) ──────
       // Strike prices the user never wants a leg on, for calls AND puts alike. Removed from
       // the scan pool (so neither the long nor the short can land on one) and from the hedge
       // picker below. atmStrike and the intrinsic lookups still see the full chain: they
       // only PRICE the spread, and an excluded ATM must not shift every candidate's ratio.
-      // Live accounts ignore the list.
-      const excludedStrikes = new Set(
-        accountState.mode !== 'live' ? (config.excludedStrikes || []).map(Number) : []
-      );
+      // New entries only — open positions on an excluded strike are left alone.
+      const excludedStrikes = new Set((config.excludedStrikes || []).map(Number));
 
       // A. Local Scan: top candidates per type
       const callTickers = allTickers.filter(t => t.type === 'call' && t.expiry === config.expiry && (atmStrike === null || t.strike >= atmStrike) && !occupiedStrikes.call.has(Number(t.strike)) && !excludedStrikes.has(Number(t.strike)));
@@ -3378,7 +3376,7 @@ async function startSingleAccountEngine(account) {
         const quote = (t) => t.ask ?? t.lastPrice ?? t.markPrice;
         const pool = allTickers.filter(t => t.type === type && t.expiry === config.expiry
           && t.symbol !== spread.buyLeg.symbol && t.symbol !== spread.sellLeg.symbol
-          && !excludedStrikes.has(Number(t.strike)) // user-excluded (paper, migration 040)
+          && !excludedStrikes.has(Number(t.strike)) // user-excluded (migration 040)
           && quote(t) > 0);
         const ticker = pickHedgeStrike(pool, type, Number(spread.sellLeg.strike), spread.sellIv, hedgeFilters);
         return ticker ? { ticker, ask: quote(ticker) } : null;
