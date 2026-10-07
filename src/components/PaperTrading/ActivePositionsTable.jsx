@@ -199,7 +199,7 @@ export default function ActivePositionsTable({
             <thead><tr>
               <th>Position</th>
               <th>Strikes<span className="pt-th-sub">spot</span></th>
-              {showQtyColumn && <th>Qty<span className="pt-th-sub">per leg · net prem</span></th>}
+              {showQtyColumn && <th>Qty<span className="pt-th-sub">long : short · net prem</span></th>}
               <th>Entry<span className="pt-th-sub">prem · iv</span></th>
               <th>Mark<span className="pt-th-sub">prem · iv</span></th>
               <th>Dist. to Exit</th>
@@ -257,7 +257,6 @@ export default function ActivePositionsTable({
                   return Number.isInteger(n) ? n.toLocaleString() : n.toFixed(Math.abs(n) >= 1 ? 2 : 4).replace(/0+$/, '').replace(/\.$/, '');
                 };
                 const fmtPrem = (v) => `${v >= 0 ? '+' : '−'}$${Math.abs(v).toFixed(2)}`;
-                const qtyLine = (q, prem) => `${fmtQ(q)} · ${fmtPrem(prem)}`;
 
                 // ── Distance-to-exit meter (spot vs the buy-strike trigger) ──
                 const { distPct, away } = exitMeter(p);
@@ -308,15 +307,11 @@ export default function ActivePositionsTable({
                     </td>
                     {/* Qty per leg (same order as Strikes) + premium at entry, and the net credit/debit */}
                     {showQtyColumn && (
-                    <td title={`Qty traded per leg and premium at entry (long/hedge paid −, short received +). Contracts: ${buyContracts}${isLongOnly ? '' : `/${sellContracts}`}${hasHedge ? ` + ${hedgeContracts}H` : ''}`}>
-                      {legStack(
-                        isHedgeOnly ? null : qtyLine(qtyLong, premLong),
-                        isLongOnly ? null : qtyLine(qtyShort, premShort),
-                        { longOnly: isLongOnly, h: hasHedge ? qtyLine(qtyHedge, premHedge) : null },
-                      )}
-                      <span className="pt-cell-sub">
-                        net <b className={netPrem >= 0 ? 'pt-prem-cr' : 'pt-prem-dr'}>{netPrem >= 0 ? 'CR' : 'DR'} ${Math.abs(netPrem).toFixed(2)}</b>
-                      </span>
+                    <td title={`Qty traded (long : short${hasHedge ? ' + hedge' : ''}) and the net premium at entry (short received − long${hasHedge ? ' − hedge' : ''} paid). Contracts: ${buyContracts}${isLongOnly ? '' : `/${sellContracts}`}${hasHedge ? ` + ${hedgeContracts}H` : ''}`}>
+                      <div className="pt-mono">
+                        {isHedgeOnly ? '—' : fmtQ(qtyLong)} : {isLongOnly ? '—' : fmtQ(qtyShort)}{hasHedge ? ` + ${fmtQ(qtyHedge)}H` : ''}
+                      </div>
+                      <div className={`pt-mono ${netPrem >= 0 ? 'pt-prem-cr' : 'pt-prem-dr'}`}>{fmtPrem(netPrem)}</div>
                     </td>
                     )}
                     {/* Entry premium (stacked) + entry IV */}
