@@ -886,12 +886,16 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   // Copy the active account's settings to the rest of its group. what: 'config' | 'schedules' | 'all'.
   const syncActiveGroup = useCallback(async (what) => {
     if (!activeAccountId || !activeGroupIdRef.current) return;
+    // Only the group's owner or an admin propagates settings (migration 052); a client editing
+    // their own grouped account just saves it for that account.
+    const grp = groups.find(g => g.id === activeGroupIdRef.current);
+    if (userProfile?.role !== 'admin' && grp && grp.user_id !== session?.user?.id) return;
     const { error } = await supabase.rpc('sync_account_group', { p_source: activeAccountId, p_what: what });
     if (error) {
       console.error('Group settings sync error:', error);
       alert(`Saved on this account, but copying the settings to the rest of its group failed: ${error.message}`);
     }
-  }, [activeAccountId]);
+  }, [activeAccountId, groups, userProfile, session]);
 
   const runGroupOp = async (fn) => {
     setGroupsBusy(true);
@@ -906,9 +910,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   };
 
   const handleCreateGroup = (name, accountIds, sourceId) => runGroupOp(async () => {
-    const members = accounts.filter(a => accountIds.includes(a.id));
-    const owner = members[0]?.user_id;
-    if (members.some(m => m.user_id !== owner)) throw new Error('All accounts in a group must belong to the same user.');
+    // The group belongs to whoever creates it (normally the admin); its members may belong
+    // to different users (migration 052).
+    const owner = session?.user?.id;
+    if (!owner) throw new Error('Not signed in.');
     const { data: group, error } = await supabase.from('account_groups')
       .insert({ name, user_id: owner, mode: dashboardMode }).select().single();
     if (error) throw error;

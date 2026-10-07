@@ -734,7 +734,7 @@ ALTER TABLE public.paper_trading_accounts
 
 CREATE INDEX IF NOT EXISTS idx_accounts_group_id ON public.paper_trading_accounts(group_id);
 
--- 3. Membership rules (any write path): same owner, same mode, same strategy_version -------
+-- 3. Membership rules (any write path): group owner/admin adds, same mode, same strategy_version (052)
 CREATE OR REPLACE FUNCTION public._check_account_group()
 RETURNS TRIGGER
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = ''
@@ -748,8 +748,15 @@ BEGIN
   IF NEW.group_id IS NULL THEN RETURN NEW; END IF;
   SELECT * INTO g FROM public.account_groups WHERE id = NEW.group_id;
   IF NOT FOUND THEN RAISE EXCEPTION 'Account group % not found', NEW.group_id; END IF;
-  IF g.user_id <> NEW.user_id THEN
-    RAISE EXCEPTION 'Account "%" belongs to a different user than group "%"', NEW.name, g.name;
+  -- Joining (or moving to) a group: only the group's owner or an admin may do it, so a client
+  -- can't attach an account to someone else's group. Changing an account's user_id while it
+  -- stays in its group is fine — members may belong to different users.
+  IF auth.uid() IS NOT NULL AND auth.uid() IS DISTINCT FROM g.user_id AND NOT public._is_admin() THEN
+    IF TG_OP = 'INSERT' THEN
+      RAISE EXCEPTION 'Only the owner of group "%" or an admin can add accounts to it', g.name;
+    ELSIF NEW.group_id IS DISTINCT FROM OLD.group_id THEN
+      RAISE EXCEPTION 'Only the owner of group "%" or an admin can add accounts to it', g.name;
+    END IF;
   END IF;
   IF g.mode <> v_mode THEN
     RAISE EXCEPTION 'Account "%" is %, but group "%" is for % accounts', NEW.name, v_mode, g.name, g.mode;
@@ -786,16 +793,21 @@ DECLARE
   v_members UUID[];
   v_cols TEXT;
   v_sched_cols TEXT;
+  v_group_owner UUID;
 BEGIN
   IF p_what NOT IN ('config', 'schedules', 'all') THEN
     RAISE EXCEPTION 'sync_account_group: p_what must be config, schedules or all';
   END IF;
   SELECT group_id, user_id INTO v_group, v_owner FROM public.paper_trading_accounts WHERE id = p_source;
   IF v_owner IS NULL THEN RAISE EXCEPTION 'Account % not found', p_source; END IF;
-  IF auth.role() <> 'service_role' AND v_owner <> auth.uid() AND NOT public._is_admin() THEN
-    RAISE EXCEPTION 'Not allowed';
-  END IF;
   IF v_group IS NULL THEN RETURN 0; END IF;
+  -- Members may belong to different users (an admin's group of client accounts), so only the
+  -- GROUP's owner or an admin may copy settings across it — never a member's own client.
+  -- No JWT user (service_role / SQL editor) is allowed.
+  SELECT user_id INTO v_group_owner FROM public.account_groups WHERE id = v_group;
+  IF auth.uid() IS NOT NULL AND auth.uid() IS DISTINCT FROM v_group_owner AND NOT public._is_admin() THEN
+    RAISE EXCEPTION 'Only the group owner or an admin can copy group settings';
+  END IF;
 
   SELECT array_agg(id) INTO v_members
     FROM public.paper_trading_accounts

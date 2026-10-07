@@ -143,7 +143,7 @@ export default function AccountGroupsModal({
             </label>
           )}
           <div className="ag-actions">
-            <span className="ag-hint">Pick at least 2 accounts. Same mode{mode === 'paper' ? ' and strategy version' : ''} and same owner.</span>
+            <span className="ag-hint">Pick at least 2 accounts{mode === 'paper' ? ' on the same strategy version' : ''}. Accounts of different users can share a group.</span>
             <button type="button" className="ag-btn primary" disabled={busy || !name.trim() || picked.length < 2} onClick={create}>
               {busy ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />} Create group
             </button>
