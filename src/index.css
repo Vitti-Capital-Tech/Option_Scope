@@ -5088,7 +5088,9 @@ body.light-theme .pt-btn-apply.active {
 
 /* Fixed, compact field widths so fields stay tidy
    (fixed width + no shrink means fields maintain proper alignment). */
-.schedule-item-num-block { flex: 1 1 74px; min-width: 66px; }
+.schedule-item-num-block { flex: 1 1 72px; min-width: 60px; }
+/* $-prefixed 4-digit values (Min Width, Spot Dist) need the room to show in full. */
+.schedule-item-num-block.schedule-item-wide-block { flex: 1 1 90px; min-width: 86px; }
 .schedule-item-toggle-block { flex: 0 0 46px; width: 46px; }
 .schedule-item-name-block { flex: 0 0 160px; width: 160px; }
 .schedule-item-time-block { flex: 0 0 92px; width: 92px; }

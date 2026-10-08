@@ -831,12 +831,12 @@ export default function SchedulePanel({
                   </div>
                 </div>
 
-                <div className="schedule-item-block schedule-item-num-block">
+                <div className="schedule-item-block schedule-item-num-block schedule-item-wide-block">
                   <span className="schedule-item-label" title="Min Spread Width">Min Width</span>
                   <CustomInput type="number" min="0" prefix="$" step="50" value={s.minStrikeDiff} onChange={e => handleChange(s.id, 'minStrikeDiff', Number(e.target.value))} />
                 </div>
 
-                <div className="schedule-item-block schedule-item-num-block">
+                <div className="schedule-item-block schedule-item-num-block schedule-item-wide-block">
                   <span className="schedule-item-label" title="Min Spot Distance">Spot Dist</span>
                   <CustomInput type="number" min="0" prefix="$" step="50" value={s.minLongDist} onChange={e => handleChange(s.id, 'minLongDist', Number(e.target.value))} />
                 </div>
