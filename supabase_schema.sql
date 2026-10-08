@@ -801,6 +801,10 @@ DECLARE
   v_sched_cols TEXT;
   v_group_owner UUID;
   v_old_jitter JSONB;
+  r RECORD;
+  v_j INTEGER;
+  v_used NUMERIC[];
+  v_done UUID[] := '{}';
 BEGIN
   IF p_what NOT IN ('config', 'schedules', 'all') THEN
     RAISE EXCEPTION 'sync_account_group: p_what must be config, schedules or all';
@@ -864,27 +868,48 @@ BEGIN
         v_sched_cols
       ) USING p_source, v_members;
 
-      -- The copies carry the source's points and jitter: swap in the member's own jitter,
-      -- keeping the base (points − jitter) the same. A member keeps its previous random part
-      -- while the window's base is unchanged; otherwise it gets a fresh one of ±[10, 50]. The
-      -- minus side is skipped when it would take the points below 0 (the engine reads |points|).
-      UPDATE public.paper_trading_schedules t
-         SET exit_points = t.exit_points - t.exit_points_jitter + r.j,
-             exit_points_jitter = r.j
-        FROM (SELECT x.id,
-                     CASE WHEN (x.prev ->> 0)::numeric = x.base AND abs((x.prev ->> 1)::int) BETWEEN 10 AND 50
-                          THEN (x.prev ->> 1)::int
-                          WHEN x.neg AND x.base >= x.mag THEN -x.mag
-                          ELSE x.mag
-                     END AS j
-                FROM (SELECT s.id,
-                             s.exit_points - s.exit_points_jitter AS base,
-                             v_old_jitter -> (s.account_id::text || ':' || s.group_window_key::text) AS prev,
-                             10 + floor(random() * 41)::int AS mag,
-                             random() < 0.5 AS neg
-                        FROM public.paper_trading_schedules s
-                       WHERE s.account_id = ANY(v_members)) x) r
-       WHERE t.id = r.id;
+      -- The copies carry the source's points and jitter: swap in each member's own jitter,
+      -- keeping the base (points − jitter) the same. Within one window no two accounts of the
+      -- group (source included) end up on the same exit points:
+      --   • a member keeps its previous random part while the base is unchanged and that value
+      --     is still free;
+      --   • otherwise it draws a free ±[10, 50] (minus only when the points stay >= 0 — the
+      --     engine reads |points|);
+      --   • only if every value is taken (more than ~80 members) may it repeat one.
+      -- Members that can keep their value are placed first, so a new member never takes it.
+      FOR r IN
+        SELECT s.id, s.group_window_key AS k, s.exit_points - s.exit_points_jitter AS base,
+               v_old_jitter -> (s.account_id::text || ':' || s.group_window_key::text) AS prev
+          FROM public.paper_trading_schedules s
+         WHERE s.account_id = ANY(v_members)
+         ORDER BY s.group_window_key,
+                  COALESCE(v_old_jitter ? (s.account_id::text || ':' || s.group_window_key::text), false) DESC,
+                  s.account_id
+      LOOP
+        SELECT COALESCE(array_agg(exit_points::numeric), '{}') INTO v_used
+          FROM public.paper_trading_schedules
+         WHERE group_window_key = r.k AND (account_id = p_source OR id = ANY(v_done));
+
+        v_j := NULL;
+        IF (r.prev ->> 0)::numeric = r.base AND abs((r.prev ->> 1)::int) BETWEEN 10 AND 50
+           AND NOT (r.base + (r.prev ->> 1)::int = ANY(v_used)) THEN
+          v_j := (r.prev ->> 1)::int;
+        END IF;
+        IF v_j IS NULL THEN
+          SELECT g.c INTO v_j
+            FROM (SELECT generate_series(-50, -10) AS c UNION ALL SELECT generate_series(10, 50)) g
+           WHERE r.base + g.c >= 0 AND NOT (r.base + g.c = ANY(v_used))
+           ORDER BY random() LIMIT 1;
+        END IF;
+        IF v_j IS NULL THEN
+          v_j := 10 + floor(random() * 41)::int;
+        END IF;
+
+        UPDATE public.paper_trading_schedules
+           SET exit_points = r.base + v_j, exit_points_jitter = v_j
+         WHERE id = r.id;
+        v_done := v_done || r.id;
+      END LOOP;
     END IF;
   END IF;
 
