@@ -929,7 +929,7 @@ export default function SchedulePanel({
                 {/* Per-window Min Days to Expiry (migration 019) — all accounts, paper AND
                     live. The traded expiry follows the active window's DTE. */}
                 <div className="schedule-item-block schedule-item-num-block">
-                  <span className="schedule-item-label" title="Min Days to Expiry">Min DTE</span>
+                  <span className="schedule-item-label" title="Min Days toExpiry">Expiry</span>
                   <CustomInput type="number" min="0" step="1" value={s.daysToExpiry ?? 0} onChange={e => handleChange(s.id, 'daysToExpiry', Number(e.target.value))} />
                 </div>
 
