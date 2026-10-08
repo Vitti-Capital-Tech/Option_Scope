@@ -2615,6 +2615,50 @@ async function startSingleAccountEngine(account) {
     } catch (e) { logError(`[${accountState.name}] processCancelRequests error:`, e); }
   }
 
+  // Manual order (UI Trade tab → delta_order_requests). Each row is CLAIMED (pending →
+  // processing) before sending, so an overlapping poll tick can never place it twice; the
+  // `MAN-<id>` client_order_id is a second guard on Delta's side. The outcome is written back
+  // to the row for the UI. A resulting untracked long is adopted by the engine like any orphan.
+  async function processOrderRequests() {
+    try {
+      const { data, error } = await supabase
+        .from('delta_order_requests').select('*')
+        .eq('account_id', accountState.id).eq('status', 'pending')
+        .order('created_at', { ascending: true });
+      if (error || !data || !data.length) return;
+      let placed = false;
+      for (const r of data) {
+        const finish = (fields) => supabase.from('delta_order_requests')
+          .update({ ...fields, processed_at: new Date().toISOString() }).eq('id', r.id);
+        // A backlog from a down engine is never sent late — prices have moved since the click.
+        if (Date.now() - new Date(r.created_at).getTime() > 60000) {
+          await finish({ status: 'expired', error: 'Not sent: the engine picked it up more than 60s after it was placed.' });
+          continue;
+        }
+        const { data: claimed } = await supabase.from('delta_order_requests')
+          .update({ status: 'processing' }).eq('id', r.id).eq('status', 'pending').select('id');
+        if (!claimed || !claimed.length) continue;
+
+        const res = await live.manualOrder({
+          symbol: r.product_symbol, side: r.side, contracts: r.size,
+          orderType: r.order_type, price: r.limit_price, reduceOnly: r.reduce_only,
+          tag: `MAN-${String(r.id).replace(/-/g, '').slice(0, 12)}`,
+        });
+        if (res.dryRun) {
+          await finish({ status: 'dry_run', error: 'Engine is in dry-run mode — the order was logged, not sent to Delta.' });
+        } else if (res.ok) {
+          await finish({ status: 'placed', exchange_order_id: res.order?.id ?? null, order_state: res.order?.state ?? null });
+          placed = true;
+          notifyTrade({ title: '🖐 MANUAL ORDER', detail: `${r.side.toUpperCase()} ${r.size}x ${r.product_symbol} ${r.order_type === 'market' ? '@ market' : `@ ${r.limit_price}`}${r.reduce_only ? ' (reduce-only)' : ''}` });
+        } else {
+          await finish({ status: 'failed', error: res.error || 'Order rejected.' });
+        }
+      }
+      // Republish so the new order / position shows in the UI within ~1s.
+      if (placed) await publishLiveSnapshot(true).catch(() => {});
+    } catch (e) { logError(`[${accountState.name}] processOrderRequests error:`, e); }
+  }
+
   // "Close All" — the dashboard sets paper_trading_accounts.close_all_requested.
   // Armed real: flatten the account in ONE Delta call (close_all); if that fails,
   // fall back to per-position closes. Then cancel resting orders, book, delete all.
@@ -6609,6 +6653,7 @@ async function startSingleAccountEngine(account) {
       if (flags.closeAll) await processCloseAll().catch(() => {});
       if (flags.closeReq) await processCloseRequests().catch(() => {});
       if (flags.cancelReq) await processCancelRequests().catch(() => {});
+      if (flags.orderReq) await processOrderRequests().catch(() => {});
     }
   };
 }
@@ -6811,7 +6856,7 @@ export async function startPaperTradingEngine() {
     // is unchanged (same 1.5s cadence, same handlers fire).
     const liveIds = ids.filter(id => runningEngines[id]?.isLive?.());
     try {
-      const [closeAllRes, closeReqRes, cancelReqRes, manualExRes] = await Promise.all([
+      const [closeAllRes, closeReqRes, cancelReqRes, manualExRes, orderReqRes] = await Promise.all([
         supabase.from('paper_trading_accounts').select('id').eq('close_all_requested', true).in('id', ids),
         liveIds.length
           ? supabase.from('delta_close_requests').select('account_id').in('account_id', liveIds)
@@ -6820,6 +6865,9 @@ export async function startPaperTradingEngine() {
           ? supabase.from('delta_cancel_requests').select('account_id').in('account_id', liveIds)
           : Promise.resolve({ data: [] }),
         supabase.from('active_positions').select('account_id').eq('exit_requested', true).in('account_id', ids),
+        // Manual orders: ALL running accounts (not just armed ones), so a request on an
+        // unarmed account is answered with a clear failure instead of sitting pending.
+        supabase.from('delta_order_requests').select('account_id').eq('status', 'pending').in('account_id', ids),
       ]);
       const pending = {};
       const mark = (rows, key, field) => {
@@ -6834,6 +6882,7 @@ export async function startPaperTradingEngine() {
       mark(closeReqRes.data, 'closeReq', 'account_id');
       mark(cancelReqRes.data, 'cancelReq', 'account_id');
       mark(manualExRes.data, 'manualEx', 'account_id');
+      mark(orderReqRes.data, 'orderReq', 'account_id');
       for (const [accountId, flags] of Object.entries(pending)) {
         const engine = runningEngines[accountId];
         if (engine?.processRequests) engine.processRequests(flags).catch(() => {});

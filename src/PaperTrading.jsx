@@ -3329,6 +3329,19 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
               liveMarks={tickerData}
               engineDryRun={engineDryRun}
               liveLoading={activeAccount?.mode === 'live' && !liveViewResolved}
+              accountId={activeAccountId}
+              accountArmed={!!activeAccount?.live_enabled}
+              products={products}
+              group={(() => {
+                // Trade tab "Whole group" option: only the group's owner or an admin fans out.
+                const grp = groups.find(g => g.id === activeAccount?.group_id);
+                if (!grp) return null;
+                return {
+                  name: grp.name,
+                  memberCount: accounts.filter(a => a.group_id === grp.id).length,
+                  canFanOut: userProfile?.role === 'admin' || grp.user_id === session?.user?.id,
+                };
+              })()}
             />
           </>
         )}

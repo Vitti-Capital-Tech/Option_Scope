@@ -2149,3 +2149,156 @@ $$;
 
 REVOKE ALL ON FUNCTION public.sync_account_group(UUID, TEXT) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.sync_account_group(UUID, TEXT) TO authenticated, service_role;
+
+-- ─── 055_manual_order_requests.sql ───
+-- Migration 055: manual orders from the dashboard's Trade tab (live accounts).
+--
+-- The UI inserts a row; the engine (which alone holds the decrypted Delta keys) claims it,
+-- places the order on Delta (POST /v2/orders, client_order_id `MAN-<request id prefix>`) and
+-- writes the outcome back to the same row: placed / dry_run / failed / expired, plus the
+-- exchange order id or the rejection message. Same queue pattern as delta_close_requests (014)
+-- and delta_cancel_requests (015), but rows are kept (and updated) so the UI can show status.
+--
+-- Account owner and admins may insert and read; only the engine (service_role) updates.
+-- Additive and safe to re-run.
+
+CREATE TABLE IF NOT EXISTS public.delta_order_requests (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    account_id        UUID NOT NULL REFERENCES public.paper_trading_accounts(id) ON DELETE CASCADE,
+    product_symbol    TEXT NOT NULL,
+    side              TEXT NOT NULL CHECK (side IN ('buy', 'sell')),
+    order_type        TEXT NOT NULL CHECK (order_type IN ('limit', 'market')),
+    size              INTEGER NOT NULL CHECK (size >= 1),
+    limit_price       NUMERIC CHECK (limit_price IS NULL OR limit_price > 0),
+    reduce_only       BOOLEAN NOT NULL DEFAULT false,
+    status            TEXT NOT NULL DEFAULT 'pending'
+                      CHECK (status IN ('pending', 'processing', 'placed', 'dry_run', 'failed', 'expired')),
+    error             TEXT,
+    exchange_order_id BIGINT,
+    order_state       TEXT,
+    requested_by      UUID DEFAULT auth.uid(),
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    processed_at      TIMESTAMPTZ,
+    CONSTRAINT delta_order_requests_limit_price CHECK (order_type = 'market' OR limit_price IS NOT NULL)
+);
+
+CREATE INDEX IF NOT EXISTS idx_delta_order_requests_account_created
+    ON public.delta_order_requests(account_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_delta_order_requests_pending
+    ON public.delta_order_requests(account_id) WHERE status = 'pending';
+
+ALTER TABLE public.delta_order_requests ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users read order requests of their own accounts" ON public.delta_order_requests;
+CREATE POLICY "Users read order requests of their own accounts"
+    ON public.delta_order_requests FOR SELECT
+    USING (
+        account_id IN (SELECT a.id FROM public.paper_trading_accounts a WHERE a.user_id = auth.uid())
+        OR EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.role = 'admin')
+    );
+
+-- New requests only: always 'pending', no outcome fields, on a live account.
+DROP POLICY IF EXISTS "Users place order requests on their own live accounts" ON public.delta_order_requests;
+CREATE POLICY "Users place order requests on their own live accounts"
+    ON public.delta_order_requests FOR INSERT
+    WITH CHECK (
+        status = 'pending' AND error IS NULL AND exchange_order_id IS NULL AND processed_at IS NULL
+        AND account_id IN (
+            SELECT a.id FROM public.paper_trading_accounts a
+             WHERE a.mode = 'live'
+               AND (a.user_id = auth.uid()
+                    OR EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = auth.uid() AND p.role = 'admin'))
+        )
+    );
+
+DROP POLICY IF EXISTS "Service role full access on order requests" ON public.delta_order_requests;
+CREATE POLICY "Service role full access on order requests"
+    ON public.delta_order_requests FOR ALL TO service_role USING (true) WITH CHECK (true);
+
+-- Realtime: the Trade tab follows each request's status as the engine updates it.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables
+    WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'delta_order_requests'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.delta_order_requests;
+  END IF;
+END $$;
+
+-- ─── 056_group_manual_orders.sql ───
+-- Migration 056: a manual order on a grouped account can be punched on the WHOLE group.
+--
+-- place_manual_order() queues the same order (symbol, side, type, size, price, reduce-only)
+-- in delta_order_requests (055) for the chosen account and, when p_whole_group is true, for
+-- every other live account in its group. The rows share one group_request_id. Each account's
+-- engine places its own copy independently, so one member's rejection (not armed, no
+-- position for reduce-only, margin…) never blocks the others.
+--
+-- Who may: the account's owner or an admin for the account itself; fanning out to the group
+-- follows sync_account_group (052) — only the GROUP's owner or an admin, since members may
+-- belong to different users. Additive and safe to re-run.
+
+ALTER TABLE public.delta_order_requests
+  ADD COLUMN IF NOT EXISTS group_request_id UUID;
+
+CREATE INDEX IF NOT EXISTS idx_delta_order_requests_group_request
+    ON public.delta_order_requests(group_request_id) WHERE group_request_id IS NOT NULL;
+
+CREATE OR REPLACE FUNCTION public.place_manual_order(
+  p_account UUID,
+  p_symbol TEXT,
+  p_side TEXT,
+  p_order_type TEXT,
+  p_size INTEGER,
+  p_limit_price NUMERIC,
+  p_reduce_only BOOLEAN DEFAULT false,
+  p_whole_group BOOLEAN DEFAULT false
+)
+RETURNS INTEGER
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = ''
+AS $$
+DECLARE
+  v_owner UUID;
+  v_mode TEXT;
+  v_group UUID;
+  v_group_owner UUID;
+  v_targets UUID[];
+  v_group_request UUID;
+BEGIN
+  SELECT user_id, mode, group_id INTO v_owner, v_mode, v_group
+    FROM public.paper_trading_accounts WHERE id = p_account;
+  IF v_owner IS NULL THEN RAISE EXCEPTION 'Account % not found', p_account; END IF;
+  IF auth.uid() IS DISTINCT FROM v_owner AND NOT public._is_admin() THEN
+    RAISE EXCEPTION 'Not allowed';
+  END IF;
+  IF v_mode IS DISTINCT FROM 'live' THEN
+    RAISE EXCEPTION 'Manual orders are only for live accounts';
+  END IF;
+
+  v_targets := ARRAY[p_account];
+  IF p_whole_group AND v_group IS NOT NULL THEN
+    SELECT user_id INTO v_group_owner FROM public.account_groups WHERE id = v_group;
+    IF auth.uid() IS DISTINCT FROM v_group_owner AND NOT public._is_admin() THEN
+      RAISE EXCEPTION 'Only the group owner or an admin can place an order on the whole group';
+    END IF;
+    SELECT v_targets || COALESCE(array_agg(id ORDER BY created_at), '{}') INTO v_targets
+      FROM public.paper_trading_accounts
+     WHERE group_id = v_group AND id <> p_account AND mode = 'live';
+    IF array_length(v_targets, 1) > 1 THEN v_group_request := gen_random_uuid(); END IF;
+  END IF;
+
+  -- Column CHECKs (side, type, size >= 1, limit price) validate the order itself.
+  INSERT INTO public.delta_order_requests
+    (account_id, product_symbol, side, order_type, size, limit_price, reduce_only, requested_by, group_request_id)
+  SELECT t, p_symbol, p_side, p_order_type, p_size,
+         CASE WHEN p_order_type = 'limit' THEN p_limit_price END,
+         COALESCE(p_reduce_only, false), auth.uid(), v_group_request
+    FROM unnest(v_targets) AS t;
+
+  RETURN array_length(v_targets, 1);
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.place_manual_order(UUID, TEXT, TEXT, TEXT, INTEGER, NUMERIC, BOOLEAN, BOOLEAN) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.place_manual_order(UUID, TEXT, TEXT, TEXT, INTEGER, NUMERIC, BOOLEAN, BOOLEAN) TO authenticated, service_role;

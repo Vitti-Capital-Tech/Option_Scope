@@ -311,3 +311,76 @@ export async function getTickers(underlying, symbols) {
     return null;
   }
 }
+
+// ── Order book (Trade tab) ─────────────────────────────────────────────
+// Delta's REST book uses { price, size, depth }; the l2_orderbook WS channel uses
+// { limit_price, size, depth }. Normalised to { price, size } numbers, best level first.
+const normLevels = (levels) => (Array.isArray(levels) ? levels : [])
+  .map(l => ({ price: toFiniteNumber(l.limit_price ?? l.price), size: toFiniteNumber(l.size) }))
+  .filter(l => l.price != null && l.size != null && l.size > 0);
+
+const normBook = (b) => ({
+  bids: normLevels(b?.buy).sort((x, y) => y.price - x.price),
+  asks: normLevels(b?.sell).sort((x, y) => x.price - y.price),
+  ts: Date.now(),
+});
+
+export async function getOrderBook(symbol, depth = 20) {
+  return normBook(await apiGet(`/v2/l2orderbook/${encodeURIComponent(symbol)}`, { depth }));
+}
+
+// Live order book for one symbol: a REST snapshot first, then full-book pushes from the
+// public l2_orderbook channel. Auto-reconnects; close() stops it.
+export function createOrderBookStream(symbol, onBook, onStatus) {
+  let ws = null;
+  let alive = true;
+  let reconnectTimer = null;
+
+  getOrderBook(symbol).then(b => { if (alive) onBook(b); }).catch(() => { });
+
+  const connect = () => {
+    if (!alive) return;
+    try {
+      ws = new WebSocket(WS_URL);
+      ws.onopen = () => {
+        onStatus?.('live');
+        ws.send(JSON.stringify({
+          type: 'subscribe',
+          payload: { channels: [{ name: 'l2_orderbook', symbols: [symbol] }] },
+        }));
+      };
+      ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg?.type === 'l2_orderbook' && msg.symbol === symbol) onBook(normBook(msg));
+        } catch { /* ignore */ }
+      };
+      ws.onerror = () => onStatus?.('error');
+      ws.onclose = () => {
+        onStatus?.('disconnected');
+        if (alive) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = setTimeout(connect, 3000);
+        }
+      };
+    } catch {
+      if (alive) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(connect, 3000);
+      }
+    }
+  };
+
+  connect();
+
+  return {
+    close: () => {
+      alive = false;
+      clearTimeout(reconnectTimer);
+      if (ws) {
+        ws.onclose = null;
+        ws.close();
+      }
+    },
+  };
+}

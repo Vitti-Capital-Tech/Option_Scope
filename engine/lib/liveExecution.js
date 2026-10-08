@@ -653,6 +653,39 @@ export function createLiveExecutor(getCtx) {
     },
 
     /**
+     * A manual order punched from the dashboard's Trade tab (delta_order_requests).
+     * `orderType` 'limit' (GTC at `price`) or 'market' (IOC). Unlike submit(), a rejection is
+     * the user's own order, so it is returned for the UI to show — no Telegram alarm.
+     * Returns { ok, order?, dryRun?, error? }.
+     */
+    async manualOrder({ symbol, side, contracts, orderType, price, reduceOnly = false, tag }) {
+      if (!armed()) return { ok: false, error: 'Account is not armed for live trading.' };
+      const { accountName, creds } = getCtx();
+      const size = Math.round(Number(contracts) || 0);
+      const isMarket = orderType === 'market';
+      const priceStr = isMarket ? null : cleanLimitPrice(price);
+      const summary = `MANUAL ${side.toUpperCase()} ${size}x ${symbol} ${isMarket ? '@ market' : `@ ${priceStr ?? '—'}`}${reduceOnly ? ' reduceOnly' : ''} [${tag}]`;
+      if (size < 1) return { ok: false, error: 'Size must be at least 1 contract.' };
+      if (!isMarket && !priceStr) return { ok: false, error: 'A limit order needs a valid price.' };
+      if (DRY_RUN) { log(`[${accountName}] ⚗ DRY-RUN manual order (not sent): ${summary}`); return { ok: true, dryRun: true }; }
+      if (!creds?.apiKey || !creds?.apiSecret) return { ok: false, error: 'No Delta credentials available to the engine.' };
+      try {
+        const order = await placeOrder(creds, {
+          product_symbol: symbol, size, side,
+          order_type: isMarket ? 'market_order' : 'limit_order',
+          ...(isMarket ? { time_in_force: 'ioc' } : { limit_price: priceStr, time_in_force: 'gtc' }),
+          reduce_only: !!reduceOnly,
+          client_order_id: clampClientOrderId(tag),
+        });
+        log(`[${accountName}] ✅ LIVE manual order: ${summary} → id ${order?.id ?? '?'} state ${order?.state ?? '?'}`);
+        return { ok: true, order };
+      } catch (e) {
+        logWarn(`[${accountName}] ✖ LIVE manual order rejected: ${summary}: ${e.message}`);
+        return { ok: false, error: e.message };
+      }
+    },
+
+    /**
      * Edit an existing resting order's price (and size) in place. Used to re-sync a
      * position's resting short buy-back when shortExitPrice changes — no cancel/replace.
      */

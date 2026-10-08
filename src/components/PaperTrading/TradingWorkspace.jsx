@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import ActivePositionsTable from './ActivePositionsTable';
 import TradeHistoryTable from './TradeHistoryTable';
+import TradeTab from './TradeTab';
 import { formatDateTime } from '../../scannerUtils';
-import { Activity, Clock, AlertOctagon, Check, History, Shield, Loader2, ChevronLeft, ChevronRight, Calendar, Download, RefreshCw } from 'lucide-react';
+import { Activity, Clock, AlertOctagon, Check, History, Shield, Loader2, ChevronLeft, ChevronRight, Calendar, Download, RefreshCw, ArrowLeftRight } from 'lucide-react';
 
 // ── Icons ───────────────────────────────────────────────────────────────
 const IconMap = {
@@ -12,6 +13,7 @@ const IconMap = {
   fills: Check,
   history: History,
   risk: Shield,
+  trade: ArrowLeftRight,
 };
 
 const Icon = ({ name, size = 15 }) => {
@@ -1044,6 +1046,8 @@ export default function TradingWorkspace(props) {
     { key: 'fills', label: 'Fills', icon: 'fills', count: live ? (live.fills?.length ?? 0) : null },
     { key: 'history', label: 'Order History', icon: 'history', count: live ? (live.order_history?.length ?? 0) : paperCount(histCount) },
     { key: 'risk', label: 'Risk & Margin', icon: 'risk', count: null },
+    // Manual order punching — live accounts only (orders go through the engine).
+    ...(isLiveAccount ? [{ key: 'trade', label: 'Trade', icon: 'trade', count: null }] : []),
   ];
 
   return (
@@ -1223,6 +1227,20 @@ export default function TradingWorkspace(props) {
               embedded
             />
             )
+          )}
+
+          {tab === 'trade' && isLiveAccount && (
+            <TradeTab
+              accountId={props.accountId}
+              accountArmed={props.accountArmed}
+              engineDryRun={engineDryRun}
+              products={props.products}
+              underlying={underlying}
+              spotPrice={props.spotPrice}
+              liveMarks={props.liveMarks}
+              livePositions={liveExchangeState?.positions}
+              group={props.group}
+            />
           )}
 
           {tab === 'risk' && (
