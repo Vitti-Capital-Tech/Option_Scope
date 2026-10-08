@@ -5044,13 +5044,14 @@ body.light-theme .pt-btn-apply.active {
   flex-shrink: 0;
 }
 
-/* Fields: compact, and they wrap onto a second line instead of scrolling sideways. */
+/* Fields: ONE row. Number fields flex to share the width, so the whole window fits a normal
+   screen; below their minimum width the row scrolls sideways instead of wrapping. */
 .schedule-item-fields {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   overflow-x: auto;
   align-items: flex-end;
-  gap: 10px 10px;
+  gap: 6px;
   padding-bottom: 2px;
 }
 
@@ -5087,23 +5088,26 @@ body.light-theme .pt-btn-apply.active {
 
 /* Fixed, compact field widths so fields stay tidy
    (fixed width + no shrink means fields maintain proper alignment). */
-.schedule-item-num-block { flex: 0 0 86px; width: 86px; }
-.schedule-item-toggle-block { flex: 0 0 64px; width: 64px; }
+.schedule-item-num-block { flex: 1 1 74px; min-width: 66px; }
+.schedule-item-toggle-block { flex: 0 0 46px; width: 46px; }
 .schedule-item-name-block { flex: 0 0 160px; width: 160px; }
-.schedule-item-time-block { flex: 0 0 104px; width: 104px; }
+.schedule-item-time-block { flex: 0 0 92px; width: 92px; }
 .schedule-item-block .uin,
 .schedule-item-block .custom-input-field { width: 100%; box-sizing: border-box; }
 /* Compact window fields: tighter inner padding so value + unit + stepper fit the narrow box. */
-.schedule-item-block .uin-input { padding: 8px 6px; }
-.schedule-item-block .uin-pre { padding-left: 7px; }
-.schedule-item-block .uin-suf { padding-right: 6px; }
+.schedule-item-block .uin-input { padding: 8px 4px 8px 6px; }
+.schedule-item-block .uin-pre { padding-left: 6px; }
+.schedule-item-block .uin-suf { padding-right: 4px; }
+.schedule-item-block .uin-step button { width: 15px; }
+.schedule-item-block .custom-dropdown-trigger { padding: 8px 6px; }
+.schedule-item-block .schedule-inline-input[type="time"] { padding: 8px 6px; }
 
 .schedule-item-label {
   font-size: 10px;
   font-weight: 700;
   color: var(--text-dim);
   text-transform: uppercase;
-  letter-spacing: 0.4px;
+  letter-spacing: 0.2px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

@@ -759,7 +759,7 @@ export default function SchedulePanel({
 
               {/* Fields row — everything else in one row (wraps only if the screen is narrow) */}
               <div className="schedule-item-fields">
-                <div className="schedule-item-block" style={{ flex: '0 0 64px', width: '64px', justifyContent: 'flex-end', height: '52px', boxSizing: 'border-box', paddingBottom: '8px' }}>
+                <div className="schedule-item-block" style={{ flex: '0 0 26px', width: '26px', justifyContent: 'flex-end', height: '52px', boxSizing: 'border-box', paddingBottom: '8px' }}>
                   <span style={{ fontSize: '12px', fontWeight: 800, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>
                     W{i + 1}
                   </span>
@@ -784,7 +784,7 @@ export default function SchedulePanel({
                 </div>
 
                 <div className="schedule-item-block schedule-item-toggle-block">
-                  <span className="schedule-item-label" title="All Same Type — force all positions in this window to be of a single type (Call or Put), bypassing Split %">Same Type</span>
+                  <span className="schedule-item-label" title="All Same Type — force all positions in this window to be of a single type (Call or Put), bypassing Split %">Same</span>
                   <div style={{ height: '36px', display: 'flex', alignItems: 'center' }}>
                     <label className="pt-switch" title="Toggle single position type (Call or Put) for this window">
                       <input
@@ -823,7 +823,7 @@ export default function SchedulePanel({
                     fontSize: '11px', fontWeight: 700, color: s.allSameType ? '#3b82f6' : 'var(--text-dim)', height: '36px',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                     background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: '5px',
-                    padding: '0 10px', fontFamily: 'JetBrains Mono, monospace', boxSizing: 'border-box', whiteSpace: 'nowrap',
+                    padding: '0 4px', fontFamily: 'JetBrains Mono, monospace', boxSizing: 'border-box', whiteSpace: 'nowrap',
                   }} title={s.allSameType
                     ? `All positions forced to ${(s.sameType || 'call').toUpperCase()} (Max ${derivePaperTypeCap(s).call} calls, ${derivePaperTypeCap(s).put} puts, total combined cap ${Math.max(0, Math.floor(s.maxCombinedPositions ?? 4))}).`
                     : `Per-type cap = ceil(Split% × Max Combined). Max ${derivePaperTypeCap(s).call} calls and ${derivePaperTypeCap(s).put} puts, but no more than ${Math.max(0, Math.floor(s.maxCombinedPositions ?? 4))} open in total.`}>
@@ -847,7 +847,7 @@ export default function SchedulePanel({
                 </div>
 
                 <div className="schedule-item-block schedule-item-toggle-block">
-                  <span className="schedule-item-label" title="ATM Scaling — dynamic short-leg scaling by ATM ratio">ATM Scale</span>
+                  <span className="schedule-item-label" title="ATM Scaling — dynamic short-leg scaling by ATM ratio">ATM</span>
                   <div style={{ height: '36px', display: 'flex', alignItems: 'center' }}>
                     <label className="pt-switch" title="Toggle dynamic scaling of short leg based on ATM ratio">
                       <input
@@ -910,7 +910,7 @@ export default function SchedulePanel({
                 </div>
 
                 <div className="schedule-item-block schedule-item-toggle-block">
-                  <span className="schedule-item-label" htmlFor={`variableExitSlices_${s.id}`} style={{ cursor: 'pointer' }} title="Variable Exit Slices — long-only ladder Variable mode: scale the held long out over N equidistant bid levels up to the recent high, instead of the fixed 5-step ladder.">Var. Slices</span>
+                  <span className="schedule-item-label" htmlFor={`variableExitSlices_${s.id}`} style={{ cursor: 'pointer' }} title="Variable Exit Slices — long-only ladder Variable mode: scale the held long out over N equidistant bid levels up to the recent high, instead of the fixed 5-step ladder.">Var.</span>
                   <div style={{ height: 34, display: 'flex', alignItems: 'center' }}>
                     <label className="pt-switch">
                       <input type="checkbox" id={`variableExitSlices_${s.id}`} checked={s.variableExitSlices ?? false} onChange={e => handleChange(s.id, 'variableExitSlices', e.target.checked)} />
@@ -985,12 +985,12 @@ export default function SchedulePanel({
                 )}
 
                 <div className="schedule-item-block schedule-item-num-block">
-                  <span className="schedule-item-label" title="Max Margin Utilised (historical peak, % of allocated balance)">Peak Margin</span>
+                  <span className="schedule-item-label" title="Max Margin Utilised (historical peak, % of allocated balance)">Peak Mgn</span>
                   <div style={{
-                    fontSize: '13px', fontWeight: '700', color: '#3b82f6', height: '36px',
+                    fontSize: '12px', fontWeight: '700', color: '#3b82f6', height: '36px',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                     background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: '5px',
-                    padding: '0 10px', fontFamily: 'JetBrains Mono, monospace', boxSizing: 'border-box', whiteSpace: 'nowrap',
+                    padding: '0 4px', fontFamily: 'JetBrains Mono, monospace', boxSizing: 'border-box', whiteSpace: 'nowrap',
                   }} title={avgUtilMap[s.id] !== undefined
                     ? `Peak margin utilised: $${avgUtilMap[s.id].peakMargin.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} of $${avgUtilMap[s.id].allocatedBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} allocated balance (${avgUtilMap[s.id].pctUtil.toFixed(2)}%)`
                     : 'Historical peak margin utilised in this window as % of allocated balance.'}>
@@ -1014,7 +1014,7 @@ export default function SchedulePanel({
                 )}
 
                 {/* Load scanner filters + lock (Window 1) or delete button inline */}
-                <div className="schedule-item-block" style={{ flex: '0 0 72px', width: '72px', justifyContent: 'flex-end', height: '52px', boxSizing: 'border-box', paddingBottom: '0', alignItems: 'center' }}>
+                <div className="schedule-item-block" style={{ flex: '0 0 56px', width: '56px', justifyContent: 'flex-end', height: '52px', boxSizing: 'border-box', paddingBottom: '0', alignItems: 'center' }}>
                   <div style={{ height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2 }}>
                     <PickerButton
                       iconOnly
