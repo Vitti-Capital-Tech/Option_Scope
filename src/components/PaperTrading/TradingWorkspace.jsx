@@ -1007,7 +1007,9 @@ function LivePositionsTab({ positions, enginePositions, onExitPosition }) {
 export default function TradingWorkspace(props) {
   const { positions, underlying, filteredTradeHistory, isLiveAccount, liveExchangeState, engineDryRun, liveLoading } = props;
 
-  const [tab, setTab] = useState('positions');
+  const [pickedTab, setTab] = useState('positions');
+  // The Trade tab exists only on live accounts: switching to a paper account falls back to Positions.
+  const tab = pickedTab === 'trade' && !isLiveAccount ? 'positions' : pickedTab;
 
   const [sessionOpen, setSessionOpen] = useState({});
   if (props.spotPrice != null && sessionOpen[underlying] == null) {

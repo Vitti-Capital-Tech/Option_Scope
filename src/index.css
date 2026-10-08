@@ -7314,11 +7314,11 @@ details.dr-note p {
 .pt-trade-fields input { height: 32px; padding: 0 10px; background: var(--bg3); color: var(--text); border: 1px solid var(--border); border-radius: 6px; font-size: 13px; font-variant-numeric: tabular-nums; text-transform: none; letter-spacing: 0; }
 .pt-trade-fields select:focus,
 .pt-trade-fields input:focus { outline: none; border-color: var(--accent); }
-.pt-seg { display: flex; background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 2px; gap: 2px; }
-.pt-seg button { flex: 1; height: 28px; border: 0; border-radius: 4px; background: transparent; color: var(--text-dim); font-size: 12px; font-weight: 700; cursor: pointer; }
-.pt-seg button.on { background: var(--bg2); color: var(--text); }
-.pt-seg button.on.call { background: var(--call); color: #fff; }
-.pt-seg button.on.put { background: var(--put); color: #fff; }
+.pt-trade-seg { display: flex; background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 2px; gap: 2px; }
+.pt-trade-seg button { flex: 1; height: 28px; border: 0; border-radius: 4px; background: transparent; color: var(--text-dim); font-size: 12px; font-weight: 700; cursor: pointer; }
+.pt-trade-seg button.on { background: var(--bg2); color: var(--text); }
+.pt-trade-seg button.on.call { background: var(--call); color: #fff; }
+.pt-trade-seg button.on.put { background: var(--put); color: #fff; }
 .pt-trade-side button { height: 32px; font-size: 13px; }
 .pt-trade-symbol { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; }
 .pt-trade-chips { display: flex; flex-wrap: wrap; gap: 6px; }

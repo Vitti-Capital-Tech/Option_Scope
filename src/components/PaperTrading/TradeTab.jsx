@@ -254,7 +254,7 @@ export default function TradeTab({ accountId, accountArmed, engineDryRun, produc
               </select>
             </label>
             <label>Type
-              <div className="pt-seg">
+              <div className="pt-trade-seg">
                 <button type="button" className={optType === 'call' ? 'on call' : ''} onClick={() => setOptType('call')}>Call</button>
                 <button type="button" className={optType === 'put' ? 'on put' : ''} onClick={() => setOptType('put')}>Put</button>
               </div>
@@ -283,11 +283,11 @@ export default function TradeTab({ accountId, accountArmed, engineDryRun, produc
             </div>
           )}
 
-          <div className="pt-seg pt-trade-side">
+          <div className="pt-trade-seg pt-trade-side">
             <button type="button" className={side === 'buy' ? 'on call' : ''} onClick={() => setSide('buy')}>Buy</button>
             <button type="button" className={side === 'sell' ? 'on put' : ''} onClick={() => setSide('sell')}>Sell</button>
           </div>
-          <div className="pt-seg">
+          <div className="pt-trade-seg">
             <button type="button" className={orderType === 'limit' ? 'on' : ''} onClick={() => setOrderType('limit')}>Limit</button>
             <button type="button" className={orderType === 'market' ? 'on' : ''} onClick={() => setOrderType('market')}>Market</button>
           </div>
