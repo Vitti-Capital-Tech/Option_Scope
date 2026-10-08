@@ -759,19 +759,19 @@ export default function SchedulePanel({
 
               {/* Fields row — everything else in one row (wraps only if the screen is narrow) */}
               <div className="schedule-item-fields">
-                <div className="schedule-item-block" style={{ flex: '0 0 85px', width: '85px', justifyContent: 'flex-end', height: '56px', boxSizing: 'border-box', paddingBottom: '8px' }}>
-                  <span style={{ fontSize: '13px', fontWeight: 800, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>
-                    Window {i + 1}
+                <div className="schedule-item-block" style={{ flex: '0 0 64px', width: '64px', justifyContent: 'flex-end', height: '52px', boxSizing: 'border-box', paddingBottom: '8px' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 800, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>
+                    W{i + 1}
                   </span>
                 </div>
 
                 <div className="schedule-item-block schedule-item-time-block">
-                  <span className="schedule-item-label">Start Time (IST)</span>
+                  <span className="schedule-item-label" title="Start Time (IST)">Start (IST)</span>
                   <CustomInput type="time" className="schedule-inline-input" value={cleanTime(s.startTime)} onChange={e => handleChange(s.id, 'startTime', e.target.value)} />
                 </div>
 
                 <div className="schedule-item-block schedule-item-time-block">
-                  <span className="schedule-item-label">End Time (IST)</span>
+                  <span className="schedule-item-label" title="End Time (IST)">End (IST)</span>
                   <CustomInput type="time" className="schedule-inline-input" value={cleanTime(s.endTime)} onChange={e => handleChange(s.id, 'endTime', e.target.value)} />
                 </div>
 
@@ -779,12 +779,12 @@ export default function SchedulePanel({
                     Split% govern entry caps for ALL accounts now (paper AND live); the old
                     per-type Calls/Puts inputs are retired. */}
                 <div className="schedule-item-block schedule-item-num-block">
-                  <span className="schedule-item-label">Max Combined Positions</span>
+                  <span className="schedule-item-label" title="Max Combined Positions — total open positions allowed in this window">Max Pos</span>
                   <CustomInput type="number" min="0" max="40" value={s.maxCombinedPositions ?? 4} onChange={e => handleChange(s.id, 'maxCombinedPositions', Math.max(0, Number(e.target.value)))} />
                 </div>
 
-                <div className="schedule-item-block schedule-item-num-block">
-                  <span className="schedule-item-label" title="Force all positions in this window to be of a single type (Call or Put), bypassing Split %">All Same Type</span>
+                <div className="schedule-item-block schedule-item-toggle-block">
+                  <span className="schedule-item-label" title="All Same Type — force all positions in this window to be of a single type (Call or Put), bypassing Split %">Same Type</span>
                   <div style={{ height: '36px', display: 'flex', alignItems: 'center' }}>
                     <label className="pt-switch" title="Toggle single position type (Call or Put) for this window">
                       <input
@@ -799,7 +799,7 @@ export default function SchedulePanel({
 
                 {s.allSameType && (
                   <div className="schedule-item-block schedule-item-num-block">
-                    <span className="schedule-item-label">Position Type</span>
+                    <span className="schedule-item-label" title="Position Type">Type</span>
                     <CustomSelect
                       value={s.sameType || 'call'}
                       onChange={val => handleChange(s.id, 'sameType', val)}
@@ -818,7 +818,7 @@ export default function SchedulePanel({
                 </div>
 
                 <div className="schedule-item-block schedule-item-num-block">
-                  <span className="schedule-item-label">Derived Caps</span>
+                  <span className="schedule-item-label" title="Derived per-type caps (calls / puts)">Caps</span>
                   <div style={{
                     fontSize: '11px', fontWeight: 700, color: s.allSameType ? '#3b82f6' : 'var(--text-dim)', height: '36px',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -832,22 +832,22 @@ export default function SchedulePanel({
                 </div>
 
                 <div className="schedule-item-block schedule-item-num-block">
-                  <span className="schedule-item-label">Min Spread Width</span>
+                  <span className="schedule-item-label" title="Min Spread Width">Min Width</span>
                   <CustomInput type="number" min="0" prefix="$" step="50" value={s.minStrikeDiff} onChange={e => handleChange(s.id, 'minStrikeDiff', Number(e.target.value))} />
                 </div>
 
                 <div className="schedule-item-block schedule-item-num-block">
-                  <span className="schedule-item-label">Min Spot Distance</span>
+                  <span className="schedule-item-label" title="Min Spot Distance">Spot Dist</span>
                   <CustomInput type="number" min="0" prefix="$" step="50" value={s.minLongDist} onChange={e => handleChange(s.id, 'minLongDist', Number(e.target.value))} />
                 </div>
 
                 <div className="schedule-item-block schedule-item-num-block">
-                  <span className="schedule-item-label" title="Minimum implied volatility difference (%) between buy and sell legs">Min IV Edge</span>
+                  <span className="schedule-item-label" title="Min IV Edge — minimum implied volatility difference (%) between buy and sell legs">IV Edge</span>
                   <CustomInput type="number" min="0" step="0.25" suffix="%" value={s.minIvDiff ?? 5} onChange={e => handleChange(s.id, 'minIvDiff', Number(e.target.value))} />
                 </div>
 
-                <div className="schedule-item-block schedule-item-num-block">
-                  <span className="schedule-item-label">ATM Scaling</span>
+                <div className="schedule-item-block schedule-item-toggle-block">
+                  <span className="schedule-item-label" title="ATM Scaling — dynamic short-leg scaling by ATM ratio">ATM Scale</span>
                   <div style={{ height: '36px', display: 'flex', alignItems: 'center' }}>
                     <label className="pt-switch" title="Toggle dynamic scaling of short leg based on ATM ratio">
                       <input
@@ -861,22 +861,22 @@ export default function SchedulePanel({
                 </div>
 
                 <div className="schedule-item-block schedule-item-num-block">
-                  <span className="schedule-item-label">Call Scaling</span>
+                  <span className="schedule-item-label" title="Call Scaling">Call %</span>
                   <CustomInput type="number" min="0" max="100" suffix="%" step="5" value={s.atmRatioPctCall ?? 50} disabled={!(s.atmRatioScaling ?? true)} onChange={e => handleChange(s.id, 'atmRatioPctCall', Number(e.target.value))} />
                 </div>
 
                 <div className="schedule-item-block schedule-item-num-block">
-                  <span className="schedule-item-label">Put Scaling</span>
+                  <span className="schedule-item-label" title="Put Scaling">Put %</span>
                   <CustomInput type="number" min="0" max="100" suffix="%" step="5" value={s.atmRatioPctPut ?? 25} disabled={!(s.atmRatioScaling ?? true)} onChange={e => handleChange(s.id, 'atmRatioPctPut', Number(e.target.value))} />
                 </div>
 
                 <div className="schedule-item-block schedule-item-num-block">
-                  <span className="schedule-item-label">Max Net Debit</span>
+                  <span className="schedule-item-label" title="Max Net Debit">Max Debit</span>
                   <CustomInput type="number" prefix="$" value={s.maxNetPremium ?? 20} onChange={e => handleChange(s.id, 'maxNetPremium', Number(e.target.value))} />
                 </div>
 
                 <div className="schedule-item-block schedule-item-num-block">
-                  <span className="schedule-item-label">Exit Type</span>
+                  <span className="schedule-item-label" title="Exit Type">Exit</span>
                   <CustomSelect
                     value={s.exitType ?? 'ATM'}
                     onChange={val => handleChange(s.id, 'exitType', val)}
@@ -887,7 +887,7 @@ export default function SchedulePanel({
 
                 {(s.exitType === 'ITM' || s.exitType === 'OTM') && (
                   <div className="schedule-item-block schedule-item-num-block">
-                    <span className="schedule-item-label">Exit Points</span>
+                    <span className="schedule-item-label" title="Exit Points">Exit Pts</span>
                     <CustomInput type="number" min="0" step="1" value={s.exitPoints ?? 0} onChange={e => handleChange(s.id, 'exitPoints', Number(e.target.value))} />
                   </div>
                 )}
@@ -905,12 +905,12 @@ export default function SchedulePanel({
                     filter panel. Short buy-back threshold + the long-only ladder's Variable
                     mode (with its slice count, shown only when Variable is ON). */}
                 <div className="schedule-item-block schedule-item-num-block">
-                  <span className="schedule-item-label" title="The short leg's live-ask threshold below which the short is bought back and the long is held.">Short Exit Price</span>
+                  <span className="schedule-item-label" title="Short Exit Price — the short leg's live-ask threshold below which the short is bought back and the long is held.">Short Exit</span>
                   <CustomInput type="number" min="0" step="0.1" prefix="$" value={s.shortExitPrice ?? 1.1} onChange={e => handleChange(s.id, 'shortExitPrice', Number(e.target.value))} />
                 </div>
 
-                <div className="schedule-item-block schedule-item-num-block">
-                  <span className="schedule-item-label" htmlFor={`variableExitSlices_${s.id}`} style={{ cursor: 'pointer' }} title="Long-only ladder Variable mode: scale the held long out over N equidistant bid levels up to the recent high, instead of the fixed 5-step ladder.">Variable Exit Slices</span>
+                <div className="schedule-item-block schedule-item-toggle-block">
+                  <span className="schedule-item-label" htmlFor={`variableExitSlices_${s.id}`} style={{ cursor: 'pointer' }} title="Variable Exit Slices — long-only ladder Variable mode: scale the held long out over N equidistant bid levels up to the recent high, instead of the fixed 5-step ladder.">Var. Slices</span>
                   <div style={{ height: 34, display: 'flex', alignItems: 'center' }}>
                     <label className="pt-switch">
                       <input type="checkbox" id={`variableExitSlices_${s.id}`} checked={s.variableExitSlices ?? false} onChange={e => handleChange(s.id, 'variableExitSlices', e.target.checked)} />
@@ -921,7 +921,7 @@ export default function SchedulePanel({
 
                 {s.variableExitSlices && (
                   <div className="schedule-item-block schedule-item-num-block">
-                    <span className="schedule-item-label" title="Number of scale-out slices for the held long leg in Variable mode.">Long Exit Slices</span>
+                    <span className="schedule-item-label" title="Long Exit Slices — number of scale-out slices for the held long leg in Variable mode.">Slices</span>
                     <CustomInput type="number" min="1" step="1" value={s.longExitSlices ?? 10} onChange={e => handleChange(s.id, 'longExitSlices', Number(e.target.value))} />
                   </div>
                 )}
@@ -929,7 +929,7 @@ export default function SchedulePanel({
                 {/* Per-window Min Days to Expiry (migration 019) — all accounts, paper AND
                     live. The traded expiry follows the active window's DTE. */}
                 <div className="schedule-item-block schedule-item-num-block">
-                  <span className="schedule-item-label">Min Days to Expiry</span>
+                  <span className="schedule-item-label" title="Min Days to Expiry">Min DTE</span>
                   <CustomInput type="number" min="0" step="1" value={s.daysToExpiry ?? 0} onChange={e => handleChange(s.id, 'daysToExpiry', Number(e.target.value))} />
                 </div>
 
@@ -941,7 +941,7 @@ export default function SchedulePanel({
                     short qty × Hedge Lot %. It rides the triplet and exits with it (main-strike
                     ATM/ITM/OTM or expiry). Paper accounts only — never shown for live. */}
                 {isPaper && strategyVersion >= 2 && (
-                  <div className="schedule-item-block schedule-item-num-block">
+                  <div className="schedule-item-block schedule-item-toggle-block">
                     <span className="schedule-item-label" title="Add a 3rd long one strike-width beyond the short leg to every spread entered in this window.">Hedge Leg</span>
                     <div style={{ height: 34, display: 'flex', alignItems: 'center' }}>
                       <label className="pt-switch">
@@ -960,15 +960,15 @@ export default function SchedulePanel({
                 {isPaper && strategyVersion >= 2 && s.hedgeEnabled && (
                   <>
                     <div className="schedule-item-block schedule-item-num-block">
-                      <span className="schedule-item-label" title="The hedge strike's price must be below this.">Max Hedge Price</span>
+                      <span className="schedule-item-label" title="Max Hedge Price — the hedge strike's price must be below this.">Hedge Max $</span>
                       <CustomInput type="number" min="0" step="1" prefix="$" value={s.hedgeMaxPrice ?? 10} onChange={e => handleChange(s.id, 'hedgeMaxPrice', Number(e.target.value))} />
                     </div>
                     <div className="schedule-item-block schedule-item-num-block">
-                      <span className="schedule-item-label" title="|hedge IV − short IV| must be at least this.">Hedge IV Diff Min</span>
+                      <span className="schedule-item-label" title="Hedge IV Diff Min — |hedge IV − short IV| must be at least this.">Hedge IV Min</span>
                       <CustomInput type="number" min="0" step="0.5" suffix="%" value={s.hedgeIvDiffMin ?? 0} onChange={e => handleChange(s.id, 'hedgeIvDiffMin', Number(e.target.value))} />
                     </div>
                     <div className="schedule-item-block schedule-item-num-block">
-                      <span className="schedule-item-label" title="|hedge IV − short IV| must be at most this.">Hedge IV Diff Max</span>
+                      <span className="schedule-item-label" title="Hedge IV Diff Max — |hedge IV − short IV| must be at most this.">Hedge IV Max</span>
                       <CustomInput type="number" min="0" step="0.5" suffix="%" value={s.hedgeIvDiffMax ?? 2} onChange={e => handleChange(s.id, 'hedgeIvDiffMax', Number(e.target.value))} />
                     </div>
                   </>
@@ -979,13 +979,13 @@ export default function SchedulePanel({
                     long, the two valid shorts nearest ATM. Each is its own position. */}
                 {isPaper && strategyVersion >= 2 && (
                   <div className="schedule-item-block schedule-item-num-block">
-                    <span className="schedule-item-label" title="How many long strikes nearest ATM (calls and puts together) may each be used by two spreads — same long, the two valid shorts nearest ATM. Each spread is a separate position with its own slot and margin. 0 = off (one spread per long strike).">Shared Long Strikes</span>
+                    <span className="schedule-item-label" title="How many long strikes nearest ATM (calls and puts together) may each be used by two spreads — same long, the two valid shorts nearest ATM. Each spread is a separate position with its own slot and margin. 0 = off (one spread per long strike).">Shared Longs</span>
                     <CustomInput type="number" min="0" step="1" value={s.sharedLongStrikes ?? 0} onChange={e => handleChange(s.id, 'sharedLongStrikes', Math.max(0, Math.floor(Number(e.target.value) || 0)))} />
                   </div>
                 )}
 
                 <div className="schedule-item-block schedule-item-num-block">
-                  <span className="schedule-item-label">Max Margin Utilised</span>
+                  <span className="schedule-item-label" title="Max Margin Utilised (historical peak, % of allocated balance)">Peak Margin</span>
                   <div style={{
                     fontSize: '13px', fontWeight: '700', color: '#3b82f6', height: '36px',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -1002,7 +1002,7 @@ export default function SchedulePanel({
 
                 {/* Overlap badge inline */}
                 {overlapWindow && (
-                  <div className="schedule-item-block" style={{ justifyContent: 'flex-end', height: '56px', boxSizing: 'border-box', paddingBottom: '8px' }}>
+                  <div className="schedule-item-block" style={{ justifyContent: 'flex-end', height: '52px', boxSizing: 'border-box', paddingBottom: '0' }}>
                     <div
                       style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'rgba(248,81,73,0.1)', border: '1px solid rgba(248,81,73,0.3)', padding: '0 12px', borderRadius: 5, fontSize: 9, fontWeight: 700, color: '#f85149', cursor: 'help', height: '36px', boxSizing: 'border-box' }}
                       title={`Time overlaps with "Window ${schedules.findIndex(x => x.id === overlapWindow.id) + 1}" (${cleanTime(overlapWindow.startTime)} – ${cleanTime(overlapWindow.endTime)})`}
@@ -1014,7 +1014,7 @@ export default function SchedulePanel({
                 )}
 
                 {/* Load scanner filters + lock (Window 1) or delete button inline */}
-                <div className="schedule-item-block" style={{ flex: '0 0 84px', width: '84px', justifyContent: 'flex-end', height: '56px', boxSizing: 'border-box', paddingBottom: '8px', alignItems: 'center' }}>
+                <div className="schedule-item-block" style={{ flex: '0 0 72px', width: '72px', justifyContent: 'flex-end', height: '52px', boxSizing: 'border-box', paddingBottom: '0', alignItems: 'center' }}>
                   <div style={{ height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2 }}>
                     <PickerButton
                       iconOnly

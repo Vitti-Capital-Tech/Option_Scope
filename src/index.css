@@ -5014,7 +5014,7 @@ body.light-theme .pt-btn-apply.active {
 .schedule-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
   margin-bottom: 8px;
 }
 
@@ -5023,7 +5023,7 @@ body.light-theme .pt-btn-apply.active {
   flex-direction: column;
   gap: 16px;
 
-  padding: 14px 16px;
+  padding: 10px 12px;
   background: rgba(22, 27, 34, 0.4);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -5044,14 +5044,14 @@ body.light-theme .pt-btn-apply.active {
   flex-shrink: 0;
 }
 
-/* Fields: everything else in one row (scrolls horizontally on overflow). */
+/* Fields: compact, and they wrap onto a second line instead of scrolling sideways. */
 .schedule-item-fields {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   overflow-x: auto;
   align-items: flex-end;
-  gap: 14px 16px;
-  padding-bottom: 8px;
+  gap: 10px 10px;
+  padding-bottom: 2px;
 }
 
 .schedule-item-fields::-webkit-scrollbar {
@@ -5087,18 +5087,26 @@ body.light-theme .pt-btn-apply.active {
 
 /* Fixed, compact field widths so fields stay tidy
    (fixed width + no shrink means fields maintain proper alignment). */
-.schedule-item-num-block { flex: 0 0 115px; width: 115px; }
+.schedule-item-num-block { flex: 0 0 86px; width: 86px; }
+.schedule-item-toggle-block { flex: 0 0 64px; width: 64px; }
 .schedule-item-name-block { flex: 0 0 160px; width: 160px; }
-.schedule-item-time-block { flex: 0 0 120px; width: 120px; }
+.schedule-item-time-block { flex: 0 0 104px; width: 104px; }
 .schedule-item-block .uin,
 .schedule-item-block .custom-input-field { width: 100%; box-sizing: border-box; }
+/* Compact window fields: tighter inner padding so value + unit + stepper fit the narrow box. */
+.schedule-item-block .uin-input { padding: 8px 6px; }
+.schedule-item-block .uin-pre { padding-left: 7px; }
+.schedule-item-block .uin-suf { padding-right: 6px; }
 
 .schedule-item-label {
   font-size: 10px;
   font-weight: 700;
   color: var(--text-dim);
   text-transform: uppercase;
-  letter-spacing: 0.8px;
+  letter-spacing: 0.4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .schedule-inline-input {

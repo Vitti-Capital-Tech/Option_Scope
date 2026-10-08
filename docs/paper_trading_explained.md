@@ -100,20 +100,23 @@ Each account runs its own positions, config, and evaluation loop in isolation �
 
 Manual actions — **per-leg close** (`delta_close_requests`), **order cancel**
 (`delta_cancel_requests`), **Close All** (`paper_trading_accounts.close_all_requested`),
-and **manual exit** (`active_positions.exit_requested`) — are polled at the **manager
-level**, not per-account. A single `pollAllRequests` timer runs **up to 4 batched queries**
-(one per table, filtered to all running account ids) every **1.5s** and dispatches to
-each account engine's `processRequests(flags)` **only** for the request types that
-actually have pending rows.
+**manual exit** (`active_positions.exit_requested`), and — for live accounts — **manual
+orders** (`delta_order_requests`, Trade tab) and **order edits** (`delta_edit_requests`,
+Open Orders ✎) — are polled at the **manager level**, not per-account. A single
+`pollAllRequests` timer runs **one batched query per table (up to 6)**, filtered to all
+running account ids, every **1.5s** and dispatches to each account engine's
+`processRequests(flags)` **only** for the request types that actually have pending rows.
 
 > [!NOTE]
 > **Live-only queries are skipped when nothing is live (egress).** `delta_close_requests`
 > and `delta_cancel_requests` only ever have work for **armed-live** accounts (their
 > handlers no-op for paper). So the poll queries those two tables **only when at least one
 > running account is armed-live** — and scopes them to just those account ids. A
-> paper-only (or all-dry-run) deployment therefore issues just **2 queries/tick**
-> (`close_all_requested` + `exit_requested`), which cover both paper and live. Manual-action
-> responsiveness is unchanged (~1.5s), since the always-run pair covers every account.
+> paper-only (or all-dry-run) deployment therefore issues **4 queries/tick**:
+> `close_all_requested` + `exit_requested`, which cover both paper and live, plus the pending
+> `delta_order_requests` / `delta_edit_requests` rows, which are checked for every running
+> account so a request on an unarmed account gets a clear failure instead of sitting pending.
+> Manual-action responsiveness is unchanged (~1.5s).
 
 > [!NOTE]
 > **Why:** previously every account engine ran its own 1.5s timer firing 4 queries — i.e.
@@ -1241,22 +1244,22 @@ Time-Based Filter Schedules allow users to define multiple named time windows pe
 
 ### Overridden Parameters
 The following parameters are scheduled per window:
-1. **Max Combined Positions** (`maxCombinedPositions`, default `4`) — hard cap on TOTAL open full spreads (calls + puts); also the divisor for per-position margin.
+1. **Max Combined Positions** — label *Max Pos* (`maxCombinedPositions`, default `4`) — hard cap on TOTAL open full spreads (calls + puts); also the divisor for per-position margin.
 2. **Split %** (`combinedSplitPct`, default `70`) — derives the per-type cap `ceil(split% × maxCombined)` for both calls and puts.
 3. **All Positions Same Type** (`allSameType` & `sameType`) — **promoted to all accounts** (migration `037`). Toggle and dropdown to force 100% capacity to Call or Put positions (e.g. `4C / 0P` or `0C / 4P`), bypassing Split %.
-4. **Min IV Edge** (`minIvDiff`, default `5%`) — **promoted to all accounts** (migration `037`). Minimum IV difference between buy ask IV and sell bid IV, configured per schedule window and removed from global Control Panel filters.
-5. **Min Strike Difference** (`minStrikeDiff`)
-6. **Min Long Distance** (`minLongDist`)
+4. **Min IV Edge** — *IV Edge* (`minIvDiff`, default `5%`) — **promoted to all accounts** (migration `037`). Minimum IV difference between buy ask IV and sell bid IV, configured per schedule window and removed from global Control Panel filters.
+5. **Min Strike Difference** — *Min Width* (`minStrikeDiff`)
+6. **Min Long Distance** — *Spot Dist* (`minLongDist`)
 7. **ATM Ratio Entry** (`atmRatioScaling`)
 8. **Call ATM Pct (%)** (`atmRatioPctCall`)
 9. **Put ATM Pct (%)** (`atmRatioPctPut`)
 10. **Spot Diff (%)** (`spotDiff`)
-11. **Max Net Debit** (`maxNetPremium`) — entry debit cap (migration `012`)
+11. **Max Net Debit** — *Max Debit* (`maxNetPremium`) — entry debit cap (migration `012`)
 12. **Exit Type** (`exitType`) — `ATM`/`ITM`/`OTM`; **active-window-governs** open positions (migration `012`)
-13. **Exit Points** (`exitPoints`) — offset for ITM/OTM exit (migration `012`)
+13. **Exit Points** — *Exit Pts* (`exitPoints`) — offset for ITM/OTM exit (migration `012`). In an [account group](#account-groups-migration-050) each member other than the one saved from gets a random ±10–50 on top (migrations `053`/`054`).
 14. **SL/TP Diff (pts)** (`slTpDecoyDiff`) — per-window SL/TP decoy trigger offset (migration `031`)
-15. **Short Exit Price / Variable Ladder** (`shortExitPrice`, `variableExitSlices`, `longExitSlices`) — per-window exit ladder controls (migration `033`)
-16. **Days to Expiry** (`daysToExpiry`) — **v2 (experimental paper) accounts only** (migration `019`). The window's value guards its own entries; the account-global traded expiry **follows the active window** as **(current date + that window's DTE)**, re-selected in ~realtime as windows change (smallest DTE wins on overlap). On v1 (live) this stays an account-level Control Panel field and is **not** shown per window. See [Strategy Versioning](#strategy-versioning-paper-vs-live).
+15. **Short Exit Price / Variable Ladder** — *Short Exit*, *Var. Slices*, *Slices* (`shortExitPrice`, `variableExitSlices`, `longExitSlices`) — per-window exit ladder controls (migration `033`)
+16. **Days to Expiry** — *Min DTE* (`daysToExpiry`) — **v2 (experimental paper) accounts only** (migration `019`). The window's value guards its own entries; the account-global traded expiry **follows the active window** as **(current date + that window's DTE)**, re-selected in ~realtime as windows change (smallest DTE wins on overlap). On v1 (live) this stays an account-level Control Panel field and is **not** shown per window. See [Strategy Versioning](#strategy-versioning-paper-vs-live).
 17. **Hedge Leg** (`hedgeEnabled` + `hedgeLotPct`) — **v2 (experimental paper) accounts only** (config migration `041`, leg column `023`). Adds a per-spread 3rd long-only leg (long/short/long triplet). See [Hedge Leg](#hedge-leg--per-spread-3rd-long-long--short--long-triplet).
 
 18. **Shared Long Strikes** (`sharedLongStrikes`, default `0` = off) — **v2 (experimental paper) accounts only** (migration `044`). See [Shared Long Strikes](#shared-long-strikes-paper-v2).
@@ -1282,13 +1285,13 @@ Normally a strike hosts one leg per account. With **Shared Long Strikes = N**, e
 > **These 8 fields are not shown in the Control Panel filter bar** — they are configured per time window in the Schedule Panel. Every account has a permanent **Window 1** that holds the account's initial values: it is **auto-created** (seeded from the account's `paper_trading_config` base values) for any account that has no windows yet, and it **cannot be deleted** (only Window 1 — Windows 2, 3, … are deletable). Window 1 is otherwise a normal window: its name, time range, and values are all editable, and it defaults to a full-day range (`17:30`→`17:29` IST). The base config still acts as the engine's gap fallback (see [Fallback Behavior](#execution-timezones--evaluation)); since Window 1 spans the full day by default, there are normally no gaps.
 
 ### Layout & UI
-- **Compact List Style**: The configuration interface (`SchedulePanel.jsx`) features a compact, horizontal, inline-editable list. Users can edit window names, times, and overrides directly within the row.
+- **Compact List Style**: The configuration interface (`SchedulePanel.jsx`) features a compact, horizontal, inline-editable list. Users can edit window names, times, and overrides directly within the row. Field labels are short — hover one for its full name (e.g. *Max Pos* = Max Combined Positions, *Min DTE* = Min Days to Expiry, *Short Exit* = Short Exit Price, *Start (IST)* / *End (IST)*) — and each window is headed `W1`, `W2`, …. Fields are narrow (86px numbers, 64px toggles, 104px times) and wrap onto a second line instead of scrolling sideways.
 - **Visual Timeline**: A 24-hour horizontal bar visualizes active windows, gaps, and overrides. The timeline boundary starts/ends at `17:30` IST (the `12:00` UTC Delta Exchange daily rollover/day boundary), so empty slots wrap around `17:30` IST and display at the end of the bar.
 - **Sorted by Start Time**: Windows are listed in start-time order within the session (from `17:30` IST) and numbered `Window 1…N` by position; the timeline labels use the same numbers. Sorting happens on load and on Apply (not while typing).
 - **Copy from Account**: Replaces this account's windows with a one-time copy of another account's (clients: own accounts; admins: any). Nothing is saved until **Apply**; **Cancel** restores the saved windows. With open positions, Apply asks for confirmation first. Copying into a live account turns the hedge leg off. New accounts can also start from a copy via **Copy Schedule Windows From** in the Create Account modal.
 - **Load Scanner Filters**: Each window's scanner icon loads the Ratio Spread Scanner's current filters, or one of its saved settings, into that window (Min Spread Width, Min Spot Distance, Min IV Edge, Max Net Debit, ATM Scaling; hedge fields on v2 paper). Scanner-only filters are not copied. Click Apply to save. The scanner's **Send to window** button does the same from the scanner side: it opens the chosen account here with the window filled in and highlighted, unsaved until Apply.
 - **Permanent Activation**: All configured schedule windows are permanently active/enabled (`is_active = true`), and the checkbox toggle has been removed.
-- **Max Margin Utilised (%)**: Displays the historical peak margin utilized as a percentage of allocated balance (`(peak margin / allocated balance) × 100`) for active positions open at any single instant during the session for that schedule window. Hover tooltip shows exact peak margin ($) vs allocated balance ($).
+- **Max Margin Utilised (%)** (label *Peak Margin*): Displays the historical peak margin utilized as a percentage of allocated balance (`(peak margin / allocated balance) × 100`) for active positions open at any single instant during the session for that schedule window. Hover tooltip shows exact peak margin ($) vs allocated balance ($).
 
 ### Execution, Timezones & Evaluation
 - **Database (IST)**: All times in the database `paper_trading_schedules` table (columns `start_time` and `end_time`) are stored directly as IST values in `TIME` type columns.
@@ -1429,7 +1432,16 @@ The engine's `engine_heartbeat` row is polled every **30 seconds** (paused when 
 
 The positions/history area (`TradingWorkspace.jsx`) is a tabbed panel modelled on an
 exchange layout: **Positions, Open Orders, Stop Orders, Fills, Order History, Risk &
-Margin**.
+Margin**, plus **Trade** on live accounts (hidden for paper — switching to a paper account
+falls back to Positions).
+
+- **Positions — Qty column (paper):** `long : short` traded qty on one line (`+ <qty>H` for a
+  hedge triplet), and the net entry premium below (short received − long / hedge paid; header
+  sub-label *long : short · net prem*). The per-leg contract counts are in the cell's tooltip.
+- **Trade (live):** pick an option, watch its live order book and punch a limit / market order
+  by hand (optionally on the whole group); the engine places it. **Open Orders (armed live):**
+  ✎ edits a resting limit order's qty / price in place. See
+  [live_trading.md](live_trading.md#manual-orders--trade-tab-migrations-055056).
 
 - **Paper accounts (and dry-run or disarmed live):** every tab is **engine-derived** —
   Positions / Open Orders / Stop Orders / Risk & Margin from the in-memory
@@ -1637,7 +1649,8 @@ Several accounts can share **one set of settings** while still trading on their 
 
 - **What is shared**: everything you set — Control Panel filters, exits, trade days, full deploy, excluded strikes, allocation % / entry offsets / position caps, and all schedule windows (with their hedge, caps and exit overrides).
 - **What stays per account**: balance and initial balance, open positions, P&L and history, strategy version, credentials, Start Live / Disarm, Pause and Telegram. Sizing still uses each account's own balance.
-- **How it works**: settings are still saved per account. When you save a change on any grouped account (Apply filters, Apply schedules, Edit account), the same settings are copied to every other member at once (`sync_account_group`). The engine sees each member's settings change exactly as if you had edited it.
-- **Rules**: same mode (paper or live), same strategy version, same owner. An account can be in one group at a time.
+- **How it works**: settings are still saved per account. When the group's owner or an admin saves a change on any grouped account (Apply filters, Apply schedules, Edit account), the same settings are copied to every other member at once (`sync_account_group`). A client editing their own account that sits in someone else's group just saves it for that account. The engine sees each member's settings change exactly as if you had edited it.
+- **Rules**: same mode (paper or live) and same strategy version. Members may belong to **different users** — e.g. an admin's group of client accounts (migration `052`); only the group's owner or an admin can add accounts to it. An account can be in one group at a time.
+- **Exit points differ per member (migrations `053`/`054`)**: when windows are copied, every other member's window **Exit Points** become the saved value ± a random whole number from 10 to 50 (only + if − would go below 0), so the accounts don't all exit at the same spot level. The account you saved from keeps exactly what you typed. A member keeps its offset while that window's value is unchanged and gets a new one when you change it; within one window no two accounts of the group end up on the same exit points. Typing a value directly into a member makes it the new base. Only schedule windows get the offset (not the account-level fallback), and an ATM exit ignores points.
 - **Managing**: **Groups** button next to *New Account*. Create a group from two or more accounts and choose whose settings to copy. Adding an account replaces its settings with the group's. Removing an account, or deleting the group, leaves the accounts with their current settings; they just stop syncing.
 - Grouped accounts show a purple group badge in the account selector, and a banner above the Control Panel lists the other members.

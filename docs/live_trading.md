@@ -98,7 +98,7 @@ Rows carry `day_basis` (migration 049): `'utc'` for Delta's day, `'ist1730'` for
 - **Summary** — net P&L for the range with return % (total net ÷ each account's first opening balance + Σ `net_deposits`) and realized − fees; up / down days and win rate (days with net P&L > 0 vs < 0), average day, best and worst day, **max drawdown** (largest fall of cumulative daily net P&L from its high in the range), fees paid on Delta as % of realized, peak margin used (highest day, % and date), and the current / ending balance (Σ each account's latest `closing_balance`) with net deposits.
 - **Charts** (`src/components/DailyReport/ReportCharts.jsx`) — *Daily net P&L* (columns above / below zero) and *Cumulative net P&L* (running total; deposits / withdrawals excluded), with hover tooltips.
 - **All live accounts = one combined row per day.** Amounts (balances, deposits, realized, fees, net, unrealized, exits) are summed; return = combined net ÷ Σ per-account bases (opening + max(0, deposits), as the engine computes it); max margin = Σ each account's own peak that day — an upper bound, since peaks may not coincide — and its % is against the summed balances at those peaks; max-margin time is blank; status shows the least-final one (*In progress* > *Not final* > *Backfilled* > *Final*); *est.* carries through if any account's figure was estimated. A **Combined / Per account** toggle on the table switches back to individual rows, and a **By account** table compares accounts (balance, deposits, net P&L, return, share of total P&L, fees, up / down days, best / worst day, drawdown, exits) — clicking a row opens that account. The summary always comes from the per-account rows, so its return matches either view.
-- **Table** — engine fee estimate, unrealized at close and max-margin time are hidden behind **More columns**; today's in-progress row is highlighted; the totals row follows the visible columns. CSV / Excel exports mirror the current rows (combined or per account) and always include every column. The calculation notes are under a collapsible *How these numbers are calculated*.
+- **Table** — the **Realized P&L ($)** column (rows, *est.* rows and total) is plain text, not red/green; Net P&L, Return and Deposits keep their colour. Engine fee estimate, unrealized at close and max-margin time are hidden behind **More columns**; today's in-progress row is highlighted; the totals row follows the visible columns. CSV / Excel exports mirror the current rows (combined or per account) and always include every column. The calculation notes are under a collapsible *How these numbers are calculated*.
 
 ## Credential storage & security model
 
@@ -789,6 +789,8 @@ the browser) executes them on Delta and cleans up:
 | **Order cancel (✕)** | inserts `delta_cancel_requests` (`order_id`, `product_id`) | cancels that order on Delta, deletes the row |
 | **Close All** | sets `paper_trading_accounts.close_all_requested = true` | one-shot native `close_all` flatten (falls back to per-position closes), books + deletes all |
 | **Manual exit** | sets `active_positions.exit_requested = true` | cancel resting + market-close the legs, books Manual Exit, deletes the row |
+| **Manual order (Trade tab)** | RPC `place_manual_order` inserts `delta_order_requests` (`pending`; one row per account on a whole-group order) | claims the row, places the order on Delta, writes back `placed` / `dry_run` / `failed` / `expired` (migrations `055`/`056`, see [Manual orders](#manual-orders--trade-tab-migrations-055056)) |
+| **Order edit (✎)** | inserts `delta_edit_requests` (`order_id`, new total `size`, `limit_price`) | claims the row, edits the order in place (`PUT /v2/orders`), writes back `done` / `dry_run` / `failed` / `expired` (migration `057`) |
 
 > [!IMPORTANT]
 > **Close All is DB-polled, not Realtime-only.** It used to fire only when a Realtime
@@ -800,15 +802,17 @@ the browser) executes them on Delta and cleans up:
 > Realtime delivery. Per-leg close / cancel / manual-exit were already DB-polled.
 
 > [!NOTE]
-> **Consolidated request poll (multi-account egress).** These four request types are no
+> **Consolidated request poll (multi-account egress).** These request types are no
 > longer polled per-account (which was 4 queries × N accounts every 1.5s). A single
-> **manager-level** poll (`pollAllRequests`) runs up to 4 **batched** queries across all
-> running accounts every 1.5s and dispatches only to the accounts with pending work — so
-> idle request-poll load stays flat as the account count grows (≤4 queries/tick instead
-> of 4×N). The two **live-only** tables (`delta_close_requests`, `delta_cancel_requests`)
-> are queried **only when at least one running account is armed-live** (scoped to those
-> ids), so a paper-only / all-dry-run deployment issues just **2 queries/tick**
-> (`close_all_requested` + `exit_requested`, which cover every account). Manual-action
+> **manager-level** poll (`pollAllRequests`) runs one **batched** query per table (up to 6)
+> across all running accounts every 1.5s and dispatches only to the accounts with pending
+> work — so idle request-poll load stays flat as the account count grows. The two
+> **live-only** tables (`delta_close_requests`, `delta_cancel_requests`) are queried
+> **only when at least one running account is armed-live** (scoped to those ids). The
+> pending `delta_order_requests` / `delta_edit_requests` rows are queried for **every**
+> running account, so a request on an unarmed account is answered with a clear failure
+> instead of sitting pending; a paper-only / all-dry-run deployment therefore issues
+> **4 queries/tick** (`close_all_requested`, `exit_requested` and the two request tables). Manual-action
 > responsiveness is unchanged (~1.5s). After executing, each handler republishes the live
 > snapshot immediately (see [the data pipeline](#live-exchange-data-pipeline-dashboard-tabs)).
 
@@ -909,6 +913,80 @@ fill: **buy at ask + `entry_buy_offset`** (default 10), **sell at bid −
 `entry_sell_offset`** (default 3), editable per account in the live section of the
 Create/Edit modal. The offsets affect only the order limit price sent to Delta — the
 stored entry price (used for PnL/margin) remains the ask/bid. Paper ignores them.
+
+### Manual orders — Trade tab (migrations 055/056)
+
+Live accounts get a **Trade** tab in the Trading Workspace (hidden for paper; switching to a
+paper account falls back to Positions) to punch an order by hand without leaving the dashboard:
+
+- **Pick the option** — expiry, Call/Put and strike (defaults: nearest expiry, strike nearest
+  spot). Chips list the account's open option positions; clicking one selects it.
+- **Order book** — fetched by the **browser directly** from Delta's public data (REST
+  `/v2/l2orderbook` snapshot, then the `l2_orderbook` WebSocket channel; no keys involved).
+  10 levels per side with depth bars, mark and spread. Clicking a level sets the limit price.
+- **Ticket** — Buy / Sell, **Limit** (GTC) or **Market** (IOC), limit price with **Bid / Mark /
+  Ask** quick-fill, size in **whole contracts** (shows the underlying equivalent and an
+  approximate premium), **Reduce-only**. A confirm dialog summarises the order (and warns in
+  dry-run). The ticket is disabled until the account is armed.
+- **Manual orders** list — the last 20 requests with their status, updated in real time:
+  Placed (with Delta's order id / state), Dry-run, Rejected (Delta's message), Expired, or
+  *No response* if the engine hasn't picked it up within 60s.
+
+**Flow.** The browser never holds Delta keys. It calls RPC `place_manual_order(...)`, which
+inserts a `pending` row in `delta_order_requests`; the engine's 1.5s request poll picks it up,
+**expires** any row older than 60s (prices have moved — never sent late), **claims** the row
+(`pending → processing`, so overlapping polls can't place it twice), places it with
+`POST /v2/orders` and `client_order_id` `MAN-<12 hex of the request id>` (a second
+idempotency guard), and writes the outcome back: `placed` / `dry_run` (`DELTA_LIVE_DRYRUN`) /
+`failed` (Delta's message, or "not armed") / `expired`. A placed order sends a
+`🖐 MANUAL ORDER` Telegram **trade** alert and republishes the snapshot. Rejections are shown in
+the UI only — they are **not** Telegram failure alarms (it's your own order).
+
+**RLS.** The account owner or an admin may read the rows; inserts must be `pending` with no
+outcome fields, on a `live` account; only the engine (`service_role`) updates. The table is in
+the `supabase_realtime` publication.
+
+**Whole group (migration 056).** On a grouped account the group's owner or an admin sees a
+**Whole group** checkbox (on by default): `place_manual_order(..., p_whole_group)` queues the
+**same** order (same size and price) for every other live account of the group, linked by
+`group_request_id`. Each account's engine places its own copy independently, so one
+rejection (not armed, nothing to reduce, margin…) never blocks the others; each account's
+status shows in its own Trade tab.
+
+> [!WARNING]
+> **The engine doesn't manage manual orders.** A filled manual **long** is an untracked
+> position, so the engine **adopts** it after its usual ~120s grace (see
+> [external reconciliation](#changes-made-directly-on-delta-external-reconciliation)) — by
+> design. A manual **short** only raises an admin alert. The engine does not cancel a manual
+> resting order. Don't punch manual orders on the symbols of the strategy's running legs —
+> Delta nets them into the engine's tracked position.
+
+### Order edit — Open Orders ✎ (migration 057)
+
+On a live account's **Open Orders** tab, limit orders get a **✎** button beside ✕. Qty and
+limit price become inline inputs — qty is the order's **total** size including what has
+already filled, so it must be above the filled qty — and ✓ / Enter saves, ↺ / Esc discards.
+The UI inserts a `delta_edit_requests` row and waits (up to 25s) for the outcome; the engine
+claims it the same way as a manual order and edits the order **in place** with
+`PUT /v2/orders` (same order id, bracket kept), writing back `done` / `dry_run` / `failed` /
+`expired` (60s), then republishes the snapshot. Same RLS as `delta_order_requests` (no
+Realtime — the UI polls the row).
+
+> [!CAUTION]
+> Editing the engine's **short buy-back** (`-SEX`) holds only until `shortExitPrice` or the
+> active window changes — `resyncRestingOrders` then re-prices it back to the config. Don't
+> change the qty of the engine's ladder slices or of in-flight entry orders.
+
+### Account groups on live (migrations 052–054)
+
+Live accounts can be grouped like paper ones (same mode and strategy version). A group may
+hold accounts of **different users** — e.g. an admin's group of client accounts (migration
+`052`); only the group's owner or an admin can add accounts or copy settings across it, and a
+client editing their own grouped account saves it for that account only. When settings are
+copied, each other member's **window Exit Points** get a random ±10–50 offset from the saved
+value (unique within the group per window, stable while the base value is unchanged —
+migrations `053`/`054`; see the LLD), so the group's exits don't all sit on one spot level.
+The account-level exit points fallback is not jittered, and an `ATM` exit type ignores points.
 
 ### Excluded strikes on live (2026-10-07)
 
@@ -1520,8 +1598,8 @@ bookkeeping.
     Realtime broadcast + UI refetch roughly every 60s instead of every 20s, while a
     real fill/order/position change still publishes immediately.
   - **Immediate republish after a manual action:** the engine republishes the snapshot
-    **right after** it processes a per-leg close, Close All, order cancel, or manual
-    exit — so the closed row clears from the UI within ~1s instead of lingering until
+    **right after** it processes a per-leg close, Close All, order cancel, manual
+    exit, manual order or order edit — so the closed row clears from the UI within ~1s instead of lingering until
     the next 20s tick. (Without this, the UI's optimistic removal was undone by a
     refetch of the still-stale snapshot, making the position visibly **reappear then
     vanish** — the "close glitch".)
@@ -1630,3 +1708,6 @@ forwards the signed headers unchanged, so the browser's HMAC stays valid.
    - After the short @1.1 fills → **Open Orders** shows the fixed **ladder** SELLs;
      **Fills** shows executions; Order History logs `Short Leg Exit @ …` /
      `Long Leg Exit @ level …`. Only scale up once this full cycle is confirmed.
+5. **Upgrading to the manual-order / group-jitter build:** run migrations `053`–`057` in
+   order. `053`/`054` need no code change; `055`, `056` and `057` need the engine restarted
+   (`pm2`) and the frontend redeployed.
