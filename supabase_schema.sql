@@ -198,6 +198,12 @@ CREATE TABLE IF NOT EXISTS public.paper_trading_schedules (
     -- Shared Long Strikes (migration 044, paper v2): the N long strikes nearest ATM may each
     -- carry two spreads (same long, the two valid shorts nearest ATM). 0 = off.
     shared_long_strikes INTEGER NOT NULL DEFAULT 0 CHECK (shared_long_strikes >= 0),
+    -- Group exit-points jitter (migration 053): the random ±[10, 50] part sync_account_group added
+    -- to this window's exit_points (0 = set directly). Base points = exit_points − exit_points_jitter.
+    exit_points_jitter INTEGER NOT NULL DEFAULT 0,
+    -- Links the copies of one window across a group's members (migration 053), so a member
+    -- keeps its jitter while the window's base points don't change.
+    group_window_key UUID,
     is_active BOOLEAN NOT NULL DEFAULT true,
     sort_order INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -794,6 +800,7 @@ DECLARE
   v_cols TEXT;
   v_sched_cols TEXT;
   v_group_owner UUID;
+  v_old_jitter JSONB;
 BEGIN
   IF p_what NOT IN ('config', 'schedules', 'all') THEN
     RAISE EXCEPTION 'sync_account_group: p_what must be config, schedules or all';
@@ -840,11 +847,44 @@ BEGIN
         FROM information_schema.columns
        WHERE table_schema = 'public' AND table_name = 'paper_trading_schedules'
          AND column_name NOT IN ('id', 'account_id', 'created_at', 'updated_at');
+
+      -- Give the source's new windows a group-wide key (copies inherit it), then remember each
+      -- member's current base + jitter per window before its rows are replaced.
+      UPDATE public.paper_trading_schedules SET group_window_key = id
+       WHERE account_id = p_source AND group_window_key IS NULL;
+      SELECT jsonb_object_agg(account_id::text || ':' || group_window_key::text,
+                              jsonb_build_array(exit_points - exit_points_jitter, exit_points_jitter))
+        INTO v_old_jitter
+        FROM public.paper_trading_schedules
+       WHERE account_id = ANY(v_members) AND group_window_key IS NOT NULL;
+
       DELETE FROM public.paper_trading_schedules WHERE account_id = ANY(v_members);
       EXECUTE format(
         'INSERT INTO public.paper_trading_schedules (account_id, %1$s) SELECT m, %1$s FROM public.paper_trading_schedules s CROSS JOIN unnest($2) AS m WHERE s.account_id = $1',
         v_sched_cols
       ) USING p_source, v_members;
+
+      -- The copies carry the source's points and jitter: swap in the member's own jitter,
+      -- keeping the base (points − jitter) the same. A member keeps its previous random part
+      -- while the window's base is unchanged; otherwise it gets a fresh one of ±[10, 50]. The
+      -- minus side is skipped when it would take the points below 0 (the engine reads |points|).
+      UPDATE public.paper_trading_schedules t
+         SET exit_points = t.exit_points - t.exit_points_jitter + r.j,
+             exit_points_jitter = r.j
+        FROM (SELECT x.id,
+                     CASE WHEN (x.prev ->> 0)::numeric = x.base AND abs((x.prev ->> 1)::int) BETWEEN 10 AND 50
+                          THEN (x.prev ->> 1)::int
+                          WHEN x.neg AND x.base >= x.mag THEN -x.mag
+                          ELSE x.mag
+                     END AS j
+                FROM (SELECT s.id,
+                             s.exit_points - s.exit_points_jitter AS base,
+                             v_old_jitter -> (s.account_id::text || ':' || s.group_window_key::text) AS prev,
+                             10 + floor(random() * 41)::int AS mag,
+                             random() < 0.5 AS neg
+                        FROM public.paper_trading_schedules s
+                       WHERE s.account_id = ANY(v_members)) x) r
+       WHERE t.id = r.id;
     END IF;
   END IF;
 
@@ -854,3 +894,25 @@ $$;
 
 REVOKE ALL ON FUNCTION public.sync_account_group(UUID, TEXT) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.sync_account_group(UUID, TEXT) TO authenticated, service_role;
+
+-- Migration 053: a direct edit of exit_points resets its group jitter (typed value = new base)
+CREATE OR REPLACE FUNCTION public._reset_exit_points_jitter()
+RETURNS TRIGGER
+LANGUAGE plpgsql SET search_path = ''
+AS $$
+BEGIN
+  -- sync_account_group changes both columns together; anything else changing only the points
+  -- is a direct edit.
+  IF NEW.exit_points IS DISTINCT FROM OLD.exit_points
+     AND NEW.exit_points_jitter IS NOT DISTINCT FROM OLD.exit_points_jitter THEN
+    NEW.exit_points_jitter := 0;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_reset_exit_points_jitter ON public.paper_trading_schedules;
+CREATE TRIGGER trg_reset_exit_points_jitter
+  BEFORE UPDATE ON public.paper_trading_schedules
+  FOR EACH ROW EXECUTE FUNCTION public._reset_exit_points_jitter();
+

@@ -31,7 +31,7 @@ const COLUMNS = [
   { key: 'openingBalance', label: 'Opening Balance ($)', usd: true },
   { key: 'closingBalance', label: 'Closing Balance ($)', usd: true },
   { key: 'netDeposits', label: 'Deposits / Withdrawals ($)', usd: true, signed: true },
-  { key: 'realizedGross', label: 'Realized P&L ($)', usd: true, signed: true },
+  { key: 'realizedGross', label: 'Realized P&L ($)', usd: true },
   { key: 'feesActual', label: 'Fees Paid — Delta ($)', usd: true },
   { key: 'feesEstimated', label: 'Fees — Engine Est. ($)', usd: true, detail: true },
   { key: 'netPnl', label: 'Net P&L ($)', usd: true, signed: true },
@@ -306,7 +306,7 @@ export default function DailyReport({ onNavigate, theme, toggleTheme, active }) 
     // Before Delta's order history: realized (and so net / return) is the engine's estimate.
     if (r.pnlEstimate && PNL_KEYS.has(c.key) && v != null) {
       return (
-        <span className={tone(v)} title="Estimated from trade history (engine-side P&L) — this day is older than Delta's order history, so Delta's own realized P&L isn't available">
+        <span className={c.signed ? tone(v) : ''} title="Estimated from trade history (engine-side P&L) — this day is older than Delta's order history, so Delta's own realized P&L isn't available">
           {c.pct ? fmtPct(v) : fmtUsd(v)} <span className="dr-est">est.</span>
         </span>
       );
@@ -328,7 +328,7 @@ export default function DailyReport({ onNavigate, theme, toggleTheme, active }) 
       case 'date': return 'Total';
       case 'account': return `${t.days} day${t.days === 1 ? '' : 's'}`;
       case 'netDeposits': return <span className={tone(t.netDeposits)}>{fmtUsd(t.netDeposits)}</span>;
-      case 'realizedGross': return <><span className={tone(t.realizedGross)}>{fmtUsd(t.realizedGross)}</span>{est(t.pnlEstimate)}</>;
+      case 'realizedGross': return <><span>{fmtUsd(t.realizedGross)}</span>{est(t.pnlEstimate)}</>;
       case 'feesActual': return fmtUsd(t.feesActual);
       case 'feesEstimated': return fmtUsd(t.feesEstimated);
       case 'netPnl': return <><span className={tone(t.netPnl)}>{fmtUsd(t.netPnl)}</span>{est(t.pnlEstimate)}</>;
