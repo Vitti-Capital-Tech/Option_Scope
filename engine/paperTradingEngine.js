@@ -20,6 +20,7 @@ import { reserveSpread as governorReserveSpread } from './lib/entryGovernor.js';
 import { createDailyStatsTracker } from './lib/dailyStats.js';
 import { notifyLiveFailure, notifyLiveTrade, sendTelegramMessage } from './lib/telegram.js';
 import { getBalance } from './lib/deltaTradeApi.js';
+import { reportDbFailure, summarizeDbError } from './lib/dbHealth.js';
 import {
   loadProducts, getExpiries, getSpotPrice,
   buildSymbolMeta,
@@ -6626,7 +6627,11 @@ async function startSingleAccountEngine(account) {
         balances: snap.balances,
         wallet: snap.wallet,
       }, { onConflict: 'account_id' });
-      if (error) { logError(`[${accountState.name}] live_exchange_state upsert error:`, error.message); return; }
+      if (error) {
+        logError(`[${accountState.name}] live_exchange_state upsert error:`, summarizeDbError(error));
+        reportDbFailure('live snapshot', error);
+        return;
+      }
       lastSnapSig = sig;
       lastSnapUpsertAt = now;
     } catch (e) {

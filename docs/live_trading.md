@@ -257,6 +257,8 @@ Telegram outage can never crash or block the engine.
 | `TELEGRAM_GLOBAL_GAP_MS` | no (default `150`) | Minimum gap between **any** two sends, bot-wide across every chat |
 | `TELEGRAM_MAX_RETRIES` | no (default `3`) | Retries after a `429` / transient failure |
 | `TELEGRAM_MAX_QUEUE` | no (default `200`) | Max messages queued per chat before the oldest is dropped (logged) |
+| `DB_ALERT_AFTER_MS` | no (default `45000`) | **Database watchdog** (`engine/lib/dbHealth.js`): when no Supabase write (account heartbeats every 30s, live snapshots) has succeeded for this long and writes keep failing, one 🛑 **DATABASE UNREACHABLE** alert goes to the error channel (else the default chat) with the reason — e.g. `HTTP 521 (Cloudflare page) — Supabase is down / refusing connections`. A ✅ **DATABASE RECOVERED** message (with the outage length) follows the first successful write. Added after the 8 Oct 2026 outage, when the Micro instance ran out of memory and the dashboard showed "Engine Offline". Engine logs now print that one-line reason instead of the whole Cloudflare HTML page |
+| `DB_ALERT_REPEAT_MS` | no (default `600000`) | While the database stays unreachable, repeat the 🛑 alert this often |
 | `VITE_TELEGRAM_BOT_USERNAME` | frontend | Bot @username (no `@`) — builds the per-account "Connect Telegram" deep link |
 
 Only the **bot token** is fundamentally required now; a message is sent when the token

@@ -343,6 +343,19 @@ export function notifyLiveTrade({ account = '—', title = 'Trade', detail = '',
  * @param {string|number} chatId  destination chat id (required — no global fallback)
  * @param {string}        text    message text (HTML parse mode)
  */
+/**
+ * Engine-wide (not per-account) alert, e.g. the database being unreachable. Goes to the
+ * error channel when configured, else the default chat. Fire-and-forget; NOT de-duplicated
+ * (callers rate-limit their own alerts). `lines` are plain text and are HTML-escaped.
+ */
+export function notifySystem({ title, lines = [] } = {}) {
+  if (!ENABLED) return;
+  const dest = ERROR_CHAT_ID || CHAT_ID;
+  const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  const text = [`<b>${escapeHtml(title)}</b>`, ...lines.filter(Boolean).map(escapeHtml), `<i>${ts} UTC</i>`].join('\n');
+  sendTelegram(text, dest).catch(() => {});
+}
+
 export function sendTelegramMessage(chatId, text) {
   if (!chatId) return Promise.resolve({ ok: false });
   return sendTelegram(text, chatId);

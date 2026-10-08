@@ -5,6 +5,7 @@
  */
 import { supabase } from './supabase.js';
 import { log, logError } from './utils.js';
+import { reportDbOk, reportDbFailure, summarizeDbError } from './dbHealth.js';
 /**
  * Create a heartbeat manager for a specific engine.
  * @param {string} engineId - 'paper_trading'
@@ -41,10 +42,14 @@ export function createHeartbeat(engineId) {
         allocation_pct: state.allocation_pct,
       });
       if (error) {
-        logError(`Heartbeat write error (${engineId}):`, error.message);
+        logError(`Heartbeat write error (${engineId}):`, summarizeDbError(error));
+        reportDbFailure('heartbeat', error);
+      } else {
+        reportDbOk();
       }
     } catch (e) {
       logError(`Heartbeat exception (${engineId}):`, e.message);
+      reportDbFailure('heartbeat', e);
     }
   };
 
