@@ -246,7 +246,9 @@ const Tag = ({ text, color = 'var(--accent)' }) => (
 );
 
 // ── Open Orders (live) — resting limit orders on Delta ────────────────────
-function LiveOrdersTab({ orders, spotPrice, onCancelOrder }) {
+function LiveOrdersTab({ orders, spotPrice, onCancelOrder, onEditOrder }) {
+  // Inline edit (✎) of one resting limit order: total qty + limit price.
+  const [editing, setEditing] = useState(null); // { id, qty, price, saving, error }
   if (!orders?.length) {
     return <EmptyPanel icon="open" title="No Open Orders"
       desc="Resting limit orders on Delta Exchange appear here. Spread entries rest at their limit price until filled." />;
@@ -273,21 +275,62 @@ function LiveOrdersTab({ orders, spotPrice, onCancelOrder }) {
           const tp = num(o.bracket_take_profit_price);
           const sl = num(o.bracket_stop_loss_price);
           const isCall = (o.product_symbol || '').startsWith('C-');
+          const canEdit = !!onEditOrder && o.id != null && String(o.order_type) === 'limit_order';
+          const ed = editing?.id === o.id ? editing : null;
+          const save = async () => {
+            const newQty = Number(ed.qty);
+            const newPx = Number(ed.price);
+            if (!Number.isInteger(newQty) || newQty < Math.max(1, filled + 1)) {
+              setEditing({ ...ed, error: `Qty must be a whole number above the filled ${filled}.` });
+              return;
+            }
+            if (!(newPx > 0)) { setEditing({ ...ed, error: 'Enter a valid price.' }); return; }
+            setEditing({ ...ed, saving: true, error: '' });
+            const res = await onEditOrder(o, { size: newQty, price: newPx });
+            if (res?.ok) setEditing(null);
+            else setEditing(cur => (cur?.id === o.id ? { ...cur, saving: false, error: res?.error || 'Edit failed.' } : cur));
+          };
           return (
             <tr key={o.id ?? o.client_order_id} className={`pt-row-${isCall ? 'call' : 'put'}`}>
               {/* Vertical rail before the symbol: GREEN for a long (buy) order, RED for a short (sell). */}
               <td><span className={`pt-legrail ${sell ? 'short' : 'long'}`} /><span className="pt-instrument">{o.product_symbol || '—'}</span></td>
-              <td className="r"><span style={{ color: sell ? 'var(--put)' : 'var(--call)', fontWeight: 700 }}>{qty > 0 ? '+' : ''}{qty}</span></td>
+              <td className="r">{ed ? (
+                <input type="number" min={Math.max(1, filled + 1)} step="1" value={ed.qty} disabled={ed.saving}
+                  onChange={e => setEditing({ ...ed, qty: e.target.value, error: '' })} className="pt-order-edit-input" title="Total order qty (incl. filled)" />
+              ) : (
+                <span style={{ color: sell ? 'var(--put)' : 'var(--call)', fontWeight: 700 }}>{qty > 0 ? '+' : ''}{qty}</span>
+              )}</td>
               <td className="r">{fmtNum(filled, 0)}</td>
               <td className="r">{sizeBtc} {unit}</td>
               <td className="r">{notional != null ? `$${fmtNum(notional)}` : '—'}</td>
               <td>{String(o.order_type || '').replace('_order', '').replace(/^\w/, c => c.toUpperCase())}</td>
               <td className="r">{o.reduce_only ? '✓' : '—'}</td>
-              <td className="r">{fmtNum(o.limit_price)}</td>
+              <td className="r">{ed ? (
+                <input type="number" min="0" step="any" value={ed.price} disabled={ed.saving}
+                  onChange={e => setEditing({ ...ed, price: e.target.value, error: '' })}
+                  onKeyDown={e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') setEditing(null); }}
+                  className="pt-order-edit-input" title="Limit price" />
+              ) : fmtNum(o.limit_price)}</td>
               <td className="r">{o.average_fill_price ? fmtNum(o.average_fill_price) : '—'}</td>
               <td><span style={{ fontSize: 11 }}><span style={{ color: 'var(--call)' }}>TP {tp != null ? tp : '—'}</span> · <span style={{ color: 'var(--put)' }}>SL {sl != null ? sl : '—'}</span></span></td>
               <td className="r"><span className="pt-dim" style={{ fontSize: 11 }}>{fmtTs(o.created_at)}</span></td>
-              <td className="r"><button onClick={() => onCancelOrder && onCancelOrder(o)} className="pt-btn-close" title="Cancel order">✕</button></td>
+              <td className="r">
+                {ed ? (
+                  <span className="pt-order-edit-actions">
+                    <button type="button" onClick={save} disabled={ed.saving} className="pt-btn-edit" title="Save (Enter)">{ed.saving ? '…' : '✓'}</button>
+                    <button type="button" onClick={() => setEditing(null)} disabled={ed.saving} className="pt-btn-close" title="Discard (Esc)">↺</button>
+                    {ed.error && <span className="pt-order-edit-error" title={ed.error}>{ed.error}</span>}
+                  </span>
+                ) : (
+                  <span className="pt-order-edit-actions">
+                    {canEdit && (
+                      <button type="button" className="pt-btn-edit" title="Edit qty / price"
+                        onClick={() => setEditing({ id: o.id, qty: String(size), price: String(o.limit_price ?? ''), saving: false, error: '' })}>✎</button>
+                    )}
+                    <button onClick={() => onCancelOrder && onCancelOrder(o)} className="pt-btn-close" title="Cancel order">✕</button>
+                  </span>
+                )}
+              </td>
             </tr>
           );
         })}
@@ -1148,7 +1191,7 @@ export default function TradingWorkspace(props) {
 
           {tab === 'open' && (
             live ? (
-              <LiveOrdersTab orders={live.orders} spotPrice={props.spotPrice} onCancelOrder={props.onCancelOrder} />
+              <LiveOrdersTab orders={live.orders} spotPrice={props.spotPrice} onCancelOrder={props.onCancelOrder} onEditOrder={props.onEditOrder} />
             ) : (
               <ActivePositionsTable
                 positions={props.positions}

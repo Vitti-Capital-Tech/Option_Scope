@@ -1360,6 +1360,30 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     setTimeout(() => syncAll(), 2000);
   };
 
+  // Edit a resting order's qty / limit price (✎ on an Open Orders row). The engine applies it
+  // on Delta (delta_edit_requests, migration 057); wait for its outcome so the row can show
+  // a rejection. Resolves { ok, error? }.
+  const triggerEditOrder = async (o, { size, price }) => {
+    if (!o?.id) return { ok: false, error: 'Order has no id.' };
+    const { data, error } = await supabase
+      .from('delta_edit_requests')
+      .insert([{ account_id: activeAccountId, order_id: o.id, product_id: o.product_id, product_symbol: o.product_symbol, size, limit_price: price }])
+      .select('id').single();
+    if (error) { console.error('edit-order failed', error); return { ok: false, error: error.message }; }
+    for (let i = 0; i < 25; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      const { data: row } = await supabase.from('delta_edit_requests').select('status, error').eq('id', data.id).single();
+      if (!row || row.status === 'pending' || row.status === 'processing') continue;
+      if (row.status === 'done') {
+        setLiveExchangeState(prev => prev ? { ...prev, orders: (prev.orders || []).map(x => (x.id === o.id ? { ...x, size, limit_price: String(price) } : x)) } : prev);
+        setTimeout(() => syncAll(), 1500);
+        return { ok: true };
+      }
+      return { ok: false, error: row.error || `Edit ${row.status}.` };
+    }
+    return { ok: false, error: 'No response from the engine yet — is it running? Refresh to check the order.' };
+  };
+
   const handleConfirmDelete = async () => {
     if (!accountToDeleteId) return;
     setIsDeletingAccount(true);
@@ -3312,6 +3336,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
               onCloseAll={triggerCloseAll}
               onCloseOrphan={triggerCloseOrphan}
               onCancelOrder={triggerCancelOrder}
+              onEditOrder={triggerEditOrder}
               onSync={syncAll}
               isSyncing={isSyncing}
               filteredTradeHistory={filteredTradeHistory}
