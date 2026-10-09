@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../supabase';
 import { createOrderBookStream } from '../../api';
+import { showConfirm } from '../common/dialogService';
 
 // ── Trade tab (live accounts) ───────────────────────────────────────────
 // Pick an option → watch its live order book → punch a limit / market order. The browser
@@ -219,7 +220,11 @@ export default function TradeTab({ accountId, accountArmed, engineDryRun, produc
     const what = `${side.toUpperCase()} ${sizeN} × ${symbol} ${orderType === 'market' ? 'at MARKET' : `@ ${price}`}${reduceOnly ? ' (reduce-only)' : ''}`;
     const where = toGroup ? `\n\nOn ALL ${groupOthers + 1} accounts of group "${group.name}" (same size and price on each).` : '';
     const warn = engineDryRun ? '\n\nThe engine is in DRY-RUN mode: the order will be logged, not sent to Delta.' : '';
-    if (!window.confirm(`Place live order?\n\n${what}${where}${warn}`)) return;
+    if (!(await showConfirm(`${what}${where}${warn}`, {
+      title: 'Place live order?',
+      tone: side === 'sell' ? 'danger' : 'primary',
+      confirmLabel: side === 'sell' ? 'Place sell order' : 'Place buy order',
+    }))) return;
     setSubmitting(true);
     setNotice('');
     const { data: count, error } = await supabase.rpc('place_manual_order', {

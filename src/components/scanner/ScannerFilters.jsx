@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { RotateCcw, X, Plus, Check, RefreshCw } from 'lucide-react';
 import { SCANNER_DEFAULTS, SAVED_SETTINGS_KEY } from './scannerDefaults';
 import SendToWindow from './SendToWindow';
+import { showConfirm } from '../common/dialogService';
 
 const FIELD_KEYS = Object.keys(SCANNER_DEFAULTS);
 
@@ -50,16 +51,17 @@ export function ScannerFilterToolbar({ config, updateConfig, onSendToWindow }) {
     storeSaved(next);
     setAppliedName(n);
   };
-  const commit = () => {
+  const commit = async () => {
     const n = name.trim();
     if (!n) return;
-    if (saved.some(p => p.name === n) && !window.confirm(`"${n}" already exists. Replace it with the current filters?`)) return;
+    if (saved.some(p => p.name === n)
+      && !(await showConfirm(`"${n}" already exists. Replace it with the current filters?`, { title: 'Replace saved settings', confirmLabel: 'Replace' }))) return;
     saveAs(n);
     setNaming(false);
     setName('');
   };
-  const update = (n) => {
-    if (!window.confirm(`Update "${n}" with the current filters?`)) return;
+  const update = async (n) => {
+    if (!(await showConfirm(`Update "${n}" with the current filters?`, { title: 'Update saved settings', confirmLabel: 'Update' }))) return;
     saveAs(n);
   };
   const cancel = () => { setNaming(false); setName(''); };

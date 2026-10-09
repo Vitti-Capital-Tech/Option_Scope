@@ -22,6 +22,7 @@ import EditAccountModal from './components/PaperTrading/EditAccountModal';
 import AccountGroupsModal from './components/PaperTrading/AccountGroupsModal';
 import DeleteAccountModal from './components/PaperTrading/DeleteAccountModal';
 import ConfirmExitModal from './components/PaperTrading/ConfirmExitModal';
+import { showAlert, showConfirm } from './components/common/dialogService';
 
 const UNDERLYINGS = ['BTC', 'ETH'];
 const HEARTBEAT_ONLINE_THRESHOLD = 60000;
@@ -893,7 +894,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     const { error } = await supabase.rpc('sync_account_group', { p_source: activeAccountId, p_what: what });
     if (error) {
       console.error('Group settings sync error:', error);
-      alert(`Saved on this account, but copying the settings to the rest of its group failed: ${error.message}`);
+      showAlert(`Saved on this account, but copying the settings to the rest of its group failed: ${error.message}`);
     }
   }, [activeAccountId, groups, userProfile, session]);
 
@@ -1030,7 +1031,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
 
       if (accErr) {
         console.error('Failed to create account:', accErr);
-        alert(`Failed to create account: ${accErr.message}`);
+        showAlert(`Failed to create account: ${accErr.message}`);
         setIsCreatingAccount(false);
         return;
       }
@@ -1080,7 +1081,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           });
           if (credErr) {
             console.error('Failed to store Delta credentials:', credErr);
-            alert(`Account created, but storing Delta credentials failed: ${credErr.message}\nYou can add them later via Edit Account.`);
+            showAlert(`Account created, but storing Delta credentials failed: ${credErr.message}\nYou can add them later via Edit Account.`);
           }
         }
 
@@ -1096,7 +1097,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
             }
           } catch (schErr) {
             console.error('Failed to copy schedules:', schErr);
-            alert(`Account created, but copying schedule windows failed: ${schErr.message}\nYou can import them later from the Time Schedules panel.`);
+            showAlert(`Account created, but copying schedule windows failed: ${schErr.message}\nYou can import them later from the Time Schedules panel.`);
           }
         }
 
@@ -1107,7 +1108,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         setIsCreateModalOpen(false);
         resetCreate();
       } else {
-        alert("Account was created, but details could not be retrieved. Please check if Row Level Security (RLS) is blocking the query.");
+        showAlert("Account was created, but details could not be retrieved. Please check if Row Level Security (RLS) is blocking the query.");
       }
     } catch (e) {
       console.error('Create account exception:', e);
@@ -1215,7 +1216,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
 
       if (error) {
         console.error('Failed to update account:', error);
-        alert(`Failed to update account: ${error.message}`);
+        showAlert(`Failed to update account: ${error.message}`);
         return;
       }
 
@@ -1231,7 +1232,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         .eq('account_id', activeAccountId);
       if (cfgErr) {
         console.error('Failed to update account config:', cfgErr);
-        alert(`Account saved, but the engine settings (allocation %, entry offsets) could not be updated: ${cfgErr.message}`);
+        showAlert(`Account saved, but the engine settings (allocation %, entry offsets) could not be updated: ${cfgErr.message}`);
       } else {
         setPendingAlloc({ accountId: activeAccountId, pct: allocPct, until: Date.now() + 180000 });
         fetchHeartbeat();
@@ -1248,7 +1249,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         });
         if (credErr) {
           console.error('Failed to update Delta credentials:', credErr);
-          alert(`Account saved, but updating Delta credentials failed: ${credErr.message}`);
+          showAlert(`Account saved, but updating Delta credentials failed: ${credErr.message}`);
         }
       }
 
@@ -1276,7 +1277,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       .eq('id', accountId);
     if (error) {
       console.error('Failed to update account flags:', error);
-      alert(`Failed to update account: ${error.message}`);
+      showAlert(`Failed to update account: ${error.message}`);
     }
     await fetchAccounts();
   };
@@ -1303,9 +1304,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     finally { setTelegramBusy(false); }
   };
 
-  const triggerStartLive = (accountId) => {
+  const triggerStartLive = async (accountId) => {
     const acc = accounts.find(a => a.id === accountId);
-    if (!window.confirm(`Start LIVE trading for "${acc?.name}"?\n\nThe engine will place real orders for this account (subject to the engine's dry-run switch).`)) return;
+    if (!(await showConfirm(`Start LIVE trading for "${acc?.name}"?\n\nThe engine will place real orders for this account (subject to the engine's dry-run switch).`,
+      { title: 'Start LIVE trading', tone: 'danger', confirmLabel: 'Start LIVE' }))) return;
     updateAccountFlags(accountId, { live_enabled: true, paused: false });
   };
   const triggerDisarmLive = (accountId) => updateAccountFlags(accountId, { live_enabled: false });
@@ -1368,7 +1370,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     const { error } = await supabase
       .from('delta_close_requests')
       .insert([{ account_id: activeAccountId, product_symbol: symbol }]);
-    if (error) { console.error('close-symbol failed', error); alert(`Failed to close ${symbol}: ${error.message}`); return; }
+    if (error) { console.error('close-symbol failed', error); showAlert(`Failed to close ${symbol}: ${error.message}`); return; }
     // Keep this leg hidden across refetches until the engine snapshot drops it.
     pendingCloseRef.current.symbols.set(symbol, { since: Date.now() });
     setLiveExchangeState(prev => prev ? { ...prev, positions: (prev.positions || []).filter(p => p.product_symbol !== symbol) } : prev);
@@ -1382,7 +1384,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     const { error } = await supabase
       .from('delta_cancel_requests')
       .insert([{ account_id: activeAccountId, order_id: o.id, product_id: o.product_id }]);
-    if (error) { console.error('cancel-order failed', error); alert(`Failed to cancel order: ${error.message}`); return; }
+    if (error) { console.error('cancel-order failed', error); showAlert(`Failed to cancel order: ${error.message}`); return; }
     setLiveExchangeState(prev => prev ? { ...prev, orders: (prev.orders || []).filter(x => x.id !== o.id) } : prev);
     setTimeout(() => syncAll(), 2000);
   };
@@ -1428,7 +1430,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
 
       if (error) {
         console.error('Failed to delete account:', error);
-        alert(`Failed to delete account: ${error.message}`);
+        showAlert(`Failed to delete account: ${error.message}`);
         return;
       }
 
@@ -2211,7 +2213,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           .eq('id', pos.id);
         if (error) {
           console.error('Failed to request manual exit:', error);
-          alert(`Failed to request exit: ${error.message}`);
+          showAlert(`Failed to request exit: ${error.message}`);
           setIsExitingPosition(false);
           return;
         }
@@ -2294,7 +2296,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       const { error: histError } = await supabase.from('trade_history').insert([historyRow]);
       if (histError) {
         console.error('Failed to insert into trade_history:', histError);
-        alert(`Error recording trade history: ${histError.message}`);
+        showAlert(`Error recording trade history: ${histError.message}`);
         setIsExitingPosition(false);
         return;
       }
@@ -2303,7 +2305,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       const { error: delError } = await supabase.from('active_positions').delete().eq('id', pos.id);
       if (delError) {
         console.error('Failed to delete from active_positions:', delError);
-        alert(`Error deleting active position: ${delError.message}`);
+        showAlert(`Error deleting active position: ${delError.message}`);
         setIsExitingPosition(false);
         return;
       }
@@ -2323,7 +2325,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
 
     } catch (e) {
       console.error('Error during manual exit:', e);
-      alert(`An error occurred: ${e.message}`);
+      showAlert(`An error occurred: ${e.message}`);
     } finally {
       setIsExitingPosition(false);
     }
@@ -2927,7 +2929,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   // ── Export CSV ────────────────────────────────────────────────────────
   const exportCSV = () => {
     if (!filteredTradeHistory.length) {
-      alert('No closed trades found for the selected filter.');
+      showAlert('No closed trades found for the selected filter.');
       return;
     }
     const headers = [

@@ -7419,3 +7419,15 @@ details.dr-note p {
 .ag-diff-step { display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); }
 .ag-diff-step .ag-input { width: 72px; }
 .ag-diff-hint { font-size: 11px; color: var(--text-dim); font-family: ui-monospace, Consolas, monospace; }
+
+/* In-app alert / confirm dialog (components/common/AppDialog.jsx) — above other modals. */
+.app-dialog-overlay { z-index: 10050; }
+.app-dialog { max-width: 440px; margin: auto; }
+.app-dialog-title { margin: 0; font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.app-dialog-message { margin: 0; font-size: 13px; line-height: 1.55; color: var(--text); white-space: pre-line; overflow-wrap: anywhere; max-height: 60vh; overflow-y: auto; }
+.app-dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 6px; }
+.app-dialog-btn { padding: 8px 16px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer; font-size: 13px; font-weight: 600; font-family: inherit; }
+.app-dialog-btn:hover { border-color: var(--text-dim); }
+.app-dialog-btn.primary { color: #fff; }
+.app-dialog-btn.primary:hover { filter: brightness(1.1); }
+.app-dialog-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

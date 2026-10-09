@@ -5,6 +5,7 @@ import RatioSpreadScanner from './RatioSpreadScanner.jsx'
 import PaperTrading from './PaperTrading.jsx'
 import DailyReport from './DailyReport.jsx'
 import { useTabSync } from './useTabSync.js'
+import { AppDialogHost } from './components/common/AppDialog.jsx'
 
 function Root() {
   const [page, setPage] = useState(() => {
@@ -73,6 +74,8 @@ function Root() {
       <div style={{ display: page === 'report' ? 'block' : 'none', height: '100%', width: '100%' }}>
         <DailyReport onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} active={page === 'report'} />
       </div>
+      {/* In-app alert / confirm dialogs (replace window.alert / window.confirm) */}
+      <AppDialogHost />
     </>
   );
 }

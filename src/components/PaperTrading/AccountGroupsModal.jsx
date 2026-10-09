@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Users, X, Plus, Trash2, Loader2, Pencil, Check } from 'lucide-react';
+import { showConfirm } from '../common/dialogService';
 
 // Account groups (migration 050): accounts of one mode that share ALL strategy settings
 // (Control Panel filters, schedule windows, excluded strikes, allocation % / caps). Settings are
@@ -96,7 +97,7 @@ export default function AccountGroupsModal({
       + `${others.length ? `${others.join(', ')} will get ALL settings (filters, schedule windows, excluded strikes, allocation %) copied from ${accounts.find(a => a.id === source)?.name}. Their own current settings are replaced.\n` : ''}`
       + `${moving.length ? `\n${moving.map(a => `${a.name} leaves "${groupName(a.group_id)}"`).join(', ')}.\n` : ''}`
       + '\nBalances, open positions and live controls are not changed.';
-    if (!window.confirm(msg)) return;
+    if (!(await showConfirm(msg, { title: 'Create group', confirmLabel: 'Create group' }))) return;
     const ok = await onCreate(name.trim(), picked, source, normDiff(newDiff));
     if (ok) { setName(''); setPicked([]); setSourceId(''); setNewDiff(DEFAULT_DIFF); }
   };
@@ -108,7 +109,7 @@ export default function AccountGroupsModal({
     const from = membersOf(g.id)[0];
     const msg = `Add ${acc.name} to "${g.name}"?\n\n${acc.name}'s settings (filters, schedule windows, excluded strikes, allocation %) will be replaced by the group's${from ? ` (copied from ${from.name})` : ''}.`
       + `${acc.group_id ? `\nIt leaves "${groupName(acc.group_id)}".` : ''}\n\nBalance, open positions and live controls are not changed.`;
-    if (!window.confirm(msg)) return;
+    if (!(await showConfirm(msg, { title: 'Add account to group', confirmLabel: 'Add' }))) return;
     const ok = await onAddMember(g.id, id);
     if (ok) setAddPick(p => ({ ...p, [g.id]: '' }));
   };
@@ -152,7 +153,10 @@ export default function AccountGroupsModal({
                   </>
                 )}
                 <button type="button" className="ag-icon-btn danger" disabled={busy} title="Delete group (accounts keep their current settings)"
-                  onClick={() => window.confirm(`Delete group "${g.name}"? Its accounts keep their current settings and become independent again.`) && onDelete(g.id)}>
+                  onClick={async () => {
+                    if (await showConfirm(`Delete group "${g.name}"? Its accounts keep their current settings and become independent again.`,
+                      { title: 'Delete group', tone: 'danger', confirmLabel: 'Delete' })) onDelete(g.id);
+                  }}>
                   <Trash2 size={13} />
                 </button>
               </div>
@@ -176,10 +180,10 @@ export default function AccountGroupsModal({
                     max: g.exit_points_random_max ?? DEFAULT_RMAX,
                   }}
                   busy={busy}
-                  onApply={(v) => {
+                  onApply={async (v) => {
                     const msg = `Use a ${v.mode === 'fixed' ? `FIXED ${v.step}-point` : `RANDOM (±${v.min}–${v.max})`} exit-points difference in "${g.name}"?\n\n`
                       + "The group's schedule windows are re-copied now from its first account so it applies immediately (other members' window settings are replaced by that account's, as on any group save).";
-                    if (window.confirm(msg)) onUpdateExitDiff(g.id, v);
+                    if (await showConfirm(msg, { title: 'Exit points difference', confirmLabel: 'Apply' })) onUpdateExitDiff(g.id, v);
                   }}
                 />
               )}
