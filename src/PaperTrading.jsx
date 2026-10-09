@@ -909,13 +909,22 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     }
   };
 
-  const handleCreateGroup = (name, accountIds, sourceId) => runGroupOp(async () => {
+  const handleCreateGroup = (name, accountIds, sourceId, exitDiff = null) => runGroupOp(async () => {
     // The group belongs to whoever creates it (normally the admin); its members may belong
     // to different users (migration 052).
     const owner = session?.user?.id;
     if (!owner) throw new Error('Not signed in.');
     const { data: group, error } = await supabase.from('account_groups')
-      .insert({ name, user_id: owner, mode: dashboardMode }).select().single();
+      .insert({
+        name, user_id: owner, mode: dashboardMode,
+        // Exit-points difference (migration 058). Sent only when not the default, so creating a
+        // group still works on a database where 058 hasn't run yet.
+        ...(exitDiff && (exitDiff.mode !== 'fixed' || exitDiff.step !== 25 || exitDiff.min !== 10 || exitDiff.max !== 50)
+          ? {
+            exit_points_mode: exitDiff.mode, exit_points_step: exitDiff.step,
+            exit_points_random_min: exitDiff.min, exit_points_random_max: exitDiff.max,
+          } : {}),
+      }).select().single();
     if (error) throw error;
     const { error: joinErr } = await supabase.from('paper_trading_accounts').update({ group_id: group.id }).in('id', accountIds);
     if (joinErr) {
@@ -939,6 +948,24 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   const handleRemoveGroupMember = (accountId) => runGroupOp(async () => {
     const { error } = await supabase.from('paper_trading_accounts').update({ group_id: null }).eq('id', accountId);
     if (error) throw error;
+  });
+
+  // Random / fixed exit-points difference of a group (migration 058). Re-copies the group's
+  // schedule windows from its first-created member so the new difference applies at once.
+  const handleUpdateGroupExitDiff = (groupId, { mode, step, min, max }) => runGroupOp(async () => {
+    const { error } = await supabase.from('account_groups')
+      .update({
+        exit_points_mode: mode, exit_points_step: step,
+        exit_points_random_min: min, exit_points_random_max: max,
+        updated_at: new Date().toISOString(),
+      }).eq('id', groupId);
+    if (error) throw error;
+    const first = accounts.filter(a => a.group_id === groupId)
+      .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))[0];
+    if (first) {
+      const { error: syncErr } = await supabase.rpc('sync_account_group', { p_source: first.id, p_what: 'schedules' });
+      if (syncErr) throw new Error(`Saved, but re-applying it to the group's windows failed: ${syncErr.message}`);
+    }
   });
 
   const handleRenameGroup = (groupId, name) => runGroupOp(async () => {
@@ -3436,6 +3463,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         onRemoveMember={handleRemoveGroupMember}
         onRename={handleRenameGroup}
         onDelete={handleDeleteGroup}
+        onUpdateExitDiff={handleUpdateGroupExitDiff}
       />
 
       <ConfirmExitModal

@@ -979,7 +979,7 @@ Realtime — the UI polls the row).
 > active window changes — `resyncRestingOrders` then re-prices it back to the config. Don't
 > change the qty of the engine's ladder slices or of in-flight entry orders.
 
-### Account groups on live (migrations 052–054)
+### Account groups on live (migrations 052–054, 058)
 
 Live accounts can be grouped like paper ones (same mode and strategy version). A group may
 hold accounts of **different users** — e.g. an admin's group of client accounts (migration
@@ -989,6 +989,13 @@ copied, each other member's **window Exit Points** get a random ±10–50 offset
 value (unique within the group per window, stable while the base value is unchanged —
 migrations `053`/`054`; see the LLD), so the group's exits don't all sit on one spot level.
 The account-level exit points fallback is not jittered, and an `ATM` exit type ignores points.
+
+Since migration `058` each group chooses **Fixed** (the default, also for existing groups) or **Random**
+(above) in the Groups modal (*Exit points difference*, with a *Step* for Fixed, default 25, and a
+*From–To* range for Random, default 10–50). Fixed puts the saved account at its typed value and
+the others on an arithmetic progression around it — e.g. 5 accounts at step 25: −50, −25, 0, +25, +50,
+handed out in account creation order (a minus step that would go below 0 is replaced by the next plus
+step). Applying the setting re-copies the group's windows from its first-created account right away.
 
 ### Excluded strikes on live (2026-10-07)
 
@@ -1710,6 +1717,6 @@ forwards the signed headers unchanged, so the browser's HMAC stays valid.
    - After the short @1.1 fills → **Open Orders** shows the fixed **ladder** SELLs;
      **Fills** shows executions; Order History logs `Short Leg Exit @ …` /
      `Long Leg Exit @ level …`. Only scale up once this full cycle is confirmed.
-5. **Upgrading to the manual-order / group-jitter build:** run migrations `053`–`057` in
+5. **Upgrading to the manual-order / group-jitter build:** run migrations `053`–`058` in
    order. `053`/`054` need no code change; `055`, `056` and `057` need the engine restarted
    (`pm2`) and the frontend redeployed.

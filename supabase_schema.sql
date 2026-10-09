@@ -707,6 +707,13 @@ CREATE TABLE IF NOT EXISTS public.account_groups (
     name TEXT NOT NULL,
     user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
     mode TEXT NOT NULL DEFAULT 'paper' CHECK (mode IN ('paper', 'live')),
+    -- Exit-points difference across members (migration 058): 'fixed' AP steps (default) or 'random' ±10–50.
+    exit_points_mode TEXT NOT NULL DEFAULT 'fixed' CHECK (exit_points_mode IN ('random', 'fixed')),
+    exit_points_step INTEGER NOT NULL DEFAULT 25 CHECK (exit_points_step BETWEEN 0 AND 1000),
+    exit_points_random_min INTEGER NOT NULL DEFAULT 10,
+    exit_points_random_max INTEGER NOT NULL DEFAULT 50,
+    CONSTRAINT account_groups_exit_points_random_range_check
+      CHECK (exit_points_random_min >= 0 AND exit_points_random_max <= 1000 AND exit_points_random_min <= exit_points_random_max),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -805,6 +812,15 @@ DECLARE
   v_j INTEGER;
   v_used NUMERIC[];
   v_done UUID[] := '{}';
+  v_diff_mode TEXT;
+  v_step INTEGER;
+  w RECORD;
+  v_base NUMERIC;
+  v_n INTEGER;
+  v_offsets INTEGER[];
+  v_src_j INTEGER;
+  v_rmin INTEGER;
+  v_rmax INTEGER;
 BEGIN
   IF p_what NOT IN ('config', 'schedules', 'all') THEN
     RAISE EXCEPTION 'sync_account_group: p_what must be config, schedules or all';
@@ -815,7 +831,11 @@ BEGIN
   -- Members may belong to different users (an admin's group of client accounts), so only the
   -- GROUP's owner or an admin may copy settings across it — never a member's own client.
   -- No JWT user (service_role / SQL editor) is allowed.
-  SELECT user_id INTO v_group_owner FROM public.account_groups WHERE id = v_group;
+  SELECT user_id, COALESCE(exit_points_mode, 'fixed'), COALESCE(exit_points_step, 25),
+         COALESCE(exit_points_random_min, 10), COALESCE(exit_points_random_max, 50)
+    INTO v_group_owner, v_diff_mode, v_step, v_rmin, v_rmax
+    FROM public.account_groups WHERE id = v_group;
+  IF v_rmax < v_rmin THEN v_rmax := v_rmin; END IF;
   IF auth.uid() IS NOT NULL AND auth.uid() IS DISTINCT FROM v_group_owner AND NOT public._is_admin() THEN
     RAISE EXCEPTION 'Only the group owner or an admin can copy group settings';
   END IF;
@@ -868,48 +888,93 @@ BEGIN
         v_sched_cols
       ) USING p_source, v_members;
 
-      -- The copies carry the source's points and jitter: swap in each member's own jitter,
-      -- keeping the base (points − jitter) the same. Within one window no two accounts of the
-      -- group (source included) end up on the same exit points:
-      --   • a member keeps its previous random part while the base is unchanged and that value
-      --     is still free;
-      --   • otherwise it draws a free ±[10, 50] (minus only when the points stay >= 0 — the
-      --     engine reads |points|);
-      --   • only if every value is taken (more than ~80 members) may it repeat one.
-      -- Members that can keep their value are placed first, so a new member never takes it.
-      FOR r IN
-        SELECT s.id, s.group_window_key AS k, s.exit_points - s.exit_points_jitter AS base,
-               v_old_jitter -> (s.account_id::text || ':' || s.group_window_key::text) AS prev
-          FROM public.paper_trading_schedules s
-         WHERE s.account_id = ANY(v_members)
-         ORDER BY s.group_window_key,
-                  COALESCE(v_old_jitter ? (s.account_id::text || ':' || s.group_window_key::text), false) DESC,
-                  s.account_id
-      LOOP
-        SELECT COALESCE(array_agg(exit_points::numeric), '{}') INTO v_used
-          FROM public.paper_trading_schedules
-         WHERE group_window_key = r.k AND (account_id = p_source OR id = ANY(v_done));
+      IF v_diff_mode = 'fixed' THEN
+        -- FIXED difference (migration 058): slots of an arithmetic progression around the
+        -- window's base — 0, +s, −s, +2s, −2s, … (a minus step is skipped where it would take
+        -- the points below 0; the engine reads |points|). The source keeps its own points (slot 0
+        -- when it was typed there; its own offset if it is itself a member that was offset), and
+        -- the other members take the nearest remaining slots, sorted ascending and handed out in
+        -- account creation order, so each keeps the same place on every save. E.g. 5 accounts,
+        -- step 25, saved from the typed account: source 0, others −50 / −25 / +25 / +50.
+        -- Deterministic (no randomness); unique while the step is > 0.
+        FOR w IN
+          SELECT s.group_window_key AS key, min(s.exit_points - s.exit_points_jitter) AS base, count(*)::int AS n
+            FROM public.paper_trading_schedules s
+           WHERE s.account_id = ANY(v_members)
+           GROUP BY s.group_window_key
+        LOOP
+          v_base := w.base;
+          v_n := w.n;
+          SELECT COALESCE(max(exit_points_jitter), 0) INTO v_src_j
+            FROM public.paper_trading_schedules
+           WHERE account_id = p_source AND group_window_key IS NOT DISTINCT FROM w.key;
+          SELECT array_agg(o ORDER BY o) INTO v_offsets
+            FROM (SELECT c.o
+                    FROM (SELECT 0 AS o, 0 AS idx, 0 AS neg
+                          UNION ALL
+                          SELECT g * v_step, g, 0 FROM generate_series(1, v_n + 1) g
+                          UNION ALL
+                          SELECT -g * v_step, g, 1 FROM generate_series(1, v_n + 1) g) c
+                   WHERE v_base + c.o >= 0 AND c.o <> v_src_j
+                   ORDER BY c.idx, c.neg
+                   LIMIT v_n) t;
+          WITH ordered AS (
+            SELECT s.id, row_number() OVER (ORDER BY a.created_at, a.id) AS rn
+              FROM public.paper_trading_schedules s
+              JOIN public.paper_trading_accounts a ON a.id = s.account_id
+             WHERE s.account_id = ANY(v_members) AND s.group_window_key IS NOT DISTINCT FROM w.key
+          )
+          UPDATE public.paper_trading_schedules t
+             SET exit_points = v_base + COALESCE(v_offsets[o.rn], 0),
+                 exit_points_jitter = COALESCE(v_offsets[o.rn], 0)
+            FROM ordered o
+           WHERE t.id = o.id;
+        END LOOP;
+      ELSE
+        -- RANDOM difference (053/054), within the group's range [v_rmin, v_rmax] (default 10–50).
+        -- The copies carry the source's points and jitter: swap in each member's own jitter,
+        -- keeping the base (points − jitter) the same. Within one window no two accounts of the
+        -- group (source included) end up on the same exit points:
+        --   • a member keeps its previous random part while the base is unchanged and that value
+        --     is still free;
+        --   • otherwise it draws a free ±[min, max] (minus only when the points stay >= 0 — the
+        --     engine reads |points|);
+        --   • only if every value in the range is taken may it repeat one.
+        -- Members that can keep their value are placed first, so a new member never takes it.
+        FOR r IN
+          SELECT s.id, s.group_window_key AS k, s.exit_points - s.exit_points_jitter AS base,
+                 v_old_jitter -> (s.account_id::text || ':' || s.group_window_key::text) AS prev
+            FROM public.paper_trading_schedules s
+           WHERE s.account_id = ANY(v_members)
+           ORDER BY s.group_window_key,
+                    COALESCE(v_old_jitter ? (s.account_id::text || ':' || s.group_window_key::text), false) DESC,
+                    s.account_id
+        LOOP
+          SELECT COALESCE(array_agg(exit_points::numeric), '{}') INTO v_used
+            FROM public.paper_trading_schedules
+           WHERE group_window_key = r.k AND (account_id = p_source OR id = ANY(v_done));
 
-        v_j := NULL;
-        IF (r.prev ->> 0)::numeric = r.base AND abs((r.prev ->> 1)::int) BETWEEN 10 AND 50
-           AND NOT (r.base + (r.prev ->> 1)::int = ANY(v_used)) THEN
-          v_j := (r.prev ->> 1)::int;
-        END IF;
-        IF v_j IS NULL THEN
-          SELECT g.c INTO v_j
-            FROM (SELECT generate_series(-50, -10) AS c UNION ALL SELECT generate_series(10, 50)) g
-           WHERE r.base + g.c >= 0 AND NOT (r.base + g.c = ANY(v_used))
-           ORDER BY random() LIMIT 1;
-        END IF;
-        IF v_j IS NULL THEN
-          v_j := 10 + floor(random() * 41)::int;
-        END IF;
+          v_j := NULL;
+          IF (r.prev ->> 0)::numeric = r.base AND abs((r.prev ->> 1)::int) BETWEEN v_rmin AND v_rmax
+             AND NOT (r.base + (r.prev ->> 1)::int = ANY(v_used)) THEN
+            v_j := (r.prev ->> 1)::int;
+          END IF;
+          IF v_j IS NULL THEN
+            SELECT g.c INTO v_j
+              FROM (SELECT generate_series(-v_rmax, -v_rmin) AS c UNION ALL SELECT generate_series(v_rmin, v_rmax)) g
+             WHERE r.base + g.c >= 0 AND NOT (r.base + g.c = ANY(v_used))
+             ORDER BY random() LIMIT 1;
+          END IF;
+          IF v_j IS NULL THEN
+            v_j := v_rmin + floor(random() * (v_rmax - v_rmin + 1))::int;
+          END IF;
 
-        UPDATE public.paper_trading_schedules
-           SET exit_points = r.base + v_j, exit_points_jitter = v_j
-         WHERE id = r.id;
-        v_done := v_done || r.id;
-      END LOOP;
+          UPDATE public.paper_trading_schedules
+             SET exit_points = r.base + v_j, exit_points_jitter = v_j
+           WHERE id = r.id;
+          v_done := v_done || r.id;
+        END LOOP;
+        END IF;
     END IF;
   END IF;
 
