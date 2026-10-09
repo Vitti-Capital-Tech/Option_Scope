@@ -619,7 +619,10 @@ allocated pool  = equity × (balance_allocation_pct / 100)
 buffer          = equity − allocated pool          # never used for margin
 ```
 
-The engine seeds cumulative realized P&L once at startup (a `SUM(realized_net_pnl)` over `trade_history`) and refreshes it on a short TTL (~45 s), so the 1-second eval loop never re-queries every cycle. (`getPaperEquity()` / `refreshRealizedPnl()`.)
+The cumulative realized P&L comes from the **`get_account_realized_pnl`** RPC (migration `060`): the database sums `trade_history` for the account (index-only scan on `idx_trade_history_account_pnl`) and returns one number, re-read on a short TTL (~45 s). (`getPaperEquity()` / `refreshRealizedPnl()`.)
+
+> [!WARNING]
+> **Fixed 2026-10-09:** before migration `060` the engine downloaded every `trade_history` row and summed it, but the API returns at most **1,000 rows** per request — accounts with more trades were sized off a partial, too-small equity (e.g. Live Trading Mimic: 3,300 trades, $6,571 realized, engine saw ~$1,900). With `060` their equity, and so the size of new paper positions, jumps to the correct value. Until `060` is run the engine sums the history in 1,000-row pages instead.
 
 ### 2. Per-window combined cap → derived per-type caps & single-type mode
 

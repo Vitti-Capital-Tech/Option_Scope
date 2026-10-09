@@ -1055,15 +1055,45 @@ async function startSingleAccountEngine(account) {
   let realizedPnlSeeded = false;
   const REALIZED_PNL_TTL_MS = 45000;
 
+  // Realized P&L = get_account_realized_pnl (migration 060): the database sums trade_history
+  // and returns ONE number (index-only scan, a few bytes of egress). Before 060 is run it falls
+  // back to summing trade_history in 1,000-row pages — the old single request was capped at
+  // 1,000 rows by the API, so accounts with more trades got a partial (too small) equity.
+  let pnlRpcAvailable = true;
+  const isMissingRelation = (err) => /does not exist|could not find|PGRST20[2-5]/i.test(`${err?.code || ''} ${err?.message || ''}`);
+  async function sumRealizedPaged() {
+    let total = 0;
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await supabase
+        .from('trade_history').select('realized_net_pnl')
+        .eq('account_id', accountState.id)
+        .order('id', { ascending: true })
+        .range(from, from + 999);
+      if (error) throw error;
+      for (const r of (data || [])) total += Number(r.realized_net_pnl) || 0;
+      if (!data || data.length < 1000) return total;
+    }
+  }
   async function refreshRealizedPnl(force = false) {
     if (!force && realizedPnlSeeded && (Date.now() - realizedPnlFetchedAt) < REALIZED_PNL_TTL_MS) return;
     try {
-      const { data, error } = await supabase
-        .from('trade_history')
-        .select('realized_net_pnl')
-        .eq('account_id', accountState.id);
-      if (error) { logError(`[${accountState.name}] realized P&L fetch error`, error); return; }
-      realizedPnlToDate = (data || []).reduce((s, r) => s + (Number(r.realized_net_pnl) || 0), 0);
+      let total = null;
+      if (pnlRpcAvailable) {
+        const { data, error } = await supabase.rpc('get_account_realized_pnl', { p_account: accountState.id });
+        if (error) {
+          if (isMissingRelation(error)) {
+            pnlRpcAvailable = false;
+            logWarn(`[${accountState.name}] get_account_realized_pnl not available (migration 060 not run?) — summing trade_history in pages instead.`);
+          } else {
+            logError(`[${accountState.name}] realized P&L fetch error`, error);
+            return;
+          }
+        } else {
+          total = Number(data) || 0;
+        }
+      }
+      if (total == null) total = await sumRealizedPaged();
+      realizedPnlToDate = total;
       realizedPnlFetchedAt = Date.now();
       realizedPnlSeeded = true;
     } catch (e) { logError(`[${accountState.name}] realized P&L fetch exception`, e); }
