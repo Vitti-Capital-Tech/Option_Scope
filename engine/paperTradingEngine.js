@@ -6977,9 +6977,15 @@ async function startSingleAccountEngine(account) {
 export async function startPaperTradingEngine() {
   const runningEngines = {}; // accountId -> engineHandle
   const startingEngines = new Set(); // accountIds with an in-flight start (race guard)
+  // Accounts still waiting in the staggered startup queue. Other triggers (the 30s fallback
+  // sync, Realtime account events) must not start them early, or the stagger is undone.
+  const startupQueue = new Set();
+  let managerStopping = false; // set by stop(): no new account may start after shutdown begins
 
-  async function startAccountEngine(account) {
+  async function startAccountEngine(account, { fromStartupQueue = false } = {}) {
     const accountId = account.id;
+    if (managerStopping) return;
+    if (!fromStartupQueue && startupQueue.has(accountId)) return; // its turn comes in the stagger
     // Reserve the slot SYNCHRONOUSLY before the await below. Without this, a
     // concurrent trigger (initial fetch, 30s fallback sync, Realtime account
     // event) could pass the `runningEngines` check while a start is mid-flight
@@ -7023,9 +7029,45 @@ export async function startPaperTradingEngine() {
   if (error) {
     logError('Failed to fetch paper trading accounts:', error.message);
   } else if (accounts) {
-    log(`Starting ${accounts.length} account engines in parallel...`);
-    await Promise.allSettled(accounts.map(acc => startAccountEngine(acc)));
-    log(`All account engines started.`);
+    // Staggered start: starting every account at once (22 × products, tickers, positions,
+    // schedules, history) pushed the process past its memory limit — pm2 then restarted it
+    // again (9 Oct 04:03 → 04:05 UTC) — and flooded Supabase with timeouts. Accounts start in
+    // small batches instead: armed live accounts with open positions first, then other armed
+    // live, disarmed live, then paper. Runs in the background so the manager's own timers
+    // (manual-action poll, account sync) start right away; queued accounts are only started
+    // by the stagger. ENGINE_START_BATCH (default 4) / ENGINE_START_GAP_MS (default 3000).
+    const batchSize = Math.max(1, Number(process.env.ENGINE_START_BATCH) || 4);
+    const gapMs = Math.max(0, Number(process.env.ENGINE_START_GAP_MS ?? 3000));
+    const withOpen = new Set();
+    try {
+      const { data: openRows } = await supabase.from('active_positions').select('account_id');
+      for (const r of (openRows || [])) if (r.account_id) withOpen.add(r.account_id);
+    } catch { /* ordering hint only */ }
+    const rank = (a) => {
+      const live = a.mode === 'live';
+      if (live && a.live_enabled) return withOpen.has(a.id) ? 0 : 1;
+      if (live) return 2;
+      return withOpen.has(a.id) ? 3 : 4;
+    };
+    const ordered = [...accounts].sort((a, b) => rank(a) - rank(b));
+    for (const a of ordered) startupQueue.add(a.id);
+    log(`Starting ${ordered.length} account engines in batches of ${batchSize} (${gapMs}ms apart) — live accounts first...`);
+    (async () => {
+      for (let i = 0; i < ordered.length; i += batchSize) {
+        if (managerStopping) break;
+        const batch = ordered.slice(i, i + batchSize);
+        await Promise.allSettled(batch.map(acc => {
+          if (!startupQueue.has(acc.id)) return null; // deactivated / deleted while queued
+          startupQueue.delete(acc.id);
+          return startAccountEngine(acc, { fromStartupQueue: true });
+        }));
+        if (i + batchSize < ordered.length && gapMs > 0) await new Promise(r => setTimeout(r, gapMs));
+      }
+      log(`All account engines started.`);
+    })().catch(e => {
+      startupQueue.clear();
+      logError('Staggered startup error:', e);
+    });
   }
 
   // Subscribe to paper_trading_accounts changes
@@ -7043,9 +7085,11 @@ export async function startPaperTradingEngine() {
             await startAccountEngine(newRecord);
           }
         } else if (eventType === 'DELETE') {
+          startupQueue.delete(oldRecord.id); // deleted while waiting to start → never start it
           await stopAccountEngine(oldRecord.id, true);
         } else if (eventType === 'UPDATE') {
           if (!newRecord.is_active) {
+            startupQueue.delete(newRecord.id); // deactivated while waiting to start
             await stopAccountEngine(newRecord.id);
           } else {
             if (!runningEngines[newRecord.id]) {
@@ -7351,6 +7395,8 @@ export async function startPaperTradingEngine() {
   return {
     async stop() {
       log('Shutting down all running account engines...');
+      managerStopping = true;
+      startupQueue.clear();
       tgListenerStop = true;
       clearInterval(syncTimer);
       clearInterval(verifyTimer);

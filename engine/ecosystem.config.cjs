@@ -26,8 +26,13 @@ module.exports = {
     autorestart: true,
     // Log formatting
     log_date_format: 'YYYY-MM-DD HH:mm:ss',
-    // Memory limit — restart if exceeded
-    max_memory_restart: '500M',
+    // Memory limit — restart if exceeded. Was 500M: the engine (22 accounts) peaks at
+    // ~550–680 MB on busy minutes and right after a start, so PM2 kept restarting it
+    // (8 Oct 05:27, 9 Oct 04:03 / 04:05 / 04:31 UTC) — each restart reloads every account
+    // at once and was what overloaded Supabase. The Lightsail box has 1.9 GB RAM with ~1 GB
+    // free; 900M leaves headroom for the OS + pm2-logrotate. Watch `pm2 status` memory: a
+    // steady climb over days (not just peaks) would mean a leak to fix, not a limit to raise.
+    max_memory_restart: '900M',
     // Merge stdout and stderr into one log
     merge_logs: true,
   }]
