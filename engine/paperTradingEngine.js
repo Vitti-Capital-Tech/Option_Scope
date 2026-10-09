@@ -6770,7 +6770,7 @@ async function startSingleAccountEngine(account) {
 
   // Live wallet balance poll — every 60s for armed live accounts, surfaced to the
   // dashboard via the heartbeat (Wallet / Allocated / per-position figures).
-  const balanceTimer = setInterval(async () => {
+  const balanceTick = async () => {
     try {
       // Fallback for a missed realtime config event: re-read the allocation % (one cheap
       // query a minute) so a change saved in the UI always reaches sizing within ~60s.
@@ -6808,7 +6808,11 @@ async function startSingleAccountEngine(account) {
         });
       }
     } catch (e) { /* non-fatal */ }
-  }, 60000);
+  };
+  const balanceTimer = setInterval(balanceTick, 60000);
+  // Run it once right away (and publish) so the dashboard's wallet balance is back within
+  // seconds of an engine restart instead of after the first 60s tick.
+  balanceTick().then(() => heartbeat.flush()).catch(() => {});
 
   // Live exchange snapshot — every 20s for armed live accounts, READS real Delta
   // state (positions, resting/stop orders, fills, balances) and upserts it to
@@ -6820,7 +6824,9 @@ async function startSingleAccountEngine(account) {
   // balance fluctuations). Used to skip redundant upserts (see below).
   const snapSignature = (s) => {
     if (!s) return '';
-    const pos = (s.positions || []).map(p => `${p.product_symbol}:${p.size}:${p.entry_price ?? ''}`).sort().join('|');
+    // Margin rounded to $1 is part of the signature, so a margin change (short options move
+    // with spot) publishes a full snapshot right away instead of waiting for the 5-min refresh.
+    const pos = (s.positions || []).map(p => `${p.product_symbol}:${p.size}:${p.entry_price ?? ''}:${Math.round(Number(p.margin) || 0)}`).sort().join('|');
     const ord = (s.orders || []).map(o => `${o.id}:${o.limit_price ?? o.price ?? ''}:${o.size}:${o.state ?? ''}`).sort().join('|');
     const stp = (s.stopOrders || []).map(o => `${o.id}:${o.stop_price ?? o.limit_price ?? ''}:${o.size}:${o.state ?? ''}`).sort().join('|');
     const fills = `${(s.fills || []).length}:${(s.fills || [])[0]?.id ?? ''}`;
@@ -6833,8 +6839,15 @@ async function startSingleAccountEngine(account) {
   // into one only when something meaningful moved. The keepalive still refreshes
   // updated_at (liveness; UI marks stale after 120s) and mark/PnL at least this often.
   const SNAP_KEEPALIVE_MS = 60000;
+  // Migration 061: when nothing structural changed, the keepalive only bumps updated_at (no
+  // rewrite of the large JSON row, a tiny Realtime payload); the full row — with fresh marks /
+  // margins — is still rewritten at least every SNAP_FULL_REFRESH_MS. snapshot_version changes
+  // only on a full write, so the dashboard knows when it must re-read the row.
+  const SNAP_FULL_REFRESH_MS = 300000;
   let lastSnapSig = null;
   let lastSnapUpsertAt = 0;
+  let lastSnapFullAt = 0;
+  let snapVersionSupported = true;
   // Order history is the slow part of a snapshot, so fetch it only every 4th tick
   // (~40s at a 10s interval) and reuse the cached value in between. `force` (Sync
   // button / after an action) always refreshes it.
@@ -6853,7 +6866,14 @@ async function startSingleAccountEngine(account) {
       const sig = snapSignature(snap);
       const now = Date.now();
       if (sig === lastSnapSig && (now - lastSnapUpsertAt) < SNAP_KEEPALIVE_MS) return;
-      const { error } = await supabase.from('live_exchange_state').upsert({
+      // Unchanged: a light keepalive (timestamp only) until the periodic full refresh is due.
+      if (!force && snapVersionSupported && sig === lastSnapSig && (now - lastSnapFullAt) < SNAP_FULL_REFRESH_MS) {
+        const { error: kaErr } = await supabase.from('live_exchange_state')
+          .update({ updated_at: new Date().toISOString() }).eq('account_id', accountState.id);
+        if (!kaErr) { lastSnapUpsertAt = now; return; }
+        // fall through to a full write on any error
+      }
+      const row = {
         account_id: accountState.id,
         updated_at: new Date().toISOString(),
         positions: snap.positions,
@@ -6863,7 +6883,14 @@ async function startSingleAccountEngine(account) {
         order_history: snap.orderHistory,
         balances: snap.balances,
         wallet: snap.wallet,
-      }, { onConflict: 'account_id' });
+        ...(snapVersionSupported ? { snapshot_version: now } : {}),
+      };
+      let { error } = await supabase.from('live_exchange_state').upsert(row, { onConflict: 'account_id' });
+      if (error && snapVersionSupported && /snapshot_version/i.test(error.message || '')) {
+        snapVersionSupported = false; // migration 061 not run yet
+        delete row.snapshot_version;
+        ({ error } = await supabase.from('live_exchange_state').upsert(row, { onConflict: 'account_id' }));
+      }
       if (error) {
         logError(`[${accountState.name}] live_exchange_state upsert error:`, summarizeDbError(error));
         reportDbFailure('live snapshot', error);
@@ -6871,6 +6898,7 @@ async function startSingleAccountEngine(account) {
       }
       lastSnapSig = sig;
       lastSnapUpsertAt = now;
+      lastSnapFullAt = now;
     } catch (e) {
       logWarn(`[${accountState.name}] live snapshot publish failed: ${e.message}`);
     }
@@ -7117,12 +7145,17 @@ export async function startPaperTradingEngine() {
       }
 
       // Purge processed/stale requests older than 1 hour (they hold no secret once processed).
-      const cutoff = new Date(Date.now() - 3600000).toISOString();
-      await supabase.from('delta_verify_requests').delete().lt('created_at', cutoff);
+      // Once a minute, not on every 4s tick.
+      if (Date.now() - lastVerifyPurgeAt > 60000) {
+        lastVerifyPurgeAt = Date.now();
+        const cutoff = new Date(Date.now() - 3600000).toISOString();
+        await supabase.from('delta_verify_requests').delete().lt('created_at', cutoff);
+      }
     } catch (e) {
       logError('Verify watcher exception:', e);
     }
   }
+  let lastVerifyPurgeAt = 0;
   const verifyTimer = setInterval(processVerifyRequests, 4000);
 
   // ── Consolidated manual-action request poll ───────────────────────────
@@ -7131,6 +7164,9 @@ export async function startPaperTradingEngine() {
   // request-poll egress from 4×N queries/tick to 4/tick, while keeping the same
   // ~1.5s manual-action responsiveness. Only accounts with actual pending work
   // get their handlers invoked.
+  // Migration 061: one RPC (get_pending_engine_requests) instead of six table reads per tick.
+  // Falls back to the six reads until 061 is run.
+  let pendingRpcAvailable = true;
   async function pollAllRequests() {
     const ids = Object.keys(runningEngines);
     if (!ids.length) return;
@@ -7141,6 +7177,30 @@ export async function startPaperTradingEngine() {
     // closeAll + manualEx still cover ALL accounts, so manual-action responsiveness
     // is unchanged (same 1.5s cadence, same handlers fire).
     const liveIds = ids.filter(id => runningEngines[id]?.isLive?.());
+    if (pendingRpcAvailable) {
+      try {
+        const { data, error: err } = await supabase.rpc('get_pending_engine_requests', { p_ids: ids, p_live_ids: liveIds });
+        if (!err) {
+          const pending = {};
+          for (const r of (data || [])) {
+            if (!r?.account_id || !r?.kind) continue;
+            (pending[r.account_id] ||= {})[r.kind] = true;
+          }
+          for (const [accountId, flags] of Object.entries(pending)) {
+            const engine = runningEngines[accountId];
+            if (engine?.processRequests) engine.processRequests(flags).catch(() => {});
+          }
+          return;
+        }
+        if (/does not exist|could not find|PGRST20[2-5]/i.test(`${err?.code || ''} ${err?.message || ''}`)) {
+          pendingRpcAvailable = false;
+          logWarn('get_pending_engine_requests not available (migration 061 not run?) — polling the request tables directly.');
+        } else {
+          logError('Consolidated request poll error:', err.message);
+          return;
+        }
+      } catch (e) { logError('Consolidated request poll error:', e); return; }
+    }
     try {
       const [closeAllRes, closeReqRes, cancelReqRes, manualExRes, orderReqRes, editReqRes] = await Promise.all([
         supabase.from('paper_trading_accounts').select('id').eq('close_all_requested', true).in('id', ids),

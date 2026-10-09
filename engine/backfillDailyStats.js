@@ -127,7 +127,7 @@ async function backfillAccount(acct, lastDate) {
   console.log(`\n── ${acct.name} (${acct.id})`);
   const history = await selectAll(() => supabase.from('trade_history')
     .select('trade_id, entry_time, exit_time, margin, sell_qty, realized_gross_pnl, total_fees')
-    .eq('account_id', acct.id).order('exit_time', { ascending: true }));
+    .eq('account_id', acct.id).order('exit_time', { ascending: true }).order('id', { ascending: true }));
   const { data: open, error: openErr } = await supabase.from('active_positions')
     .select('id, entry_time, margin, sell_qty').eq('account_id', acct.id);
   if (openErr) throw openErr;

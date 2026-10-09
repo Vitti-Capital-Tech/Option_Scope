@@ -1263,6 +1263,7 @@ export default function TradingWorkspace(props) {
               resetToToday={props.resetToToday}
               filteredRealizedPnl={props.filteredRealizedPnl}
               filteredWins={props.filteredWins}
+              filteredTradeCount={props.filteredTradeCount}
               exportCSV={props.exportCSV}
               includeFees={props.includeFees}
               schedules={props.schedules}

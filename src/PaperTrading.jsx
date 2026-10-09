@@ -92,6 +92,35 @@ const genScheduleId = () => {
 };
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// trade_history row → UI trade. Shared by the history fetch and the all-time CSV export.
+const TRADE_HISTORY_COLUMNS = 'id, trade_id, underlying, expiry, type, buy_leg, sell_leg, hedge_leg, sell_qty, strike_diff, entry_time, exit_time, entry_buy_price, entry_sell_price, exit_buy_price, exit_sell_price, entry_spot_price, exit_spot_price, margin, realized_gross_pnl, realized_net_pnl, exit_fee, total_fees, exit_reason, is_partial, lot_size, account_id';
+const mapTradeRow = (t) => {
+  const buyLeg = safeParseLeg(t.buy_leg);
+  const sellLeg = safeParseLeg(t.sell_leg);
+  return {
+    id: t.trade_id || t.id,
+    underlying: t.underlying, expiry: t.expiry, type: t.type,
+    buyLeg, sellLeg,
+    hedgeLeg: safeParseLeg(t.hedge_leg),
+    sellQty: t.sell_qty, strikeDiff: t.strike_diff,
+    entryTime: new Date(t.entry_time), exitTime: new Date(t.exit_time),
+    entryBuyPrice: t.entry_buy_price, entrySellPrice: t.entry_sell_price,
+    exitBuyPrice: t.exit_buy_price, exitSellPrice: t.exit_sell_price,
+    entrySpotPrice: t.entry_spot_price, exitSpotPrice: t.exit_spot_price,
+    margin: t.margin,
+    realizedGrossPnl: t.realized_gross_pnl, realizedNetPnl: t.realized_net_pnl,
+    exitFee: t.exit_fee, totalFees: t.total_fees,
+    entryFee: (t.total_fees || 0) - (t.exit_fee || 0),
+    exitReason: t.exit_reason,
+    entryBuyIv: buyLeg?.entryIv || null,
+    entrySellIv: sellLeg?.entryIv || null,
+    exitBuyIv: buyLeg?.exitIv || null,
+    exitSellIv: sellLeg?.exitIv || null,
+    _isPartial: t.is_partial || false,
+    _exitedBuyQty: t.lot_size ?? buyLeg?.lotSize ?? 1,
+  };
+};
+
 // paper_trading_schedules row → UI window. Shared by fetch and copy-from-account.
 const mapScheduleRow = (s) => ({
   id: s.id,
@@ -2130,6 +2159,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   }, [activeAccountId]);
 
   // Lightweight all-time aggregates for the cumulative KPIs — no heavy JSON legs.
+  const statsDebounceRef = useRef(null);
   const fetchHistoryStats = useCallback(async () => {
     if (!activeAccountId) return;
     try {
@@ -2154,21 +2184,32 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   const fetchSupabaseTradeHistory = useCallback(async () => {
     if (!activeAccountId) return;
     try {
-      let query = supabase
+      const base = () => supabase
         .from('trade_history')
-        .select('id, trade_id, underlying, expiry, type, buy_leg, sell_leg, hedge_leg, sell_qty, strike_diff, entry_time, exit_time, entry_buy_price, entry_sell_price, exit_buy_price, exit_sell_price, entry_spot_price, exit_spot_price, margin, realized_gross_pnl, realized_net_pnl, exit_fee, total_fees, exit_reason, is_partial, lot_size, account_id')
+        .select(TRADE_HISTORY_COLUMNS)
         .eq('account_id', activeAccountId)
         .eq('underlying', underlying)
-        .order('exit_time', { ascending: false });
+        .order('exit_time', { ascending: false })
+        .order('id', { ascending: true });
+      let query = base();
 
       // Server-side fetch of just the selected day (matches the UTC+12 day bucket
       // used by filteredTradeHistory) — keeps egress tiny regardless of history size.
       const day = historyFilterDateRef.current;
       if (day) {
-        const base = new Date(`${day}T00:00:00.000Z`).getTime();
-        const startISO = new Date(base - 12 * 3600 * 1000).toISOString();
-        const endISO = new Date(base + 12 * 3600 * 1000).toISOString();
-        query = query.gte('exit_time', startISO).lt('exit_time', endISO).limit(1000);
+        const dayStart = new Date(`${day}T00:00:00.000Z`).getTime();
+        const startISO = new Date(dayStart - 12 * 3600 * 1000).toISOString();
+        const endISO = new Date(dayStart + 12 * 3600 * 1000).toISOString();
+        // A day can exceed the API's 1,000-row cap — read it in pages so it's complete.
+        const all = [];
+        for (let from = 0; ; from += 1000) {
+          const { data: page, error: pageErr } = await base().gte('exit_time', startISO).lt('exit_time', endISO).range(from, from + 999);
+          if (pageErr) return;
+          all.push(...(page || []));
+          if (!page || page.length < 1000) break;
+        }
+        if (historyFilterDateRef.current === day) setTradeHistory(all.map(mapTradeRow));
+        return;
       } else {
         query = query.limit(300);
       }
@@ -2176,31 +2217,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       const { data, error } = await query;
 
       if (error) return;
-      if (data) {
-        const mapped = data.map(t => ({
-          id: t.trade_id || t.id,
-          underlying: t.underlying, expiry: t.expiry, type: t.type,
-          buyLeg: safeParseLeg(t.buy_leg), sellLeg: safeParseLeg(t.sell_leg),
-          hedgeLeg: safeParseLeg(t.hedge_leg),
-          sellQty: t.sell_qty, strikeDiff: t.strike_diff,
-          entryTime: new Date(t.entry_time), exitTime: new Date(t.exit_time),
-          entryBuyPrice: t.entry_buy_price, entrySellPrice: t.entry_sell_price,
-          exitBuyPrice: t.exit_buy_price, exitSellPrice: t.exit_sell_price,
-          entrySpotPrice: t.entry_spot_price, exitSpotPrice: t.exit_spot_price,
-          margin: t.margin,
-          realizedGrossPnl: t.realized_gross_pnl, realizedNetPnl: t.realized_net_pnl,
-          exitFee: t.exit_fee, totalFees: t.total_fees,
-          entryFee: (t.total_fees || 0) - (t.exit_fee || 0),
-          exitReason: t.exit_reason,
-          entryBuyIv: safeParseLeg(t.buy_leg)?.entryIv || null,
-          entrySellIv: safeParseLeg(t.sell_leg)?.entryIv || null,
-          exitBuyIv: safeParseLeg(t.buy_leg)?.exitIv || null,
-          exitSellIv: safeParseLeg(t.sell_leg)?.exitIv || null,
-          _isPartial: t.is_partial || false,
-          _exitedBuyQty: t.lot_size ?? safeParseLeg(t.buy_leg)?.lotSize ?? 1,
-        }));
-        setTradeHistory(mapped);
-      }
+      if (data) setTradeHistory(data.map(mapTradeRow));
     } catch (e) { }
   }, [activeAccountId, underlying]);
 
@@ -2402,7 +2419,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           setTradeHistory(prev => [newTrade, ...prev]);
           // Refresh the all-time aggregates from the server (single row) so the
           // KPIs stay correct without re-deriving sums/today-bucket on the client.
-          fetchHistoryStats();
+          // Debounced: one exit can book several rows (ladder slices, hedge) at once.
+          clearTimeout(statsDebounceRef.current);
+          statsDebounceRef.current = setTimeout(() => fetchHistoryStats(), 1500);
         }
       )
       .subscribe();
@@ -2559,6 +2578,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     }
     return out;
   }, []);
+  // snapshot_version (migration 061) of the row currently shown. The engine's keepalive only
+  // moves updated_at; a different version means the snapshot itself changed and must be read.
+  const liveSnapVersionRef = useRef(null);
   const fetchLiveExchangeState = useCallback(async () => {
     if (!activeAccountId || !isActiveLive) { setLiveExchangeState(null); markLiveProbe('snap'); return; }
     try {
@@ -2570,10 +2592,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         .select('*')
         .eq('account_id', activeAccountId)
         .maybeSingle();
-      if (error || !data) { setLiveExchangeState(null); return; }
+      if (error || !data) { liveSnapVersionRef.current = null; setLiveExchangeState(null); return; }
       // Treat a stale snapshot (engine offline) as absent so tabs don't show ghosts.
       const age = Date.now() - new Date(data.updated_at).getTime();
-      setLiveExchangeState(age < HEARTBEAT_STALE_THRESHOLD ? applyCloseGuard(data) : null);
+      const fresh = age < HEARTBEAT_STALE_THRESHOLD;
+      liveSnapVersionRef.current = fresh && Number(data.snapshot_version) > 0 ? Number(data.snapshot_version) : null;
+      setLiveExchangeState(fresh ? applyCloseGuard(data) : null);
     } catch (e) { setLiveExchangeState(null); }
     finally { markLiveProbe('snap'); }
   }, [activeAccountId, isActiveLive, applyCloseGuard, markLiveProbe]);
@@ -2619,7 +2643,19 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       // slow safety net (every 3rd tick ≈ 30s) to catch a missed Realtime message.
       if (isActiveLive) {
         liveSnapPollRef.current = (liveSnapPollRef.current + 1) % 3;
-        if (liveSnapPollRef.current === 0) fetchLiveExchangeState();
+        if (liveSnapPollRef.current === 0) {
+          // Light check first: only re-read the heavy row when its version moved.
+          supabase.from('live_exchange_state').select('updated_at, snapshot_version')
+            .eq('account_id', activeAccountId).maybeSingle()
+            .then(({ data, error }) => {
+              const sameVersion = !error && data && liveSnapVersionRef.current != null
+                && Number(data.snapshot_version) === liveSnapVersionRef.current;
+              if (!sameVersion) { fetchLiveExchangeState(); return; }
+              const fresh = Date.now() - new Date(data.updated_at).getTime() < HEARTBEAT_STALE_THRESHOLD;
+              if (!fresh) { liveSnapVersionRef.current = null; setLiveExchangeState(null); return; }
+              setLiveExchangeState(prev => (prev ? { ...prev, updated_at: data.updated_at } : prev));
+            });
+        }
       }
     };
     const id = setInterval(tick, 10000);
@@ -2638,12 +2674,20 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     // Apply an already-delivered row through the same staleness + close-guard path
     // fetchLiveExchangeState uses, so behaviour is identical minus the extra read.
     const applyRow = (row) => {
-      if (!row) { setLiveExchangeState(null); return; }
+      if (!row) { liveSnapVersionRef.current = null; setLiveExchangeState(null); return; }
       const age = Date.now() - new Date(row.updated_at).getTime();
-      setLiveExchangeState(age < HEARTBEAT_STALE_THRESHOLD ? applyCloseGuard(row) : null);
+      const fresh = age < HEARTBEAT_STALE_THRESHOLD;
+      liveSnapVersionRef.current = fresh && Number(row.snapshot_version) > 0 ? Number(row.snapshot_version) : null;
+      setLiveExchangeState(fresh ? applyCloseGuard(row) : null);
     };
     const onChange = (payload) => {
       const row = payload?.new;
+      // Keepalive (same snapshot_version): only the timestamp moved — keep the shown data.
+      if (payload?.eventType === 'UPDATE' && row && row.snapshot_version != null
+          && liveSnapVersionRef.current != null && Number(row.snapshot_version) === liveSnapVersionRef.current) {
+        setLiveExchangeState(prev => (prev ? { ...prev, updated_at: row.updated_at } : prev));
+        return;
+      }
       // Realtime truncates oversized rows (columns arrive missing). If the payload
       // looks complete, use it for free; otherwise fall back to a full refetch so a
       // large snapshot is never dropped or partially applied.
@@ -2938,8 +2982,23 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   });
 
   // ── Export CSV ────────────────────────────────────────────────────────
-  const exportCSV = () => {
-    if (!filteredTradeHistory.length) {
+  const exportCSV = async () => {
+    // "All history" only holds the latest 300 rows on screen — export the full history.
+    let tradesToExport = filteredTradeHistory;
+    if (!historyFilterDate) {
+      const all = [];
+      for (let from = 0; ; from += 1000) {
+        const { data, error } = await supabase.from('trade_history').select(TRADE_HISTORY_COLUMNS)
+          .eq('account_id', activeAccountId).eq('underlying', underlying)
+          .order('exit_time', { ascending: false }).order('id', { ascending: true })
+          .range(from, from + 999);
+        if (error) { showAlert(`Could not load the full history for export: ${error.message}`); return; }
+        all.push(...(data || []));
+        if (!data || data.length < 1000) break;
+      }
+      tradesToExport = all.map(mapTradeRow);
+    }
+    if (!tradesToExport.length) {
       showAlert('No closed trades found for the selected filter.');
       return;
     }
@@ -2952,7 +3011,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       'Exit ATM Ratio', 'Exit ATM Buy Price', 'Exit ATM Sell Price',
       'Gross PnL', 'Total Fees', 'Net PnL', 'Margin', 'Exit Reason'
     ];
-    const rows = filteredTradeHistory.map(t => {
+    const rows = tradesToExport.map(t => {
       const sellQty = t.sellQty;
       const grossPnl = t.realizedGrossPnl || 0;
       const netPnl = t.realizedNetPnl || 0;
@@ -3140,11 +3199,16 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   const activePutsCount = useLive
     ? livePositions.filter(p => (p.product_symbol || '').startsWith('P-')).length
     : positions.filter(p => p.type === 'put' && p.underlying === underlying).length;
-  const filteredRealizedPnl = filteredTradeHistory.reduce((s, t) =>
-    s + (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || 0)), 0);
-  const filteredWins = filteredTradeHistory.filter(t =>
-    (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || 0)) > 0
-  ).length;
+  // A selected day is fetched in full, so sum it here. "All history" only loads the latest
+  // 300 rows for the list — its totals come from the server aggregate (get_trade_stats).
+  const allTime = !historyFilterDate;
+  const filteredRealizedPnl = allTime
+    ? (includeFees ? historyStats.totalNet : historyStats.totalGross) || 0
+    : filteredTradeHistory.reduce((s, t) => s + (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || 0)), 0);
+  const filteredWins = allTime
+    ? (includeFees ? historyStats.winNet : historyStats.winGross) || 0
+    : filteredTradeHistory.filter(t => (includeFees ? (t.realizedNetPnl || 0) : (t.realizedGrossPnl || 0)) > 0).length;
+  const filteredTradeCount = allTime ? (historyStats.totalCount || 0) : filteredTradeHistory.length;
 
   const fmtDuration = (ms) => {
     const s = Math.floor(ms / 1000);
@@ -3386,6 +3450,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
               resetToToday={resetToToday}
               filteredRealizedPnl={filteredRealizedPnl}
               filteredWins={filteredWins}
+              filteredTradeCount={filteredTradeCount}
               exportCSV={exportCSV}
               schedules={schedules}
               tradeHistory={tradeHistory}

@@ -94,18 +94,46 @@ export function createDailyStatsTracker({ accountState, live }) {
   // Delta's realized P&L + commission from order history (orders that closed/filled in the
   // window); exits + the engine's fee estimate from trade_history. A failed Delta read keeps
   // the previous Delta figures; with none yet, realized falls back to trade_history.
+  // The day's trade_history sums — get_trade_day_totals (migration 061) returns them as one row.
+  // Until 061 is run: sum in 1,000-row pages (a single request is capped at 1,000 rows by the
+  // API, which silently undercounted busy days).
+  let dayTotalsRpc = true;
+  async function dayTradeTotals(start, end) {
+    const fromIso = new Date(start).toISOString();
+    const toIso = new Date(end).toISOString();
+    if (dayTotalsRpc) {
+      const { data, error } = await supabase
+        .rpc('get_trade_day_totals', { p_account: accountState.id, p_from: fromIso, p_to: toIso })
+        .single();
+      if (!error) {
+        return { historyGross: num(data?.realized_gross) ?? 0, feesEstimated: num(data?.fees) ?? 0, tradesClosed: Number(data?.trades) || 0 };
+      }
+      if (!/does not exist|could not find|PGRST20[2-5]/i.test(`${error.code || ''} ${error.message || ''}`)) throw error;
+      dayTotalsRpc = false;
+    }
+    let historyGross = 0, feesEstimated = 0, tradesClosed = 0;
+    for (let from = 0; ; from += 1000) {
+      const { data: rows, error } = await supabase.from('trade_history')
+        .select('realized_gross_pnl, total_fees')
+        .eq('account_id', accountState.id)
+        .gte('exit_time', fromIso)
+        .lt('exit_time', toIso)
+        .order('id', { ascending: true })
+        .range(from, from + 999);
+      if (error) throw error;
+      for (const r of (rows || [])) {
+        historyGross += num(r.realized_gross_pnl) ?? 0;
+        feesEstimated += num(r.total_fees) ?? 0;
+      }
+      tradesClosed += (rows || []).length;
+      if (!rows || rows.length < 1000) return { historyGross, feesEstimated, tradesClosed };
+    }
+  }
+
   async function computeTotals(date, previous) {
     const end = dayEndMs(date);
     const start = end - DAY_MS;
-    const { data: rows, error } = await supabase.from('trade_history')
-      .select('realized_gross_pnl, total_fees')
-      .eq('account_id', accountState.id)
-      .gte('exit_time', new Date(start).toISOString())
-      .lt('exit_time', new Date(end).toISOString())
-      .limit(10000);
-    if (error) throw error;
-    const historyGross = (rows || []).reduce((s, r) => s + (num(r.realized_gross_pnl) ?? 0), 0);
-    const feesEstimated = (rows || []).reduce((s, r) => s + (num(r.total_fees) ?? 0), 0);
+    const { historyGross, feesEstimated, tradesClosed } = await dayTradeTotals(start, end);
 
     let realizedGross = previous?.fromDelta ? previous.realizedGross : historyGross;
     let feesActual = previous?.feesActual ?? null;
@@ -127,7 +155,7 @@ export function createDailyStatsTracker({ accountState, live }) {
     let netDeposits = previous?.netDeposits ?? null;
     const txns = await live.walletTransactionsSince(start);
     if (txns) netDeposits = capitalFlowsByDay(txns, tradeDateOf).get(date) ?? 0;
-    return { realizedGross, feesEstimated, feesActual, tradesClosed: (rows || []).length, fillsCount, fromDelta, netDeposits };
+    return { realizedGross, feesEstimated, feesActual, tradesClosed, fillsCount, fromDelta, netDeposits };
   }
 
   async function save(d, isFinal = false) {

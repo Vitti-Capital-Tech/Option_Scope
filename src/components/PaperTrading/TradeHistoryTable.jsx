@@ -19,6 +19,7 @@ export default function TradeHistoryTable({
   resetToToday,
   filteredRealizedPnl,
   filteredWins,
+  filteredTradeCount,
   exportCSV,
   includeFees,
   schedules = [],
@@ -229,7 +230,7 @@ export default function TradeHistoryTable({
                 <span style={{ fontSize: '14px', fontWeight: 700 }}>
                   <span className="value green">{filteredWins}</span>
                   <span style={{ margin: '0 4px', color: 'var(--text-dim)', fontWeight: 400 }}>/</span>
-                  <span className="value red">{filteredTradeHistory.length - filteredWins}</span>
+                  <span className="value red">{(filteredTradeCount ?? filteredTradeHistory.length) - filteredWins}</span>
                 </span>
               </div>
             </div>

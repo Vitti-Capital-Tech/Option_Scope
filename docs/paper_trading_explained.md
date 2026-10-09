@@ -103,26 +103,29 @@ Manual actions — **per-leg close** (`delta_close_requests`), **order cancel**
 **manual exit** (`active_positions.exit_requested`), and — for live accounts — **manual
 orders** (`delta_order_requests`, Trade tab) and **order edits** (`delta_edit_requests`,
 Open Orders ✎) — are polled at the **manager level**, not per-account. A single
-`pollAllRequests` timer runs **one batched query per table (up to 6)**, filtered to all
-running account ids, every **1.5s** and dispatches to each account engine's
+`pollAllRequests` timer makes **one RPC call** every **1.5s** —
+`get_pending_engine_requests(p_ids, p_live_ids)` (migration `061`), which returns
+`(account_id, kind)` rows (`closeAll`, `closeReq`, `cancelReq`, `manualEx`, `orderReq`,
+`editReq`) for all running account ids — and dispatches to each account engine's
 `processRequests(flags)` **only** for the request types that actually have pending rows.
+Until `061` is run it falls back to one batched read per table (up to 6).
 
 > [!NOTE]
-> **Live-only queries are skipped when nothing is live (egress).** `delta_close_requests`
+> **Live-only checks are scoped to armed-live accounts.** `delta_close_requests`
 > and `delta_cancel_requests` only ever have work for **armed-live** accounts (their
-> handlers no-op for paper). So the poll queries those two tables **only when at least one
-> running account is armed-live** — and scopes them to just those account ids. A
-> paper-only (or all-dry-run) deployment therefore issues **4 queries/tick**:
-> `close_all_requested` + `exit_requested`, which cover both paper and live, plus the pending
-> `delta_order_requests` / `delta_edit_requests` rows, which are checked for every running
+> handlers no-op for paper), so they are checked only for the armed-live ids
+> (`p_live_ids`). `close_all_requested` + `exit_requested` cover both paper and live, and the
+> pending `delta_order_requests` / `delta_edit_requests` rows are checked for every running
 > account so a request on an unarmed account gets a clear failure instead of sitting pending.
+> In the pre-`061` fallback a paper-only (or all-dry-run) deployment issues **4 queries/tick**.
 > Manual-action responsiveness is unchanged (~1.5s).
 
 > [!NOTE]
 > **Why:** previously every account engine ran its own 1.5s timer firing 4 queries — i.e.
 > `4 × N` queries/tick. At 18-20 accounts that was ~80 queries/1.5s (~4.6M/day) of mostly
-> **empty** reads, a dominant, constant source of Supabase egress. Consolidating to 4
-> batched queries/tick (~230K/day) keeps idle load **flat as accounts scale**, with the
+> **empty** reads, a dominant, constant source of Supabase egress. Consolidating to batched
+> per-table queries (~230K/day), and with migration `061` to **one RPC call per tick**
+> (~58K/day), keeps idle load **flat as accounts scale**, with the
 > same ~1.5s responsiveness. After executing an action, the handler republishes the live
 > snapshot immediately (see [live_trading.md](live_trading.md#manual-actions--close-all-per-leg-close-order-cancel)).
 
@@ -1476,7 +1479,9 @@ falls back to Positions).
 > [!NOTE]
 > **Live-fresh unrealized P&L (Positions UPNL/Mark, Risk & Margin card, Daily P&L KPI).**
 > The engine's snapshot deliberately suppresses mark/unrealized-PnL updates to keep egress
-> flat (so the snapshot's `unrealized_pnl`/`mark_price` are stale up to the 60s keepalive).
+> flat (so the snapshot's `unrealized_pnl`/`mark_price` can be up to ~5 min old: with migration
+> `061` the 60s keepalive only bumps `updated_at`, and the full row is rewritten on a structural
+> change, a Sync/action, or at least every 5 min).
 > To avoid a laggy P&L, the UI **recomputes unrealized live from the WebSocket mark feed**
 > (~1s fresh), exactly as Delta does — `size × contract_value × (mark − entry)`, signed size
 > so shorts profit on decay — via the shared `livePnlOf()` helper, falling back to the
@@ -1547,7 +1552,7 @@ The Trade History header (`TradeHistoryTable.jsx`) shows a **Window Capacity** r
 
 ### CSV Export
 
-The Trade History table provides a **CSV export** button (`exportCSV`). The export includes:
+The Trade History table provides a **CSV export** button (`exportCSV`). With a day selected it exports that day (read in full, in 1,000-row pages); in *Show all history* mode — where the list shows only the latest 300 rows, and the Realized P&L / Win / Loss totals come from the server aggregate `get_trade_stats` — it downloads the **complete** history in 1,000-row pages (shared `mapTradeRow` / `TRADE_HISTORY_COLUMNS`). The export includes:
 
 | Column | Description |
 |--------|-------------|

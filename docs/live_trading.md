@@ -77,7 +77,7 @@ One row per live account per day — **Delta's day, 00:00 → 24:00 UTC (05:30 �
 | `closing_balance`, `unrealized_pnl` | Latest snapshot (wallet balance; Σ `unrealized_pnl` of Delta positions) |
 | `max_margin_used` / `_at` / `_pct` | Peak of `balance − available_balance` (what Delta blocks for positions + orders); saved as it rises, at most once a minute, and reloaded on restart |
 | `realized_gross_pnl`, `fees_actual`, `fills_count` | **Delta's own figures** from order history: Σ `meta_data.pnl` and `paid_commission` of orders that closed/filled in the window (`getOrderHistorySinceFull`) — the same numbers the Live dashboard shows. `trade_history`'s engine-side P&L does not match Delta for live, so it's only a fallback before the first successful Delta read. |
-| `fees_estimated`, `trades_closed` | That day's `trade_history` rows (`exit_time` in the window) |
+| `fees_estimated`, `trades_closed` | That day's `trade_history` rows (`exit_time` in the window), summed in the database by `get_trade_day_totals` (migration `061`; the old row download was capped at 1,000 rows by the API, undercounting busy days). Before `061`: summed in 1,000-row pages ordered by `id` |
 | `net_deposits` (migration 048) | Σ signed `amount` of that day's wallet-ledger `deposit` / `withdrawal` / `transfer` entries — moves the balance, never counted as P&L |
 | `net_pnl`, `return_pct` | `realized_gross_pnl − (fees_actual ?? fees_estimated)`; `net_pnl ÷ (opening_balance + max(0, net_deposits)) × 100`. The tab's range total uses first-day opening + Σ `net_deposits` as its base |
 
@@ -806,15 +806,17 @@ the browser) executes them on Delta and cleans up:
 > [!NOTE]
 > **Consolidated request poll (multi-account egress).** These request types are no
 > longer polled per-account (which was 4 queries × N accounts every 1.5s). A single
-> **manager-level** poll (`pollAllRequests`) runs one **batched** query per table (up to 6)
-> across all running accounts every 1.5s and dispatches only to the accounts with pending
-> work — so idle request-poll load stays flat as the account count grows. The two
-> **live-only** tables (`delta_close_requests`, `delta_cancel_requests`) are queried
-> **only when at least one running account is armed-live** (scoped to those ids). The
-> pending `delta_order_requests` / `delta_edit_requests` rows are queried for **every**
-> running account, so a request on an unarmed account is answered with a clear failure
-> instead of sitting pending; a paper-only / all-dry-run deployment therefore issues
-> **4 queries/tick** (`close_all_requested`, `exit_requested` and the two request tables). Manual-action
+> **manager-level** poll (`pollAllRequests`) makes **one RPC call** per 1.5s tick —
+> `get_pending_engine_requests(p_ids, p_live_ids)` (migration `061`), which returns
+> `(account_id, kind)` rows (`closeAll`, `closeReq`, `cancelReq`, `manualEx`, `orderReq`,
+> `editReq`) across all running accounts — and dispatches only to the accounts with pending
+> work, so idle request-poll load stays flat as the account count grows. The two
+> **live-only** tables (`delta_close_requests`, `delta_cancel_requests`) are checked only
+> for the **armed-live** ids. The pending `delta_order_requests` / `delta_edit_requests`
+> rows are checked for **every** running account, so a request on an unarmed account is
+> answered with a clear failure instead of sitting pending. `061` adds the indexes that keep
+> each part an index lookup. Until `061` is run the engine falls back to one batched read per
+> table (up to 6; **4/tick** on a paper-only / all-dry-run deployment). Manual-action
 > responsiveness is unchanged (~1.5s). After executing, each handler republishes the live
 > snapshot immediately (see [the data pipeline](#live-exchange-data-pipeline-dashboard-tabs)).
 
@@ -1603,9 +1605,13 @@ bookkeeping.
     `live_exchange_state` when a **structural signature** changed (position set + size,
     resting/stop orders, fills, wallet — deliberately ignoring tick-by-tick
     mark/unrealized-PnL noise), else at most once per **60s keepalive** to refresh
-    `updated_at` (liveness; UI marks stale after 120s). Quiet markets therefore emit a
-    Realtime broadcast + UI refetch roughly every 60s instead of every 20s, while a
-    real fill/order/position change still publishes immediately.
+    `updated_at` (liveness; UI marks stale after 120s). With migration `061` that
+    keepalive only `UPDATE`s `updated_at` (no rewrite of the JSON row, a tiny Realtime
+    payload); the **full row** is rewritten on a structural change, on `force` (Sync /
+    after an action), or at least every **5 min** (`SNAP_FULL_REFRESH_MS`), each time
+    stamped with a new `snapshot_version` (`Date.now()`). A real fill/order/position change
+    still publishes immediately. Before `061` the engine detects the missing column and
+    writes full rows on every keepalive as before.
   - **Immediate republish after a manual action:** the engine republishes the snapshot
     **right after** it processes a per-leg close, Close All, order cancel, manual
     exit, manual order or order edit — so the closed row clears from the UI within ~1s instead of lingering until
@@ -1614,7 +1620,7 @@ bookkeeping.
     vanish** — the "close glitch".)
 - **Table** — `live_exchange_state` (migration `009_live_exchange_state.sql`): one row
   per account (`positions`, `orders`, `stop_orders`, `fills`, `balances` JSONB +
-  `wallet` numeric + `updated_at`). RLS: authenticated read, `service_role` write;
+  `wallet` numeric + `updated_at` + `snapshot_version` BIGINT, migration `061`). RLS: authenticated read, `service_role` write;
   `ON DELETE CASCADE` with the account.
 - **UI** — `PaperTrading.jsx` is **Realtime-driven**. Each `live_exchange_state` change
   arrives with the **full new row in the Realtime payload**, so the UI **applies
@@ -1623,7 +1629,11 @@ bookkeeping.
   order_history) per open tab. It falls back to a full refetch only if the payload looks
   truncated (Delta drops columns on oversized rows) or on tab focus (catch-up for anything
   missed while backgrounded). The old every-**5s** snapshot refetch was already removed in
-  favour of this Realtime path — a large egress cut with no visible staleness.
+  favour of this Realtime path — a large egress cut with no visible staleness. The UI tracks
+  `snapshot_version` (`liveSnapVersionRef`): a Realtime UPDATE with the **same** version
+  (a keepalive) only refreshes `updated_at` in state, with no refetch; a new version applies
+  the row / refetches as before. The 30s safety-net poll selects only
+  `(updated_at, snapshot_version)` and re-reads the full row only when the version moved.
   `TradingWorkspace.jsx` renders Delta data in each tab
   **only when** the account is
   live **and** the engine is placing real orders (`engineDryRun === false`) **and**
@@ -1642,8 +1652,8 @@ bookkeeping.
   (spot's proximity to the nearest exit trigger across the group's legs); **Filter** by P&L
   (All / Winning / Losing) and Type (All / Calls / Puts). Defaults to entry-time, newest first.
 - **Live-fresh unrealized P&L (egress-safe).** The change-guarded upsert above deliberately
-  freezes `mark_price`/`unrealized_pnl` between structural changes (stale up to the 60s
-  keepalive). So the UI does **not** trust those snapshot fields for the money figures — the
+  freezes `mark_price`/`unrealized_pnl` (and margin fields) between structural changes —
+  stale up to the ~5 min full refresh with migration `061` (60s keepalive before it). So the UI does **not** trust those snapshot fields for the money figures — the
   **Positions UPNL/Mark, the Risk & Margin card, and the Daily P&L KPI all recompute
   unrealized live from the WebSocket mark feed** (~1s fresh), exactly as Delta does:
   `size × contract_value × (mark − entry)` (signed size → shorts profit on decay), via the
@@ -1676,7 +1686,7 @@ does NOT call Delta for Verify. It calls `request_delta_verification` (encrypts 
 secret with the Vault key), and the **engine** — running on the whitelisted server
 with the service_role key — polls `delta_verify_requests`, runs the balance check
 from that IP, and writes the result back (`get_delta_verification_status`, which the
-UI polls). The secret is cleared once processed; rows are purged after 1 hour.
+UI polls). The secret is cleared once processed; rows are purged after 1 hour (checked at most once a minute).
 Requires the engine running with `SUPABASE_SERVICE_ROLE_KEY`, and migration 004.
 This is what `verifyDeltaCredentials` uses today — no AWS exposure needed.
 
@@ -1720,3 +1730,6 @@ forwards the signed headers unchanged, so the browser's HMAC stays valid.
 5. **Upgrading to the manual-order / group-jitter build:** run migrations `053`–`058` in
    order. `053`/`054` need no code change; `055`, `056` and `057` need the engine restarted
    (`pm2`) and the frontend redeployed.
+6. **Query-optimisation build:** run migrations `060` and `061` (`061` needs `055`/`057`
+   first; its index builds briefly lock writes — run at a quiet time), restart the engine
+   and redeploy the frontend.

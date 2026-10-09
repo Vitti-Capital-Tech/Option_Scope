@@ -36,10 +36,12 @@ export function createHeartbeat(engineId) {
         active_positions: state.active_positions,
         ws_status: state.ws_status,
         spot_price: state.spot_price,
-        wallet_balance: state.wallet_balance,
         dry_run: state.dry_run,
-        max_positions: state.max_positions,
-        allocation_pct: state.allocation_pct,
+        // Not yet known right after a (re)start → leave the last published values in place
+        // instead of blanking them (the dashboard's wallet balance used to vanish for ~1 min).
+        ...(state.wallet_balance != null ? { wallet_balance: state.wallet_balance } : {}),
+        ...(state.max_positions != null ? { max_positions: state.max_positions } : {}),
+        ...(state.allocation_pct != null ? { allocation_pct: state.allocation_pct } : {}),
       });
       if (error) {
         logError(`Heartbeat write error (${engineId}):`, summarizeDbError(error));
