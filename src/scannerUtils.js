@@ -56,6 +56,48 @@ export function pickHedgeStrike(candidates, type, sellStrike, sellIv, { maxPrice
   return best;
 }
 
+
+/**
+ * Every qualifying hedge (3rd long) strike for a ratio spread, nearest the short first.
+ * Range: strikes BEYOND the short on the same side (call: above, put: below) from one strike
+ * step away up to (strike width − one strike step) away — e.g. BTC (200-pt steps) 80000/81000
+ * → 81200, 81400, 81600, 81800. The step is the smallest gap between the candidates' listed
+ * strikes. Each must also have price (ask, fallback last / mark) below `maxPrice` and
+ * |IV (ask IV, fallback iv) − short IV| inside [ivMin, ivMax]. Returns [] when none qualify.
+ * Callers pick among them (best ATM P&L / ROI). Twin of engine/lib/utils.js listHedgeStrikes — keep identical.
+ */
+export function listHedgeStrikes(candidates, type, sellStrike, sellIv, strikeDiff, { maxPrice = 10, ivMin = 0, ivMax = 2 } = {}) {
+  const isCall = String(type).toLowerCase() === 'call';
+  const short = Number(sellStrike);
+  const shortIv = Number(sellIv);
+  const width = Math.abs(Number(strikeDiff));
+  if (!Number.isFinite(short) || !Number.isFinite(shortIv) || !(width > 0)) return [];
+  const strikes = [...new Set((candidates || []).map(t => Number(t?.strike)).filter(Number.isFinite))].sort((a, b) => a - b);
+  let step = Infinity;
+  for (let i = 1; i < strikes.length; i++) {
+    const g = strikes[i] - strikes[i - 1];
+    if (g > 0 && g < step) step = g;
+  }
+  if (!Number.isFinite(step)) return [];
+  const maxDist = width - step;
+  const out = [];
+  for (const t of candidates || []) {
+    const k = Number(t?.strike);
+    if (!Number.isFinite(k)) continue;
+    if (isCall ? !(k > short) : !(k < short)) continue;
+    const dist = Math.abs(k - short);
+    if (dist > maxDist + 1e-9) continue;
+    const px = Number(t.ask ?? t.lastPrice ?? t.markPrice);
+    if (!(px > 0) || !(px < maxPrice)) continue;
+    const iv = Number(t.askIv ?? t.iv);
+    if (!Number.isFinite(iv)) continue;
+    const ivDiff = Math.abs(iv - shortIv);
+    if (ivDiff < ivMin || ivDiff > ivMax) continue;
+    out.push(t);
+  }
+  return out.sort((a, b) => Math.abs(Number(a.strike) - short) - Math.abs(Number(b.strike) - short));
+}
+
 export function normalizeIv(iv) {
   if (!Number.isFinite(iv)) return null;
   return iv <= 1 ? iv * 100 : iv;

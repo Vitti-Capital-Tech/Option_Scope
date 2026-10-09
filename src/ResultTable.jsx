@@ -26,10 +26,25 @@ function describeIntrinsic(detail, field) {
 // A fallback (not an exact strike) produced the price → flag it with a "≈" marker.
 const isApproxIntrinsic = (detail) => !!detail && (detail.mode === 'bracket' || detail.mode === 'single');
 
-// Hedge leg (3rd long) under the spread strikes — only when the Hedge toggle is on AND a
-// quoted strike exists one strike-width beyond the short (see pickHedgeStrike).
-function HedgeLine({ hedge }) {
+// Hedge legs (3rd long) under the spread strikes — only when the Hedge toggle is on. Every
+// qualifying option is listed (strikes from one step beyond the short up to width − one step,
+// under Max Hedge Price, inside the IV-diff range, 3-leg net within Max Debit); the ✓ one
+// (best ATM ROI) is what the row's Net Premium / ATM P&L / Margin / ROI use.
+function HedgeLine({ hedge, options }) {
   if (!hedge) return null;
+  if (options && options.length > 1) {
+    return (
+      <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2, lineHeight: 1.45 }}>
+        {options.map(o => (
+          <div key={o.strike} style={o.chosen ? { fontWeight: 700, color: 'var(--text)' } : undefined}
+            title={`Hedge long ${Number(o.strike).toLocaleString()} @ ${Number(o.price).toFixed(2)}${o.iv != null ? ` (${Number(o.iv).toFixed(1)}% IV)` : ''} × ${o.qty} · net premium ${Number(o.netPremium ?? 0).toFixed(2)}${o.atAtm != null ? ` · worth ${Number(o.atAtm).toFixed(2)} at ATM` : ''}${o.roi != null ? ` · ATM ROI ${o.roi.toFixed(2)}%` : ''}${o.chosen ? ' — used for this row (best ATM ROI)' : ''}`}>
+            H: <span className="scanner-buy">+{Number(o.strike).toLocaleString()}</span> @ ${Number(o.price).toFixed(2)} × {o.qty}
+            {o.roi != null && <> · {o.roi >= 0 ? '+' : ''}{o.roi.toFixed(2)}%</>}{o.chosen ? ' ✓' : ''}
+          </div>
+        ))}
+      </div>
+    );
+  }
   const price = Number(hedge.price);
   return (
     <div
@@ -231,31 +246,42 @@ export default function ResultTable({
       // × Hedge Lot %. At ATM it is worth the bid at the ATM-shifted hedge strike (same
       // shift as the long/short); unquoted there = worthless (whole premium lost). Its
       // premium adds to margin. Mirrors the engine's ATM P&L gate.
+      // Every qualifying hedge option is priced the same way and the row uses the one with the
+      // best ATM ROI (then ATM P&L); unpriceable at ATM → the nearest (first) option.
       const hedgePct = (Number(config?.hedgeLotPct) || 0) / 100;
-      let hedge = null;
-      let hedgeTerm = 0;
-      let hedgeMargin = 0;
-      if (r.hedge) {
-        const hedgeQty = Math.round(adjustedSellQty * hedgePct * 100) / 100;
-        const offset = Number(r.hedge.strike) - Number(r.buyLeg.strike);
-        const hedgeAtAtm = atmStrike != null
+      const legsPnl = hasAtmData
+        ? (buyIntrinsic - r.buyPrice) + (r.sellPrice - sellIntrinsic) * totalSellQty
+        : null;
+      const baseMargin = (r.buyPrice * adjustedLotSize) + (shortValue / leverage);
+      const priceHedge = (h) => {
+        const qty = Math.round(adjustedSellQty * hedgePct * 100) / 100;
+        const offset = Number(h.strike) - Number(r.buyLeg.strike);
+        const atAtm = atmStrike != null
           ? (resolveTickerPrice(atmStrike + offset, type, 'bid').price ?? 0)
           : 0;
-        hedgeTerm = (hedgeAtAtm - r.hedge.price) * totalSellQty * hedgePct;
-        hedgeMargin = r.hedge.price * adjustedSellQty * hedgePct;
-        hedge = { ...r.hedge, qty: hedgeQty, atAtm: hedgeAtAtm };
+        const term = (atAtm - h.price) * totalSellQty * hedgePct;
+        const hMargin = h.price * adjustedSellQty * hedgePct;
+        const pnl = legsPnl != null ? (legsPnl + term) * adjustedLotSize : null;
+        const m = baseMargin + hMargin;
+        return { ...h, qty, atAtm, atAtmPnl: pnl, margin: m, roi: (pnl != null && m > 0) ? (pnl / m) * 100 : null };
+      };
+      const pricedOptions = (r.hedgeOptions?.length ? r.hedgeOptions : (r.hedge ? [r.hedge] : [])).map(priceHedge);
+      let hedge = null;
+      for (const o of pricedOptions) {
+        if (!hedge) { hedge = o; continue; }
+        const a = o.roi ?? -Infinity;
+        const b = hedge.roi ?? -Infinity;
+        if (a > b || (a === b && (o.atAtmPnl ?? -Infinity) > (hedge.atAtmPnl ?? -Infinity))) hedge = o;
       }
+      const hedgeOptions = pricedOptions.map(o => ({ ...o, chosen: o === hedge }));
 
       // Compute P&L scaled to the adjusted lot size
-      const atAtmPnl = hasAtmData
-        ? ((buyIntrinsic - r.buyPrice) + (r.sellPrice - sellIntrinsic) * totalSellQty + hedgeTerm) * adjustedLotSize
-        : null;
-
-      const margin = (r.buyPrice * adjustedLotSize) + (shortValue / leverage) + hedgeMargin;
+      const atAtmPnl = hedge ? hedge.atAtmPnl : (legsPnl != null ? legsPnl * adjustedLotSize : null);
+      const margin = hedge ? hedge.margin : baseMargin;
       const roi = (atAtmPnl != null && margin > 0) ? (atAtmPnl / margin) * 100 : null;
 
-      // Net premium is computed in the scanner from the scaled qty.
-      const rawNetPremium = r.netPremium;
+      // Net premium is computed in the scanner from the scaled qty (per chosen hedge option).
+      const rawNetPremium = hedge?.netPremium ?? r.netPremium;
 
       const isRatioChanged = atmRatioScaling && totalSellQty !== r.sellQty;
 
@@ -280,7 +306,9 @@ export default function ResultTable({
         roi,
         roundedAtmRatio,
         hasAtmData,
-        hedge
+        hedge,
+        hedgeOptions,
+        netDelta3: hedge?.netDelta3 ?? r.netDelta3,
       };
     });
 
@@ -436,7 +464,7 @@ export default function ResultTable({
                                 </span>
                               </div>
                               <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Δ: {bestRow.strikeDiff.toLocaleString()}</div>
-                              <HedgeLine hedge={bestRow.hedge} />
+                              <HedgeLine hedge={bestRow.hedge} options={bestRow.hedgeOptions} />
                             </div>
                           </div>
                         </td>
@@ -518,7 +546,7 @@ export default function ResultTable({
                                   </span>
                                 </div>
                                 <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Δ: {r.strikeDiff.toLocaleString()}</div>
-                                <HedgeLine hedge={r.hedge} />
+                                <HedgeLine hedge={r.hedge} options={r.hedgeOptions} />
                               </div>
                             </td>
                             <td>

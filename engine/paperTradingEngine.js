@@ -33,7 +33,7 @@ import { subscribeTickers } from './lib/tickerHub.js';
 import {
   safeParseLeg, calculateFee, calcMargin, leverageFor, scanTickers,
   computeEntryAtmRatio, computeScaledSellQty,
-  pickTopUniqueStrikes, pickHedgeStrike, log, logWarn, logError
+  pickTopUniqueStrikes, pickHedgeStrike, listHedgeStrikes, log, logWarn, logError
 } from './lib/utils.js';
 
 // Entry chase-fill tuning (armed-real only): re-price each entry leg toward the
@@ -3462,19 +3462,45 @@ async function startSingleAccountEngine(account) {
         ivMin: Number(effectiveConfig.hedgeIvDiffMin ?? 0),
         ivMax: Number(effectiveConfig.hedgeIvDiffMax ?? 2),
       };
-      function hedgeCandidateFor(spread) {
-        if (!hedgeOn) return null;
+      // Every qualifying hedge for a spread: strikes beyond the short from one strike step up
+      // to (width − one step) away, under Max Hedge Price and inside the IV-diff range
+      // (listHedgeStrikes — same rule as the scanner). [{ ticker, ask }], nearest first.
+      function hedgeOptionsFor(spread) {
+        if (!hedgeOn) return [];
         const type = spread.buyLeg.type;
         const quote = (t) => t.ask ?? t.lastPrice ?? t.markPrice;
         const pool = allTickers.filter(t => t.type === type && t.expiry === config.expiry
           && t.symbol !== spread.buyLeg.symbol && t.symbol !== spread.sellLeg.symbol
           && !excludedStrikes.has(Number(t.strike)) // user-excluded (migration 040)
           && quote(t) > 0);
-        const ticker = pickHedgeStrike(pool, type, Number(spread.sellLeg.strike), spread.sellIv, hedgeFilters);
-        return ticker ? { ticker, ask: quote(ticker) } : null;
+        return listHedgeStrikes(pool, type, Number(spread.sellLeg.strike), spread.sellIv, spread.strikeDiff, hedgeFilters)
+          .map(ticker => ({ ticker, ask: quote(ticker) }));
+      }
+      // The hedge a spread uses this cycle: of its qualifying options that keep the 3-leg net
+      // premium within Max Net Debit, the one with the best ATM ROI (then ATM P&L). Cached per
+      // spread for the cycle so the ATM P&L gate and the entry use the SAME strike.
+      const hedgeChoiceCache = new Map();
+      function hedgeCandidateFor(spread) {
+        if (!hedgeOn) return null;
+        const key = `${spread.buyLeg.symbol}|${spread.sellLeg.symbol}`;
+        if (hedgeChoiceCache.has(key)) return hedgeChoiceCache.get(key);
+        const options = hedgeOptionsFor(spread);
+        let best = null;
+        for (const h of options) {
+          const r = calculateAtmPnlAndRoi(spread, h);
+          if (r.atmPnl == null || r.ratioToUse == null) continue; // unpriceable at ATM → can't rank
+          const net = r.ratioToUse * spread.sellPrice - spread.buyPrice - r.ratioToUse * (hedgeLotPct / 100) * h.ask;
+          if (net < -effectiveConfig.maxNetPremium) continue;
+          if (!best || r.roi > best.roi || (r.roi === best.roi && r.atmPnl > best.atmPnl)) best = { ...h, roi: r.roi, atmPnl: r.atmPnl };
+        }
+        const choice = best ? { ...best, optionCount: options.length, optionStrikes: options.map(o => Number(o.ticker.strike)) } : null;
+        hedgeChoiceCache.set(key, choice);
+        return choice;
       }
 
-      function calculateAtmPnlAndRoi(spread) {
+      // hedgeOverride: price the spread with THIS hedge option (used to rank the options);
+      // omitted → the spread's chosen hedge (hedgeCandidateFor).
+      function calculateAtmPnlAndRoi(spread, hedgeOverride) {
         const buyIntrinsic = getTickerPrice(atmStrike, spread.buyLeg.type, 'bid', config.expiry);
         const targetSellStrike = spread.buyLeg.type === 'call' ? atmStrike + spread.strikeDiff : atmStrike - spread.strikeDiff;
         const sellIntrinsic = getTickerPrice(targetSellStrike, spread.buyLeg.type, 'ask', config.expiry);
@@ -3509,7 +3535,7 @@ async function startSingleAccountEngine(account) {
         // scaled by adjustedLotSize like the short). At ATM it is worth the bid at the
         // ATM-shifted hedge strike (same shift as the other two legs); unquoted there =
         // worthless, so the whole premium counts as lost. Its premium is added to margin.
-        const hedge = hedgeCandidateFor(spread);
+        const hedge = hedgeOverride !== undefined ? hedgeOverride : hedgeCandidateFor(spread);
         let hedgeTerm = 0;
         let hedgeMargin = 0;
         let hedgeAtAtm = null;
@@ -5404,7 +5430,7 @@ async function startSingleAccountEngine(account) {
             const best = cand ? cand.ticker : null;
             const bestAsk = cand ? cand.ask : null;
             if (!best) {
-              logWarn(`[${accountState.name}] ⛔ ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Hedge Leg is on but no strike beyond the short has price < $${hedgeFilters.maxPrice} and |IV − short IV| in [${hedgeFilters.ivMin}, ${hedgeFilters.ivMax}] — not entering unhedged.`);
+              logWarn(`[${accountState.name}] ⛔ ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Hedge Leg is on but no strike from one step beyond the short up to (width − one step) has price < ${hedgeFilters.maxPrice}, |IV − short IV| in [${hedgeFilters.ivMin}, ${hedgeFilters.ivMax}] and a 3-leg net within Max Net Debit — not entering unhedged.`);
               continue;
             }
             // Combined-premium gate: the Max Net Debit now applies to ALL THREE legs.
@@ -5429,6 +5455,7 @@ async function startSingleAccountEngine(account) {
               contractValue: hedgeCV,
             };
             hedgeMargin = calcMargin(bestAsk, hedgeQty, spotPrice, 0, 1, config.underlying);
+            log(`[${accountState.name}] ✚ Hedge for ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: ${best.strike} @ ${bestAsk} (best ATM ROI ${cand.roi != null ? cand.roi.toFixed(2) + '%' : '—'} of ${cand.optionCount} qualifying: ${cand.optionStrikes.join(', ')}).`);
           }
 
           const id = `T${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
