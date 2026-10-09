@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { RotateCcw, X, Plus, Check } from 'lucide-react';
+import { RotateCcw, X, Plus, Check, RefreshCw } from 'lucide-react';
 import { SCANNER_DEFAULTS, SAVED_SETTINGS_KEY } from './scannerDefaults';
 import SendToWindow from './SendToWindow';
 
@@ -25,33 +25,49 @@ function storeSaved(list) {
 
 /**
  * Top-bar toolbar: how many filters differ from default, the user's saved settings
- * (click to apply, × to delete), "+ Save" (name the current filters) and Reset.
+ * (click to apply, × to delete, ⟳ to update the applied one with the current filters),
+ * "+ Save" (name the current filters; an existing name is overwritten in place) and Reset.
  * Saved settings are a full snapshot of every filter, kept in this browser.
  */
 export function ScannerFilterToolbar({ config, updateConfig, onSendToWindow }) {
   const [saved, setSaved] = useState(loadSaved);
   const [naming, setNaming] = useState(false);
   const [name, setName] = useState('');
+  // The saved setting last applied here: once the filters are changed, its chip offers ⟳ Update.
+  const [appliedName, setAppliedName] = useState(null);
 
   const val = (k) => config[k] ?? SCANNER_DEFAULTS[k];
   const changedCount = FIELD_KEYS.filter(k => !same(val(k), SCANNER_DEFAULTS[k])).length;
   const isActive = (values) => FIELD_KEYS.every(k => same(val(k), values[k] ?? SCANNER_DEFAULTS[k]));
 
+  const currentValues = () => Object.fromEntries(FIELD_KEYS.map(k => [k, val(k)]));
+  // Save under `n`: an existing entry is overwritten IN PLACE (keeps its position), else appended.
+  const saveAs = (n) => {
+    const values = currentValues();
+    const exists = saved.some(p => p.name === n);
+    const next = exists ? saved.map(p => (p.name === n ? { name: n, values } : p)) : [...saved, { name: n, values }];
+    setSaved(next);
+    storeSaved(next);
+    setAppliedName(n);
+  };
   const commit = () => {
     const n = name.trim();
     if (!n) return;
-    const values = Object.fromEntries(FIELD_KEYS.map(k => [k, val(k)]));
-    const next = [...saved.filter(p => p.name !== n), { name: n, values }];
-    setSaved(next);
-    storeSaved(next);
+    if (saved.some(p => p.name === n) && !window.confirm(`"${n}" already exists. Replace it with the current filters?`)) return;
+    saveAs(n);
     setNaming(false);
     setName('');
+  };
+  const update = (n) => {
+    if (!window.confirm(`Update "${n}" with the current filters?`)) return;
+    saveAs(n);
   };
   const cancel = () => { setNaming(false); setName(''); };
   const remove = (n) => {
     const next = saved.filter(p => p.name !== n);
     setSaved(next);
     storeSaved(next);
+    if (appliedName === n) setAppliedName(null);
   };
 
   return (
@@ -60,16 +76,28 @@ export function ScannerFilterToolbar({ config, updateConfig, onSendToWindow }) {
         <span className="scanner-toolbar-count" title="Filters that differ from the defaults">{changedCount} changed</span>
       )}
       {saved.length > 0 && <span className="scanner-toolbar-label">Saved</span>}
-      {saved.map(p => (
-        <span key={p.name} className={`scanner-saved ${isActive(p.values) ? 'on' : ''}`}>
-          <button type="button" className="scanner-saved-apply" onClick={() => updateConfig({ ...SCANNER_DEFAULTS, ...p.values })} title={`Apply "${p.name}"`}>
-            {p.name}
+      {saved.map(p => {
+        const active = isActive(p.values);
+        const modified = !active && p.name === appliedName;
+        return (
+        <span key={p.name} className={`scanner-saved ${active ? 'on' : ''} ${modified ? 'modified' : ''}`}>
+          <button type="button" className="scanner-saved-apply"
+            onClick={() => { updateConfig({ ...SCANNER_DEFAULTS, ...p.values }); setAppliedName(p.name); }}
+            title={modified ? `Filters changed since "${p.name}" was applied — click to re-apply it` : `Apply "${p.name}"`}>
+            {p.name}{modified ? ' •' : ''}
           </button>
+          {modified && (
+            <button type="button" className="scanner-saved-upd" onClick={() => update(p.name)}
+              aria-label={`Update saved settings ${p.name}`} title={`Update "${p.name}" with the current filters`}>
+              <RefreshCw size={11} strokeWidth={3} />
+            </button>
+          )}
           <button type="button" className="scanner-saved-del" onClick={() => remove(p.name)} aria-label={`Delete saved settings ${p.name}`} title="Delete">
             <X size={11} strokeWidth={3} />
           </button>
         </span>
-      ))}
+        );
+      })}
       {naming ? (
         <span className="scanner-saved-new">
           <input

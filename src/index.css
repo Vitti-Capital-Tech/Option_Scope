@@ -3579,6 +3579,25 @@ body.light-theme .pt-live-badge {
   color: var(--danger);
 }
 
+/* Applied saved setting whose filters were changed since: dashed border + ⟳ Update. */
+.scanner-saved.modified {
+  border-style: dashed;
+  border-color: var(--accent);
+}
+
+.scanner-saved-upd {
+  display: inline-flex;
+  background: none;
+  border: 0;
+  color: var(--accent);
+  padding: 4px 3px;
+  cursor: pointer;
+}
+
+.scanner-saved-upd:hover {
+  color: var(--call);
+}
+
 .scanner-saved-add {
   display: inline-flex;
   align-items: center;
