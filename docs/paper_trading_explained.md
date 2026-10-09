@@ -701,6 +701,19 @@ Normal sizing **reserves** budget for every empty combined slot (`partMargin = r
 
 ---
 
+### 5. Replace with a closer-to-ATM spread (paper only — migration 059)
+
+A Control Panel toggle (**Replace Closer to ATM → Replace Farther Pair**, `replace_closer_atm`, **off by default**; hidden on live accounts and never applied to them by the engine). When it is on and a qualifying new spread is **blocked only because the account is full** — the allocated margin pool is exhausted, the per-type cap is reached, or the combined cap is reached — the engine may swap out an open pair for it in the same cycle.
+
+- **Which pair can go**: a call **or** a put pair — a put can make room for a call and vice versa — except when the **per-type cap** is what blocks the new spread: then only a pair of the same type frees that slot. It must be a full pair (short still open), whose **long strike is farther from spot** than the new spread's long strike. Among several, the farthest goes first.
+- **Cashflow > 0**: that pair's premium received on the short minus premium paid on the long and the hedge, on the legs' current quantities (`entrySellPrice × sellQty × short lot − entryBuyPrice × long lot − hedge entry × hedge lot`).
+- **Account unrealized P&L > that cashflow**: the total unrealized P&L of **every** open position (long at bid, short at ask, hedge at bid — the exit loop's prices) must be positive and larger than the pair's cashflow. If any open position is unquoted the total is unknown and nothing is replaced that cycle.
+- **Safe swap**: the old pair is only set aside while the new spread runs the remaining entry checks (expiry, strike conflict, hedge, governor…). Only when the new spread is actually staged is the old pair exited — booked like any strategy exit with `exit_reason = 'Replaced (closer-to-ATM spread)'` (its hedge as a `-HX` row) — and its margin goes back to the pool to size the new one. If the new spread fails a later check, the old pair stays.
+- **As many as qualify** per cycle; after each swap the replaced pair's unrealized P&L is taken out of the account total for the next check.
+
+> [!NOTE]
+> **Log lines**: `⇆ Closer-ATM replace candidate (margin full | per-type cap full | combined cap full): CALL 83000/84000 could replace T… (82000/83400, 1150 from spot) — cashflow $… < account unrealized $…` and `⇆ PAPER closer-ATM REPLACE: exiting … → entering ….`
+
 ## Cross-Account Entry Governor (Paper + Live)
 
 **Files**: [entryGovernor.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/lib/entryGovernor.js) · [paperTradingEngine.js:L4306](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L4306)

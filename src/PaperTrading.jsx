@@ -365,7 +365,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     excludedStrikes: [],
     // Paper full-deployment fill (migration 030) — paper only.
     fullDeployEnabled: false,
-    fullDeployTime: '04:30'
+    fullDeployTime: '04:30',
+    // Paper-only closer-to-ATM replacement (migration 059).
+    replaceCloserAtm: false
   }));
   const [draftConfig, setDraftConfig] = useState(() => ({ ...config }));
   const [isConfigLoaded, setIsConfigLoaded] = useState(false);
@@ -460,6 +462,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   }, [activeAccountId]);
   // In-app confirmation (toast-styled, no browser alert): { message, confirmLabel, onConfirm }.
   const [confirmDialog, setConfirmDialog] = useState(null);
+  // Whether paper_trading_config has migration 059's replace_closer_atm column (see the save).
+  const hasReplaceCloserAtmColRef = useRef(false);
   // Session-open spot per underlying → drives the % change on the spot bar shown
   // above the tables (captured once, first time we see a spot for that underlying).
   const spotOpenRef = useRef({});
@@ -1480,6 +1484,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         excluded_strikes: Array.isArray(newCfg.excludedStrikes) ? newCfg.excludedStrikes : [],
         full_deploy_enabled: newCfg.fullDeployEnabled ?? false,
         full_deploy_time: newCfg.fullDeployTime ?? '04:30',
+        // Migration 059 — sent only once the column exists (or when switched on), so saving
+        // still works on a database where 059 hasn't run yet.
+        ...((hasReplaceCloserAtmColRef.current || newCfg.replaceCloserAtm)
+          ? { replace_closer_atm: !!newCfg.replaceCloserAtm } : {}),
         updated_at: new Date().toISOString()
       }).select();
       if (error) {
@@ -1518,7 +1526,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     'tradeDays',
     'excludedStrikes',
     'fullDeployEnabled',
-    'fullDeployTime'
+    'fullDeployTime',
+    'replaceCloserAtm'
   ];
 
   const updateConfig = (keyOrObj, value) => {
@@ -1606,7 +1615,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         return arr1.some((v, idx) => v !== arr2[idx]);
       }
       if (k === 'exitType' || k === 'variableExitSlices' || k === 'atmRatioScaling' || k === 'underlying' || k === 'expiry'
-        || k === 'fullDeployEnabled' || k === 'fullDeployTime') {
+        || k === 'fullDeployEnabled' || k === 'fullDeployTime' || k === 'replaceCloserAtm') {
         return val1 !== val2;
       }
       const num1 = (val1 === '' || val1 === '-' || val1 == null) ? null : Number(val1);
@@ -1729,8 +1738,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
             : [],
           // Paper full-deployment fill (migration 030) — paper only.
           fullDeployEnabled: data.full_deploy_enabled ?? false,
-          fullDeployTime: data.full_deploy_time ?? '04:30'
+          fullDeployTime: data.full_deploy_time ?? '04:30',
+          replaceCloserAtm: data.replace_closer_atm ?? false
         };
+        hasReplaceCloserAtmColRef.current = Object.prototype.hasOwnProperty.call(data, 'replace_closer_atm');
         setConfig(loadedConfig);
         setDraftConfig(loadedConfig);
         setConfigDbId(data.id);

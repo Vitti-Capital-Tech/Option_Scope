@@ -228,6 +228,30 @@ export default function ControlPanel({
             </div>
           </div>
 
+          {/* Closer-to-ATM replacement (migration 059) — PAPER ONLY. When slots / margin are
+              full, a better spread nearer ATM replaces a farther open pair (call or put) whose
+              cashflow is positive and below the account's total unrealized P&L. */}
+          {!accountIsLive && (
+            <div className="pt-filter-cluster">
+              <span className="pt-cluster-head">Replace Closer to ATM</span>
+              <div className="pt-cluster-fields">
+                <div key="replaceCloserAtm" className="form-group">
+                  <label htmlFor="replaceCloserAtm" className="pt-field-label" style={{ marginBottom: 0, cursor: 'pointer' }}
+                    title="When slots or margin are full and a spread closer to ATM is available, exit an open pair (call or put) whose long is farther from spot and enter the closer one — only if that pair's cashflow (short premium − long − hedge premium) is positive and the account's total unrealized P&L is positive and larger than it. Paper accounts only.">
+                    Replace Farther Pair
+                  </label>
+                  <div style={{ height: 34, display: 'flex', alignItems: 'center' }}>
+                    <label className="pt-switch">
+                      <input type="checkbox" id="replaceCloserAtm" checked={draftConfig?.replaceCloserAtm ?? false}
+                        onChange={e => updateDraftConfig('replaceCloserAtm', e.target.checked)} />
+                      <span className="pt-slider"></span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Apply, Cancel & Reset Buttons */}
           <div className="pt-filter-actions">
             <button

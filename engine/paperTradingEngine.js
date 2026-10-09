@@ -312,7 +312,9 @@ async function startSingleAccountEngine(account) {
     // per IST day at fullDeployTime the whole remaining pool is concentrated across
     // openable spreads instead of reserved per free slot. Disabled by default.
     fullDeployEnabled: false,
-    fullDeployTime: '04:30'
+    fullDeployTime: '04:30',
+    // Paper-only closer-to-ATM replacement (migration 059). Off by default.
+    replaceCloserAtm: false
   };
   let products = [];
   let expiries = [];
@@ -608,7 +610,9 @@ async function startSingleAccountEngine(account) {
           tradeDays: Array.isArray(data.trade_days) ? data.trade_days : [0, 1, 2, 3, 4, 5, 6],
           // Paper full-deployment fill (migration 030) — paper only.
           fullDeployEnabled: data.full_deploy_enabled ?? false,
-          fullDeployTime: data.full_deploy_time ?? '04:30'
+          fullDeployTime: data.full_deploy_time ?? '04:30',
+          // Paper-only closer-to-ATM replacement (migration 059).
+          replaceCloserAtm: data.replace_closer_atm ?? false
         };
 
         if (config) {
@@ -4883,10 +4887,100 @@ async function startSingleAccountEngine(account) {
             if (p.sellLeg?.symbol && p.sellQty > 0) heldSymbols.add(p.sellLeg.symbol);
           }
         }
+        // ── Closer-to-ATM replacement (migration 059, PAPER ONLY) ─────────────────────
+        // When config.replaceCloserAtm is on, a candidate blocked ONLY by full slots / an
+        // exhausted allocated pool (margin, per-type cap, combined cap) may replace an open
+        // pair (call OR put; it must be the candidate's type only when the per-type cap is what
+        // blocks) whose long strike is FARTHER from spot, if that pair's cashflow
+        // (short premium in − long − hedge premium out, on current quantities) is > 0 AND the
+        // account's total unrealized P&L (all open positions: long @ bid, short @ ask, hedge
+        // @ bid — the exit loop's prices) is > that cashflow. The victim is only TENTATIVELY
+        // set aside (pendingRotate) while the candidate runs the remaining checks; it is
+        // committed when the candidate is staged in newEntries and reverted otherwise, so a
+        // pair is never exited for a spread that then fails to enter. Committed victims are
+        // booked like any strategy exit (pushed to `exited`) after this loop.
+        const rotateOn = isPaperAccount && !!config.replaceCloserAtm;
+        const rotatingIds = new Set();
+        const rotateCommits = [];
+        let pendingRotate = null;
+        const rotateBid = (sym) => { const t = sym ? tickerData[sym] : null; return t?.bid ?? t?.lastPrice ?? t?.markPrice ?? null; };
+        const rotateAsk = (sym) => { const t = sym ? tickerData[sym] : null; return t?.ask ?? t?.lastPrice ?? t?.markPrice ?? null; };
+        // Unrealized gross P&L of one open position (null when a leg it holds is unquoted).
+        const rotateUnrealizedOf = (p) => {
+          let g = 0;
+          if ((p.buyLeg?.lotSize || 0) > 0) {
+            const b = rotateBid(p.buyLeg.symbol);
+            if (b == null) return null;
+            g += (b - (p.entryBuyPrice || 0)) * p.buyLeg.lotSize;
+          }
+          if ((p.sellQty || 0) > 0) {
+            const a = rotateAsk(p.sellLeg?.symbol);
+            if (a == null) return null;
+            g += ((p.entrySellPrice || 0) - a) * p.sellQty * (p.sellLeg.lotSize || 1);
+          }
+          if (p.hedgeLeg && (p.hedgeLeg.lotSize || 0) > 0) {
+            const h = rotateBid(p.hedgeLeg.symbol);
+            if (h == null) return null;
+            g += (h - (p.hedgeLeg.entryPrice || 0)) * p.hedgeLeg.lotSize;
+          }
+          return g;
+        };
+        // Cashflow of a pair: premium received on the short minus premium paid on the long and hedge.
+        const rotateCashflowOf = (p) => (p.entrySellPrice || 0) * (p.sellQty || 0) * (p.sellLeg?.lotSize || 1)
+          - (p.entryBuyPrice || 0) * (p.buyLeg?.lotSize || 0)
+          - (p.hedgeLeg && (p.hedgeLeg.lotSize || 0) > 0 ? (p.hedgeLeg.entryPrice || 0) * p.hedgeLeg.lotSize : 0);
+        let rotateU = null; // account total unrealized P&L (null = unknown → no replacement)
+        if (rotateOn) {
+          let sum = 0;
+          for (const p of remaining) {
+            const u = rotateUnrealizedOf(p);
+            if (u == null) { sum = null; break; }
+            sum += u;
+          }
+          rotateU = sum;
+          if (rotateU == null) log(`[${accountState.name}] ⇆ Closer-ATM replace: skipped this cycle — an open position is unquoted, so the account's total unrealized P&L is unknown.`);
+        }
+        // onlyType: restrict to one type (per-type cap); null = any type, farthest from spot wins.
+        const pickRotateVictim = (candLongStrike, onlyType = null) => {
+          if (!rotateOn || rotateU == null || !(rotateU > 0) || spotPrice == null) return null;
+          const candDist = Math.abs(candLongStrike - spotPrice);
+          let best = null;
+          for (const p of remaining) {
+            if (rotatingIds.has(p.id) || p.underlying !== underlying || (onlyType && p.type !== onlyType)) continue;
+            if (!((p.sellQty || 0) > 0) || p.buyLeg?.isHedge || p.exitRequested) continue;
+            const c = rotateCashflowOf(p);
+            if (!(c > 0) || !(rotateU > c)) continue;
+            const d = Math.abs(Number(p.buyLeg?.strike) - spotPrice);
+            if (!(d > candDist)) continue;
+            if (!best || d > best.d) best = { p, d, c };
+          }
+          return best;
+        };
+        const revertPendingRotate = () => {
+          if (!pendingRotate) return;
+          rotatingIds.delete(pendingRotate.p.id);
+          if (paperRemainingBudget != null) paperRemainingBudget -= (pendingRotate.p.margin || 0);
+          pendingRotate = null;
+        };
         for (const spread of uniqueTopSpreads) {
+          // A victim set aside for the previous candidate that did not get staged → restore it.
+          revertPendingRotate();
           const bStrike = Number(spread.buyLeg.strike);
           const sStrike = Number(spread.sellLeg.strike);
           const spreadType = spread.buyLeg.type;
+          // Set a closer-to-ATM victim aside for THIS candidate (tentative; see above).
+          // needType: the victim must be this type (per-type cap); null = any type.
+          const tryRotate = (why, needType = null) => {
+            if (pendingRotate && (!needType || pendingRotate.p.type === needType)) return true;
+            if (pendingRotate) revertPendingRotate(); // set aside a pair of the needed type instead
+            const v = pickRotateVictim(bStrike, needType);
+            if (!v) return false;
+            pendingRotate = v;
+            rotatingIds.add(v.p.id);
+            if (paperRemainingBudget != null) paperRemainingBudget += (v.p.margin || 0);
+            log(`[${accountState.name}] ⇆ Closer-ATM replace candidate (${why}): ${spreadType.toUpperCase()} ${bStrike}/${sStrike} could replace ${v.p.type.toUpperCase()} ${v.p.id} (${v.p.buyLeg.strike}/${v.p.sellLeg.strike}, ${Math.round(v.d)} from spot) — cashflow ${v.c.toFixed(2)} < account unrealized ${rotateU.toFixed(2)}.`);
+            return true;
+          };
           // Live accounts need a valid per-position margin part to size safely.
           if (liveArmed && partMargin == null) continue;
           // Paper accounts self-skip when the allocated pool is exhausted — either no
@@ -4903,11 +4997,22 @@ async function startSingleAccountEngine(account) {
               && (Number(p.buyLeg?.strike) === bStrike || Number(p.buyLeg?.strike) === sStrike));
 
             // If a replacement long-only exists, its exit will free its margin into the pool
-            const freedMargin = blockedReplace ? (blockedReplace.margin || (partMargin > 0 ? partMargin : 0)) : 0;
-            const effectivePoolLeft = poolLeft + freedMargin;
-            const effPartMargin = (partMargin != null && partMargin > 0.01)
+            let freedMargin = blockedReplace ? (blockedReplace.margin || (partMargin > 0 ? partMargin : 0)) : 0;
+            let effectivePoolLeft = poolLeft + freedMargin;
+            let effPartMargin = (partMargin != null && partMargin > 0.01)
               ? partMargin
               : (freedMargin > 0 ? (freedMargin / Math.max(1, paperRemainingSlots)) : (partMargin ?? 0));
+            // Closer-to-ATM replacement (059): an exhausted pool can be refilled by setting aside
+            // a farther same-type pair — its margin returns to the pool (tryRotate adds it to
+            // paperRemainingBudget) and sizes the new spread.
+            if ((effPartMargin <= 0.01 || effectivePoolLeft <= 0.01) && tryRotate('margin full')) {
+              const rotFreed = pendingRotate.p.margin || 0;
+              freedMargin += rotFreed;
+              effectivePoolLeft = Math.max(0, paperRemainingBudget - paperDeployed) + (freedMargin - rotFreed);
+              effPartMargin = (partMargin != null && partMargin > 0.01)
+                ? partMargin
+                : (freedMargin / Math.max(1, paperRemainingSlots));
+            }
 
             if (effPartMargin <= 0.01 || effectivePoolLeft <= 0.01) {
               const loStrike = blockedReplace ? Number(blockedReplace.buyLeg?.strike) : null;
@@ -4940,10 +5045,13 @@ async function startSingleAccountEngine(account) {
 
           // Portfolio cap — count only full spreads (positions with an active short leg).
           // Long-only held positions (sellQty === 0) free up a slot for new entries.
-          let count = remaining.filter(p => p.underlying === underlying && p.type === spreadType && p.sellQty > 0).length +
+          const countOfType = () => remaining.filter(p => p.underlying === underlying && p.type === spreadType && p.sellQty > 0 && !rotatingIds.has(p.id)).length +
             newEntries.filter(p => p.underlying === underlying && p.type === spreadType).length;
+          let count = countOfType();
           // Per-type cap is derived from the window's combined + split% (or 100% of maxCombined if allSameType is active)
           const typeCap = derivedTypeCap(effectiveConfig, spreadType);
+          // Closer-to-ATM replacement (059): a full per-type cap frees a slot by setting a farther pair aside.
+          if (typeCap > 0 && count >= typeCap && tryRotate('per-type cap full', spreadType)) count = countOfType();
           if (typeCap === 0 || count >= typeCap) {
             const dlo = remaining.find(p => p.expiry === config.expiry && p.underlying === underlying && p.type === spreadType && p.sellQty === 0 && (p.buyLeg?.lotSize ?? 0) > 0 && p.sellLeg?.strike != null && (Number(p.buyLeg?.strike) === bStrike || Number(p.buyLeg?.strike) === sStrike));
             if (typeCap === 0) {
@@ -4959,8 +5067,11 @@ async function startSingleAccountEngine(account) {
           // per-type cap (ceil(split% × combined)) individually allows more. Applies to ALL
           // accounts now (paper AND live).
           const combinedCap = Math.max(0, Math.floor(effectiveConfig.maxCombinedPositions ?? config.maxCombinedPositions ?? 4));
-          const combinedCount = remaining.filter(p => p.underlying === underlying && p.sellQty > 0).length +
+          const countCombined = () => remaining.filter(p => p.underlying === underlying && p.sellQty > 0 && !rotatingIds.has(p.id)).length +
             newEntries.filter(p => p.underlying === underlying).length;
+          let combinedCount = countCombined();
+          // Closer-to-ATM replacement (059): a full combined cap frees a slot the same way.
+          if (combinedCount >= combinedCap && tryRotate('combined cap full')) combinedCount = countCombined();
           if (combinedCount >= combinedCap) {
             const dlo = remaining.find(p => p.expiry === config.expiry && p.underlying === underlying && p.type === spreadType && p.sellQty === 0 && (p.buyLeg?.lotSize ?? 0) > 0 && p.sellLeg?.strike != null && (Number(p.buyLeg?.strike) === bStrike || Number(p.buyLeg?.strike) === sStrike));
             logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: combined position cap of ${combinedCap} reached (${combinedCount} open)${dlo ? ` — ⊙ REPLACE-DIAG: long-only ${dlo.id} at strike ${Number(dlo.buyLeg?.strike)} could have been REPLACED but the combined cap blocks the new full spread` : ''}.`);
@@ -4984,7 +5095,7 @@ async function startSingleAccountEngine(account) {
             return occ;
           };
           const conflictScope = [
-            ...remaining.filter(p => p.expiry === config.expiry && p.underlying === underlying && p.type === spreadType),
+            ...remaining.filter(p => p.expiry === config.expiry && p.underlying === underlying && p.type === spreadType && !rotatingIds.has(p.id)),
             ...newEntries.filter(p => p.underlying === underlying && p.type === spreadType),
           ];
           let conflictClashes = conflictScope.filter(p => {
@@ -5438,6 +5549,13 @@ async function startSingleAccountEngine(account) {
           }
 
           newEntries.push(newPos);
+          // Closer-to-ATM replacement (059): the candidate is staged, so its set-aside pair is
+          // now really exited (booked after this loop). Its margin stays in the pool.
+          if (pendingRotate) {
+            rotateCommits.push({ victim: pendingRotate.p, entry: newPos });
+            rotateU -= (rotateUnrealizedOf(pendingRotate.p) ?? 0); // it is no longer open
+            pendingRotate = null;
+          }
           // Track pool consumed this cycle so the paper running-pool clamp (and the 4:30
           // concentrate fill) never collectively deploy more than the remaining pool.
           if (isPaperAccount) paperDeployed += newPos.margin;
@@ -5448,6 +5566,68 @@ async function startSingleAccountEngine(account) {
             heldSymbols.add(newPos.sellLeg.symbol);
             if (hedgeLeg) heldSymbols.add(hedgeLeg.symbol);
           }
+        }
+        revertPendingRotate();
+
+        // Book every committed closer-to-ATM replacement (059) as a regular strategy exit:
+        // hedge leg as its own -HX row now, the pair via `exited` (Process exits below).
+        for (const { victim: pos, entry } of rotateCommits) {
+          const exitReason = 'Replaced (closer-to-ATM spread)';
+          const latestBuy = (pos.buyLeg?.lotSize || 0) > 0 ? (rotateBid(pos.buyLeg.symbol) ?? pos.entryBuyPrice) : null;
+          const latestSell = (pos.sellQty || 0) > 0 ? (rotateAsk(pos.sellLeg.symbol) ?? pos.entrySellPrice) : null;
+          if (pos.hedgeLeg && (pos.hedgeLeg.lotSize || 0) > 0) {
+            const hedge = pos.hedgeLeg;
+            const hedgeBid = rotateBid(hedge.symbol) ?? hedge.entryPrice ?? 0;
+            const hedgeExitFee = calculateFee(hedgeBid, spotPrice, hedge.lotSize, hedge.originalLotSize || 1);
+            const hedgeEntryFee = hedge.entryFee || 0;
+            const hedgeGrossPnl = (hedgeBid - (hedge.entryPrice || 0)) * hedge.lotSize;
+            try {
+              await supabase.from('trade_history').upsert([{
+                trade_id: `${pos.id}-HX`,
+                underlying: pos.underlying, expiry: pos.expiry, type: pos.type,
+                buy_leg: JSON.stringify(hedge), sell_leg: JSON.stringify({ lotSize: 0 }), hedge_leg: JSON.stringify(hedge),
+                sell_qty: 0, strike_diff: 0,
+                entry_time: pos.entryTime.toISOString(),
+                entry_buy_price: hedge.entryPrice ?? 0, entry_sell_price: 0, entry_spot_price: pos.entrySpotPrice,
+                margin: 0, exit_time: new Date().toISOString(),
+                exit_buy_price: hedgeBid, exit_sell_price: null, exit_spot_price: spotPrice,
+                realized_gross_pnl: hedgeGrossPnl, realized_net_pnl: hedgeGrossPnl - hedgeEntryFee - hedgeExitFee,
+                exit_fee: hedgeExitFee, total_fees: hedgeEntryFee + hedgeExitFee,
+                exit_reason: 'Hedge Exit (replaced, closer-to-ATM)', is_partial: true, lot_size: hedge.lotSize,
+                account_id: accountState.id,
+              }], { onConflict: 'trade_id', ignoreDuplicates: true });
+            } catch (e) { logError(`[${accountState.name}] Failed to book hedge exit for replaced ${pos.id}:`, e); }
+            pos.hedgeLeg = null;
+          }
+          const buyDiff = latestBuy != null ? latestBuy - (pos.entryBuyPrice || 0) : 0;
+          const sellDiff = latestSell != null ? (pos.entrySellPrice || 0) - latestSell : 0;
+          const grossPnl = buyDiff * (pos.buyLeg?.lotSize || 0) + sellDiff * (pos.sellQty || 0) * (pos.sellLeg?.lotSize || 1);
+          const exitFee = calculateFee(latestBuy, spotPrice, pos.buyLeg?.lotSize || 0, pos.buyLeg?.originalLotSize || 1)
+            + calculateFee(latestSell, spotPrice, pos.sellQty || 0, pos.sellLeg?.lotSize || 1);
+          const totalFees = (pos.entryFee || 0) + exitFee;
+          exited.push({
+            ...pos,
+            buyLeg: { ...pos.buyLeg, exitIv: tickerData[pos.buyLeg?.symbol]?.bidIv ?? null },
+            sellLeg: { ...pos.sellLeg, exitIv: tickerData[pos.sellLeg?.symbol]?.askIv ?? null },
+            _exitedBuyQty: pos.buyLeg?.lotSize || 0,
+            exitTime: new Date(),
+            exitBuyPrice: latestBuy,
+            exitSellPrice: latestSell,
+            exitSpotPrice: spotPrice,
+            realizedGrossPnl: grossPnl,
+            realizedNetPnl: grossPnl - totalFees,
+            entryFee: pos.entryFee || 0,
+            exitFee,
+            totalFees,
+            exitReason,
+            _latestBuy: latestBuy,
+            _latestSell: latestSell,
+            _isPartial: false,
+            zombieExitTime: null,
+          });
+          const ri = remaining.findIndex(p => p.id === pos.id);
+          if (ri !== -1) remaining.splice(ri, 1);
+          log(`[${accountState.name}] ⇆ PAPER closer-ATM REPLACE: exiting ${pos.type.toUpperCase()} ${pos.buyLeg.strike}/${pos.sellLeg.strike} (${pos.id}, gross ${grossPnl.toFixed(2)}) → entering ${entry.buyLeg.strike}/${entry.sellLeg.strike}.`);
         }
 
         // (Per-spread hedge legs are attached to each entry above; the standalone

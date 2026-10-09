@@ -126,6 +126,9 @@ CREATE TABLE IF NOT EXISTS public.paper_trading_config (
     -- aligned to the 17:30 IST trading-day boundary. Entry-only gate, v2/paper only.
     -- See migration 021.
     trade_days JSONB NOT NULL DEFAULT '[0,1,2,3,4,5,6]'::jsonb,
+    -- Paper-only closer-to-ATM replacement (migration 059): when slots/margin are full, a closer
+    -- same-type spread replaces a farther pair whose cashflow > 0 and < the account's unrealized P&L.
+    replace_closer_atm BOOLEAN NOT NULL DEFAULT false,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
