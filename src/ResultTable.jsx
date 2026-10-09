@@ -26,16 +26,20 @@ function describeIntrinsic(detail, field) {
 // A fallback (not an exact strike) produced the price → flag it with a "≈" marker.
 const isApproxIntrinsic = (detail) => !!detail && (detail.mode === 'bracket' || detail.mode === 'single');
 
-// Hedge legs (3rd long) under the spread strikes — only when the Hedge toggle is on. Every
-// qualifying option is listed (strikes from one step beyond the short up to width − one step,
+// Hedge legs (3rd long) under the spread strikes — only when the Hedge toggle is on. The top 2
+// qualifying options by ATM ROI are listed (strikes from one step beyond the short up to width − one step,
 // under Max Hedge Price, inside the IV-diff range, 3-leg net within Max Debit); the ✓ one
 // (best ATM ROI) is what the row's Net Premium / ATM P&L / Margin / ROI use.
 function HedgeLine({ hedge, options }) {
   if (!hedge) return null;
   if (options && options.length > 1) {
+    // Only the top 2 by ATM ROI (the ✓ one first) — the rest are left out to keep rows short.
+    const top = [...options]
+      .sort((a, b) => (b.chosen - a.chosen) || ((b.roi ?? -Infinity) - (a.roi ?? -Infinity)))
+      .slice(0, 2);
     return (
       <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2, lineHeight: 1.45 }}>
-        {options.map(o => (
+        {top.map(o => (
           <div key={o.strike} style={o.chosen ? { fontWeight: 700, color: 'var(--text)' } : undefined}
             title={`Hedge long ${Number(o.strike).toLocaleString()} @ ${Number(o.price).toFixed(2)}${o.iv != null ? ` (${Number(o.iv).toFixed(1)}% IV)` : ''} × ${o.qty} · net premium ${Number(o.netPremium ?? 0).toFixed(2)}${o.atAtm != null ? ` · worth ${Number(o.atAtm).toFixed(2)} at ATM` : ''}${o.roi != null ? ` · ATM ROI ${o.roi.toFixed(2)}%` : ''}${o.chosen ? ' — used for this row (best ATM ROI)' : ''}`}>
             H: <span className="scanner-buy">+{Number(o.strike).toLocaleString()}</span> @ ${Number(o.price).toFixed(2)} × {o.qty}
