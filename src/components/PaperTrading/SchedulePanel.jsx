@@ -844,7 +844,7 @@ export default function SchedulePanel({
                   <CustomInput type="number" min="0" prefix="$" step="50" value={s.minLongDist} onChange={e => handleChange(s.id, 'minLongDist', Number(e.target.value))} />
                 </div>
 
-                <div className="schedule-item-block schedule-item-num-block">
+                <div className="schedule-item-block schedule-item-num-block schedule-item-mid-block">
                   <span className="schedule-item-label" title="Min IV Edge — minimum implied volatility difference (%) between buy and sell legs">IV Edge</span>
                   <CustomInput type="number" min="0" step="0.25" suffix="%" value={s.minIvDiff ?? 5} onChange={e => handleChange(s.id, 'minIvDiff', Number(e.target.value))} />
                 </div>
@@ -873,7 +873,7 @@ export default function SchedulePanel({
                   <CustomInput type="number" min="0" max="100" suffix="%" step="5" value={s.atmRatioPctPut ?? 25} disabled={!(s.atmRatioScaling ?? true)} onChange={e => handleChange(s.id, 'atmRatioPctPut', Number(e.target.value))} />
                 </div>
 
-                <div className="schedule-item-block schedule-item-num-block">
+                <div className="schedule-item-block schedule-item-num-block schedule-item-mid-block">
                   <span className="schedule-item-label" title="Max Net Debit">Max Debit</span>
                   <CustomInput type="number" prefix="$" value={s.maxNetPremium ?? 20} onChange={e => handleChange(s.id, 'maxNetPremium', Number(e.target.value))} />
                 </div>
@@ -900,14 +900,14 @@ export default function SchedulePanel({
                     (call: real + diff, put: real − diff). 0 = decoy == real (feature off).
                     Live drives the exchange bracket; paper records real/decoy for validation. */}
                 <div className="schedule-item-block schedule-item-num-block">
-                  <span className="schedule-item-label" title="Shift the exchange (decoy) SL/TP this many points away from the real exit level (harder-to-trigger direction). 0 = off (decoy = real).">SL/TP Diff</span>
-                  <CustomInput type="number" min="0" step="1" suffix="pts" value={s.slTpDecoyDiff ?? 0} onChange={e => handleChange(s.id, 'slTpDecoyDiff', Number(e.target.value))} />
+                  <span className="schedule-item-label" title="Shift the exchange (decoy) SL/TP this many points away from the real exit level (harder-to-trigger direction). 0 = off (decoy = real). Value in points.">SL/TP Pts</span>
+                  <CustomInput type="number" min="0" step="1" value={s.slTpDecoyDiff ?? 0} onChange={e => handleChange(s.id, 'slTpDecoyDiff', Number(e.target.value))} />
                 </div>
 
                 {/* Per-window exit controls (migration 033) — moved here from the global
                     filter panel. Short buy-back threshold + the long-only ladder's Variable
                     mode (with its slice count, shown only when Variable is ON). */}
-                <div className="schedule-item-block schedule-item-num-block">
+                <div className="schedule-item-block schedule-item-num-block schedule-item-mid-block">
                   <span className="schedule-item-label" title="Short Exit Price — the short leg's live-ask threshold below which the short is bought back and the long is held.">Short Exit</span>
                   <CustomInput type="number" min="0" step="0.1" prefix="$" value={s.shortExitPrice ?? 1.1} onChange={e => handleChange(s.id, 'shortExitPrice', Number(e.target.value))} />
                 </div>

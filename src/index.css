@@ -4141,6 +4141,8 @@ body.light-theme .pt-btn-apply.active {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0; /* lets a long account name ellipsize instead of wrapping the LIVE / group chips */
+  flex: 1 1 auto;
 }
 
 .account-dropdown-item-icon {
@@ -5107,7 +5109,9 @@ body.light-theme .pt-btn-apply.active {
 
 /* Fixed, compact field widths so fields stay tidy
    (fixed width + no shrink means fields maintain proper alignment). */
-.schedule-item-num-block { flex: 1 1 72px; min-width: 60px; }
+.schedule-item-num-block { flex: 1 1 72px; min-width: 64px; } /* fits "100 %" + stepper; the row may scroll sideways rather than clip a value */
+/* $-prefixed values that can be negative / decimal (Max Debit "$ -70", Short Exit "$ 2.1"). */
+.schedule-item-num-block.schedule-item-mid-block { flex: 1 1 80px; min-width: 76px; }
 /* $-prefixed 4-digit values (Min Width, Spot Dist) need the room to show in full. */
 .schedule-item-num-block.schedule-item-wide-block { flex: 1 1 90px; min-width: 86px; }
 .schedule-item-toggle-block { flex: 0 0 46px; width: 46px; }

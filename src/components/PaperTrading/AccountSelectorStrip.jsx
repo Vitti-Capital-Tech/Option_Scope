@@ -14,6 +14,8 @@ function LiveBadge({ account }) {
         padding: '1px 5px',
         borderRadius: 4,
         marginLeft: 6,
+        whiteSpace: 'nowrap',
+        flexShrink: 0,
         color: armed ? '#0d1117' : '#3b82f6',
         background: armed ? '#3fb950' : 'transparent',
         border: armed ? 'none' : '1px solid #3b82f6'
@@ -31,7 +33,7 @@ function PausedBadge({ account }) {
       title="Paused — no new positions; open ones still managed"
       style={{
         fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
-        padding: '1px 5px', borderRadius: 4, marginLeft: 6,
+        padding: '1px 5px', borderRadius: 4, marginLeft: 6, whiteSpace: 'nowrap', flexShrink: 0,
         color: '#3b82f6', background: 'transparent', border: '1px solid #3b82f6',
       }}
     >
@@ -51,7 +53,7 @@ function GroupBadge({ account, groups }) {
         fontSize: 9, fontWeight: 700, letterSpacing: '0.04em',
         padding: '1px 5px', borderRadius: 4, marginLeft: 6,
         color: '#a371f7', background: 'transparent', border: '1px solid #a371f7',
-        display: 'inline-flex', alignItems: 'center', gap: 3, maxWidth: 120,
+        display: 'inline-flex', alignItems: 'center', gap: 3, maxWidth: 120, whiteSpace: 'nowrap', flexShrink: 0,
         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
       }}
     >
@@ -156,7 +158,7 @@ export default function AccountSelectorStrip({
                     >
                       <div className="account-dropdown-item-left">
                         <Columns className="account-dropdown-item-icon" size={14} strokeWidth={2.5} />
-                        <span>{acc.name}</span>
+                        <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={acc.name}>{acc.name}</span>
                         {acc.paused
                           ? <PausedBadge account={acc} />
                           : <LiveBadge account={acc} />}

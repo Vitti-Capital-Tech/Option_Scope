@@ -911,7 +911,7 @@ One rule covers every exit type — no special ITM handling, no warnings:
 | Put OTM 50 | 50 | strike + 50 | strike | ATM |
 
 > [!IMPORTANT]
-> **`diff = 0` → decoy == real → current behaviour (fully backward compatible).** No separate on/off flag. Configured **per schedule window** on `paper_trading_schedules.sl_tp_decoy_diff` (primary; `paper_trading_config` is the account-level fallback), editable in **Schedule Panel → each window → "SL/TP Diff (pts)"**.
+> **`diff = 0` → decoy == real → current behaviour (fully backward compatible).** No separate on/off flag. Configured **per schedule window** on `paper_trading_schedules.sl_tp_decoy_diff` (primary; `paper_trading_config` is the account-level fallback), editable in **Schedule Panel → each window → "SL/TP Pts"** (the label carries the unit; the input shows just the number).
 
 **Where the decoy acts, per account type:**
 
@@ -1276,7 +1276,7 @@ The following parameters are scheduled per window:
 11. **Max Net Debit** — *Max Debit* (`maxNetPremium`) — entry debit cap (migration `012`)
 12. **Exit Type** (`exitType`) — `ATM`/`ITM`/`OTM`; **active-window-governs** open positions (migration `012`)
 13. **Exit Points** — *Exit Pts* (`exitPoints`) — offset for ITM/OTM exit (migration `012`). In an [account group](#account-groups-migration-050) each member other than the one saved from gets a random ±10–50 on top (migrations `053`/`054`).
-14. **SL/TP Diff (pts)** (`slTpDecoyDiff`) — per-window SL/TP decoy trigger offset (migration `031`)
+14. **SL/TP Diff (pts)** — label *SL/TP Pts* (`slTpDecoyDiff`) — per-window SL/TP decoy trigger offset (migration `031`)
 15. **Short Exit Price / Variable Ladder** — *Short Exit*, *Var.*, *Slices* (`shortExitPrice`, `variableExitSlices`, `longExitSlices`) — per-window exit ladder controls (migration `033`)
 16. **Days to Expiry** — *Min DTE* (`daysToExpiry`) — **v2 (experimental paper) accounts only** (migration `019`). The window's value guards its own entries; the account-global traded expiry **follows the active window** as **(current date + that window's DTE)**, re-selected in ~realtime as windows change (smallest DTE wins on overlap). On v1 (live) this stays an account-level Control Panel field and is **not** shown per window. See [Strategy Versioning](#strategy-versioning-paper-vs-live).
 17. **Hedge Leg** (`hedgeEnabled` + `hedgeLotPct`) — **v2 (experimental paper) accounts only** (config migration `041`, leg column `023`). Adds a per-spread 3rd long-only leg (long/short/long triplet). See [Hedge Leg](#hedge-leg--per-spread-3rd-long-long--short--long-triplet).
