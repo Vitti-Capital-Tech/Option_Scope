@@ -458,10 +458,13 @@ export default function SchedulePanel({
 
   const handleImport = useCallback(async (item) => {
     try {
-      const ok = await onImportSchedules(item.key);
-      if (!ok) { setNotice(`"${item.label}" has no schedule windows to copy.`); return; }
+      const res = await onImportSchedules(item.key);
+      const windows = typeof res === 'object' && res ? res.windows : (res ? 1 : 0);
+      const filters = typeof res === 'object' && res ? res.filters : 0;
+      if (!windows && !filters) { setNotice(`"${item.label}" has no schedule windows or filters to copy.`); return; }
       setImportedFrom(item.label);
-      setNotice(`Copied windows from "${item.label}". This account's windows are replaced only after you click Apply — Cancel restores them.`);
+      const what = windows && filters ? 'windows and global filters' : windows ? 'windows' : 'global filters (it has no windows)';
+      setNotice(`Copied ${what} from "${item.label}". Nothing is saved until you click Apply here — it saves both the windows and the Control Panel filters (and copies them to this account's group). Cancel restores both.`);
     } catch (e) {
       console.error('Import schedules error', e);
       setNotice(`Couldn't copy windows from "${item.label}": ${e.message}`);
@@ -674,7 +677,7 @@ export default function SchedulePanel({
           <PickerButton
             label="Copy from account"
             icon={<Copy size={11} strokeWidth={2.5} />}
-            title="Replace these windows with a copy of another account's windows (saved only on Apply)"
+            title="Replace these windows and the Control Panel filters with a copy of another account's (saved only on Apply)"
             emptyText="No other accounts to copy from"
             getItems={() => copySources.map(a => ({ key: a.id, label: a.name, sub: a.mode }))}
             onPick={handleImport}

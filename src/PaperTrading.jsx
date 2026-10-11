@@ -191,6 +191,61 @@ const toScheduleRow = (s, accountId, i) => ({
   updated_at: new Date().toISOString(),
 });
 
+// Global (Control Panel) filters that "Copy from account" brings along with the windows.
+// Account-specific settings are left alone: initial balance, strategy version, allocation %
+// and the selected expiry (re-picked for the account's underlying).
+const COPY_FILTER_COLUMNS = {
+  underlying: 'underlying',
+  min_strike_diff: 'minStrikeDiff',
+  min_iv_diff: 'minIvDiff',
+  max_ratio_deviation: 'maxRatioDeviation',
+  min_sell_premium: 'minSellPremium',
+  max_net_premium: 'maxNetPremium',
+  min_long_dist: 'minLongDist',
+  max_sell_qty: 'maxSellQty',
+  min_atm_pnl: 'minAtmPnl',
+  min_atm_roi: 'minAtmRoi',
+  atm_ratio_scaling: 'atmRatioScaling',
+  atm_ratio_distance_call: 'atmRatioPctCall',
+  atm_ratio_distance_put: 'atmRatioPctPut',
+  days_to_expiry: 'daysToExpiry',
+  exit_type: 'exitType',
+  exit_points: 'exitPoints',
+  short_exit_price: 'shortExitPrice',
+  long_exit_slices: 'longExitSlices',
+  variable_exit_slices: 'variableExitSlices',
+  trade_days: 'tradeDays',
+  excluded_strikes: 'excludedStrikes',
+  full_deploy_enabled: 'fullDeployEnabled',
+  full_deploy_time: 'fullDeployTime',
+  replace_closer_atm: 'replaceCloserAtm',
+};
+// Source account's config row → { db: columns to write, ui: draft-config keys }. Only
+// columns the source row actually has are copied. RLS limits sources like copySchedulesFrom.
+const loadCopyFilters = async (sourceAccountId) => {
+  const { data, error } = await supabase
+    .from('paper_trading_config').select('*').eq('account_id', sourceAccountId).maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  const db = {};
+  const ui = {};
+  for (const [col, key] of Object.entries(COPY_FILTER_COLUMNS)) {
+    if (!Object.prototype.hasOwnProperty.call(data, col) || data[col] === undefined) continue;
+    let v = data[col];
+    if (col === 'excluded_strikes') v = Array.isArray(v) ? v.map(Number).filter(Number.isFinite) : [];
+    if (col === 'trade_days' && !Array.isArray(v)) continue;
+    db[col] = v;
+    ui[key] = v;
+  }
+  // The engine's base sizing fields aren't edited in the Control Panel; a brand-new
+  // account gets them too (an existing one keeps its own — windows override them anyway).
+  const dbNewAccount = { ...db };
+  for (const col of ['max_combined_positions', 'combined_split_pct']) {
+    if (data[col] != null) dbNewAccount[col] = data[col];
+  }
+  return { db, dbNewAccount, ui };
+};
+
 // One-time copy of another account's windows (a snapshot, not a link — both accounts
 // stay independently editable afterwards). Copies get fresh non-uuid ids so saving
 // inserts new rows instead of touching the source's. The hedge leg and Shared Long
@@ -1118,8 +1173,21 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           }
         }
 
-        // Optional: start the new account with a copy of another account's windows.
+        // Optional: start the new account with a copy of another account's windows AND its
+        // global (Control Panel) filters.
         if (data.copySchedulesFromId) {
+          try {
+            const filters = await loadCopyFilters(data.copySchedulesFromId);
+            if (filters && Object.keys(filters.dbNewAccount).length) {
+              const { error: cfgCopyErr } = await supabase.from('paper_trading_config')
+                .update({ ...filters.dbNewAccount, updated_at: new Date().toISOString() })
+                .eq('account_id', accData.id);
+              if (cfgCopyErr) throw cfgCopyErr;
+            }
+          } catch (cfgCopyErr) {
+            console.error('Failed to copy global filters:', cfgCopyErr);
+            showAlert(`Account created, but copying the global filters failed: ${cfgCopyErr.message}\nYou can copy them later with "Copy from account" in the Time Schedules panel.`);
+          }
           try {
             const copied = await copySchedulesFrom(data.copySchedulesFromId, accountMode);
             if (copied.length > 0) {
@@ -1661,10 +1729,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     if (draftConfig) {
       updateConfig(draftConfig);
     }
+    setCopiedFiltersPending(false);
   };
 
   const handleCancelFilters = () => {
     setDraftConfig({ ...config });
+    setCopiedFiltersPending(false);
   };
 
 
@@ -1979,13 +2049,24 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   // Replace this account's windows with a copy of another account's. Only local state
   // changes here — nothing is saved until Apply, and Cancel restores the saved windows.
   // Returns false when the source has no windows (so the panel can say so).
+  // Also copies the source's global (Control Panel) filters into the filter draft; one Apply
+  // in the Time Schedules panel then saves both (and group sync copies both to the members).
+  // Returns { windows, filters } — counts of what was copied.
+  const [copiedFiltersPending, setCopiedFiltersPending] = useState(false);
   const handleImportSchedules = useCallback(async (sourceAccountId) => {
     const targetMode = accounts.find(a => a.id === activeAccountId)?.mode === 'live' ? 'live' : 'paper';
-    const copied = await copySchedulesFrom(sourceAccountId, targetMode);
-    if (copied.length === 0) return false;
-    setSchedules(copied);
-    return true;
-  }, [accounts, activeAccountId]);
+    const [copied, filters] = await Promise.all([
+      copySchedulesFrom(sourceAccountId, targetMode),
+      loadCopyFilters(sourceAccountId),
+    ]);
+    if (copied.length > 0) setSchedules(copied);
+    const filterCount = filters ? Object.keys(filters.ui).length : 0;
+    if (filterCount) {
+      setDraftConfig(prev => ({ ...(prev || config), ...filters.ui }));
+      setCopiedFiltersPending(true);
+    }
+    return { windows: copied.length, filters: filterCount };
+  }, [accounts, activeAccountId, config]);
 
   // Scanner "Send to window" (see main.jsx). Two steps, each once per send (`token`),
   // using adjust-state-during-render: 1) open the target account; 2) once that
@@ -3358,9 +3439,17 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
               schedules={schedules}
               setSchedules={setSchedules}
               isSavingSchedules={isSavingSchedules}
-              isSchedulesDirty={isSchedulesDirty}
-              onApplySchedules={saveSupabaseSchedules}
-              onCancelSchedules={handleCancelSchedules}
+              isSchedulesDirty={isSchedulesDirty || copiedFiltersPending}
+              onApplySchedules={async () => {
+                // Windows first, then the global filters copied with them (if any) — both
+                // sync to the group's other members on save.
+                await saveSupabaseSchedules();
+                if (copiedFiltersPending) handleApplyFilters();
+              }}
+              onCancelSchedules={async () => {
+                if (copiedFiltersPending) handleCancelFilters();
+                await handleCancelSchedules();
+              }}
               onResetSchedules={handleResetSchedules}
               copySources={copySources.filter(a => a.id !== activeAccountId)}
               onImportSchedules={handleImportSchedules}
