@@ -1828,7 +1828,8 @@ async function startSingleAccountEngine(account) {
     }
     log(`[${accountState.name}] ⊕ ADOPTED orphan long ${symbol} (${contracts} contract(s) @ entry ${entryPx}) as long-only [${pos.id}] — managing via TP bracket + spot-cross/expiry catch-all (no scale-out ladder).`);
     notifyTrade({ title: '🧬 ORPHAN ADOPTED', detail: `Long ${meta.strike} · ${symbol} · ${contracts} contract(s) @ entry ${entryPx} → managed as long-only (TP bracket + catch-all, no ladder)` });
-    notifyFailure({ account: accountState.name, context: `Untracked long ${symbol} (${contracts} contract(s)) found on Delta with no engine row — adopted and now managed as long-only. Check how it was opened.`, error: { message: 'orphan-adopted' } });
+    // No failure alert: adopting an untracked long (typically a manual order on Delta or from
+    // the Trade tab) is normal, not an error — the 🧬 ORPHAN ADOPTED trade message above reports it.
     return true;
   }
 
