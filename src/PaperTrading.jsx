@@ -454,7 +454,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     fullDeployTime: '04:30',
     // Paper-only closer-to-ATM replacement (migration 059).
     replaceCloserAtm: false,
-    // Paper-only Delta OI-limit filter (migration 062); cap in $M, null = underlying default.
+    // Delta OI-limit filter (migration 062; paper AND live); cap in $M, null = underlying default.
     oiFilterEnabled: false,
     oiMaxCapM: null
   }));
@@ -1859,7 +1859,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           fullDeployEnabled: data.full_deploy_enabled ?? false,
           fullDeployTime: data.full_deploy_time ?? '04:30',
           replaceCloserAtm: data.replace_closer_atm ?? false,
-          // Paper-only Delta OI-limit filter (migration 062).
+          // Delta OI-limit filter (migration 062; paper AND live).
           oiFilterEnabled: data.oi_filter_enabled ?? false,
           oiMaxCapM: data.oi_max_cap_m != null ? Number(data.oi_max_cap_m) : null
         };

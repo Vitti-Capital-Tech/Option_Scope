@@ -319,7 +319,7 @@ async function startSingleAccountEngine(account) {
     fullDeployTime: '04:30',
     // Paper-only closer-to-ATM replacement (migration 059). Off by default.
     replaceCloserAtm: false,
-    // Paper-only Delta OI-limit filter (migration 062). Off by default; cap in millions of
+    // Delta OI-limit filter (migration 062; paper AND live). Off by default; cap in millions of
     // USD, null = the underlying's default (BTC 15, ETH 10, XAUT 5).
     oiFilterEnabled: false,
     oiMaxCapM: null
@@ -621,7 +621,7 @@ async function startSingleAccountEngine(account) {
           fullDeployTime: data.full_deploy_time ?? '04:30',
           // Paper-only closer-to-ATM replacement (migration 059).
           replaceCloserAtm: data.replace_closer_atm ?? false,
-          // Paper-only Delta OI-limit filter (migration 062).
+          // Delta OI-limit filter (migration 062; paper AND live).
           oiFilterEnabled: data.oi_filter_enabled ?? false,
           oiMaxCapM: data.oi_max_cap_m != null ? Number(data.oi_max_cap_m) : null
         };
@@ -3366,13 +3366,13 @@ async function startSingleAccountEngine(account) {
       // New entries only — open positions on an excluded strike are left alone.
       const excludedStrikes = new Set((config.excludedStrikes || []).map(Number));
 
-      // ── Delta OI-limit filter (migration 062) — PAPER only, opt-in (Control Panel) ──────
+      // ── Delta OI-limit filter (migration 062) — paper AND live, opt-in (Control Panel) ──
       // Delta puts a strike into reduce-only once its market-wide OI reaches the cap, so no
-      // new leg can open there. With the toggle on, a strike Delta has locked
+      // new leg can open there (on live Delta would reject the order). With the toggle on, a strike Delta has locked
       // (oi_reduce_only_mode) or whose OI (USD) is at/over the cap is removed from the scan
       // pool and the hedge picker, like an excluded strike. Pricing lookups (ATM intrinsics)
       // still see the full chain. New entries only — open positions are left alone.
-      const oiFilterOn = accountState.mode !== 'live' && !!config.oiFilterEnabled;
+      const oiFilterOn = !!config.oiFilterEnabled;
       const oiCapM = effectiveOiCapM(config.oiMaxCapM, underlying);
       const oiOk = (t) => !oiFilterOn || !isOiBlocked(t, oiCapM);
       const oiBlocked = { call: [], put: [] };
@@ -3540,7 +3540,7 @@ async function startSingleAccountEngine(account) {
         const pool = allTickers.filter(t => t.type === type && t.expiry === config.expiry
           && t.symbol !== spread.buyLeg.symbol && t.symbol !== spread.sellLeg.symbol
           && !excludedStrikes.has(Number(t.strike)) // user-excluded (migration 040)
-          && oiOk(t)                                // Delta OI limit (migration 062, paper)
+          && oiOk(t)                                // Delta OI limit (migration 062)
           && quote(t) > 0);
         return listHedgeStrikes(pool, type, Number(spread.sellLeg.strike), spread.sellIv, spread.strikeDiff, hedgeFilters)
           .map(ticker => ({ ticker, ask: quote(ticker) }));

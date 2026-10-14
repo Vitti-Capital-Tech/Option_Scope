@@ -707,11 +707,11 @@ Normal sizing **reserves** budget for every empty combined slot (`partMargin = r
 
 ---
 
-### Open Interest limit (paper only — migration 062)
+### Open Interest limit (paper and live — migration 062)
 
 Delta Exchange applies a contract-level, market-wide **Open Interest (OI) limit** on options from 14 Oct 2026: once a strike's total open interest (all traders) reaches the cap — **BTC 15M, ETH 10M, XAUT 5M** — Delta switches that strike to **reduce-only**: new positions are rejected, closing is still allowed, existing orders are untouched. Delta flags it on every ticker (`oi_reduce_only_mode`) and reports the strike's OI in USD (`oi_value_usd`).
 
-Control Panel → **Open Interest → OI Limit** (`oi_filter_enabled`, **off by default**; hidden on live accounts and ignored for them by the engine). With it on, **Max OI** (`oi_max_cap_m`, in millions of USD; empty = the underlying's default, BTC 15 / ETH 10) applies: the engine skips every strike that Delta has locked or whose OI is at/over Max OI — for the long, the short and the hedge leg alike — like an excluded strike. New entries only; open positions are left alone. The entry log lists the blocked strikes (`OI-blocked (≥ $15M or locked): calls … · puts …`). Synced across the account's group like the other global filters.
+Control Panel → **Open Interest → OI Limit** (`oi_filter_enabled`, **off by default**; paper and live accounts — promoted to live 2026-10-14). With it on, **Max OI** (`oi_max_cap_m`, in millions of USD; empty = the underlying's default, BTC 15 / ETH 10) applies: the engine skips every strike that Delta has locked or whose OI is at/over Max OI — for the long, the short and the hedge leg alike — like an excluded strike. New entries only; open positions are left alone. The entry log lists the blocked strikes (`OI-blocked (≥ $15M or locked): calls … · puts …`). Synced across the account's group like the other global filters.
 
 ---
 

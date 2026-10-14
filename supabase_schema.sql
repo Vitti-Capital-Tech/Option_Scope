@@ -129,7 +129,7 @@ CREATE TABLE IF NOT EXISTS public.paper_trading_config (
     -- Paper-only closer-to-ATM replacement (migration 059): when slots/margin are full, a closer
     -- same-type spread replaces a farther pair whose cashflow > 0 and < the account's unrealized P&L.
     replace_closer_atm BOOLEAN NOT NULL DEFAULT false,
-    -- Paper-only Delta OI-limit filter (migration 062): skip strikes Delta has made reduce-only
+    -- Delta OI-limit filter (migration 062; paper AND live): skip strikes Delta has made reduce-only
     -- or whose OI (USD) is at/over oi_max_cap_m million (NULL = underlying default: BTC 15, ETH 10).
     oi_filter_enabled BOOLEAN NOT NULL DEFAULT false,
     oi_max_cap_m NUMERIC NULL CHECK (oi_max_cap_m IS NULL OR oi_max_cap_m > 0),

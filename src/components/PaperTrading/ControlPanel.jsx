@@ -253,16 +253,16 @@ export default function ControlPanel({
             </div>
           )}
 
-          {/* Delta OI limit (migration 062) — PAPER ONLY. Delta makes a strike reduce-only once
-              its market-wide open interest reaches the cap; with this on, the engine skips
+          {/* Delta OI limit (migration 062) — paper AND live. Delta makes a strike reduce-only
+              once its market-wide open interest reaches the cap; with this on, the engine skips
               strikes that are locked or at/over the cap (long, short and hedge). */}
-          {!accountIsLive && (
+          {(
             <div className="pt-filter-cluster">
               <span className="pt-cluster-head">Open Interest</span>
               <div className="pt-cluster-fields">
                 <div key="oiFilterEnabled" className="form-group">
                   <label htmlFor="oiFilterEnabled" className="pt-field-label" style={{ marginBottom: 0, cursor: 'pointer' }}
-                    title="Delta's contract-level OI limit: once a strike's total open interest reaches the cap, Delta allows only reduce-only orders there. On: no new leg (long, short or hedge) on a strike that Delta has locked or whose OI (USD) is at/over Max OI. New entries only. Paper accounts only.">
+                    title="Delta's contract-level OI limit: once a strike's total open interest reaches the cap, Delta allows only reduce-only orders there. On: no new leg (long, short or hedge) on a strike that Delta has locked or whose OI (USD) is at/over Max OI. New entries only.">
                     OI Limit
                   </label>
                   <div style={{ height: 34, display: 'flex', alignItems: 'center' }}>

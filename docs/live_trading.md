@@ -67,6 +67,8 @@ the testbed. Full mechanism:
 >
 > Schedule windows copied into a live account (Schedule Panel **Copy from account**, or **Copy Schedule Windows From** at account creation) always arrive with the hedge leg **off**. Applying a copied set replaces every window at once, so with open positions the UI asks for confirmation first — caps and exit rules change immediately.
 
+> **Open Interest limit filter (migration `062`, promoted to Live 2026-10-14):** Delta makes an option strike reduce-only once its market-wide open interest reaches the cap (BTC 15M, ETH 10M, XAUT 5M; ticker field `oi_reduce_only_mode`, OI in USD `oi_value_usd`) — an opening order there is rejected. Control Panel → **Open Interest → OI Limit** (off by default) with **Max OI** ($M; default by underlying) makes the engine skip every strike that is locked or at/over the cap for the long, the short and the hedge — new entries only; exits (reduce-only) are unaffected.
+
 ## Daily report (`live_daily_stats`, migration 045)
 
 One row per live account per day — **Delta's day, 00:00 → 24:00 UTC (05:30 → 05:30 IST)**, not the app's 17:30 IST trading day, so each day's realized P&L and fees match Delta's own daily figures — shown in the **Daily Report** tab with CSV / Excel export. Written by `engine/lib/dailyStats.js`, fed from `publishLiveSnapshot` (~every 10s, armed live accounts, dry-run included):
