@@ -8,7 +8,7 @@ const UNDERLYINGS = ['BTC', 'ETH'];
 const SCANNER_TOP_KEY = 'vitti_scanner_top_spreads_v1';
 
 import ResultTable from './ResultTable';
-import { normalizeIv, toFiniteNumber, matchesOptionType, listHedgeStrikes } from './scannerUtils';
+import { normalizeIv, toFiniteNumber, matchesOptionType, listHedgeStrikes, defaultOiCapM, effectiveOiCapM, isOiBlocked } from './scannerUtils';
 import Navbar from './components/PaperTrading/Navbar';
 import CustomSelect from './components/common/CustomSelect';
 import CustomInput from './components/common/CustomInput';
@@ -253,6 +253,10 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
           const delta = t.greeks ? toFiniteNumber(t.greeks.delta) : null;
           const gamma = t.greeks ? toFiniteNumber(t.greeks.gamma) : null;
           const theta = t.greeks ? toFiniteNumber(t.greeks.theta) : null;
+          // Strike OI (USD / contracts) + Delta's OI-limit lock (reduce-only).
+          const oiUsd = toFiniteNumber(t.oi_value_usd);
+          const oiContracts = toFiniteNumber(t.oi_contracts);
+          const oiLocked = t.oi_reduce_only_mode == null ? null : (t.oi_reduce_only_mode === true || t.oi_reduce_only_mode === 'true');
 
           latestTickerDataRef.current[sym] = {
             symbol: sym,
@@ -269,6 +273,9 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
             deltaNotional: delta !== null ? Math.abs(delta) * lotSize : null,
             gamma,
             theta,
+            oiUsd,
+            oiContracts,
+            oiLocked,
             lastUpdate: Date.now(),
             bidUpdatedAt: bid != null ? Date.now() : 0,
             askUpdatedAt: ask != null ? Date.now() : 0,
@@ -304,6 +311,9 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
         const delta = msg.greeks ? toFiniteNumber(msg.greeks.delta) : null;
         const gamma = msg.greeks ? toFiniteNumber(msg.greeks.gamma) : null;
         const theta = msg.greeks ? toFiniteNumber(msg.greeks.theta) : null;
+        const oiUsd = toFiniteNumber(msg.oi_value_usd);
+        const oiContracts = toFiniteNumber(msg.oi_contracts);
+        const oiLocked = msg.oi_reduce_only_mode == null ? null : (msg.oi_reduce_only_mode === true || msg.oi_reduce_only_mode === 'true');
 
         const meta = symbolMeta[sym];
         if (!meta) return;
@@ -330,6 +340,9 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
             : prevBuffered?.deltaNotional,
           gamma: gamma ?? prevBuffered?.gamma ?? null,
           theta: theta ?? prevBuffered?.theta ?? null,
+          oiUsd: oiUsd ?? prevBuffered?.oiUsd ?? null,
+          oiContracts: oiContracts ?? prevBuffered?.oiContracts ?? null,
+          oiLocked: oiLocked ?? prevBuffered?.oiLocked ?? null,
           lastUpdate: Date.now(),
         };
 
@@ -530,10 +543,15 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
       }
     }
 
+    // Delta OI limit (toggle): drop strikes Delta has locked (reduce-only) or whose OI (USD)
+    // is at/over the cap — no new leg can open there. Covers the long, the short and the
+    // hedge (the hedge pool is drawn from these). Pricing lookups still see the full chain.
+    const oiCapM = effectiveOiCapM(config.oiMaxCapM, underlying);
+    const oiOk = (t) => !config.oiFilterEnabled || !isOiBlocked(t, oiCapM);
     // For Call: ATM or OTM means strike >= atmStrike
-    const callTickers = allTickers.filter(t => t.type === 'call' && (atmStrike === null || t.strike >= atmStrike));
+    const callTickers = allTickers.filter(t => t.type === 'call' && (atmStrike === null || t.strike >= atmStrike) && oiOk(t));
     // For Put: ATM or OTM means strike <= atmStrike
-    const putTickers = allTickers.filter(t => t.type === 'put' && (atmStrike === null || t.strike <= atmStrike));
+    const putTickers = allTickers.filter(t => t.type === 'put' && (atmStrike === null || t.strike <= atmStrike) && oiOk(t));
 
     // Find the best price for a given strike + option type, falling back to the
     // nearest available strike within a tight tolerance (used for ATM scaling).
@@ -803,6 +821,29 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
                 <span className="pt-slider"></span>
               </label>
             </div>
+            <div key="oiFilterEnabled" className="form-group row-inline scanner-switch-field">
+              <label htmlFor="oiFilterEnabled" style={{ cursor: 'pointer', userSelect: 'none' }}
+                title="Delta's contract-level OI limit: a strike whose open interest reaches the cap goes reduce-only (no new positions). On: hide spreads with a leg on a strike that is locked or whose OI (USD) is at/over the cap.">
+                Open Interest
+              </label>
+              <label className="pt-switch" title="Hide spreads on strikes at/over the OI cap or locked by Delta">
+                <input type="checkbox" id="oiFilterEnabled" checked={config.oiFilterEnabled ?? false}
+                  onChange={e => updateConfig('oiFilterEnabled', e.target.checked)} />
+                <span className="pt-slider"></span>
+              </label>
+            </div>
+            {config.oiFilterEnabled && (
+              <div key="oiMaxCapM" className="form-group row-inline">
+                <label>Max OI</label>
+                <CustomInput type="number" step="1" min="1" prefix="$" suffix="M" showStepper width={100}
+                  value={config.oiMaxCapM ?? defaultOiCapM(underlying)}
+                  onChange={e => {
+                    const n = Number(e.target.value);
+                    updateConfig('oiMaxCapM', e.target.value === '' || !(n > 0) ? null : n);
+                  }}
+                />
+              </div>
+            )}
             {config.hedgeEnabled && (
               <div key="hedgeLotPct" className="form-group row-inline">
                 <label>Hedge Lot</label>

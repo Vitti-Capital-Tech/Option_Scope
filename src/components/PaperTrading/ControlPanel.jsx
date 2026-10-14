@@ -5,6 +5,7 @@ import CustomSelect from '../common/CustomSelect';
 import CustomInput from '../common/CustomInput';
 import SchedulePanel from './SchedulePanel';
 import ExcludedStrikesFilter from './ExcludedStrikesFilter';
+import { defaultOiCapM } from '../../scannerUtils';
 
 export default function ControlPanel({
   underlying,
@@ -248,6 +249,44 @@ export default function ControlPanel({
                     </label>
                   </div>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* Delta OI limit (migration 062) — PAPER ONLY. Delta makes a strike reduce-only once
+              its market-wide open interest reaches the cap; with this on, the engine skips
+              strikes that are locked or at/over the cap (long, short and hedge). */}
+          {!accountIsLive && (
+            <div className="pt-filter-cluster">
+              <span className="pt-cluster-head">Open Interest</span>
+              <div className="pt-cluster-fields">
+                <div key="oiFilterEnabled" className="form-group">
+                  <label htmlFor="oiFilterEnabled" className="pt-field-label" style={{ marginBottom: 0, cursor: 'pointer' }}
+                    title="Delta's contract-level OI limit: once a strike's total open interest reaches the cap, Delta allows only reduce-only orders there. On: no new leg (long, short or hedge) on a strike that Delta has locked or whose OI (USD) is at/over Max OI. New entries only. Paper accounts only.">
+                    OI Limit
+                  </label>
+                  <div style={{ height: 34, display: 'flex', alignItems: 'center' }}>
+                    <label className="pt-switch">
+                      <input type="checkbox" id="oiFilterEnabled" checked={draftConfig?.oiFilterEnabled ?? false}
+                        onChange={e => updateDraftConfig('oiFilterEnabled', e.target.checked)} />
+                      <span className="pt-slider"></span>
+                    </label>
+                  </div>
+                </div>
+                {draftConfig?.oiFilterEnabled && (
+                  <div key="oiMaxCapM" className="form-group">
+                    <label className="pt-field-label" style={{ marginBottom: 0 }}
+                      title={`Max open interest per strike, in millions of USD. Default for ${underlying || 'BTC'}: ${defaultOiCapM(underlying)}M (Delta's cap).`}>
+                      Max OI
+                    </label>
+                    <CustomInput type="number" step="1" min="1" prefix="$" suffix="M" showStepper width={100}
+                      value={draftConfig?.oiMaxCapM ?? defaultOiCapM(underlying)}
+                      onChange={e => {
+                        const n = Number(e.target.value);
+                        updateDraftConfig('oiMaxCapM', e.target.value === '' || !(n > 0) ? null : n);
+                      }} />
+                  </div>
+                )}
               </div>
             </div>
           )}

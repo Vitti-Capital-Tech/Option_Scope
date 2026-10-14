@@ -199,6 +199,14 @@ Two threshold filters let you hide spreads whose **projected at-ATM edge** is to
 
 ---
 
+### Open Interest limit (toggle)
+
+Delta's contract-level OI limit (from 14 Oct 2026) makes a strike reduce-only once its market-wide open interest reaches the cap (BTC 15M, ETH 10M, XAUT 5M). The **Open Interest** toggle in the filter bar (**off by default**) with **Max OI** (in $M; default by underlying: BTC 15, ETH 10) hides every spread whose long, short or hedge would sit on a strike Delta has locked (`oi_reduce_only_mode`) or whose OI (`oi_value_usd`) is at/over the cap. It is saved with the scanner config and presets.
+
+The **OI (L/S)** column (formerly Delta (L/S)) shows each leg's strike OI in USD millions, 🔒 when Delta has locked the strike. Hover the cell for the OI in USD and contracts and the old delta figures (Delta L/S, N, 3-leg).
+
+---
+
 ### Hedge Leg Preview (toggle)
 
 The **Hedge Leg** checkbox in the filter bar (with **Hedge Lot %**, default 50%) shows each spread's 3rd long: the same leg paper trading adds when a window's Hedge toggle is on.

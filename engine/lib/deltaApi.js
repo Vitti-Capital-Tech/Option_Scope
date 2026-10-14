@@ -170,7 +170,10 @@ export async function getTickers(underlying, symbols) {
           last_price: toFiniteNumber(t.last_price || t.close),
           greeks: t.greeks || null,
           mark_vol: t.mark_vol || t.quotes?.mark_iv || null,
-          quotes: t.quotes || null
+          quotes: t.quotes || null,
+          oi_value_usd: t.oi_value_usd ?? null,
+          oi_contracts: t.oi_contracts ?? null,
+          oi_reduce_only_mode: t.oi_reduce_only_mode ?? null,
         });
       }
     }
@@ -403,6 +406,10 @@ export function processTickerMessage(msg, symbolMeta, prevData) {
   const askIv = normalizeIv(toFiniteNumber(msg.quotes?.ask_iv));
   const iv = normalizeIv(toFiniteNumber(msg.mark_vol ?? msg.quotes?.mark_iv ?? msg.greeks?.iv));
   const delta = msg.greeks ? toFiniteNumber(msg.greeks.delta) : null;
+  // Strike OI (USD / contracts) and Delta's OI-limit lock (reduce-only) — OI filter.
+  const oiUsd = toFiniteNumber(msg.oi_value_usd);
+  const oiContracts = toFiniteNumber(msg.oi_contracts);
+  const oiLocked = msg.oi_reduce_only_mode == null ? null : (msg.oi_reduce_only_mode === true || msg.oi_reduce_only_mode === 'true');
 
   const prev = prevData?.[sym];
 
@@ -432,6 +439,9 @@ export function processTickerMessage(msg, symbolMeta, prevData) {
     iv: iv ?? prev?.iv ?? null,
     delta: delta !== null ? delta : prev?.delta,
     deltaNotional: delta !== null ? Math.abs(delta) * meta.lotSize : prev?.deltaNotional,
+    oiUsd: oiUsd ?? prev?.oiUsd ?? null,
+    oiContracts: oiContracts ?? prev?.oiContracts ?? null,
+    oiLocked: oiLocked ?? prev?.oiLocked ?? null,
   };
 }
 
@@ -462,6 +472,10 @@ export async function backfillTickers(underlying, symbolMeta, existingData = {})
       const askSize = toFiniteNumber(t.quotes?.ask_size ?? t.quotes?.best_ask_size);
       const bidIv = normalizeIv(toFiniteNumber(t.quotes?.bid_iv));
       const askIv = normalizeIv(toFiniteNumber(t.quotes?.ask_iv));
+      // Strike OI (USD / contracts) and Delta's OI-limit lock (reduce-only) — OI filter.
+      const oiUsd = toFiniteNumber(t.oi_value_usd);
+      const oiContracts = toFiniteNumber(t.oi_contracts);
+      const oiLocked = t.oi_reduce_only_mode == null ? null : (t.oi_reduce_only_mode === true || t.oi_reduce_only_mode === 'true');
 
       const resolvedBid = bid ?? (prev?.bid ?? null);
       const resolvedAsk = ask ?? (prev?.ask ?? null);
@@ -492,6 +506,9 @@ export async function backfillTickers(underlying, symbolMeta, existingData = {})
         iv: iv ?? (prev?.iv ?? null),
         delta: t.greeks ? toFiniteNumber(t.greeks.delta) : (prev?.delta ?? null),
         deltaNotional: t.greeks ? Math.abs(t.greeks.delta) * meta.lotSize : (prev?.deltaNotional ?? null),
+        oiUsd: oiUsd ?? (prev?.oiUsd ?? null),
+        oiContracts: oiContracts ?? (prev?.oiContracts ?? null),
+        oiLocked: oiLocked ?? (prev?.oiLocked ?? null),
       };
     }
 

@@ -6,6 +6,28 @@ import { leverageFor } from './scannerUtils';
 // strike — exact listed / bracket-average / single-neighbour / omitted. Rendered as a
 // hover tooltip on the ATM P&L intrinsic cells so the bracket-and-average fallback
 // (getTickerPrice) can be verified at a glance without hand-checking the option chain.
+// OI (L/S) column: each leg's strike open interest in USD (millions), 🔒 when Delta has put
+// the strike in reduce-only (contract-level OI limit). The old Delta (L/S) figures moved to
+// the cell's tooltip.
+function fmtOi(leg) {
+  if (!leg) return '—';
+  const v = leg.oiUsd != null && Number.isFinite(Number(leg.oiUsd)) ? `${(Number(leg.oiUsd) / 1e6).toFixed(1)}M` : '—';
+  return leg.oiLocked === true ? `🔒 ${v}` : v;
+}
+function oiDeltaTip(row) {
+  const oiLine = (name, leg) => {
+    const usd = leg?.oiUsd != null ? `${Number(leg.oiUsd).toLocaleString(undefined, { maximumFractionDigits: 0 })}` : '—';
+    const c = leg?.oiContracts != null ? ` (${Number(leg.oiContracts).toLocaleString()} contracts)` : '';
+    return `${name} OI: ${usd}${c}${leg?.oiLocked === true ? ' · LOCKED (reduce-only)' : ''}`;
+  };
+  return [
+    oiLine('Long', row.buyLeg),
+    oiLine('Short', row.sellLeg),
+    `Delta (L/S): ${row.buyLeg.lotSize} / ${row.sellLeg.delta?.toFixed(4) ?? '—'}`,
+    `N: ${row.deltaDiff.toFixed(4)}${row.netDelta3 != null ? ` · 3-leg ${row.netDelta3.toFixed(4)}` : ''}`,
+  ].join('\n');
+}
+
 function describeIntrinsic(detail, field) {
   if (!detail) return undefined;
   const m = (n) => `$${Number(n).toFixed(2)}`;
@@ -399,7 +421,7 @@ export default function ResultTable({
                 <th>Premium (L/S)</th>
                 <th>Ratio (L/S)</th>
                 <th>Net Premium & IV Edge</th>
-                <th className="hide-mobile">Delta (L/S)</th>
+                <th className="hide-mobile" title="Open interest of each leg's strike (USD). 🔒 = Delta has made the strike reduce-only (OI limit). Hover a cell for OI contracts and the delta figures.">OI (L/S)</th>
                 <th style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.2)', background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>ATM Pricing</th>
                 <th style={{ background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>ATM Edge (P&L)</th>
                 <th style={{ borderRight: '1px solid rgba(0, 217, 163, 0.2)', background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>Req. Margin</th>
@@ -501,13 +523,10 @@ export default function ResultTable({
                             {bestRow.ivDiff.toFixed(1)}% IV{bestRow.hedge ? ' · incl. hedge' : ''}
                           </div>
                         </td>
-                        <td className="hide-mobile">
+                        <td className="hide-mobile" title={oiDeltaTip(bestRow)} style={{ cursor: 'help' }}>
                           <div>
-                            <span className='scanner-buy'>{bestRow.buyLeg.lotSize}</span>/
-                            <span className='scanner-sell'>{bestRow.sellLeg.delta?.toFixed(4)}</span>
-                          </div>
-                          <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-                            N: {bestRow.deltaDiff.toFixed(4)}{bestRow.netDelta3 != null ? ` · 3-leg ${bestRow.netDelta3.toFixed(4)}` : ''}
+                            <span className='scanner-buy'>{fmtOi(bestRow.buyLeg)}</span>/
+                            <span className='scanner-sell'>{fmtOi(bestRow.sellLeg)}</span>
                           </div>
                         </td>
 
@@ -582,13 +601,10 @@ export default function ResultTable({
                                 {r.ivDiff.toFixed(1)}% IV{r.hedge ? ' · incl. hedge' : ''}
                               </div>
                             </td>
-                            <td className="hide-mobile">
+                            <td className="hide-mobile" title={oiDeltaTip(r)} style={{ cursor: 'help' }}>
                               <div>
-                                <span className='scanner-buy'>{r.buyLeg.lotSize}</span>/
-                                <span className='scanner-sell'>{r.sellLeg.delta?.toFixed(4)}</span>
-                              </div>
-                              <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-                                N: {r.deltaDiff.toFixed(4)}{r.netDelta3 != null ? ` · 3-leg ${r.netDelta3.toFixed(4)}` : ''}
+                                <span className='scanner-buy'>{fmtOi(r.buyLeg)}</span>/
+                                <span className='scanner-sell'>{fmtOi(r.sellLeg)}</span>
                               </div>
                             </td>
 

@@ -219,6 +219,8 @@ const COPY_FILTER_COLUMNS = {
   full_deploy_enabled: 'fullDeployEnabled',
   full_deploy_time: 'fullDeployTime',
   replace_closer_atm: 'replaceCloserAtm',
+  oi_filter_enabled: 'oiFilterEnabled',
+  oi_max_cap_m: 'oiMaxCapM',
 };
 // Source account's config row → { db: columns to write, ui: draft-config keys }. Only
 // columns the source row actually has are copied. RLS limits sources like copySchedulesFrom.
@@ -451,7 +453,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     fullDeployEnabled: false,
     fullDeployTime: '04:30',
     // Paper-only closer-to-ATM replacement (migration 059).
-    replaceCloserAtm: false
+    replaceCloserAtm: false,
+    // Paper-only Delta OI-limit filter (migration 062); cap in $M, null = underlying default.
+    oiFilterEnabled: false,
+    oiMaxCapM: null
   }));
   const [draftConfig, setDraftConfig] = useState(() => ({ ...config }));
   const [isConfigLoaded, setIsConfigLoaded] = useState(false);
@@ -548,6 +553,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   const [confirmDialog, setConfirmDialog] = useState(null);
   // Whether paper_trading_config has migration 059's replace_closer_atm column (see the save).
   const hasReplaceCloserAtmColRef = useRef(false);
+  // Whether paper_trading_config has migration 062's OI-filter columns (same guard).
+  const hasOiFilterColRef = useRef(false);
   // Session-open spot per underlying → drives the % change on the spot bar shown
   // above the tables (captured once, first time we see a spot for that underlying).
   const spotOpenRef = useRef({});
@@ -1585,6 +1592,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         // still works on a database where 059 hasn't run yet.
         ...((hasReplaceCloserAtmColRef.current || newCfg.replaceCloserAtm)
           ? { replace_closer_atm: !!newCfg.replaceCloserAtm } : {}),
+        // Migration 062 — same guard (sent once the columns exist, or when switched on).
+        ...((hasOiFilterColRef.current || newCfg.oiFilterEnabled)
+          ? {
+              oi_filter_enabled: !!newCfg.oiFilterEnabled,
+              oi_max_cap_m: Number(newCfg.oiMaxCapM) > 0 ? Number(newCfg.oiMaxCapM) : null,
+            } : {}),
         updated_at: new Date().toISOString()
       }).select();
       if (error) {
@@ -1624,7 +1637,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     'excludedStrikes',
     'fullDeployEnabled',
     'fullDeployTime',
-    'replaceCloserAtm'
+    'replaceCloserAtm',
+    'oiFilterEnabled',
+    'oiMaxCapM'
   ];
 
   const updateConfig = (keyOrObj, value) => {
@@ -1633,8 +1648,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     for (const k of Object.keys(updates)) {
       const val = updates[k];
       if (k === 'exitType' || k === 'variableExitSlices' || k === 'atmRatioScaling' || k === 'underlying' || k === 'expiry' || k === 'tradeDays'
-        || k === 'excludedStrikes') {
+        || k === 'excludedStrikes' || k === 'oiFilterEnabled') {
         parsedUpdates[k] = val;
+      } else if (k === 'oiMaxCapM') {
+        // Empty / non-positive → null (the underlying's default cap), never 0.
+        const num = Number(val);
+        parsedUpdates[k] = (val === '' || val == null || !(num > 0)) ? null : num;
       } else {
         const num = (val === '' || val === '-' || val == null) ? null : Number(val);
         if (num === null || isNaN(num)) {
@@ -1715,6 +1734,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         || k === 'fullDeployEnabled' || k === 'fullDeployTime' || k === 'replaceCloserAtm') {
         return val1 !== val2;
       }
+      if (k === 'oiFilterEnabled') return !!val1 !== !!val2;
       const num1 = (val1 === '' || val1 === '-' || val1 == null) ? null : Number(val1);
       const num2 = (val2 === '' || val2 === '-' || val2 == null) ? null : Number(val2);
       return num1 !== num2;
@@ -1838,9 +1858,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           // Paper full-deployment fill (migration 030) — paper only.
           fullDeployEnabled: data.full_deploy_enabled ?? false,
           fullDeployTime: data.full_deploy_time ?? '04:30',
-          replaceCloserAtm: data.replace_closer_atm ?? false
+          replaceCloserAtm: data.replace_closer_atm ?? false,
+          // Paper-only Delta OI-limit filter (migration 062).
+          oiFilterEnabled: data.oi_filter_enabled ?? false,
+          oiMaxCapM: data.oi_max_cap_m != null ? Number(data.oi_max_cap_m) : null
         };
         hasReplaceCloserAtmColRef.current = Object.prototype.hasOwnProperty.call(data, 'replace_closer_atm');
+        hasOiFilterColRef.current = Object.prototype.hasOwnProperty.call(data, 'oi_filter_enabled');
         setConfig(loadedConfig);
         setDraftConfig(loadedConfig);
         setConfigDbId(data.id);

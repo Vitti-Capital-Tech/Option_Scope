@@ -37,6 +37,28 @@ export function calculateFee(price, spot, qty, lotSize) {
  * |IV (ask IV, fallback iv) − short IV| inside [ivMin, ivMax]. Returns [] when none qualify.
  * Callers pick among them (best ATM P&L / ROI). Twin of src/scannerUtils.js listHedgeStrikes — keep identical.
  */
+// ── Delta contract-level OI limit (from 14 Oct 2026) ────────────────────────────────
+// A strike whose market-wide open interest reaches Delta's cap goes REDUCE-ONLY (no new
+// positions; closing allowed). Delta flags it per ticker (`oi_reduce_only_mode` → oiLocked)
+// and reports the strike's OI in USD (`oi_value_usd` → oiUsd). Default caps, in millions of
+// USD: BTC 15, ETH 10, XAUT 5. Twin of the helpers in src/scannerUtils.js / engine/lib/utils.js.
+export const OI_CAP_DEFAULTS_M = { BTC: 15, ETH: 10, XAUT: 5 };
+export function defaultOiCapM(underlying) {
+  return OI_CAP_DEFAULTS_M[String(underlying || '').toUpperCase()] ?? 15;
+}
+/** The cap in effect: a positive configured value (millions), else the underlying's default. */
+export function effectiveOiCapM(capM, underlying) {
+  const n = Number(capM);
+  return capM != null && capM !== '' && Number.isFinite(n) && n > 0 ? n : defaultOiCapM(underlying);
+}
+/** True when no new leg may be opened on this ticker: Delta locked it, or OI ≥ cap. Unknown OI → allowed. */
+export function isOiBlocked(t, capM) {
+  if (!t) return false;
+  if (t.oiLocked === true) return true;
+  const oi = Number(t.oiUsd);
+  return t.oiUsd != null && Number.isFinite(oi) && oi >= Number(capM) * 1e6;
+}
+
 export function listHedgeStrikes(candidates, type, sellStrike, sellIv, strikeDiff, { maxPrice = 10, ivMin = 0, ivMax = 2 } = {}) {
   const isCall = String(type).toLowerCase() === 'call';
   const short = Number(sellStrike);
