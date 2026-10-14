@@ -3647,7 +3647,7 @@ async function startSingleAccountEngine(account) {
           .slice(0, 3)
           .map(([k, v]) => `${k}:${v}`)
           .join(' ');
-        log(`[${accountState.name}] Evaluating ${topSpreads.length} candidate spreads for entry (Spot: ${spotPrice}, ATM Strike: ${atmStrike})${rejSummary ? ` | pool ${callTickers.length}c/${putTickers.length}p, top rejects: ${rejSummary}` : ''}${excludedStrikes.size ? ` | excluded strikes: ${[...excludedStrikes].sort((a, b) => a - b).join(',')}` : ''}${oiFilterOn && (oiBlocked.call.length || oiBlocked.put.length) ? ` | OI-blocked (≥ ${oiCapM}M or locked): ${oiBlocked.call.length ? `calls ${oiBlocked.call.sort((a, b) => a - b).join(',')}` : ''}${oiBlocked.call.length && oiBlocked.put.length ? ' · ' : ''}${oiBlocked.put.length ? `puts ${oiBlocked.put.sort((a, b) => a - b).join(',')}` : ''}` : ''}`);
+        log(`[${accountState.name}] Evaluating ${topSpreads.length} candidate spreads for entry (Spot: ${spotPrice}, ATM Strike: ${atmStrike})${rejSummary ? ` | pool ${callTickers.length}c/${putTickers.length}p, top rejects: ${rejSummary}` : ''}${excludedStrikes.size ? ` | excluded strikes: ${[...excludedStrikes].sort((a, b) => a - b).join(',')}` : ''}${oiFilterOn && (oiBlocked.call.length || oiBlocked.put.length) ? ` | OI-blocked (≥ $${oiCapM}M or locked):${oiBlocked.call.length ? `calls ${oiBlocked.call.sort((a, b) => a - b).join(',')}` : ''}${oiBlocked.call.length && oiBlocked.put.length ? ' · ' : ''}${oiBlocked.put.length ? `puts ${oiBlocked.put.sort((a, b) => a - b).join(',')}` : ''}` : ''}`);
         if (topSpreads.length === 0) {
           // Log top rejection reason to diagnose why 0 candidates
           const topFilter = Object.entries(totalRejected)

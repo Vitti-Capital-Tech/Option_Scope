@@ -3345,6 +3345,14 @@ body.light-theme .pt-live-badge {
   flex-wrap: wrap;
 }
 
+/* A filter toggle and the fields it controls, kept side by side as one unit. */
+.scanner-filter-group {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
 .scanner-config-bar .form-group.row-inline {
   margin-bottom: 0;
   display: flex;
@@ -3437,6 +3445,12 @@ body.light-theme .pt-live-badge {
 
   .scanner-filters-container .form-group.row-inline input {
     width: 70px;
+  }
+
+  .scanner-filter-group {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
   }
 
   .scanner-filters-container .filter-title {

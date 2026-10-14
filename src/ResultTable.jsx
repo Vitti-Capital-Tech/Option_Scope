@@ -7,27 +7,13 @@ import { leverageFor } from './scannerUtils';
 // hover tooltip on the ATM P&L intrinsic cells so the bracket-and-average fallback
 // (getTickerPrice) can be verified at a glance without hand-checking the option chain.
 // OI (L/S) column: each leg's strike open interest in USD (millions), 🔒 when Delta has put
-// the strike in reduce-only (contract-level OI limit). The old Delta (L/S) figures moved to
-// the cell's tooltip.
+// the strike in reduce-only (contract-level OI limit). Net delta stays under it; the long /
+// short deltas are in the cell's hover card (renderDeltaTip).
 function fmtOi(leg) {
   if (!leg) return '—';
-  const v = leg.oiUsd != null && Number.isFinite(Number(leg.oiUsd)) ? `${(Number(leg.oiUsd) / 1e6).toFixed(1)}M` : '—';
+  const v = leg.oiUsd != null && Number.isFinite(Number(leg.oiUsd)) ? `$${(Number(leg.oiUsd) / 1e6).toFixed(1)}M` : '—';
   return leg.oiLocked === true ? `🔒 ${v}` : v;
 }
-function oiDeltaTip(row) {
-  const oiLine = (name, leg) => {
-    const usd = leg?.oiUsd != null ? `${Number(leg.oiUsd).toLocaleString(undefined, { maximumFractionDigits: 0 })}` : '—';
-    const c = leg?.oiContracts != null ? ` (${Number(leg.oiContracts).toLocaleString()} contracts)` : '';
-    return `${name} OI: ${usd}${c}${leg?.oiLocked === true ? ' · LOCKED (reduce-only)' : ''}`;
-  };
-  return [
-    oiLine('Long', row.buyLeg),
-    oiLine('Short', row.sellLeg),
-    `Delta (L/S): ${row.buyLeg.lotSize} / ${row.sellLeg.delta?.toFixed(4) ?? '—'}`,
-    `N: ${row.deltaDiff.toFixed(4)}${row.netDelta3 != null ? ` · 3-leg ${row.netDelta3.toFixed(4)}` : ''}`,
-  ].join('\n');
-}
-
 function describeIntrinsic(detail, field) {
   if (!detail) return undefined;
   const m = (n) => `$${Number(n).toFixed(2)}`;
@@ -102,11 +88,12 @@ export default function ResultTable({
   // renderTipContent). One shared card, position:fixed so the table's overflow
   // scroll container never clips it. { detail, field, x, y, below }.
   const [tip, setTip] = useState(null);
-  const showTip = (e, detail, field) => {
+  // kind: 'intrinsic' (ATM pricing cells) or 'delta' (OI (L/S) cells — detail is the row).
+  const showTip = (e, detail, field, kind = 'intrinsic') => {
     if (!detail) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const below = rect.top < 170; // not enough room above → flip under the cell
-    setTip({ detail, field, x: rect.left + rect.width / 2, y: below ? rect.bottom : rect.top, below });
+    setTip({ detail, field, kind, x: rect.left + rect.width / 2, y: below ? rect.bottom : rect.top, below });
   };
   const hideTip = () => setTip(null);
 
@@ -217,6 +204,23 @@ export default function ResultTable({
         {detail.mode === 'none' && (
           <div className="rt-tip-note">No listed strike within ±{detail.tolerance ?? '?'} pts of the target — price omitted (shown as —).</div>
         )}
+      </>
+    );
+  };
+
+  // Hover card for an OI (L/S) cell: the long and short leg deltas (same card style as the
+  // ATM pricing tooltip).
+  const renderDeltaTip = (row) => {
+    const k = (s) => Number(s).toLocaleString();
+    const d = (v) => (v != null && Number.isFinite(Number(v)) ? Number(v).toFixed(4) : '—');
+    return (
+      <>
+        <div className="rt-tip-head">
+          <span className="rt-tip-badge bracket">Delta</span>
+          <span className="rt-tip-field">Long / Short</span>
+        </div>
+        <div className="rt-tip-row"><span className="k">Long · {k(row.buyLeg.strike)}</span><span className="v">{d(row.buyLeg.delta)}</span></div>
+        <div className="rt-tip-row"><span className="k">Short · {k(row.sellLeg.strike)}</span><span className="v">{d(row.sellLeg.delta)}</span></div>
       </>
     );
   };
@@ -421,7 +425,7 @@ export default function ResultTable({
                 <th>Premium (L/S)</th>
                 <th>Ratio (L/S)</th>
                 <th>Net Premium & IV Edge</th>
-                <th className="hide-mobile" title="Open interest of each leg's strike (USD). 🔒 = Delta has made the strike reduce-only (OI limit). Hover a cell for OI contracts and the delta figures.">OI (L/S)</th>
+                <th className="hide-mobile" title="Open interest of each leg's strike (USD). 🔒 = Delta has made the strike reduce-only (OI limit). N = net delta; hover a cell for the long / short delta.">OI (L/S)</th>
                 <th style={{ borderLeft: '1px solid rgba(0, 217, 163, 0.2)', background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>ATM Pricing</th>
                 <th style={{ background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>ATM Edge (P&L)</th>
                 <th style={{ borderRight: '1px solid rgba(0, 217, 163, 0.2)', background: 'rgba(0, 217, 163, 0.04)', color: 'var(--accent)' }}>Req. Margin</th>
@@ -523,10 +527,14 @@ export default function ResultTable({
                             {bestRow.ivDiff.toFixed(1)}% IV{bestRow.hedge ? ' · incl. hedge' : ''}
                           </div>
                         </td>
-                        <td className="hide-mobile" title={oiDeltaTip(bestRow)} style={{ cursor: 'help' }}>
+                        <td className="hide-mobile" style={{ cursor: 'help' }}
+                          onMouseEnter={(e) => showTip(e, bestRow, null, 'delta')} onMouseLeave={hideTip}>
                           <div>
                             <span className='scanner-buy'>{fmtOi(bestRow.buyLeg)}</span>/
                             <span className='scanner-sell'>{fmtOi(bestRow.sellLeg)}</span>
+                          </div>
+                          <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                            N: {bestRow.deltaDiff.toFixed(4)}{bestRow.netDelta3 != null ? ` · 3-leg ${bestRow.netDelta3.toFixed(4)}` : ''}
                           </div>
                         </td>
 
@@ -601,10 +609,14 @@ export default function ResultTable({
                                 {r.ivDiff.toFixed(1)}% IV{r.hedge ? ' · incl. hedge' : ''}
                               </div>
                             </td>
-                            <td className="hide-mobile" title={oiDeltaTip(r)} style={{ cursor: 'help' }}>
+                            <td className="hide-mobile" style={{ cursor: 'help' }}
+                              onMouseEnter={(e) => showTip(e, r, null, 'delta')} onMouseLeave={hideTip}>
                               <div>
                                 <span className='scanner-buy'>{fmtOi(r.buyLeg)}</span>/
                                 <span className='scanner-sell'>{fmtOi(r.sellLeg)}</span>
+                              </div>
+                              <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                                N: {r.deltaDiff.toFixed(4)}{r.netDelta3 != null ? ` · 3-leg ${r.netDelta3.toFixed(4)}` : ''}
                               </div>
                             </td>
 
@@ -644,7 +656,7 @@ export default function ResultTable({
 
       {tip && (
         <div className={`rt-tip${tip.below ? ' below' : ''}`} role="tooltip" style={{ left: tip.x, top: tip.y }}>
-          {renderTipContent(tip.detail, tip.field)}
+          {tip.kind === 'delta' ? renderDeltaTip(tip.detail) : renderTipContent(tip.detail, tip.field)}
         </div>
       )}
     </div>

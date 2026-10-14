@@ -805,89 +805,98 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
                 onChange={e => updateConfig('minAtmRoi', Number(e.target.value))}
               />
             </div>
-            <div key="atmRatioScaling" className="form-group row-inline scanner-switch-field">
-              <label htmlFor="atmRatioScaling" style={{ cursor: 'pointer', userSelect: 'none' }}>Dynamic ATM Scaling</label>
-              <label className="pt-switch" title="Scale the short qty toward the ATM ratio">
-                <input type="checkbox" id="atmRatioScaling" checked={config.atmRatioScaling ?? false}
-                  onChange={e => updateConfig('atmRatioScaling', e.target.checked)} />
-                <span className="pt-slider"></span>
-              </label>
-            </div>
-            <div key="hedgeEnabled" className="form-group row-inline scanner-switch-field">
-              <label htmlFor="hedgeEnabled" style={{ cursor: 'pointer', userSelect: 'none' }}>Hedge Leg</label>
-              <label className="pt-switch" title="Show each spread's 3rd long (hedge) leg">
-                <input type="checkbox" id="hedgeEnabled" checked={config.hedgeEnabled ?? false}
-                  onChange={e => updateConfig('hedgeEnabled', e.target.checked)} />
-                <span className="pt-slider"></span>
-              </label>
-            </div>
-            <div key="oiFilterEnabled" className="form-group row-inline scanner-switch-field">
-              <label htmlFor="oiFilterEnabled" style={{ cursor: 'pointer', userSelect: 'none' }}
-                title="Delta's contract-level OI limit: a strike whose open interest reaches the cap goes reduce-only (no new positions). On: hide spreads with a leg on a strike that is locked or whose OI (USD) is at/over the cap.">
-                Open Interest
-              </label>
-              <label className="pt-switch" title="Hide spreads on strikes at/over the OI cap or locked by Delta">
-                <input type="checkbox" id="oiFilterEnabled" checked={config.oiFilterEnabled ?? false}
-                  onChange={e => updateConfig('oiFilterEnabled', e.target.checked)} />
-                <span className="pt-slider"></span>
-              </label>
-            </div>
-            {config.oiFilterEnabled && (
-              <div key="oiMaxCapM" className="form-group row-inline">
-                <label>Max OI</label>
-                <CustomInput type="number" step="1" min="1" prefix="$" suffix="M" showStepper width={100}
-                  value={config.oiMaxCapM ?? defaultOiCapM(underlying)}
-                  onChange={e => {
-                    const n = Number(e.target.value);
-                    updateConfig('oiMaxCapM', e.target.value === '' || !(n > 0) ? null : n);
-                  }}
-                />
+            {/* Dynamic ATM Scaling + its call / put scaling */}
+            <div className="scanner-filter-group">
+              <div key="atmRatioScaling" className="form-group row-inline scanner-switch-field">
+                <label htmlFor="atmRatioScaling" style={{ cursor: 'pointer', userSelect: 'none' }}>Dynamic ATM Scaling</label>
+                <label className="pt-switch" title="Scale the short qty toward the ATM ratio">
+                  <input type="checkbox" id="atmRatioScaling" checked={config.atmRatioScaling ?? false}
+                    onChange={e => updateConfig('atmRatioScaling', e.target.checked)} />
+                  <span className="pt-slider"></span>
+                </label>
               </div>
-            )}
-            {config.hedgeEnabled && (
-              <div key="hedgeLotPct" className="form-group row-inline">
-                <label>Hedge Lot</label>
-                <CustomInput type="number" step="5" min="0" max="100" suffix="%" showStepper width={100} value={config.hedgeLotPct ?? 50}
-                  onChange={e => updateConfig('hedgeLotPct', Number(e.target.value))}
-                />
+              {config.atmRatioScaling && (
+                <>
+                  <div key="atmRatioPctCall" className="form-group row-inline">
+                    <label>Call Scaling</label>
+                    <CustomInput type="number" step="5" suffix="%" showStepper width={100} value={config.atmRatioPctCall ?? 50}
+                      onChange={e => updateConfig('atmRatioPctCall', Number(e.target.value))}
+                    />
+                  </div>
+                  <div key="atmRatioPctPut" className="form-group row-inline">
+                    <label>Put Scaling</label>
+                    <CustomInput type="number" step="5" suffix="%" showStepper width={100} value={config.atmRatioPctPut ?? 50}
+                      onChange={e => updateConfig('atmRatioPctPut', Number(e.target.value))}
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+            {/* Hedge Leg + its lot / max price / IV diff */}
+            <div className="scanner-filter-group">
+              <div key="hedgeEnabled" className="form-group row-inline scanner-switch-field">
+                <label htmlFor="hedgeEnabled" style={{ cursor: 'pointer', userSelect: 'none' }}>Hedge Leg</label>
+                <label className="pt-switch" title="Show each spread's 3rd long (hedge) leg">
+                  <input type="checkbox" id="hedgeEnabled" checked={config.hedgeEnabled ?? false}
+                    onChange={e => updateConfig('hedgeEnabled', e.target.checked)} />
+                  <span className="pt-slider"></span>
+                </label>
               </div>
-            )}
-            {config.hedgeEnabled && (
-              <>
-                <div key="hedgeMaxPrice" className="form-group row-inline">
-                  <label>Max Hedge Price</label>
-                  <CustomInput type="number" step="1" min="0" prefix="$" showStepper width={100} value={config.hedgeMaxPrice ?? 10}
-                    onChange={e => updateConfig('hedgeMaxPrice', Number(e.target.value))}
+              {config.hedgeEnabled && (
+                <div key="hedgeLotPct" className="form-group row-inline">
+                  <label>Hedge Lot</label>
+                  <CustomInput type="number" step="5" min="0" max="100" suffix="%" showStepper width={100} value={config.hedgeLotPct ?? 50}
+                    onChange={e => updateConfig('hedgeLotPct', Number(e.target.value))}
                   />
                 </div>
-                <div key="hedgeIvDiffMin" className="form-group row-inline">
-                  <label>Hedge IV Diff</label>
-                  <CustomInput type="number" step="0.5" min="0" suffix="%" showStepper width={90} value={config.hedgeIvDiffMin ?? 0}
-                    onChange={e => updateConfig('hedgeIvDiffMin', Number(e.target.value))}
-                  />
-                  <span style={{ margin: '0 4px' }}>to</span>
-                  <CustomInput type="number" step="0.5" min="0" suffix="%" showStepper width={90} value={config.hedgeIvDiffMax ?? 2}
-                    onChange={e => updateConfig('hedgeIvDiffMax', Number(e.target.value))}
+              )}
+              {config.hedgeEnabled && (
+                <>
+                  <div key="hedgeMaxPrice" className="form-group row-inline">
+                    <label>Max Hedge Price</label>
+                    <CustomInput type="number" step="1" min="0" prefix="$" showStepper width={100} value={config.hedgeMaxPrice ?? 10}
+                      onChange={e => updateConfig('hedgeMaxPrice', Number(e.target.value))}
+                    />
+                  </div>
+                  <div key="hedgeIvDiffMin" className="form-group row-inline">
+                    <label>Hedge IV Diff</label>
+                    <CustomInput type="number" step="0.5" min="0" suffix="%" showStepper width={90} value={config.hedgeIvDiffMin ?? 0}
+                      onChange={e => updateConfig('hedgeIvDiffMin', Number(e.target.value))}
+                    />
+                    <span style={{ margin: '0 4px' }}>to</span>
+                    <CustomInput type="number" step="0.5" min="0" suffix="%" showStepper width={90} value={config.hedgeIvDiffMax ?? 2}
+                      onChange={e => updateConfig('hedgeIvDiffMax', Number(e.target.value))}
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+            {/* Open Interest (Delta OI limit) + its cap */}
+            <div className="scanner-filter-group">
+              <div key="oiFilterEnabled" className="form-group row-inline scanner-switch-field">
+                <label htmlFor="oiFilterEnabled" style={{ cursor: 'pointer', userSelect: 'none' }}
+                  title="Delta's contract-level OI limit: a strike whose open interest reaches the cap goes reduce-only (no new positions). On: hide spreads with a leg on a strike that is locked or whose OI (USD) is at/over the cap.">
+                  Open Interest
+                </label>
+                <label className="pt-switch" title="Hide spreads on strikes at/over the OI cap or locked by Delta">
+                  <input type="checkbox" id="oiFilterEnabled" checked={config.oiFilterEnabled ?? false}
+                    onChange={e => updateConfig('oiFilterEnabled', e.target.checked)} />
+                  <span className="pt-slider"></span>
+                </label>
+              </div>
+              {config.oiFilterEnabled && (
+                <div key="oiMaxCapM" className="form-group row-inline">
+                  <label>Max OI</label>
+                  <CustomInput type="number" step="1" min="1" prefix="$" suffix="M" showStepper width={100}
+                    value={config.oiMaxCapM ?? defaultOiCapM(underlying)}
+                    onChange={e => {
+                      const n = Number(e.target.value);
+                      updateConfig('oiMaxCapM', e.target.value === '' || !(n > 0) ? null : n);
+                    }}
                   />
                 </div>
-              </>
-            )}
-            {config.atmRatioScaling && (
-              <>
-                <div key="atmRatioPctCall" className="form-group row-inline">
-                  <label>Call Scaling</label>
-                  <CustomInput type="number" step="5" suffix="%" showStepper width={100} value={config.atmRatioPctCall ?? 50}
-                    onChange={e => updateConfig('atmRatioPctCall', Number(e.target.value))}
-                  />
-                </div>
-                <div key="atmRatioPctPut" className="form-group row-inline">
-                  <label>Put Scaling</label>
-                  <CustomInput type="number" step="5" suffix="%" showStepper width={100} value={config.atmRatioPctPut ?? 50}
-                    onChange={e => updateConfig('atmRatioPctPut', Number(e.target.value))}
-                  />
-                </div>
-              </>
-            )}
+              )}
+            </div>
           </div>
           {/* Actions for Start/Stop Scan button */}
           <div>

@@ -276,7 +276,7 @@ export default function ControlPanel({
                 {draftConfig?.oiFilterEnabled && (
                   <div key="oiMaxCapM" className="form-group">
                     <label className="pt-field-label" style={{ marginBottom: 0 }}
-                      title={`Max open interest per strike, in millions of USD. Default for ${underlying || 'BTC'}: ${defaultOiCapM(underlying)}M (Delta's cap).`}>
+                      title={`Max open interest per strike, in millions of USD. Default for ${underlying || 'BTC'}: $${defaultOiCapM(underlying)}M (Delta's cap).`}>
                       Max OI
                     </label>
                     <CustomInput type="number" step="1" min="1" prefix="$" suffix="M" showStepper width={100}
