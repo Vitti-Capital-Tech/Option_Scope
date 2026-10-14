@@ -160,7 +160,9 @@ $$\text{sellIntrinsic} = \text{OTM Sell leg Ask price (at ATM} \pm \text{strikeD
 
 $$\text{ATM PnL} = [(\text{buyIntrinsic} - \text{Entry Buy Price}) + (\text{Entry Sell Price} - \text{sellIntrinsic}) \times \text{originalSellQty}] \times \text{Adjusted Lot Size}$$
 
-$$\text{Margin Requirement} = (\text{Entry Buy Price} \times \text{Adjusted Lot Size}) + \frac{\text{Short Value (capped at } \$195{,}000)}{\text{Leverage (BTC } 200 \text{, ETH } 100)}$$
+$$\text{Margin Requirement} = (\text{Entry Buy Price} \times \text{Adjusted Lot Size}) + \frac{\text{Short Value (capped at } \$195{,}000)}{\text{Leverage}}$$
+
+Leverage depends on the underlying and the expiry: **DTE 0 / DTE 1** (settles today or tomorrow) — BTC **200×**, ETH **100×**; any farther expiry (weekly, monthly, …) — **100×** for both.
 
 $$\text{ROI} = \left(\frac{\text{ATM PnL}}{\text{Margin Requirement}}\right) \times 100$$
 

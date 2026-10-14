@@ -1136,7 +1136,7 @@ async function startSingleAccountEngine(account) {
   function longOnlyMargin(pos) {
     const cv = pos.buyLeg?.contractValue;
     const lot = cv != null ? cv * longContracts(pos.buyLeg) : (pos.buyLeg?.lotSize || 0);
-    return calcMargin(pos.entryBuyPrice, lot, spotPrice, 0, 1, pos.underlying);
+    return calcMargin(pos.entryBuyPrice, lot, spotPrice, 0, 1, pos.underlying, pos.expiry);
   }
 
   // Correct-basis margin for a full/partial spread. A LIVE position is sized on the real
@@ -1148,11 +1148,11 @@ async function startSingleAccountEngine(account) {
   // formula (calcMargin with longCV × contracts for the long, shortCV for the short).
   function contractBasisMargin(pos, longCV) {
     if (longCV == null) {
-      return calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, spotPrice, pos.sellQty, pos.sellLeg.lotSize || 1, pos.underlying);
+      return calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, spotPrice, pos.sellQty, pos.sellLeg.lotSize || 1, pos.underlying, pos.expiry);
     }
     const longLot = longCV * longContracts(pos.buyLeg);
     const shortCV = pos.sellQty > 0 ? (symbolMeta[pos.sellLeg?.symbol]?.contractValue ?? longCV) : 1;
-    return calcMargin(pos.entryBuyPrice, longLot, spotPrice, pos.sellQty, shortCV, pos.underlying);
+    return calcMargin(pos.entryBuyPrice, longLot, spotPrice, pos.sellQty, shortCV, pos.underlying, pos.expiry);
   }
 
   // One-time PnL-basis normalisation for a LIVE position that was opened on the PAPER
@@ -3613,11 +3613,11 @@ async function startSingleAccountEngine(account) {
           const offset = Number(hedge.ticker.strike) - Number(spread.buyLeg.strike);
           hedgeAtAtm = getTickerPrice(atmStrike + offset, spread.buyLeg.type, 'bid', config.expiry) ?? 0;
           hedgeTerm = (hedgeAtAtm - hedge.ask) * unitQty;
-          hedgeMargin = calcMargin(hedge.ask, adjustedSellQty * (hedgeLotPct / 100), spotPrice, 0, 1, config.underlying);
+          hedgeMargin = calcMargin(hedge.ask, adjustedSellQty * (hedgeLotPct / 100), spotPrice, 0, 1, config.underlying, config.expiry);
         }
 
         const atmPnl = ((buyIntrinsic - spread.buyPrice) + (spread.sellPrice - sellIntrinsic) * ratioToUse + hedgeTerm) * adjustedLotSize;
-        const margin = calcMargin(spread.buyPrice, adjustedLotSize, spotPrice, adjustedSellQty, sellLotSize, config.underlying) + hedgeMargin;
+        const margin = calcMargin(spread.buyPrice, adjustedLotSize, spotPrice, adjustedSellQty, sellLotSize, config.underlying, config.expiry) + hedgeMargin;
         const roi = margin > 0 ? (atmPnl / margin) * 100 : 0;
 
         return { atmPnl, roi, buyIntrinsic, sellIntrinsic, targetSellStrike, atmRatio: entryAtmRatio, ratioToUse, hedge, hedgeAtAtm };
@@ -4485,7 +4485,7 @@ async function startSingleAccountEngine(account) {
                   // do NOT delete or `continue` — fall through so the catch-all can close it.
                   pos.buyLeg.lotSize = 0;
                   pos.buyLeg.longExitStage = stage;
-                  pos.margin = calcMargin(pos.hedgeLeg.entryPrice, pos.hedgeLeg.lotSize, spotPrice, 0, 1, pos.underlying);
+                  pos.margin = calcMargin(pos.hedgeLeg.entryPrice, pos.hedgeLeg.lotSize, spotPrice, 0, 1, pos.underlying, pos.expiry);
                   try {
                     await supabase.from('active_positions').update({
                       buy_leg: JSON.stringify(pos.buyLeg),
@@ -5338,7 +5338,7 @@ async function startSingleAccountEngine(account) {
             }
             liveLongCV = longCV; // persist as the leg's margin basis for later long-only recompute
             liveShortCV = shortCV; // persist for the short leg object built after this block
-            const baseMargin = calcMargin(entryBuyPrice, longCV, spotPrice, ratioToUse, shortCV, config.underlying);
+            const baseMargin = calcMargin(entryBuyPrice, longCV, spotPrice, ratioToUse, shortCV, config.underlying, config.expiry);
             // Fit the order to what Delta actually has free: Delta's available margin above
             // the reserve, minus what candidates sized earlier this cycle already claimed.
             const liveFree = liveAvailLeft != null ? Math.max(0, liveAvailLeft - liveSizedSoFar) : null;
@@ -5362,7 +5362,7 @@ async function startSingleAccountEngine(account) {
             // Rounding the long UP can push the estimate back over what Delta has free —
             // step it down until the order fits (never below 1, which fits by the check above).
             if (liveFree != null) {
-              const estAt = (lc) => calcMargin(entryBuyPrice, longCV * lc, spotPrice, Math.max(1, Math.round(lc * ratioToUse)), shortCV, config.underlying);
+              const estAt = (lc) => calcMargin(entryBuyPrice, longCV * lc, spotPrice, Math.max(1, Math.round(lc * ratioToUse)), shortCV, config.underlying, config.expiry);
               while (longC > 1 && estAt(longC) > liveFree) longC--;
             }
 
@@ -5391,13 +5391,13 @@ async function startSingleAccountEngine(account) {
             }
             adjustedLotSize = Number((longCV * longC).toFixed(4));
             adjustedSellQty = shortC;
-            liveMargin = calcMargin(entryBuyPrice, longCV * longC, spotPrice, adjustedSellQty, shortCV, config.underlying);
+            liveMargin = calcMargin(entryBuyPrice, longCV * longC, spotPrice, adjustedSellQty, shortCV, config.underlying, config.expiry);
             if (liveFree != null) liveSizedSoFar += liveMargin;
             log(`[${accountState.name}] ¤ LIVE size ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: unit margin $${baseMargin.toFixed(2)} | part $${candPart.toFixed(2)} → scale ${scale.toFixed(2)}× | long ${longC} short ${shortC} (base 1:${ratioToUse}) | est margin $${liveMargin.toFixed(2)} | cv ${longCV}/${shortCV}`);
           } else if (isPaperAccount && partMargin != null) {
             // PAPER (migration 027): scale the base 1:ratio unit so its margin fills the
             // per-position part (allocated pool ÷ the active window's combined cap), then
-            // clamp by the $195k / 200x short-notional cap. Paper tolerates fractional lots.
+            // clamp by the $195k short-notional cap (leverage per leverageFor: BTC 200x DTE 0/1, else 100x). Paper tolerates fractional lots.
             // Running-pool clamp: never size a position past the pool left this cycle, so the
             // 4:30 concentrate fill (large partMargin) can't collectively over-deploy the pool.
             const effectivePart = paperRemainingBudget != null
@@ -5414,7 +5414,7 @@ async function startSingleAccountEngine(account) {
             // pool. The $195k ceiling is STILL enforced after scaling (below), so a large
             // part / concentrate fill can never place a short past $195k notional.
             const baseShortNotional = spotPrice * ratioToUse * sellLotSize;
-            const baseMargin = (entryBuyPrice || 0) * originalLotSize + baseShortNotional / leverageFor(config.underlying);
+            const baseMargin = (entryBuyPrice || 0) * originalLotSize + baseShortNotional / leverageFor(config.underlying, config.expiry);
             scale = baseMargin > 0 ? (effectivePart / baseMargin) : 1;
             if (!(scale > 0)) scale = 1;
             adjustedLotSize = Number((originalLotSize * scale).toFixed(4));
@@ -5430,7 +5430,7 @@ async function startSingleAccountEngine(account) {
               adjustedSellQty = Number((adjustedSellQty * capScale).toFixed(4));
               shortValue = 195000;
             }
-            const estMargin = calcMargin(entryBuyPrice, adjustedLotSize, spotPrice, adjustedSellQty, sellLotSize, config.underlying);
+            const estMargin = calcMargin(entryBuyPrice, adjustedLotSize, spotPrice, adjustedSellQty, sellLotSize, config.underlying, config.expiry);
             log(`[${accountState.name}] ¤ PAPER size ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: unit margin $${baseMargin.toFixed(2)} | part $${effectivePart.toFixed(2)} → scale ${scale.toFixed(2)}× | lot ${adjustedLotSize} short ${adjustedSellQty} (base 1:${ratioToUse}) | est margin $${estMargin.toFixed(2)}`);
           } else {
             // LIVE-but-unarmed (no balance sizing): unchanged $195,000 / 200x notional cap.
@@ -5473,7 +5473,7 @@ async function startSingleAccountEngine(account) {
           // remaining-budget sizing correctly). Paper: unchanged notional/leverage estimate.
           const candidateMargin = liveMargin != null
             ? liveMargin
-            : calcMargin(entryBuyPrice, adjustedLotSize, spotPrice, adjustedSellQty, spread.sellLeg.lotSize, config.underlying);
+            : calcMargin(entryBuyPrice, adjustedLotSize, spotPrice, adjustedSellQty, spread.sellLeg.lotSize, config.underlying, config.expiry);
 
           // ── Per-spread hedge leg (3rd long-only leg → long/short/long triplet) ──
           // PAPER accounts with strategy_version >= 2 only, gated by the active window's Hedge toggle (calls and
@@ -5523,7 +5523,7 @@ async function startSingleAccountEngine(account) {
               entryFee: calculateFee(bestAsk, spotPrice, hedgeQty, 1),
               contractValue: hedgeCV,
             };
-            hedgeMargin = calcMargin(bestAsk, hedgeQty, spotPrice, 0, 1, config.underlying);
+            hedgeMargin = calcMargin(bestAsk, hedgeQty, spotPrice, 0, 1, config.underlying, config.expiry);
             log(`[${accountState.name}] ✚ Hedge for ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: ${best.strike} @ ${bestAsk} (best ATM ROI ${cand.roi != null ? cand.roi.toFixed(2) + '%' : '—'} of ${cand.optionCount} qualifying: ${cand.optionStrikes.join(', ')}).`);
           }
 
@@ -5579,7 +5579,7 @@ async function startSingleAccountEngine(account) {
               // scale the 1:ratio unit by (part ÷ unit margin), round the long to a whole
               // contract, derive the short from long × ratio, and clamp both by the $195k
               // short-notional cap so a large part can't size past the spread's max qty.
-              const gBaseMargin = calcMargin(entryBuyPrice, gLongCV, spotPrice, ratioToUse, gShortCV, config.underlying);
+              const gBaseMargin = calcMargin(entryBuyPrice, gLongCV, spotPrice, ratioToUse, gShortCV, config.underlying, config.expiry);
               let gScale = gBaseMargin > 0 ? (partMargin / gBaseMargin) : 1;
               if (gScale < 1) gScale = 1;
               gLongC = Math.max(1, Math.round(gScale));

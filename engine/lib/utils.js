@@ -101,30 +101,52 @@ export function safeParseLeg(value) {
 }
 
 /**
- * Short-leg leverage, per underlying. ETH sits at 100x where BTC sits at 200x, so the SAME
- * short notional costs an ETH account twice the margin. This is the only place the number
- * lives — every margin path (engine entry sizing, ATM P&L/ROI, the scanner's displayed
- * margin, the UI's position margin) goes through it, so the three surfaces cannot drift.
+ * Short-leg leverage, per underlying AND expiry. Browser twin: src/scannerUtils.js — both copies must move together.
+ *   - Near expiries — DTE 0 (settles today) and DTE 1 (settles tomorrow): the full leverage,
+ *     BTC 200x / ETH 100x.
+ *   - Any farther expiry (weekly, monthly, …): at most 100x — BTC 100x, ETH stays 100x.
+ * DTE = whole days left to settlement. Delta settles at 17:30 IST, so this follows the 17:30
+ * trading-day boundary: under 48 hours to settlement = DTE 0 or 1. As an expiry gets closer
+ * it moves to the full leverage (e.g. a weekly bought at 100x margins at 200x in its last two
+ * days). This is the only place the number lives — every margin path (engine entry sizing,
+ * ATM P&L/ROI, the scanner's displayed margin, the UI's position margin) goes through it.
  *
- * Accepts either the underlying code ('ETH') or a full Delta symbol ('C-ETH-2800-030926'):
- * the scanner's display path only has the symbol to hand. The short-notional CAP is
- * deliberately NOT per-underlying — it stays $195,000 for both.
+ * `underlyingOrSymbol`: the underlying ('ETH') or a full Delta symbol ('C-ETH-2800-030926').
+ * `expiry`: the settlement time (ISO) or a symbol; omitted → read from `underlyingOrSymbol`
+ * when it is a symbol. No expiry known → the full leverage (previous behaviour). The $195,000
+ * short-notional cap is NOT per-underlying — it stays the same for both.
  */
-export function leverageFor(underlyingOrSymbol) {
-  return /ETH/i.test(String(underlyingOrSymbol ?? '')) ? 100 : 200;
+export const NEAR_EXPIRY_HOURS = 48;   // DTE 0 and DTE 1
+export const FAR_EXPIRY_MAX_LEVERAGE = 100;
+/** Settlement time (ms) from an ISO expiry or a Delta option symbol (…-DDMMYY → 12:00 UTC = 17:30 IST). */
+export function expiryMsOf(expiryOrSymbol) {
+  if (expiryOrSymbol == null || expiryOrSymbol === '') return null;
+  const s = String(expiryOrSymbol);
+  const m = s.match(/-(\d{2})(\d{2})(\d{2})$/);
+  if (m) return Date.UTC(2000 + Number(m[3]), Number(m[2]) - 1, Number(m[1]), 12, 0, 0);
+  if (!/\d{4}-\d{2}-\d{2}/.test(s)) return null; // not a date ('BTC', 'ETH', …)
+  const ms = Date.parse(s);
+  return Number.isFinite(ms) ? ms : null;
+}
+export function leverageFor(underlyingOrSymbol, expiry = null, nowMs = Date.now()) {
+  const full = /ETH/i.test(String(underlyingOrSymbol ?? '')) ? 100 : 200;
+  const expMs = expiryMsOf(expiry ?? underlyingOrSymbol);
+  if (expMs == null) return full;
+  return (expMs - nowMs) < NEAR_EXPIRY_HOURS * 3600000 ? full : Math.min(full, FAR_EXPIRY_MAX_LEVERAGE);
 }
 
 /**
  * Tiered margin calculation matching Delta Exchange leverage tiers.
- * margin = (entryBuyPrice × buyLotSize) + (shortValue / leverageFor(underlying))
+ * margin = (entryBuyPrice × buyLotSize) + (shortValue / leverageFor(underlying, expiry))
  *
- * `underlying` defaults to BTC's 200x. Every caller in this repo passes it explicitly —
- * the default exists so an omission degrades to the historical behaviour rather than NaN.
+ * `underlying` defaults to BTC. `expiry` (settlement ISO) picks the leverage tier: DTE 0/1
+ * full (BTC 200x / ETH 100x), farther expiries ≤ 100x; omitted → the full leverage. Every
+ * caller in this repo passes both explicitly.
  */
-export function calcMargin(buyPrice, buyLot, spot, sellQty, sellLot = 1, underlying = 'BTC') {
+export function calcMargin(buyPrice, buyLot, spot, sellQty, sellLot = 1, underlying = 'BTC', expiry = null) {
   const longMargin = (buyPrice || 0) * (buyLot || 1);
   const shortValue = Math.min(195000, (spot || 0) * (sellQty || 0) * sellLot);
-  return longMargin + (shortValue / leverageFor(underlying));
+  return longMargin + (shortValue / leverageFor(underlying, expiry));
 }
 
 /**

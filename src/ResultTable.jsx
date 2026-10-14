@@ -268,8 +268,8 @@ export default function ResultTable({
         shortValue = 195000;
       }
 
-      // Per-underlying (ETH 100x / BTC 200x) — derived from the leg symbol, the same source
-      // the bracket tolerance above uses. Must match engine/lib/utils.js calcMargin().
+      // Per underlying + expiry (BTC 200x / ETH 100x at DTE 0–1, farther expiries ≤ 100x) —
+      // both read from the leg symbol (…-DDMMYY). Must match engine/lib/utils.js calcMargin().
       const leverage = leverageFor(r.buyLeg?.symbol);
 
       // Hedge leg (3rd long): qty = the SCALED short qty (after the $195k / leverage cap)

@@ -3281,9 +3281,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     const sellQty = p.sellQty;
     const longMargin = buyPrice * buyLot;
     const shortValue = Math.min(195000, spot * sellQty * sellLot);
-    // Per-underlying (ETH 100x / BTC 200x) — read off the position itself, so a mixed
-    // BTC/ETH list stays correct. Must match engine/lib/utils.js calcMargin().
-    const leverage = leverageFor(p.underlying);
+    // Per underlying + expiry (BTC 200x / ETH 100x at DTE 0–1, farther expiries ≤ 100x) —
+    // read off the position itself, so a mixed list stays correct. Must match
+    // engine/lib/utils.js calcMargin().
+    const leverage = leverageFor(p.underlying, p.expiry);
     // Triplet 3rd leg (long-only): premium paid = its margin.
     const hedgeMargin = (p.hedgeLeg && (p.hedgeLeg.lotSize || 0) > 0)
       ? (p.currentHedgePrice != null ? p.currentHedgePrice : (p.hedgeLeg.entryPrice || 0)) * p.hedgeLeg.lotSize

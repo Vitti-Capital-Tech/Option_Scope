@@ -1659,7 +1659,7 @@ flowchart TD
 | Short-leg exit trigger | ask ≤ 1.1 | Short leg's live ask `≤ 1.1` → buy back short, hold long (gap-safe, once per position) |
 | Long-only exit levels | 10 equidistant | Evenly-spaced **bid** levels in [current bid, max(entry, last 2hr high)]; exit 1/10 long per crossed level (bid-triggered) |
 | $195K cap | $195,000 | Max short notional value — same for every underlying |
-| Short-leg leverage | BTC 200× · ETH 100× | `leverageFor(underlying)`; divides the (capped) short notional to give its margin. ETH pays 2× the margin for the same notional |
+| Short-leg leverage | DTE 0/1: BTC 200× · ETH 100×; farther expiries: 100× | `leverageFor(underlying, expiry)`; divides the (capped) short notional to give its margin. DTE 0/1 = under 48h to the 17:30 IST settlement |
 | Scaling step | 10% | Lot size reduction per scaling event (full spreads only) |
 | Scaling floor | 50% | Minimum lot size as % of initial (full spreads only) |
 | ATM P&L minimum (`minAtmPnl`) | $50 (configurable, paper) | Min simulated ATM profit for entry; scaled down by the ATM-ratio pct |

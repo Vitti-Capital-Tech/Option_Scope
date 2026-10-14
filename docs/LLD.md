@@ -318,7 +318,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_active_positions_sell_strike_unique
 
 Applied at entry in both engines and dynamically in the frontend UI:
 
-- **Leverage**: Fixed at **200×**
+- **Leverage**: per underlying and expiry (`leverageFor`) — DTE 0/1 (settles today / tomorrow, < 48h to settlement): BTC **200×**, ETH **100×**; farther expiries (weekly, monthly, …): max **100×** (BTC 100×, ETH 100×)
 - **Short Value Cap**: Capped at **$195,000** (`Math.min(195000, shortValue)`)
 - **Static Entry Margin**: `margin = (entryBuyPrice × buyLotSize) + (shortValue / leverage)`
 - **Dynamic Live UI Margin**: In the frontend UI (`PaperTrading.jsx`), the margin for active positions is calculated in real-time as:
@@ -706,10 +706,10 @@ All ATM price lookups go through `getTickerPrice(strike, optType, priceField, ex
 ### 5. At ATM Margin
 - **Margin Calculation**: Derived from **spread entry prices** (not ATM chain data), so it is always available:
   `shortValue = Math.min(195000, spot × sellQty × sellLotSize)`
-  `leverage = leverageFor(underlying)` — **ETH `100`, everything else `200`**
+  `leverage = leverageFor(underlying, expiry)` — DTE 0/1 (< 48h to the 17:30 IST settlement): **ETH `100`, everything else `200`**; farther expiries: `min(that, 100)` (2026-10-14)
   `margin = (buyPrice × buyLotSize) + (shortValue / leverage)`
 
-  The leverage is **per underlying**; the $195,000 short-notional cap is **not** — it is the same for both. So the identical short notional costs an ETH account twice the margin a BTC account pays, and an ETH position sized against a fixed margin budget comes out roughly half the notional. `leverageFor()` lives once in `engine/lib/utils.js` and once in `src/scannerUtils.js` (the browser twin, used by `ResultTable`'s displayed margin and `PaperTrading`'s position margin); the two must move together, because the scanner's margin/ROI is exactly the number a user checks an engine decision against. It accepts either the underlying code (`'ETH'`) or a full Delta symbol (`'C-ETH-2800-030926'`), since the display path only has the symbol to hand.
+  The leverage is **per underlying**; the $195,000 short-notional cap is **not** — it is the same for both. So the identical short notional costs an ETH account twice the margin a BTC account pays, and an ETH position sized against a fixed margin budget comes out roughly half the notional. `leverageFor()` lives once in `engine/lib/utils.js` and once in `src/scannerUtils.js` (the browser twin, used by `ResultTable`'s displayed margin and `PaperTrading`'s position margin); the two must move together, because the scanner's margin/ROI is exactly the number a user checks an engine decision against. It accepts either the underlying code (`'ETH'`) or a full Delta symbol (`'C-ETH-2800-030926'`), since the display path only has the symbol to hand; the expiry is the second argument (settlement ISO) or is read from the symbol (`expiryMsOf`: `…-DDMMYY` → 12:00 UTC). No expiry → the full leverage. `calcMargin(…, underlying, expiry)` passes it on; the engine passes `config.expiry` at entry and `pos.expiry` for open positions, so a position's margin moves to the full leverage in its last two days.
 - **Always rendered**: Because margin does not depend on ATM quote availability, it is never suppressed.
 - **Sorting**: The scanner table groups the spreads by buy strike, sorts the group strikes by their highest candidate ROI descending, and sorts all options/sub-rows within each group by ROI descending. This ensures the most margin-efficient opportunities are ranked at the top.
 
