@@ -6754,10 +6754,11 @@ async function startSingleAccountEngine(account) {
     }
   }, 5 * 60 * 1000);
 
-  // Active positions, config and schedules refresh — every 5 minutes. This is only a
+  // Active positions, config and schedules refresh — every 15 minutes. This is only a
   // drift safety net now that Realtime reliably delivers account-scoped changes (config,
-  // schedules and external position deletes), so a longer interval cuts redundant egress
-  // (each cycle reads config + schedules + all positions-with-legs, per account).
+  // schedules and external position deletes), so a longer interval cuts redundant load
+  // (each cycle reads config + schedules + all positions-with-legs, per account). Live
+  // accounts' exchange-side drift is still caught by the 30s/60s reconcileOrphans.
   const positionsTimer = setInterval(async () => {
     try {
       await reloadConfigAndSync();
@@ -6767,20 +6768,24 @@ async function startSingleAccountEngine(account) {
     } catch (e) {
       logError(`[${accountState.name}] Error in positionsTimer:`, e);
     }
-  }, 300000);
+  }, 900000);
 
   // Live wallet balance poll — every 60s for armed live accounts, surfaced to the
   // dashboard via the heartbeat (Wallet / Allocated / per-position figures).
+  let allocCheckTick = 0;
   const balanceTick = async () => {
     try {
-      // Fallback for a missed realtime config event: re-read the allocation % (one cheap
-      // query a minute) so a change saved in the UI always reaches sizing within ~60s.
-      const { data: allocRow } = await supabase.from('paper_trading_config')
-        .select('balance_allocation_pct').eq('account_id', accountState.id).maybeSingle();
-      const dbAlloc = allocRow?.balance_allocation_pct != null ? Number(allocRow.balance_allocation_pct) : null;
-      if (dbAlloc != null && Number.isFinite(dbAlloc) && dbAlloc !== config.balanceAllocationPct) {
-        log(`[${accountState.name}] Allocation % updated from the database: ${config.balanceAllocationPct}% → ${dbAlloc}%`);
-        config.balanceAllocationPct = dbAlloc;
+      // Fallback for a missed realtime config event: re-read the allocation % every 5th tick
+      // (~5 min; Realtime normally delivers the change at once) so a change saved in the UI
+      // always reaches sizing within ~5 min even if its Realtime event was missed.
+      if (allocCheckTick++ % 5 === 0) {
+        const { data: allocRow } = await supabase.from('paper_trading_config')
+          .select('balance_allocation_pct').eq('account_id', accountState.id).maybeSingle();
+        const dbAlloc = allocRow?.balance_allocation_pct != null ? Number(allocRow.balance_allocation_pct) : null;
+        if (dbAlloc != null && Number.isFinite(dbAlloc) && dbAlloc !== config.balanceAllocationPct) {
+          log(`[${accountState.name}] Allocation % updated from the database: ${config.balanceAllocationPct}% → ${dbAlloc}%`);
+          config.balanceAllocationPct = dbAlloc;
+        }
       }
       if (accountState.mode === 'live' && accountState.live_enabled) {
         const bal = await live.walletBalance();
@@ -6823,6 +6828,34 @@ async function startSingleAccountEngine(account) {
   // (open position set + size, resting/stop orders, fills, wallet) while deliberately
   // IGNORING tick-by-tick noise (mark_price / unrealized_pnl / liquidation_price /
   // balance fluctuations). Used to skip redundant upserts (see below).
+  // Slim copies of Delta's order-history / fill objects for live_exchange_state: only the
+  // fields the dashboard reads (Order History + Fills tabs, CSV export, live realized P&L
+  // cards). Delta's raw objects carry a large nested `product` (and other fields we never
+  // show), so the ~2,000-order history row was several MB, rewritten on every change — the
+  // biggest single write load on Supabase. Same orders, same count, same numbers; just
+  // without the unused fields.
+  const pick = (o, keys) => {
+    const out = {};
+    for (const k of keys) if (o[k] !== undefined) out[k] = o[k];
+    return out;
+  };
+  const slimProduct = (p) => (p && typeof p === 'object')
+    ? { ...pick(p, ['symbol', 'contract_value', 'tick_size']),
+        ...(p.underlying_asset?.symbol ? { underlying_asset: { symbol: p.underlying_asset.symbol } } : {}) }
+    : p;
+  const slimMeta = (m) => (m && typeof m === 'object') ? pick(m, ['pnl', 'cashflow', 'order_size', 'order_type']) : m;
+  const HIST_KEYS = ['id', 'client_order_id', 'product_id', 'product_symbol', 'side', 'size', 'unfilled_size',
+    'state', 'order_type', 'stop_order_type', 'stop_price', 'limit_price', 'average_fill_price', 'reduce_only',
+    'bracket_order', 'bracket_stop_loss_price', 'bracket_take_profit_price', 'created_at', 'updated_at',
+    'paid_commission', 'commission', 'realized_pnl', 'realised_pnl'];
+  const FILL_KEYS = ['id', 'order_id', 'product_id', 'product_symbol', 'side', 'size', 'price', 'notional',
+    'role', 'fill_type', 'created_at', 'commission'];
+  const slimRows = (rows, keys) => (Array.isArray(rows) ? rows.map(o => (o && typeof o === 'object')
+    ? { ...pick(o, keys),
+        ...(o.product !== undefined ? { product: slimProduct(o.product) } : {}),
+        ...(o.meta_data !== undefined ? { meta_data: slimMeta(o.meta_data) } : {}) }
+    : o) : rows);
+
   const snapSignature = (s) => {
     if (!s) return '';
     // Margin rounded to $1 is part of the signature, so a margin change (short options move
@@ -6862,7 +6895,7 @@ async function startSingleAccountEngine(account) {
       const snap = await live.snapshot({ includeHistory });
       if (!snap) return;
       dailyStats.onSnapshot(snap); // fire-and-forget; never throws, skips if still busy
-      if (includeHistory && Array.isArray(snap.orderHistory)) cachedOrderHistory = snap.orderHistory;
+      if (includeHistory && Array.isArray(snap.orderHistory)) cachedOrderHistory = slimRows(snap.orderHistory, HIST_KEYS);
       snap.orderHistory = cachedOrderHistory; // reuse cache on non-history ticks
       const sig = snapSignature(snap);
       const now = Date.now();
@@ -6880,8 +6913,8 @@ async function startSingleAccountEngine(account) {
         positions: snap.positions,
         orders: snap.orders,
         stop_orders: snap.stopOrders,
-        fills: snap.fills,
-        order_history: snap.orderHistory,
+        fills: slimRows(snap.fills, FILL_KEYS),
+        order_history: snap.orderHistory, // already slimmed (cachedOrderHistory)
         balances: snap.balances,
         wallet: snap.wallet,
         ...(snapVersionSupported ? { snapshot_version: now } : {}),
