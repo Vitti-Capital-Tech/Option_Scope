@@ -2662,6 +2662,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   // snapshot_version (migration 061) of the row currently shown. The engine's keepalive only
   // moves updated_at; a different version means the snapshot itself changed and must be read.
   const liveSnapVersionRef = useRef(null);
+  // order_history currently shown. The engine writes that (large) column only when it
+  // changed, so a Realtime UPDATE can arrive without it — the shown history is kept then.
+  const liveHistRef = useRef(null);
   const fetchLiveExchangeState = useCallback(async () => {
     if (!activeAccountId || !isActiveLive) { setLiveExchangeState(null); markLiveProbe('snap'); return; }
     try {
@@ -2674,6 +2677,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         .eq('account_id', activeAccountId)
         .maybeSingle();
       if (error || !data) { liveSnapVersionRef.current = null; setLiveExchangeState(null); return; }
+      liveHistRef.current = Array.isArray(data.order_history) ? data.order_history : [];
       // Treat a stale snapshot (engine offline) as absent so tabs don't show ghosts.
       const age = Date.now() - new Date(data.updated_at).getTime();
       const fresh = age < HEARTBEAT_STALE_THRESHOLD;
@@ -2751,6 +2755,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     // directly instead of firing a second `.select('*')` read per change — killing
     // the double-read of the heaviest payload in the app (positions + orders +
     // fills + order_history) per open tab.
+    liveHistRef.current = null; // never carry another account's history over
     fetchLiveExchangeState(); // prime on mount / account switch
     // Apply an already-delivered row through the same staleness + close-guard path
     // fetchLiveExchangeState uses, so behaviour is identical minus the extra read.
@@ -2774,7 +2779,15 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       // large snapshot is never dropped or partially applied.
       if (payload?.eventType !== 'DELETE' && row && typeof row === 'object'
           && 'updated_at' in row && 'positions' in row) {
-        applyRow(row);
+        if (Array.isArray(row.order_history)) {
+          liveHistRef.current = row.order_history;
+          applyRow(row);
+        } else if (liveHistRef.current) {
+          // order_history unchanged (not in the payload) → keep the history already shown.
+          applyRow({ ...row, order_history: liveHistRef.current });
+        } else {
+          fetchLiveExchangeState();
+        }
       } else {
         fetchLiveExchangeState();
       }

@@ -1051,7 +1051,9 @@ export function createLiveExecutor(getCtx) {
      * so one failing endpoint doesn't blank the whole snapshot. Returns null if not
      * armed / no creds.
      */
-    async snapshot({ includeHistory = true } = {}) {
+    // historyPages: how many 100-order pages of history to read (the engine reads only the
+    // newest few on most refreshes and merges them into its cached list).
+    async snapshot({ includeHistory = true, historyPages = 20 } = {}) {
       if (!armed()) return null;
       const { accountName, creds } = getCtx();
       if (!creds?.apiKey) return null;
@@ -1065,7 +1067,7 @@ export function createLiveExecutor(getCtx) {
         getFills(creds),
         getBalance(creds),
       ];
-      if (includeHistory) calls.push(getOrderHistory(creds));
+      if (includeHistory) calls.push(getOrderHistory(creds, { maxPages: historyPages }));
       const results = await Promise.allSettled(calls);
       const [posR, ordR, fillR, balR, histR] = results;
       const arr = (r) => (r && r.status === 'fulfilled' && Array.isArray(r.value) ? r.value : []);
@@ -1081,7 +1083,9 @@ export function createLiveExecutor(getCtx) {
         orders: allOrders.filter(o => !isStop(o)),
         stopOrders: allOrders.filter(isStop),
         fills: arr(fillR),
-        orderHistory: includeHistory ? arr(histR) : null, // null → caller keeps cached
+        // null → caller keeps its cached history (not refreshed this time, OR the fetch
+        // failed — a failure must not blank the history).
+        orderHistory: includeHistory && histR?.status === 'fulfilled' && Array.isArray(histR.value) ? histR.value : null,
         balances,
         wallet: extractBalance(balances),
       };

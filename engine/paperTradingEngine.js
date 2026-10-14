@@ -22,7 +22,7 @@ import { notifyLiveFailure, notifyLiveTrade, sendTelegramMessage } from './lib/t
 import { getBalance } from './lib/deltaTradeApi.js';
 import { reportDbFailure, summarizeDbError } from './lib/dbHealth.js';
 import {
-  loadProducts, getExpiries, getSpotPrice,
+  getExpiries, getSpotPrice,
   buildSymbolMeta,
   backfillTickers, getOptionHigh
 } from './lib/deltaApi.js';
@@ -30,6 +30,9 @@ import {
 // share ONE Delta market-data connection per underlying instead of opening one each — the
 // per-IP connection cap (HTTP 429) makes N-per-account unscalable.
 import { subscribeTickers } from './lib/tickerHub.js';
+// Shared per-underlying product list (see productHub.js): one Delta fetch + one read-only
+// copy for all account engines, last good list kept on a failed / empty fetch.
+import { getSharedProducts } from './lib/productHub.js';
 import {
   safeParseLeg, calculateFee, calcMargin, leverageFor, scanTickers,
   computeEntryAtmRatio, computeScaledSellQty,
@@ -818,11 +821,21 @@ async function startSingleAccountEngine(account) {
 
   async function refreshProducts() {
     try {
-      const prods = await loadProducts(config.underlying);
-      products = prods;
-      expiries = getExpiries(prods);
-
       const minDte = expirySelectionMinDte();
+      // Expiries still live (a cached list can hold one that settled minutes ago).
+      const liveExpiriesOf = (list) => getExpiries(list).filter(e => new Date(e).getTime() > Date.now());
+      const hasDteTarget = (exps) => exps.some(e => (new Date(e).getTime() - Date.now()) / (24 * 60 * 60 * 1000) >= minDte);
+      let prods = await getSharedProducts(config.underlying);
+      let exps = liveExpiriesOf(prods);
+      // The window's DTE target isn't in the shared list (just listed on Delta) or the current
+      // expiry is gone (just expired) → fetch fresh now (de-duplicated, ≤ 1/min per underlying).
+      if (exps.length === 0 || !hasDteTarget(exps) || (config.expiry && !exps.includes(config.expiry))) {
+        prods = await getSharedProducts(config.underlying, { force: true });
+        exps = liveExpiriesOf(prods);
+      }
+      products = prods;
+      expiries = exps;
+
       if (expiries.length) {
         // Target = nearest available expiry at least `minDte` days out (≈ current date +
         // minDte for daily expiries); nearest overall if none qualifies.
@@ -6887,15 +6900,50 @@ async function startSingleAccountEngine(account) {
   // button / after an action) always refreshes it.
   let snapTick = 0;
   let cachedOrderHistory = [];
+  // History is read INCREMENTALLY: most refreshes read only the newest HIST_HEAD_PAGES pages
+  // (200 orders) and merge them by id into the cached list (fresh copies replace old ones);
+  // the full history (20 pages, up to HIST_MAX orders) is re-read at start and every
+  // HIST_FULL_EVERY_MS, which also picks up any older order that changed in between.
+  const HIST_HEAD_PAGES = 2;
+  const HIST_FULL_PAGES = 20;
+  const HIST_MAX = 2000;
+  const HIST_FULL_EVERY_MS = 30 * 60 * 1000;
+  let histLoaded = false;   // a history fetch has succeeded since start
+  let lastHistFullAt = 0;
+  // Fingerprint of the cached history vs the one last WRITTEN to live_exchange_state: the
+  // (large) order_history column is sent only when it changed — other snapshot writes leave
+  // it untouched in the row.
+  let cachedHistSig = '';
+  let writtenHistSig = null;
+  const histSigOf = (list) => {
+    let h = 0;
+    for (const o of list) {
+      const s = `${o.id}:${o.updated_at ?? ''}:${o.state ?? ''}:${o.unfilled_size ?? ''}|`;
+      for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+    }
+    return `${list.length}:${h}`;
+  };
   const publishLiveSnapshot = async (force = false) => {
     if (!(accountState.mode === 'live' && accountState.live_enabled)) return;
     try {
       const includeHistory = force || (snapTick % 4 === 0);
       snapTick++;
-      const snap = await live.snapshot({ includeHistory });
+      const fullHistory = includeHistory && (!histLoaded || Date.now() - lastHistFullAt >= HIST_FULL_EVERY_MS);
+      const snap = await live.snapshot({ includeHistory, historyPages: fullHistory ? HIST_FULL_PAGES : HIST_HEAD_PAGES });
       if (!snap) return;
       dailyStats.onSnapshot(snap); // fire-and-forget; never throws, skips if still busy
-      if (includeHistory && Array.isArray(snap.orderHistory)) cachedOrderHistory = slimRows(snap.orderHistory, HIST_KEYS);
+      if (includeHistory && Array.isArray(snap.orderHistory)) {
+        const fresh = slimRows(snap.orderHistory, HIST_KEYS);
+        if (fullHistory) {
+          cachedOrderHistory = fresh;
+          lastHistFullAt = Date.now();
+        } else {
+          const ids = new Set(fresh.map(o => o.id));
+          cachedOrderHistory = [...fresh, ...cachedOrderHistory.filter(o => !ids.has(o.id))].slice(0, HIST_MAX);
+        }
+        histLoaded = true;
+        cachedHistSig = histSigOf(cachedOrderHistory);
+      }
       snap.orderHistory = cachedOrderHistory; // reuse cache on non-history ticks
       const sig = snapSignature(snap);
       const now = Date.now();
@@ -6914,7 +6962,10 @@ async function startSingleAccountEngine(account) {
         orders: snap.orders,
         stop_orders: snap.stopOrders,
         fills: slimRows(snap.fills, FILL_KEYS),
-        order_history: snap.orderHistory, // already slimmed (cachedOrderHistory)
+        // Only when it changed since the last write (and once loaded) — otherwise the column
+        // keeps its stored value. The dashboard keeps its shown history when a Realtime
+        // UPDATE arrives without it.
+        ...(histLoaded && writtenHistSig !== cachedHistSig ? { order_history: snap.orderHistory } : {}),
         balances: snap.balances,
         wallet: snap.wallet,
         ...(snapVersionSupported ? { snapshot_version: now } : {}),
@@ -6933,6 +6984,7 @@ async function startSingleAccountEngine(account) {
       lastSnapSig = sig;
       lastSnapUpsertAt = now;
       lastSnapFullAt = now;
+      if ('order_history' in row) writtenHistSig = cachedHistSig;
     } catch (e) {
       logWarn(`[${accountState.name}] live snapshot publish failed: ${e.message}`);
     }
