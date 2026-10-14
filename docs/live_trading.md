@@ -267,6 +267,8 @@ Only the **bot token** is fundamentally required now; a message is sent when the
 is set **and** a destination resolves (a per-account chat id, else the global
 `TELEGRAM_CHAT_ID`). If neither resolves, alerts are **silently disabled** (logged once).
 
+**Telegram groups (2026-10-14).** An account's alerts can go to a Telegram **group** instead of a personal chat: Edit → Telegram Alerts → **Connect Telegram** reveals, next to "Open Telegram & press Start", a **Connect a Group** button (`t.me/<bot>?startgroup=<code>`) — the user picks a group, Telegram adds the bot and posts `/start@<bot> <code>`, and the listener stores the group's (negative) chat id. If the bot is already in the group Telegram may not post the command, so the exact command is shown with a **Copy** button to send in the group by hand (the listener's `/start(@bot)? <code>` match handles both). Several accounts can link to one group (each alert names its account). **Group → supergroup:** the chat id changes; a send to the old id returns 400 `migrate_to_chat_id` → `telegram.js` resends to the new id, remembers old → new, and calls the engine's `migrateTelegramChat` (via `setChatMigrationHandler`), which rewrites every account linked to the old id; the listener does the same on Telegram's migration service message (`msg.migrate_to_chat_id`).
+
 #### Delivery: per-chat queue + retry
 
 Telegram enforces **two** ceilings, and they fail differently:

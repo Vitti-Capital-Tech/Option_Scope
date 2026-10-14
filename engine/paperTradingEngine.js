@@ -18,7 +18,7 @@ import { createHeartbeat } from './lib/heartbeat.js';
 import { createLiveExecutor, isLiveDryRun, longContracts, shortContracts, extractBalance } from './lib/liveExecution.js';
 import { reserveSpread as governorReserveSpread } from './lib/entryGovernor.js';
 import { createDailyStatsTracker } from './lib/dailyStats.js';
-import { notifyLiveFailure, notifyLiveTrade, sendTelegramMessage } from './lib/telegram.js';
+import { notifyLiveFailure, notifyLiveTrade, sendTelegramMessage, setChatMigrationHandler, noteChatMigration } from './lib/telegram.js';
 import { getBalance } from './lib/deltaTradeApi.js';
 import { reportDbFailure, summarizeDbError } from './lib/dbHealth.js';
 import {
@@ -7451,8 +7451,23 @@ export async function startPaperTradingEngine() {
       .eq('id', acc.id);
     if (upErr) { logError('Telegram bind update error:', upErr.message); return; }
     log(`Telegram linked: account "${acc.name}" (${acc.id}) → chat ${chatId}`);
-    await sendTelegramMessage(chatId, `✅ <b>Connected</b> — live trading logs for <b>${tgEscape(acc.name)}</b> will now arrive in this chat.`);
+    await sendTelegramMessage(chatId, `✅ <b>Connected</b> — live trading logs for <b>${tgEscape(acc.name)}</b> will now arrive in this ${Number(chatId) < 0 ? 'group' : 'chat'}.`);
   }
+
+  // A linked GROUP that became a supergroup gets a new chat id: move every account linked to
+  // the old id over (several accounts may share one group). Fired by telegram.js on a send
+  // that came back with migrate_to_chat_id, or by the listener on the migration message.
+  async function migrateTelegramChat(oldId, newId) {
+    if (!hasServiceRole) return;
+    const { data, error } = await supabase
+      .from('paper_trading_accounts')
+      .update({ telegram_chat_id: String(newId) })
+      .eq('telegram_chat_id', String(oldId))
+      .select('id, name');
+    if (error) { logError('Telegram chat migration update error:', error.message); return; }
+    if (data?.length) log(`Telegram chat ${oldId} → ${newId}: re-linked ${data.length} account(s): ${data.map(a => a.name).join(', ')}`);
+  }
+  setChatMigrationHandler(migrateTelegramChat);
 
   async function pollTelegramUpdates() {
     let backoffMs = 0;
@@ -7482,6 +7497,11 @@ export async function startPaperTradingEngine() {
             const msg = upd.message;
             const text = msg?.text?.trim();
             const chatId = msg?.chat?.id;
+            // Group → supergroup: Telegram posts a service message carrying the new id.
+            if (msg?.migrate_to_chat_id != null && chatId != null) {
+              noteChatMigration(chatId, msg.migrate_to_chat_id);
+              continue;
+            }
             if (!text || chatId == null) continue;
             const m = text.match(/^\/start(?:@\w+)?\s+(\S+)/); // "/start <code>" (deep link)
             if (!m) continue;

@@ -96,6 +96,28 @@ const FETCH_TIMEOUT_MS = 15000;
 
 // dest → { chain: Promise, size: number, nextAt: epoch ms the next send may go out }
 const queues = new Map();
+
+// ── Group → supergroup migration ─────────────────────────────────────────────
+// When a Telegram group becomes a supergroup (e.g. an admin turns on a supergroup-only
+// setting) its chat id CHANGES, and a send to the old id fails with 400
+// `parameters.migrate_to_chat_id`. We then (1) resend that message to the new id, (2)
+// remember old → new so later sends go straight to the new id, and (3) tell the engine
+// (setChatMigrationHandler) so it rewrites every account linked to the old id.
+const migratedChats = new Map(); // old chat id → new chat id
+let onChatMigrated = null;
+/** Register (oldId, newId) => Promise — called once per migrated chat. */
+export function setChatMigrationHandler(fn) {
+  onChatMigrated = typeof fn === 'function' ? fn : null;
+}
+/** Record a migration (also used by the engine's /start listener on the service message). */
+export function noteChatMigration(oldId, newId) {
+  const o = String(oldId), n = String(newId);
+  if (!o || !n || o === n || migratedChats.get(o) === n) return false;
+  migratedChats.set(o, n);
+  log(`Telegram chat ${o} migrated to supergroup ${n} — alerts follow the new id.`);
+  if (onChatMigrated) Promise.resolve(onChatMigrated(o, n)).catch(e => logError('Telegram chat migration handler failed:', e?.message || e));
+  return true;
+}
 // Bot-wide floor on the next send, shared by every chat's queue.
 let globalNextAt = 0;
 
@@ -152,6 +174,10 @@ async function postOnce(dest, text) {
     let body = null;
     try { body = await res.json(); } catch { /* non-JSON */ }
     const desc = body == null ? '' : JSON.stringify(body);
+    const migrateTo = body?.parameters?.migrate_to_chat_id;
+    if (res.status === 400 && migrateTo != null) {
+      return { ok: false, status: 400, body: desc, migrateTo: String(migrateTo), retryAfterMs: null };
+    }
     if (res.status === 429) {
       // Telegram tells us exactly how long to wait; trust it over any backoff we'd invent.
       const secs = Number(body?.parameters?.retry_after);
@@ -214,7 +240,13 @@ function enqueue(dest, text) {
         }
         globalNextAt = Math.max(globalNextAt, Date.now() + GLOBAL_GAP_MS);
         recordSend(dest);
-        const r = await postOnce(dest, text);
+        let r = await postOnce(dest, text);
+        if (!r.ok && r.migrateTo) {
+          // Group became a supergroup — resend this message to the new id once.
+          noteChatMigration(dest, r.migrateTo);
+          recordSend(r.migrateTo);
+          r = await postOnce(r.migrateTo, text);
+        }
         if (r.ok) { q.nextAt = Date.now() + MIN_GAP_MS; return { ok: true }; }
         // Park the queue for the full wait either way — the ban outlives this message.
         // The gate loop at the top of the next attempt is what actually sleeps it out.
@@ -248,7 +280,9 @@ function enqueue(dest, text) {
 /** Low-level send. Resolves { ok } and never throws. `chatId` defaults to the env
  * TELEGRAM_CHAT_ID; pass an account's own chat id to route per-account. */
 async function sendTelegram(text, chatId) {
-  const dest = chatId || CHAT_ID;
+  const raw = chatId || CHAT_ID;
+  // A chat that migrated to a supergroup: go straight to its new id.
+  const dest = raw ? (migratedChats.get(String(raw)) || raw) : raw;
   if (!TOKEN || !dest) {
     if (!warnedDisabled) {
       log('Telegram alerts disabled (set TELEGRAM_BOT_TOKEN + a chat id — global TELEGRAM_CHAT_ID or per-account — to enable).');
