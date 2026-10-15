@@ -85,6 +85,29 @@ export default function ActivePositionsTable({
     return { triggerPrice, distPct, away: Math.abs(triggerPrice - liveSpot) };
   };
 
+  // ── Shared hedge strikes ──
+  // Several open pairs can hold their hedge (3rd long) on the SAME strike. Each pair's own
+  // hedge qty still exits with that pair, at its own TP (the engine's catch-all on its long).
+  // The Dist. to Exit cell shows, for a shared hedge, the combined picture: the TP level of
+  // the pair whose exit is farthest from ATM (call: highest, put: lowest — the last of the
+  // group to exit) and this pair's hedge qty out of the group's total.
+  const hedgeKey = (p) => p.hedgeLeg?.symbol || `${p.type}|${p.expiry}|${p.hedgeLeg?.strike}`;
+  const exitLevelOf = (p) => (p.realExitLevel != null ? Number(p.realExitLevel) : exitMeter(p).triggerPrice);
+  const hedgeGroups = new Map();
+  for (const p of positions) {
+    if (p.underlying !== underlying || !hasHedgeLeg(p)) continue;
+    const k = hedgeKey(p);
+    if (!hedgeGroups.has(k)) hedgeGroups.set(k, []);
+    hedgeGroups.get(k).push(p);
+  }
+  const hedgeShareOf = (p) => {
+    const group = hedgeGroups.get(hedgeKey(p)) || [p];
+    const levels = group.map(exitLevelOf).filter(Number.isFinite);
+    const farthest = levels.length ? (p.type === 'call' ? Math.max(...levels) : Math.min(...levels)) : null;
+    const total = group.reduce((s, g) => s + (Number(g.hedgeLeg?.lotSize) || 0), 0);
+    return { count: group.length, farthest, own: exitLevelOf(p), mine: Number(p.hedgeLeg?.lotSize) || 0, total };
+  };
+
   const pnlOf = (p) => (includeFees ? (p.unrealizedNetPnl || 0) : (p.unrealizedGrossPnl || 0));
 
   const matchesLeg = (p) => legFilter === 'all'
@@ -332,6 +355,21 @@ export default function ActivePositionsTable({
                           <span className="pt-track-mk" style={{ left: `${distPct}%` }} />
                         </div>
                         <span className="pt-dist-away">spot {liveSpot.toLocaleString()} · {Math.round(away).toLocaleString()} away</span>
+                        {hasHedge && (() => {
+                          const h = hedgeShareOf(p);
+                          const op = p.type === 'call' ? '≥' : '≤';
+                          const fmtL = (v) => (v != null && Number.isFinite(v) ? Math.round(v).toLocaleString() : '—');
+                          return h.count > 1 ? (
+                            <span className="pt-cell-sub"
+                              title={`Hedge ${kStrike(p.hedgeLeg.strike)} is shared by ${h.count} open pairs (${fmtQ(h.total)} in total). This pair's ${fmtQ(h.mine)} exits with this pair at its own TP (${op} ${fmtL(h.own)}); the hedge is fully out when the farthest pair's TP (${op} ${fmtL(h.farthest)}) is reached.`}>
+                              H {kStrike(p.hedgeLeg.strike)} · shared ×{h.count} · TP {op} {fmtL(h.farthest)} (farthest) · qty <b>{fmtQ(h.mine)}/{fmtQ(h.total)}</b>
+                            </span>
+                          ) : (
+                            <span className="pt-cell-sub" title={`Hedge ${kStrike(p.hedgeLeg.strike)} exits with this pair at its TP (${op} ${fmtL(h.own)}).`}>
+                              H {kStrike(p.hedgeLeg.strike)} · exits with this pair · qty <b>{fmtQ(h.mine)}</b>
+                            </span>
+                          );
+                        })()}
                       </div>
                     </td>
                     {/* Exit levels (migration 031/032): the engine's stored REAL exit trigger

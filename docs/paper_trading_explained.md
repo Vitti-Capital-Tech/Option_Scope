@@ -1362,6 +1362,7 @@ Replaces the old standalone "hedge overlay" with a **3rd long-only leg baked int
 **Exit** — the hedge **rides the triplet** and is closed **only** by the main long's **ATM/ITM/OTM spot-cross or expiry** catch-all. It is **never** short-bought-back, laddered, scaled, or drained:
 - The short leg buy-back ($1.1) and the long-only ladder act on the main legs only; the hedge is untouched.
 - If the main long fully ladders out first, the row is **held as "hedge-only"** (main `lotSize = 0`) until the catch-all fires.
+- **Shared hedge strike:** several open pairs may hold their hedge on the same strike. Each pair's hedge qty still exits with that pair, at its own TP. The Active Positions **Dist. to Exit** cell shows the combined view under the meter: `H <strike> · shared ×N · TP ≥/≤ <level> (farthest) · qty <this pair>/<total>`, where the level is the exit of the sharing pair farthest from ATM (call: highest, put: lowest; the stored real exit level, else the meter trigger), i.e. the point where the hedge is fully out. A hedge on its own strike shows `H <strike> · exits with this pair · qty <qty>`.
 - On the full exit (or a manual exit / Close All), the hedge is sold at its live **bid** (neutral fallback to entry price if momentarily unquoted) and booked as its own idempotent `trade_history` row with `trade_id = ${pos.id}-HX`, `exit_reason = "Hedge Exit @ <ATM|ITM|OTM|Expiry>"`.
 
 > [!NOTE]
