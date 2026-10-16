@@ -409,6 +409,8 @@ All active positions are sorted by descending `|buyStrike - spotPrice|` (farthes
 
 ### Dynamic ATM Ratio-Based Scaling
 
+**Partial scale-down controls (migration 063, paper only).** Control Panel → **Partial Scale-Down**: **Scale Down** toggle (`partial_scale_enabled`, default **on**; off = no partial scale-down), **Lot Step** (`partial_scale_lot_pct`, default 10 — each step sells this % of the initial long), **P&L Step** (`partial_scale_threshold_pct`, default 10 — the next step needs gross P&L to rise by this % of the checkpoint ATM P&L) and **Max of Long** (`partial_scale_max_pct`, default 50 — never scale the long down by more than this %; floor = initial × (1 − max/100)). The engine (`applyAtmRatioScaling`) reads them for paper accounts only; **live accounts keep the fixed 10% / 10% / 50%** and always scale. Synced across groups.
+
 For each active position, before evaluating its full exit triggers (such as expiry or ATM exit), the engine checks whether the position qualifies for a partial scale-down based on profitability, trailing PnL threshold, and ATM ratio drift:
 
 1. **Profitability Guard**: The position's unrealized `currentGrossPnl` (including accumulated sell PnL) must be **greater than zero**. This prevents scaling from triggering immediately at entry when PnL is zero.

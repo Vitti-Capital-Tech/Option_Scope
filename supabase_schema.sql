@@ -133,6 +133,11 @@ CREATE TABLE IF NOT EXISTS public.paper_trading_config (
     -- or whose OI (USD) is at/over oi_max_cap_m million (NULL = underlying default: BTC 15, ETH 10).
     oi_filter_enabled BOOLEAN NOT NULL DEFAULT false,
     oi_max_cap_m NUMERIC NULL CHECK (oi_max_cap_m IS NULL OR oi_max_cap_m > 0),
+    -- Paper-only partial scale-down controls (migration 063); live keeps 10 / 10 / 50.
+    partial_scale_enabled BOOLEAN NOT NULL DEFAULT true,
+    partial_scale_lot_pct NUMERIC NOT NULL DEFAULT 10 CHECK (partial_scale_lot_pct > 0 AND partial_scale_lot_pct <= 100),
+    partial_scale_threshold_pct NUMERIC NOT NULL DEFAULT 10 CHECK (partial_scale_threshold_pct >= 0 AND partial_scale_threshold_pct <= 1000),
+    partial_scale_max_pct NUMERIC NOT NULL DEFAULT 50 CHECK (partial_scale_max_pct > 0 AND partial_scale_max_pct < 100),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 

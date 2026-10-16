@@ -322,7 +322,12 @@ async function startSingleAccountEngine(account) {
     // Delta OI-limit filter (migration 062; paper AND live). Off by default; cap in millions of
     // USD, null = the underlying's default (BTC 15, ETH 10, XAUT 5).
     oiFilterEnabled: false,
-    oiMaxCapM: null
+    oiMaxCapM: null,
+    // Partial scale-down controls (migration 063) — PAPER only; live keeps 10 / 10 / 50.
+    partialScaleEnabled: true,
+    partialScaleLotPct: 10,
+    partialScaleThresholdPct: 10,
+    partialScaleMaxPct: 50
   };
   let products = [];
   let expiries = [];
@@ -623,7 +628,12 @@ async function startSingleAccountEngine(account) {
           replaceCloserAtm: data.replace_closer_atm ?? false,
           // Delta OI-limit filter (migration 062; paper AND live).
           oiFilterEnabled: data.oi_filter_enabled ?? false,
-          oiMaxCapM: data.oi_max_cap_m != null ? Number(data.oi_max_cap_m) : null
+          oiMaxCapM: data.oi_max_cap_m != null ? Number(data.oi_max_cap_m) : null,
+          // Partial scale-down controls (migration 063) — paper only.
+          partialScaleEnabled: data.partial_scale_enabled ?? true,
+          partialScaleLotPct: data.partial_scale_lot_pct != null ? Number(data.partial_scale_lot_pct) : 10,
+          partialScaleThresholdPct: data.partial_scale_threshold_pct != null ? Number(data.partial_scale_threshold_pct) : 10,
+          partialScaleMaxPct: data.partial_scale_max_pct != null ? Number(data.partial_scale_max_pct) : 50
         };
 
         if (config) {
@@ -4077,6 +4087,16 @@ async function startSingleAccountEngine(account) {
       // partial trade_history row and fires a reduce_only SELL to Delta when armed.
       // Full spreads only. Closes over atmStrike / getTickerPrice / spotPrice.
       async function applyAtmRatioScaling(pos, { liveExitBuy, liveExitSell, tickerBuy }) {
+        // Scale-down settings (migration 063). PAPER accounts read them from the Control Panel
+        // (toggle + lot step % + P&L step % + max % of the long); LIVE keeps the fixed
+        // 10% / 10% / 50% and is always on. Out-of-range values fall back to the defaults.
+        const isPaperAcct = accountState.mode !== 'live';
+        const pctOr = (v, def, ok) => { const n = Number(v); return v != null && Number.isFinite(n) && ok(n) ? n : def; };
+        const scaleOn = isPaperAcct ? config.partialScaleEnabled !== false : true;
+        if (!scaleOn) return;
+        const lotStepPct = isPaperAcct ? pctOr(config.partialScaleLotPct, 10, n => n > 0 && n <= 100) : 10;
+        const pnlStepPct = isPaperAcct ? pctOr(config.partialScaleThresholdPct, 10, n => n >= 0 && n <= 1000) : 10;
+        const maxScalePct = isPaperAcct ? pctOr(config.partialScaleMaxPct, 50, n => n > 0 && n < 100) : 50;
         // Dynamic ATM ratio-based scaling (full spreads only — skipped once long-only)
         if (atmStrike !== null && pos.sellQty > 0) {
           // LOT PRECISION. Every lot quantity below is rounded before it is compared, so
@@ -4140,8 +4160,10 @@ async function startSingleAccountEngine(account) {
               : (pos.buyLeg.originalSellQty && pos.buyLeg.originalSellQty > 0
                 ? roundLot(pos.sellQty * (originalLotSize / pos.buyLeg.originalSellQty))
                 : originalLotSize);
-            const deltaBuyQty = roundLot(initialScaledLotSize * 0.10);
-            const floorLimit = roundLot(initialScaledLotSize * 0.5);
+            // Step = lotStepPct of the initial long; floor = what is left after scaling it down
+            // by maxScalePct (defaults 10% / 50% — keep at least half the long).
+            const deltaBuyQty = roundLot(initialScaledLotSize * (lotStepPct / 100));
+            const floorLimit = roundLot(initialScaledLotSize * (1 - maxScalePct / 100));
             // A zero step can never reduce the lot: the loop below would spin on an
             // unchanged lot and emit duplicate slice rows. Nothing to scale — bail.
             if (!(deltaBuyQty > 0)) return;
@@ -4179,7 +4201,7 @@ async function startSingleAccountEngine(account) {
               ? pos.buyLeg.lastCheckpointAtmPnl
               : (atmBuyPnlPerLot * currentLotSize) + atmSellPnlTotal;
 
-            let threshold = (checkpointAtmPnl * 0.10) + checkpointPnl;
+            let threshold = (checkpointAtmPnl * (pnlStepPct / 100)) + checkpointPnl;
 
             while (
               currentGrossPnl >= threshold &&
@@ -4237,14 +4259,15 @@ async function startSingleAccountEngine(account) {
               const postGrossPnl = (buyPriceDiff * hypotheticalLotSize)
                 + (sellPriceDiff * pos.sellQty * (pos.sellLeg.lotSize || 1))
                 + accumulatedPartialBuyPnl;
-              const nextThreshold = (postAtmPnl * 0.10) + postGrossPnl;
+              const nextThreshold = (postAtmPnl * (pnlStepPct / 100)) + postGrossPnl;
               const partialExitReason = [
                 `Partial Exit`,
                 `Current Gross PnL: $${currentGrossPnl.toFixed(2)}`,
                 `Threshold Met: $${threshold.toFixed(2)}`,
                 `Checkpoint PnL: $${checkpointPnl.toFixed(2)}`,
                 `Checkpoint ATM PnL: $${checkpointAtmPnl.toFixed(2)}`,
-                `ATM step (10%): $${(checkpointAtmPnl * 0.10).toFixed(2)}`,
+                `ATM step (${pnlStepPct}%): $${(checkpointAtmPnl * (pnlStepPct / 100)).toFixed(2)}`,
+                `Lot step: ${lotStepPct}% · max scale-down ${maxScalePct}%`,
                 `Next threshold: $${nextThreshold.toFixed(2)}`,
                 `Live ATM Ratio: ${liveAtmRatio.toFixed(2)}`,
                 `Recalculated Ratio: ${recalculatedRatio.toFixed(2)}`,
@@ -4296,7 +4319,7 @@ async function startSingleAccountEngine(account) {
               checkpointAtmPnl = (atmBuyPnlPerLot * currentLotSize) + atmSellPnlTotal;
               pos.buyLeg.lastCheckpointAtmPnl = checkpointAtmPnl;
 
-              threshold = (checkpointAtmPnl * 0.10) + checkpointPnl;
+              threshold = (checkpointAtmPnl * (pnlStepPct / 100)) + checkpointPnl;
 
               pos.buyLeg.maxAtmRatio = recalculatedRatio;
 

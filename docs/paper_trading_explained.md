@@ -935,6 +935,8 @@ Both are stamped at **entry** and re-synced only when the active window's `exitT
 
 ## Partial Exit / Scaling Logic
 
+> **Paper controls (migration 063):** Control Panel → **Partial Scale-Down** — **Scale Down** on/off (default on), **Lot Step** % (default 10: each step sells this % of the initial long), **P&L Step** % (default 10: the threshold below uses this % of the checkpoint ATM P&L instead of 10%) and **Max of Long** % (default 50: the floor is the initial long × (1 − this/100)). The 10% / 10% / 50% figures in this section are those defaults. Live accounts always use 10 / 10 / 50.
+
 This is the most complex part. Think of it as **gradually taking profit** by reducing the buy leg's lot size in steps while keeping the short leg untouched.
 
 > [!IMPORTANT]

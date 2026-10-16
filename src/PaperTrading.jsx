@@ -191,6 +191,13 @@ const toScheduleRow = (s, accountId, i) => ({
   updated_at: new Date().toISOString(),
 });
 
+// A % config value within [min, max]; anything else → the default (so a bad value can never
+// reach the DB CHECK constraints of migration 063).
+const clampPct = (v, def, min, max) => {
+  const n = Number(v);
+  return v != null && v !== '' && Number.isFinite(n) && n >= min && n <= max ? n : def;
+};
+
 // Global (Control Panel) filters that "Copy from account" brings along with the windows.
 // Account-specific settings are left alone: initial balance, strategy version, allocation %
 // and the selected expiry (re-picked for the account's underlying).
@@ -221,6 +228,10 @@ const COPY_FILTER_COLUMNS = {
   replace_closer_atm: 'replaceCloserAtm',
   oi_filter_enabled: 'oiFilterEnabled',
   oi_max_cap_m: 'oiMaxCapM',
+  partial_scale_enabled: 'partialScaleEnabled',
+  partial_scale_lot_pct: 'partialScaleLotPct',
+  partial_scale_threshold_pct: 'partialScaleThresholdPct',
+  partial_scale_max_pct: 'partialScaleMaxPct',
 };
 // Source account's config row → { db: columns to write, ui: draft-config keys }. Only
 // columns the source row actually has are copied. RLS limits sources like copySchedulesFrom.
@@ -456,7 +467,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     replaceCloserAtm: false,
     // Delta OI-limit filter (migration 062; paper AND live); cap in $M, null = underlying default.
     oiFilterEnabled: false,
-    oiMaxCapM: null
+    oiMaxCapM: null,
+    // Paper-only partial scale-down controls (migration 063).
+    partialScaleEnabled: true,
+    partialScaleLotPct: 10,
+    partialScaleThresholdPct: 10,
+    partialScaleMaxPct: 50
   }));
   const [draftConfig, setDraftConfig] = useState(() => ({ ...config }));
   const [isConfigLoaded, setIsConfigLoaded] = useState(false);
@@ -555,6 +571,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   const hasReplaceCloserAtmColRef = useRef(false);
   // Whether paper_trading_config has migration 062's OI-filter columns (same guard).
   const hasOiFilterColRef = useRef(false);
+  // Whether paper_trading_config has migration 063's partial scale-down columns (same guard).
+  const hasPartialScaleColRef = useRef(false);
   // Session-open spot per underlying → drives the % change on the spot bar shown
   // above the tables (captured once, first time we see a spot for that underlying).
   const spotOpenRef = useRef({});
@@ -1598,6 +1616,16 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
               oi_filter_enabled: !!newCfg.oiFilterEnabled,
               oi_max_cap_m: Number(newCfg.oiMaxCapM) > 0 ? Number(newCfg.oiMaxCapM) : null,
             } : {}),
+        // Migration 063 — sent once the columns exist (or when changed from the defaults).
+        ...((hasPartialScaleColRef.current || newCfg.partialScaleEnabled === false
+          || [newCfg.partialScaleLotPct, newCfg.partialScaleThresholdPct].some(v => v != null && Number(v) !== 10)
+          || (newCfg.partialScaleMaxPct != null && Number(newCfg.partialScaleMaxPct) !== 50))
+          ? {
+              partial_scale_enabled: newCfg.partialScaleEnabled !== false,
+              partial_scale_lot_pct: clampPct(newCfg.partialScaleLotPct, 10, 1, 100),
+              partial_scale_threshold_pct: clampPct(newCfg.partialScaleThresholdPct, 10, 0, 1000),
+              partial_scale_max_pct: clampPct(newCfg.partialScaleMaxPct, 50, 1, 99),
+            } : {}),
         updated_at: new Date().toISOString()
       }).select();
       if (error) {
@@ -1639,7 +1667,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     'fullDeployTime',
     'replaceCloserAtm',
     'oiFilterEnabled',
-    'oiMaxCapM'
+    'oiMaxCapM',
+    'partialScaleEnabled',
+    'partialScaleLotPct',
+    'partialScaleThresholdPct',
+    'partialScaleMaxPct'
   ];
 
   const updateConfig = (keyOrObj, value) => {
@@ -1648,7 +1680,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     for (const k of Object.keys(updates)) {
       const val = updates[k];
       if (k === 'exitType' || k === 'variableExitSlices' || k === 'atmRatioScaling' || k === 'underlying' || k === 'expiry' || k === 'tradeDays'
-        || k === 'excludedStrikes' || k === 'oiFilterEnabled') {
+        || k === 'excludedStrikes' || k === 'oiFilterEnabled' || k === 'partialScaleEnabled') {
         parsedUpdates[k] = val;
       } else if (k === 'oiMaxCapM') {
         // Empty / non-positive → null (the underlying's default cap), never 0.
@@ -1735,6 +1767,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         return val1 !== val2;
       }
       if (k === 'oiFilterEnabled') return !!val1 !== !!val2;
+      if (k === 'partialScaleEnabled') return (val1 !== false) !== (val2 !== false);
       const num1 = (val1 === '' || val1 === '-' || val1 == null) ? null : Number(val1);
       const num2 = (val2 === '' || val2 === '-' || val2 == null) ? null : Number(val2);
       return num1 !== num2;
@@ -1861,10 +1894,16 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           replaceCloserAtm: data.replace_closer_atm ?? false,
           // Delta OI-limit filter (migration 062; paper AND live).
           oiFilterEnabled: data.oi_filter_enabled ?? false,
-          oiMaxCapM: data.oi_max_cap_m != null ? Number(data.oi_max_cap_m) : null
+          oiMaxCapM: data.oi_max_cap_m != null ? Number(data.oi_max_cap_m) : null,
+          // Paper-only partial scale-down controls (migration 063).
+          partialScaleEnabled: data.partial_scale_enabled ?? true,
+          partialScaleLotPct: data.partial_scale_lot_pct != null ? Number(data.partial_scale_lot_pct) : 10,
+          partialScaleThresholdPct: data.partial_scale_threshold_pct != null ? Number(data.partial_scale_threshold_pct) : 10,
+          partialScaleMaxPct: data.partial_scale_max_pct != null ? Number(data.partial_scale_max_pct) : 50
         };
         hasReplaceCloserAtmColRef.current = Object.prototype.hasOwnProperty.call(data, 'replace_closer_atm');
         hasOiFilterColRef.current = Object.prototype.hasOwnProperty.call(data, 'oi_filter_enabled');
+        hasPartialScaleColRef.current = Object.prototype.hasOwnProperty.call(data, 'partial_scale_enabled');
         setConfig(loadedConfig);
         setDraftConfig(loadedConfig);
         setConfigDbId(data.id);

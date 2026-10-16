@@ -253,6 +253,51 @@ export default function ControlPanel({
             </div>
           )}
 
+          {/* Partial scale-down (migration 063) — PAPER ONLY. The ATM-ratio scale-down sells
+              part of a full spread's long as the live ATM ratio rises; live keeps 10/10/50. */}
+          {!accountIsLive && (
+            <div className="pt-filter-cluster">
+              <span className="pt-cluster-head">Partial Scale-Down</span>
+              <div className="pt-cluster-fields">
+                <div key="partialScaleEnabled" className="form-group">
+                  <label htmlFor="partialScaleEnabled" className="pt-field-label" style={{ marginBottom: 0, cursor: 'pointer' }}
+                    title="When the live ATM ratio rises and the spread's gross P&L clears the step, sell part of the long (full spreads only). Off: no partial scale-down. Paper accounts only — live always scales 10% / 10% / max 50%.">
+                    Scale Down
+                  </label>
+                  <div style={{ height: 34, display: 'flex', alignItems: 'center' }}>
+                    <label className="pt-switch">
+                      <input type="checkbox" id="partialScaleEnabled" checked={draftConfig?.partialScaleEnabled ?? true}
+                        onChange={e => updateDraftConfig('partialScaleEnabled', e.target.checked)} />
+                      <span className="pt-slider"></span>
+                    </label>
+                  </div>
+                </div>
+                {(draftConfig?.partialScaleEnabled ?? true) && (
+                  <>
+                    <div key="partialScaleLotPct" className="form-group">
+                      <label className="pt-field-label" style={{ marginBottom: 0 }} title="Each scale-down step sells this % of the initial long.">Lot Step</label>
+                      <CustomInput type="number" step="1" min="1" max="100" suffix="%" showStepper width={90}
+                        value={draftConfig?.partialScaleLotPct ?? 10}
+                        onChange={e => updateDraftConfig('partialScaleLotPct', e.target.value)} />
+                    </div>
+                    <div key="partialScaleThresholdPct" className="form-group">
+                      <label className="pt-field-label" style={{ marginBottom: 0 }} title="The next step needs the spread's gross P&L to rise by this % of the checkpoint ATM P&L.">P&amp;L Step</label>
+                      <CustomInput type="number" step="1" min="0" suffix="%" showStepper width={90}
+                        value={draftConfig?.partialScaleThresholdPct ?? 10}
+                        onChange={e => updateDraftConfig('partialScaleThresholdPct', e.target.value)} />
+                    </div>
+                    <div key="partialScaleMaxPct" className="form-group">
+                      <label className="pt-field-label" style={{ marginBottom: 0 }} title="Never scale the long down by more than this % of the initial long (50 = keep at least half).">Max of Long</label>
+                      <CustomInput type="number" step="5" min="1" max="99" suffix="%" showStepper width={90}
+                        value={draftConfig?.partialScaleMaxPct ?? 50}
+                        onChange={e => updateDraftConfig('partialScaleMaxPct', e.target.value)} />
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Delta OI limit (migration 062) — paper AND live. Delta makes a strike reduce-only
               once its market-wide open interest reaches the cap; with this on, the engine skips
               strikes that are locked or at/over the cap (long, short and hedge). */}
