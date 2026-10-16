@@ -1393,12 +1393,22 @@ async function startSingleAccountEngine(account) {
   // (a pair added / exited, exit params changed). Armed real only.
   const closedHedgeIds = new Set();  // hedges closed this cycle (still in `positions` until the book refreshes)
   const hedgeBrkRetryAt = new Map(); // symbol → no retry before this time (after a failed move)
+  const hedgeBrkAlerted = new Set(); // symbols whose failed move was already alerted (cleared on success)
   let hedgeBrkSyncRunning = false;
-  async function syncSharedHedgeBrackets(reason = 'cycle') {
+  // `extra`: positions not in the book yet (a hedge that just joined a shared strike during
+  // entry), so the symbol's bracket moves to the farthest level at once instead of at the end
+  // of the cycle — until it moves, Delta's bracket sits at a NEARER pair's level and would
+  // close the whole position (every pair's hedge qty) when that pair's TP is reached.
+  async function syncSharedHedgeBrackets(reason = 'cycle', extra = []) {
     if (accountState.mode !== 'live' || !accountState.live_enabled || live.dryRun) return;
-    if (hedgeBrkSyncRunning) return;
+    if (hedgeBrkSyncRunning) {
+      if (!extra.length) return; // the next cycle's sync catches up
+      for (let i = 0; i < 25 && hedgeBrkSyncRunning; i++) await new Promise(r => setTimeout(r, 200));
+      if (hedgeBrkSyncRunning) return;
+    }
     const groups = new Map(); // symbol → positions whose hedge is on it
-    for (const p of positions) {
+    const book = [...positions, ...extra.filter(x => !positions.some(p => p.id === x.id))];
+    for (const p of book) {
       const h = p.hedgeLeg;
       if (!h?.symbol || !((h.lotSize || 0) > 0) || h.brkComputed == null || closedHedgeIds.has(p.id)) continue;
       if (!groups.has(h.symbol)) groups.set(h.symbol, []);
@@ -1430,6 +1440,7 @@ async function startSingleAccountEngine(account) {
         const r = await live.changePositionBracket({ productId: pid, symbol, side: 'tp', stopPrice: target, tag: `${list[0].id}-HTP` });
         if (r.ok && !r.skipped && !r.dryRun) {
           engineBracketAt.set(symbol, Date.now());
+          hedgeBrkAlerted.delete(symbol);
           log(`[${accountState.name}] ◎ Hedge bracket ${symbol}: TP @ spot ${target} (farthest of ${list.length} pair(s): ${desc}) [${reason}]`);
           for (const p of list) {
             p.hedgeLeg = { ...p.hedgeLeg, brkLevel: target };
@@ -1441,7 +1452,16 @@ async function startSingleAccountEngine(account) {
           logWarn(`[${accountState.name}] ⚡ Hedge bracket ${symbol} @ ${target} would fire immediately — leaving the exits to each pair's catch-all (${desc}).`);
           hedgeBrkRetryAt.set(symbol, Date.now() + 60000);
         } else {
-          hedgeBrkRetryAt.set(symbol, Date.now() + 5 * 60000);
+          // Retry soon: while it fails, the bracket may still sit at a nearer pair's level
+          // (closing every pair's hedge qty there) — or there may be none. Alert once.
+          hedgeBrkRetryAt.set(symbol, Date.now() + 60000);
+          if (list.length > 1 && !hedgeBrkAlerted.has(symbol)) {
+            hedgeBrkAlerted.add(symbol);
+            notifyFailure({
+              context: `Shared hedge ${symbol}: could not move Delta's TP to the farthest pair's level (${target}) — until it moves, a nearer pair's TP could close ALL ${list.length} pairs' hedge qty. Retrying every minute.`,
+              error: { message: r.error || r.code || 'hedge-bracket-move-failed' }, extra: desc,
+            });
+          }
         }
       }
     } catch (e) {
@@ -6467,6 +6487,12 @@ async function startSingleAccountEngine(account) {
                 // brkComputed = this pair's own level; brkLevel = what rests on Delta for the symbol.
                 t.hedgeLeg = { ...t.hedgeLeg, brkComputed: bracketLevel,
                   brkLevel: hedgeShared ? (hedgeMates[0].hedgeLeg.brkLevel ?? null) : bracketLevel };
+                // Joined a shared strike → move its single Delta bracket to the farthest pair's
+                // level NOW, so a nearer pair's TP can only ever close that pair's own qty.
+                if (hedgeShared) {
+                  await syncSharedHedgeBrackets('hedge joined', [t])
+                    .catch(e => logWarn(`[${accountState.name}] hedge bracket sync (join) failed: ${e.message}`));
+                }
               }
             }
 
