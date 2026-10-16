@@ -628,12 +628,19 @@ export function createLiveExecutor(getCtx) {
      * unwinding. No bracket — the hedge is engine-managed and exits with the triplet
      * (reduce-only `-HX` close). No-op for paper / unarmed.
      */
-    async openHedge(pos, { contracts, price, chase = null }) {
+    // `tp`: the first long's TP (spot level) — attached as the hedge's own spot-triggered TP
+    // bracket, so on Delta the hedge exits with its pair. null = no bracket (a hedge bought
+    // onto a symbol another pair's hedge already holds: the engine sets that symbol's single
+    // bracket to the farthest pair's level instead — syncSharedHedgeBrackets).
+    async openHedge(pos, { contracts, price, chase = null, tp = null }) {
       if (!armed()) return { ok: true, skipped: true };
+      const bracket = (tp != null && Number.isFinite(Number(tp)))
+        ? { bracket_take_profit_price: String(tp), bracket_stop_trigger_method: 'spot_price' }
+        : null;
       return submitChase({
         symbol: pos.hedgeLeg.symbol, side: 'buy', contracts,
         price: price ?? pos.hedgeLeg.entryPrice, reduceOnly: false, tag: `${pos.id}-HB`,
-        bracket: null, chase,
+        bracket, chase,
       });
     },
 

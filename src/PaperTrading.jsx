@@ -265,7 +265,7 @@ const copySchedulesFrom = async (sourceAccountId, targetMode) => {
     ...mapScheduleRow(row),
     id: `new-copy-${stamp}-${i}`,
     isNew: true,
-    ...(targetMode === 'live' ? { hedgeEnabled: false, sharedLongStrikes: 0 } : {}),
+    ...(targetMode === 'live' ? { sharedLongStrikes: 0 } : {}), // hedge is allowed on live; shared longs are paper-only
   })));
 };
 
@@ -2108,7 +2108,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     setFillApplied(scannerFill.token);
     const target = schedules.find(s => s.id === scannerFill.windowId);
     if (target) {
-      const allowHedge = mode !== 'live' && (config.strategyVersion ?? 1) >= 2;
+      const allowHedge = mode === 'live' || (config.strategyVersion ?? 1) >= 2;
       setSchedules(prev => prev.map(s => s.id === scannerFill.windowId
         ? { ...s, ...scannerToWindowFields(scannerFill.values, allowHedge) } : s));
     }

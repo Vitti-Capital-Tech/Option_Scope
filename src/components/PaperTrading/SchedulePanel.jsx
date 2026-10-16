@@ -471,7 +471,8 @@ export default function SchedulePanel({
     }
   }, [onImportSchedules]);
 
-  const allowHedge = isPaper && strategyVersion >= 2;
+  // Hedge leg: live accounts (any version) and paper v2+. Shared Long Strikes stays paper v2.
+  const allowHedge = !isPaper || strategyVersion >= 2;
   const handleLoadScanner = useCallback((id, windowNo, item) => {
     setSchedules(prev => prev.map(s => s.id === id ? { ...s, ...scannerToWindowFields(item.values, allowHedge) } : s));
     setNotice(`Loaded "${item.label}" into Window ${windowNo}. Click Apply to save.`);
@@ -942,8 +943,9 @@ export default function SchedulePanel({
                     nearest the short whose price is below Max Hedge Price and whose
                     |IV − short IV| is inside the IV Diff range, sized as that spread's own
                     short qty × Hedge Lot %. It rides the triplet and exits with it (main-strike
-                    ATM/ITM/OTM or expiry). Paper accounts only — never shown for live. */}
-                {isPaper && strategyVersion >= 2 && (
+                    ATM/ITM/OTM or expiry). Live accounts (any version) and paper v2+; off by default.
+                    On live the hedge is bought after the spread (chased) with the first long's TP. */}
+                {allowHedge && (
                   <div className="schedule-item-block schedule-item-toggle-block">
                     <span className="schedule-item-label" title="Add a 3rd long one strike-width beyond the short leg to every spread entered in this window.">Hedge Leg</span>
                     <div style={{ height: 34, display: 'flex', alignItems: 'center' }}>
@@ -954,13 +956,13 @@ export default function SchedulePanel({
                     </div>
                   </div>
                 )}
-                {isPaper && strategyVersion >= 2 && s.hedgeEnabled && (
+                {allowHedge && s.hedgeEnabled && (
                   <div className="schedule-item-block schedule-item-num-block">
                     <span className="schedule-item-label" title="Hedge leg quantity as a % of the spread's short-leg quantity.">Hedge Lot %</span>
                     <CustomInput type="number" min="0" max="100" step="1" suffix="%" value={s.hedgeLotPct ?? 0} onChange={e => handleChange(s.id, 'hedgeLotPct', Number(e.target.value))} />
                   </div>
                 )}
-                {isPaper && strategyVersion >= 2 && s.hedgeEnabled && (
+                {allowHedge && s.hedgeEnabled && (
                   <>
                     <div className="schedule-item-block schedule-item-num-block">
                       <span className="schedule-item-label" title="Max Hedge Price — the hedge strike's price must be below this.">Hedge Max $</span>
