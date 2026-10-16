@@ -1146,7 +1146,15 @@ async function startSingleAccountEngine(account) {
   function longOnlyMargin(pos) {
     const cv = pos.buyLeg?.contractValue;
     const lot = cv != null ? cv * longContracts(pos.buyLeg) : (pos.buyLeg?.lotSize || 0);
-    return calcMargin(pos.entryBuyPrice, lot, spotPrice, 0, 1, pos.underlying, pos.expiry);
+    return calcMargin(pos.entryBuyPrice, lot, spotPrice, 0, 1, pos.underlying, pos.expiry) + hedgePremiumMargin(pos);
+  }
+
+  // The hedge (3rd long) costs its premium — the same term the entry adds
+  // (calcMargin(hedgeAsk, hedgeQty, spot, 0, 1) = ask × qty). Recomputed margins must keep it,
+  // else used margin drops (and the entry budget grows) after a scale-down or basis fix.
+  function hedgePremiumMargin(pos) {
+    const h = pos.hedgeLeg;
+    return (h && (h.lotSize || 0) > 0) ? (Number(h.entryPrice) || 0) * h.lotSize : 0;
   }
 
   // Correct-basis margin for a full/partial spread. A LIVE position is sized on the real
@@ -1158,11 +1166,13 @@ async function startSingleAccountEngine(account) {
   // formula (calcMargin with longCV × contracts for the long, shortCV for the short).
   function contractBasisMargin(pos, longCV) {
     if (longCV == null) {
-      return calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, spotPrice, pos.sellQty, pos.sellLeg.lotSize || 1, pos.underlying, pos.expiry);
+      return calcMargin(pos.entryBuyPrice, pos.buyLeg.lotSize, spotPrice, pos.sellQty, pos.sellLeg.lotSize || 1, pos.underlying, pos.expiry)
+        + hedgePremiumMargin(pos);
     }
     const longLot = longCV * longContracts(pos.buyLeg);
     const shortCV = pos.sellQty > 0 ? (symbolMeta[pos.sellLeg?.symbol]?.contractValue ?? longCV) : 1;
-    return calcMargin(pos.entryBuyPrice, longLot, spotPrice, pos.sellQty, shortCV, pos.underlying, pos.expiry);
+    return calcMargin(pos.entryBuyPrice, longLot, spotPrice, pos.sellQty, shortCV, pos.underlying, pos.expiry)
+      + hedgePremiumMargin(pos);
   }
 
   // One-time PnL-basis normalisation for a LIVE position that was opened on the PAPER
@@ -3424,16 +3434,22 @@ async function startSingleAccountEngine(account) {
           // Per-window min-days-to-expiry (migration 019) — all accounts, paper AND live.
           // Falls back to the account-level value for rows that predate the migration.
           daysToExpiry: activeSchedule.daysToExpiry ?? config.daysToExpiry,
-          // Hedge leg (migration 041) stays experimental — strategy_version >= 2 only.
-          ...(config.strategyVersion >= 2
+          // Hedge leg (migration 041): LIVE accounts (any strategy version — live runs v1) and
+          // paper strategy_version >= 2. Without the live half, a live window's Hedge toggle
+          // never reached effectiveConfig, so hedgeRequired stayed false and live entries went
+          // in without their hedge (JD2, 2026-10-16).
+          ...((config.strategyVersion >= 2 || accountState.mode === 'live')
             ? {
               hedgeEnabled: activeSchedule.hedgeEnabled ?? false,
               hedgeLotPct: activeSchedule.hedgeLotPct ?? 0,
               hedgeMaxPrice: activeSchedule.hedgeMaxPrice ?? 10,
               hedgeIvDiffMin: activeSchedule.hedgeIvDiffMin ?? 0,
               hedgeIvDiffMax: activeSchedule.hedgeIvDiffMax ?? 2,
-              sharedLongStrikes: activeSchedule.sharedLongStrikes ?? 0,
             }
+            : {}),
+          // Shared Long Strikes stay paper v2 only (sharedLongCount is gated the same way).
+          ...(config.strategyVersion >= 2
+            ? { sharedLongStrikes: activeSchedule.sharedLongStrikes ?? 0 }
             : {}),
         }
         : { ...config };
