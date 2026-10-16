@@ -827,16 +827,53 @@ function DeltaPositionsTable({ positions, enginePositions, onExitPosition, onClo
   }
   const idx = num(spotPrice);
 
+  // Hedge (3rd long) owners by symbol. Several pairs can hold their hedge on the SAME strike,
+  // and Delta reports that strike as ONE position, so a shared hedge is shown under EACH
+  // owning pair as that pair's share (size, P&L, margin and cashflow scaled by its contracts
+  // ÷ the owners' total), labelled "shared mine/total".
+  const hedgeOwners = {};
+  for (const ep of (enginePositions || [])) {
+    const h = ep.hedgeLeg;
+    if (!h?.symbol || !((h.lotSize || 0) > 0)) continue;
+    (hedgeOwners[h.symbol] ||= []).push(ep);
+  }
+  const hedgeContractsOf = (ep) => {
+    const h = ep.hedgeLeg;
+    const base = h.originalLotSize || h.contractValue || null;
+    return base ? Math.max(0, Math.round(h.lotSize / base)) : 0;
+  };
+
   // Group each open leg under its owning engine position so the BUY (long) and SELL
   // (short) legs of the SAME spread render adjacently — easy to track a trade's journey.
   // Legs with no engine row (orphans) form their own single-leg group. Within a group the
   // order is buy → sell → hedge; groups are ordered calls-then-puts by buy strike (orphans last).
   const groupMap = new Map();
-  for (const p of open) {
-    const ep = posBySymbol[p.product_symbol] || null;
-    const key = ep ? `pos:${ep.id}` : `orphan:${p.product_symbol}`;
+  const addLeg = (key, ep, leg) => {
     if (!groupMap.has(key)) groupMap.set(key, { ep, legs: [] });
-    groupMap.get(key).legs.push(p);
+    groupMap.get(key).legs.push(leg);
+  };
+  for (const p of open) {
+    const owners = !posBySymbol[p.product_symbol] ? hedgeOwners[p.product_symbol] : null;
+    if (owners && owners.length) {
+      const counts = owners.map(hedgeContractsOf);
+      const total = counts.reduce((s, c) => s + c, 0);
+      owners.forEach((ep, i) => {
+        const ratio = owners.length === 1 ? 1 : (total > 0 ? counts[i] / total : 1 / owners.length);
+        const scale = (v) => (v == null || v === '' || Number.isNaN(Number(v)) ? v : Number(v) * ratio);
+        addLeg(`pos:${ep.id}`, ep, {
+          ...p,
+          size: scale(p.size),
+          margin: scale(p.margin),
+          realized_cashflow: scale(p.realized_cashflow),
+          cashflow: scale(p.cashflow),
+          unrealized_pnl: scale(p.unrealized_pnl),
+          _hedge: { shared: owners.length > 1, mine: counts[i], total },
+        });
+      });
+      continue;
+    }
+    const ep = posBySymbol[p.product_symbol] || null;
+    addLeg(ep ? `pos:${ep.id}` : `orphan:${p.product_symbol}`, ep, p);
   }
   const legRank = (ep, sym) => {
     if (!ep) return 0;
@@ -960,6 +997,14 @@ function DeltaPositionsTable({ positions, enginePositions, onExitPosition, onClo
                   {/* Vertical rail before the symbol: GREEN for a long position, RED for a short. */}
                   <span className={`pt-legrail ${long ? 'long' : 'short'}`} />
                   <span className="pt-instrument">{p.product_symbol || '—'}</span>
+                  {p._hedge && (
+                    <span className="pt-type-badge long"
+                      title={p._hedge.shared
+                        ? `Hedge (3rd long) shared by several pairs. This pair holds ${p._hedge.mine} of the ${p._hedge.total} contracts on Delta; the row shows its share. It exits with this pair.`
+                        : 'Hedge (3rd long) — exits with this pair.'}>
+                      HEDGE{p._hedge.shared ? ` · shared ${p._hedge.mine}/${p._hedge.total}` : ''}
+                    </span>
+                  )}
                 </td>
                 <td className="r"><span style={{ color: long ? 'var(--call)' : 'var(--put)', fontWeight: 700 }}>{long ? '+' : ''}{btc} {unit}</span></td>
                 <td className="r">{notional != null ? `$${fmtNum(notional)}` : '—'}</td>
@@ -981,7 +1026,14 @@ function DeltaPositionsTable({ positions, enginePositions, onExitPosition, onClo
                 <td className="r">{cashflow != null ? <span className={`pt-pnl ${cashflow > 0 ? 'positive' : cashflow < 0 ? 'negative' : 'zero'}`}>{cashflow > 0 ? '+' : ''}{fmtNum(cashflow)}</span> : '—'}</td>
                 <td className="r">
                   {/* Per-leg close (like Delta): ✕ closes only THIS leg, not the spread. */}
-                  <button onClick={() => onCloseOrphan && onCloseOrphan(p.product_symbol)} className="pt-btn-close" title="Close this leg on Delta">✕</button>
+                  {p._hedge?.shared ? (
+                    // ✕ closes the WHOLE Delta position — on a shared hedge that is every pair's
+                    // hedge, so it is not offered here; it exits with each pair.
+                    <button disabled className="pt-btn-close" style={{ opacity: 0.35, cursor: 'not-allowed' }}
+                      title="Shared hedge — closing it here would close every pair's hedge. It exits with each pair; use the pair's exit.">✕</button>
+                  ) : (
+                    <button onClick={() => onCloseOrphan && onCloseOrphan(p.product_symbol)} className="pt-btn-close" title="Close this leg on Delta">✕</button>
+                  )}
                 </td>
               </tr>
             );
