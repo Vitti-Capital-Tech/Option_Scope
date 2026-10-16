@@ -336,33 +336,36 @@ export default function ControlPanel({
             </div>
           )}
 
-          {/* Apply, Cancel & Reset Buttons */}
-          <div className="pt-filter-actions">
-            <button
-              type="button"
-              className={`pt-btn-filter pt-btn-apply ${isFiltersDirty ? 'active' : ''}`}
-              onClick={handleApplyFilters}
-              disabled={!isFiltersDirty}
-            >
-              Apply
-            </button>
-            <button
-              type="button"
-              className="pt-btn-filter pt-btn-cancel"
-              onClick={handleCancelFilters}
-              disabled={!isFiltersDirty}
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              className="pt-btn-filter pt-btn-reset"
-              onClick={handleResetFilters}
-              disabled={isDefaultConfig}
-            >
-              Reset
-            </button>
-          </div>
+        </div>
+
+        {/* Apply, Cancel & Reset — outside the collapsible filters so they stay visible on
+            mobile even when the filters are hidden (an edit made before collapsing can still
+            be applied or cancelled). */}
+        <div className="pt-filter-actions">
+          <button
+            type="button"
+            className={`pt-btn-filter pt-btn-apply ${isFiltersDirty ? 'active' : ''}`}
+            onClick={handleApplyFilters}
+            disabled={!isFiltersDirty}
+          >
+            Apply
+          </button>
+          <button
+            type="button"
+            className="pt-btn-filter pt-btn-cancel"
+            onClick={handleCancelFilters}
+            disabled={!isFiltersDirty}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="pt-btn-filter pt-btn-reset"
+            onClick={handleResetFilters}
+            disabled={isDefaultConfig}
+          >
+            Reset
+          </button>
         </div>
       </div>
       {/* ── Time-based Schedules ─────────────────────────────── */}

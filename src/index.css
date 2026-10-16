@@ -3750,7 +3750,8 @@ body.light-theme .pt-live-badge {
   }
 
   .pt-filters-container.expanded {
-    max-height: 800px;
+    /* Tall enough for every cluster (it grew past 800px and the last clusters were clipped). */
+    max-height: 4000px;
     opacity: 1;
     border-top: 1px solid var(--border);
     padding-top: 12px;
@@ -3970,11 +3971,18 @@ body.light-theme .pt-btn-apply.active {
 }
 
 @media (max-width: 900px) {
+  /* Outside the collapsible filters on mobile: one row of three, always visible. */
   .pt-filter-actions {
     margin-left: 0;
-    margin-top: 8px;
+    margin-top: 0;
     width: 100%;
-    justify-content: flex-end;
+    flex-direction: row;
+    justify-content: stretch;
+    gap: 8px;
+  }
+  .pt-filter-actions .pt-btn-filter {
+    flex: 1 1 0;
+    min-width: 0;
   }
 }
 
