@@ -4478,6 +4478,18 @@ async function startSingleAccountEngine(account) {
         // catch-all only needs spot (vs the main buy strike) and the hedge bid.
         const isHedgeOnly = pos.sellQty === 0 && (pos.buyLeg.lotSize || 0) <= 0 && !!pos.hedgeLeg;
 
+        // The pair is done (short bought back, long fully laddered out), so its hedge exits
+        // NOW — same as live (2026-10-16). This also clears hedge-only rows left by older
+        // builds, which held the hedge until the main-strike cross / expiry.
+        if (isHedgeOnly && (pos.hedgeLeg.lotSize || 0) > 0) {
+          await closeHedgeWithPair(pos, 'long ladder fully exited')
+            .catch(e => logError(`[${accountState.name}] hedge close (hedge-only) failed for ${pos.id}:`, e));
+          try { await supabase.from('active_positions').delete().eq('id', pos.id); }
+          catch (e) { logError(`Failed to delete hedge-only position ${pos.id}:`, e); }
+          log(`[${accountState.name}] ▤ HEDGE-ONLY CLOSED: ${pos.type.toUpperCase()} ${pos.buyLeg.strike} — long already laddered out, hedge exited with the pair`);
+          continue;
+        }
+
         // Long-only positions (short already exited) only need the long's price.
         if (!isHedgeOnly && (liveExitBuy == null || (pos.sellQty > 0 && liveExitSell == null))) {
           remaining.push(pos);
@@ -4699,32 +4711,20 @@ async function startSingleAccountEngine(account) {
 
               const fullyExited = stage >= exitLevels.length || pos.buyLeg.lotSize <= 0;
               if (fullyExited) {
+                // Main long fully laddered out → the pair is done, so its hedge (3rd long)
+                // exits too, right now — same as live (2026-10-16; it used to ride on as a
+                // "hedge-only" row until the main-strike cross / expiry).
                 if (pos.hedgeLeg && (pos.hedgeLeg.lotSize || 0) > 0) {
-                  // Main long fully laddered out, but the hedge (3rd long) rides on until the
-                  // main-strike ATM/ITM/OTM cross or expiry. Keep the row alive as hedge-only;
-                  // do NOT delete or `continue` — fall through so the catch-all can close it.
-                  pos.buyLeg.lotSize = 0;
-                  pos.buyLeg.longExitStage = stage;
-                  pos.margin = calcMargin(pos.hedgeLeg.entryPrice, pos.hedgeLeg.lotSize, spotPrice, 0, 1, pos.underlying, pos.expiry);
-                  try {
-                    await supabase.from('active_positions').update({
-                      buy_leg: JSON.stringify(pos.buyLeg),
-                      entry_fee: pos.entryFee,
-                      margin: pos.margin,
-                    }).eq('id', pos.id);
-                  } catch (e) {
-                    logError(`Failed to persist hedge-only hold for position ${pos.id}:`, e);
-                  }
-                  log(`[${accountState.name}] ▤ LONG FULLY EXITED — holding hedge leg ${pos.hedgeLeg.strike} (qty ${pos.hedgeLeg.lotSize}) until ATM/ITM/OTM or expiry`);
-                } else {
-                  try {
-                    await supabase.from('active_positions').delete().eq('id', pos.id);
-                  } catch (e) {
-                    logError(`Failed to delete fully-laddered long position ${pos.id}:`, e);
-                  }
-                  log(`[${accountState.name}] ▤ LONG FULLY EXITED: ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | ${longExitSlices.length} slice(s) | Bid $${longBid}`);
-                  continue;
+                  await closeHedgeWithPair(pos, 'long ladder fully exited')
+                    .catch(e => logError(`[${accountState.name}] hedge close (ladder) failed for ${pos.id}:`, e));
                 }
+                try {
+                  await supabase.from('active_positions').delete().eq('id', pos.id);
+                } catch (e) {
+                  logError(`Failed to delete fully-laddered long position ${pos.id}:`, e);
+                }
+                log(`[${accountState.name}] ▤ LONG FULLY EXITED: ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | ${longExitSlices.length} slice(s) | Bid $${longBid}`);
+                continue;
               } else {
               pos.margin = longOnlyMargin(pos);
               try {
