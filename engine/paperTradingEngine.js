@@ -4562,6 +4562,14 @@ async function startSingleAccountEngine(account) {
             price: exitShortPrice, tag: `${pos.id}-SEX`,
           });
 
+          // PAPER ONLY: the hedge (3rd long) exits together with the short buy-back, at its
+          // live bid, instead of riding along with the long ladder. Closed BEFORE the
+          // long-only margin is recomputed so its premium drops out of the margin too.
+          if (accountState.mode !== 'live' && pos.hedgeLeg && (pos.hedgeLeg.lotSize || 0) > 0) {
+            await closeHedgeWithPair(pos, 'short leg exited')
+              .catch(e => logError(`[${accountState.name}] hedge close (short exit) failed for ${pos.id}:`, e));
+          }
+
           // Convert the position to long-only: drop the short leg, recompute margin.
           // Snapshot the long lot (base for the 10-slice laddered exit) and build 10
           // equidistant exit levels spanning the long's current bid up to its entry price.
@@ -4587,6 +4595,7 @@ async function startSingleAccountEngine(account) {
               sell_qty: 0,
               entry_fee: pos.entryFee,
               margin: pos.margin,
+              hedge_leg: pos.hedgeLeg ? JSON.stringify(pos.hedgeLeg) : null,
             }).eq('id', pos.id);
           } catch (e) {
             logError(`Failed to persist short-leg exit for position ${pos.id}:`, e);
