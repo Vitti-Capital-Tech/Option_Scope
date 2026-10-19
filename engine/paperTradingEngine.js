@@ -4490,6 +4490,23 @@ async function startSingleAccountEngine(account) {
           continue;
         }
 
+        // PAPER ONLY: a long-only row (short already bought back) still holding its hedge —
+        // left by builds before the hedge exited with the short — closes that hedge now at
+        // its live bid. The main long keeps laddering; margin drops the hedge premium.
+        if (accountState.mode !== 'live' && !isHedgeOnly && pos.sellQty === 0
+          && pos.hedgeLeg && (pos.hedgeLeg.lotSize || 0) > 0) {
+          await closeHedgeWithPair(pos, 'short leg already exited')
+            .catch(e => logError(`[${accountState.name}] hedge close (long-only) failed for ${pos.id}:`, e));
+          if (!pos.hedgeLeg) {
+            pos.margin = longOnlyMargin(pos);
+            try {
+              await supabase.from('active_positions').update({ hedge_leg: null, margin: pos.margin }).eq('id', pos.id);
+            } catch (e) {
+              logError(`Failed to persist long-only hedge exit for position ${pos.id}:`, e);
+            }
+          }
+        }
+
         // Long-only positions (short already exited) only need the long's price.
         if (!isHedgeOnly && (liveExitBuy == null || (pos.sellQty > 0 && liveExitSell == null))) {
           remaining.push(pos);
