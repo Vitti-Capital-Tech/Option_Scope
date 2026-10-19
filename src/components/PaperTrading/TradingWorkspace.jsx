@@ -808,11 +808,16 @@ function DeltaPositionsTable({ positions, enginePositions, onExitPosition, onClo
   }
   const num = (v) => (v == null || v === '' || Number.isNaN(Number(v)) ? null : Number(v));
 
-  // Map each leg back to its engine position (for Close) — by leg symbol.
+  // Map each leg back to its engine position (for Close) — by leg symbol. A long-only pair
+  // (short already bought back) keeps a stale sellLeg, so its sell symbol is mapped only while
+  // the short is actually open; buy legs are mapped first and never overwritten by a sell leg,
+  // so another pair's long on that strike stays under its real owner.
   const posBySymbol = {};
   for (const ep of (enginePositions || [])) {
     if (ep.buyLeg?.symbol) posBySymbol[ep.buyLeg.symbol] = ep;
-    if (ep.sellLeg?.symbol) posBySymbol[ep.sellLeg.symbol] = ep;
+  }
+  for (const ep of (enginePositions || [])) {
+    if ((ep.sellQty || 0) > 0 && ep.sellLeg?.symbol && !posBySymbol[ep.sellLeg.symbol]) posBySymbol[ep.sellLeg.symbol] = ep;
   }
   // TP/SL per leg come from the resting stop orders, matched by product_symbol.
   const stopBySymbol = {};
