@@ -20,6 +20,7 @@ import TradingWorkspace from './components/PaperTrading/TradingWorkspace';
 import CreateAccountModal from './components/PaperTrading/CreateAccountModal';
 import EditAccountModal from './components/PaperTrading/EditAccountModal';
 import AccountGroupsModal from './components/PaperTrading/AccountGroupsModal';
+import { groupLeaderId } from './components/PaperTrading/groupLeader';
 import DeleteAccountModal from './components/PaperTrading/DeleteAccountModal';
 import ConfirmExitModal from './components/PaperTrading/ConfirmExitModal';
 import { showAlert, showConfirm } from './components/common/dialogService';
@@ -1004,12 +1005,15 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     // their own grouped account just saves it for that account.
     const grp = groups.find(g => g.id === activeGroupIdRef.current);
     if (userProfile?.role !== 'admin' && grp && grp.user_id !== session?.user?.id) return;
+    // The group follows its leader (migration 064): only a save on the leader is copied to the
+    // others; a save on a follower stays on that account until the leader's next save.
+    if (grp && groupLeaderId(grp, accounts) !== activeAccountId) return;
     const { error } = await supabase.rpc('sync_account_group', { p_source: activeAccountId, p_what: what });
     if (error) {
       console.error('Group settings sync error:', error);
       showAlert(`Saved on this account, but copying the settings to the rest of its group failed: ${error.message}`);
     }
-  }, [activeAccountId, groups, userProfile, session]);
+  }, [activeAccountId, groups, accounts, userProfile, session]);
 
   const runGroupOp = async (fn) => {
     setGroupsBusy(true);
@@ -1031,6 +1035,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     const { data: group, error } = await supabase.from('account_groups')
       .insert({
         name, user_id: owner, mode: dashboardMode,
+        leader_account_id: sourceId, // the members follow the account settings are copied from (064)
         // Exit-points difference (migration 058). Sent only when not the default, so creating a
         // group still works on a database where 058 hasn't run yet.
         ...(exitDiff && (exitDiff.mode !== 'fixed' || exitDiff.step !== 25 || exitDiff.min !== 10 || exitDiff.max !== 50)
@@ -1050,11 +1055,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   });
 
   const handleAddGroupMember = (groupId, accountId) => runGroupOp(async () => {
-    const source = accounts.find(a => a.group_id === groupId && a.id !== accountId);
+    const sourceId = groupLeaderId(groups.find(g => g.id === groupId), accounts);
     const { error } = await supabase.from('paper_trading_accounts').update({ group_id: groupId }).eq('id', accountId);
     if (error) throw error;
-    if (source) {
-      const { error: syncErr } = await supabase.rpc('sync_account_group', { p_source: source.id, p_what: 'all' });
+    if (sourceId && sourceId !== accountId) {
+      const { error: syncErr } = await supabase.rpc('sync_account_group', { p_source: sourceId, p_what: 'all' });
       if (syncErr) throw new Error(`Added, but copying the group's settings failed: ${syncErr.message}`);
     }
   });
@@ -1062,10 +1067,22 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   const handleRemoveGroupMember = (accountId) => runGroupOp(async () => {
     const { error } = await supabase.from('paper_trading_accounts').update({ group_id: null }).eq('id', accountId);
     if (error) throw error;
+    // Removing the leader → the group falls back to its first-created member (groupLeaderId).
+    await supabase.from('account_groups').update({ leader_account_id: null }).eq('leader_account_id', accountId);
+  });
+
+  // Change which account the group follows (migration 064), then copy the new leader's
+  // settings to the other members so they follow it at once.
+  const handleSetGroupLeader = (groupId, accountId) => runGroupOp(async () => {
+    const { error } = await supabase.from('account_groups')
+      .update({ leader_account_id: accountId, updated_at: new Date().toISOString() }).eq('id', groupId);
+    if (error) throw error;
+    const { error: syncErr } = await supabase.rpc('sync_account_group', { p_source: accountId, p_what: 'all' });
+    if (syncErr) throw new Error(`Leader changed, but copying its settings to the group failed: ${syncErr.message}`);
   });
 
   // Random / fixed exit-points difference of a group (migration 058). Re-copies the group's
-  // schedule windows from its first-created member so the new difference applies at once.
+  // schedule windows from its leader so the new difference applies at once.
   const handleUpdateGroupExitDiff = (groupId, { mode, step, min, max }) => runGroupOp(async () => {
     const { error } = await supabase.from('account_groups')
       .update({
@@ -1074,10 +1091,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         updated_at: new Date().toISOString(),
       }).eq('id', groupId);
     if (error) throw error;
-    const first = accounts.filter(a => a.group_id === groupId)
-      .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))[0];
-    if (first) {
-      const { error: syncErr } = await supabase.rpc('sync_account_group', { p_source: first.id, p_what: 'schedules' });
+    const leaderId = groupLeaderId(groups.find(g => g.id === groupId), accounts);
+    if (leaderId) {
+      const { error: syncErr } = await supabase.rpc('sync_account_group', { p_source: leaderId, p_what: 'schedules' });
       if (syncErr) throw new Error(`Saved, but re-applying it to the group's windows failed: ${syncErr.message}`);
     }
   });
@@ -3482,13 +3498,22 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
               const group = activeAccount?.group_id ? groups.find(g => g.id === activeAccount.group_id) : null;
               if (!group) return null;
               const others = accounts.filter(a => a.group_id === group.id && a.id !== activeAccountId).map(a => a.name);
+              const leaderId = groupLeaderId(group, accounts);
+              const leaderName = accounts.find(a => a.id === leaderId)?.name;
               return (
                 <div className="ag-banner">
                   <Users size={14} strokeWidth={2.5} />
-                  <span>
-                    <b>Group “{group.name}”</b> — settings are shared with {others.length ? others.join(', ') : 'no other account yet'}.
-                    Changes you save here apply to all {others.length + 1} accounts. Balance, positions and P&amp;L stay per account.
-                  </span>
+                  {leaderId === activeAccountId ? (
+                    <span>
+                      <b>Group “{group.name}”</b> — this account is the <b>leader</b>; {others.length ? others.join(', ') : 'no other account yet'} follow its settings.
+                      Changes you save here apply to all {others.length + 1} accounts. Balance, positions and P&amp;L stay per account.
+                    </span>
+                  ) : (
+                    <span>
+                      <b>Group “{group.name}”</b> — this account follows <b>{leaderName ?? 'the group leader'}</b>.
+                      Changes saved here stay on this account only and are replaced on the leader's next save. Edit the leader to change the whole group.
+                    </span>
+                  )}
                   <button type="button" onClick={() => { setGroupsError(''); setIsGroupsModalOpen(true); }}>Manage</button>
                 </div>
               );
@@ -3708,6 +3733,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         onRename={handleRenameGroup}
         onDelete={handleDeleteGroup}
         onUpdateExitDiff={handleUpdateGroupExitDiff}
+        onSetLeader={handleSetGroupLeader}
       />
 
       <ConfirmExitModal

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Users, X, Plus, Trash2, Loader2, Pencil, Check } from 'lucide-react';
+import { Users, X, Plus, Trash2, Loader2, Pencil, Check, Crown } from 'lucide-react';
 import { showConfirm } from '../common/dialogService';
+import { groupLeaderId } from './groupLeader';
 
 // Account groups (migration 050): accounts of one mode that share ALL strategy settings
 // (Control Panel filters, schedule windows, excluded strikes, allocation % / caps). Settings are
@@ -74,7 +75,7 @@ function ExitDiffControl({ value, onChange, onApply, busy }) {
 
 export default function AccountGroupsModal({
   isOpen, onClose, mode, groups, accounts, busy, error,
-  onCreate, onAddMember, onRemoveMember, onRename, onDelete, onUpdateExitDiff,
+  onCreate, onAddMember, onRemoveMember, onRename, onDelete, onUpdateExitDiff, onSetLeader,
 }) {
   const [name, setName] = useState('');
   const [newDiff, setNewDiff] = useState(DEFAULT_DIFF);
@@ -106,7 +107,7 @@ export default function AccountGroupsModal({
     const id = addPick[g.id];
     const acc = accounts.find(a => a.id === id);
     if (!acc) return;
-    const from = membersOf(g.id)[0];
+    const from = accounts.find(a => a.id === groupLeaderId(g, accounts));
     const msg = `Add ${acc.name} to "${g.name}"?\n\n${acc.name}'s settings (filters, schedule windows, excluded strikes, allocation %) will be replaced by the group's${from ? ` (copied from ${from.name})` : ''}.`
       + `${acc.group_id ? `\nIt leaves "${groupName(acc.group_id)}".` : ''}\n\nBalance, open positions and live controls are not changed.`;
     if (!(await showConfirm(msg, { title: 'Add account to group', confirmLabel: 'Add' }))) return;
@@ -123,7 +124,7 @@ export default function AccountGroupsModal({
         </div>
         <p className="ag-intro">
           Accounts in a group share <b>all</b> settings — Control Panel filters, schedule windows, excluded strikes, allocation % and
-          position caps. Save a change on any member and it is copied to the others. Each account still trades and is monitored on its
+          position caps. The members follow the group's <b>leader</b>: a change saved on the leader is copied to the others. Each account still trades and is monitored on its
           own: balance, open positions, P&amp;L{mode === 'live' ? ', credentials, Start Live / Disarm' : ''} and Pause stay per account.
         </p>
 
@@ -134,6 +135,7 @@ export default function AccountGroupsModal({
         {groups.map(g => {
           const members = membersOf(g.id);
           const candidates = accounts.filter(a => a.group_id !== g.id);
+          const leaderId = groupLeaderId(g, accounts);
           return (
             <div key={g.id} className="ag-group">
               <div className="ag-group-head">
@@ -163,13 +165,29 @@ export default function AccountGroupsModal({
               <div className="ag-members">
                 {members.length === 0 && <span className="ag-empty">No accounts</span>}
                 {members.map(a => (
-                  <span key={a.id} className="ag-chip">
+                  <span key={a.id} className={`ag-chip${a.id === leaderId ? ' leader' : ''}`} title={a.id === leaderId ? 'Leader — the group follows this account' : undefined}>
+                    {a.id === leaderId && <Crown size={11} />}
                     {a.name}
                     <button type="button" disabled={busy} title={`Remove ${a.name} (keeps its current settings)`}
                       onClick={() => onRemoveMember(a.id)} aria-label={`Remove ${a.name}`}><X size={11} /></button>
                   </span>
                 ))}
               </div>
+              {onSetLeader && members.length > 1 && (
+                <label className="ag-source">
+                  <span>Group follows</span>
+                  <select className="ag-input" value={leaderId ?? ''} disabled={busy}
+                    onChange={async (e) => {
+                      const next = members.find(a => a.id === e.target.value);
+                      if (!next) return;
+                      const others = members.filter(a => a.id !== next.id).map(a => a.name).join(', ');
+                      const msg = `Make ${next.name} the leader of "${g.name}"?\n\n${others} will get ALL settings (filters, schedule windows, excluded strikes, allocation %) copied from ${next.name} now. Their own current settings are replaced.\n\nBalances, open positions and live controls are not changed.`;
+                      if (await showConfirm(msg, { title: 'Change group leader', confirmLabel: 'Follow ' + next.name })) onSetLeader(g.id, next.id);
+                    }}>
+                    {members.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                  </select>
+                </label>
+              )}
               {onUpdateExitDiff && (
                 <ExitDiffControl
                   key={`${g.id}-${g.exit_points_mode}-${g.exit_points_step}-${g.exit_points_random_min}-${g.exit_points_random_max}`}
@@ -182,7 +200,7 @@ export default function AccountGroupsModal({
                   busy={busy}
                   onApply={async (v) => {
                     const msg = `Use a ${v.mode === 'fixed' ? `FIXED ${v.step}-point` : `RANDOM (±${v.min}–${v.max})`} exit-points difference in "${g.name}"?\n\n`
-                      + "The group's schedule windows are re-copied now from its first account so it applies immediately (other members' window settings are replaced by that account's, as on any group save).";
+                      + "The group's schedule windows are re-copied now from its leader so it applies immediately (other members' window settings are replaced by the leader's, as on any group save).";
                     if (await showConfirm(msg, { title: 'Exit points difference', confirmLabel: 'Apply' })) onUpdateExitDiff(g.id, v);
                   }}
                 />
@@ -225,7 +243,7 @@ export default function AccountGroupsModal({
           <ExitDiffControl value={newDiff} onChange={setNewDiff} busy={busy} />
           {picked.length > 1 && (
             <label className="ag-source">
-              <span>Copy settings from</span>
+              <span title="The leader: its settings are copied to the others now, and the group keeps following it">Group follows</span>
               <select className="ag-input" value={source} onChange={e => setSourceId(e.target.value)}>
                 {picked.map(id => <option key={id} value={id}>{accounts.find(a => a.id === id)?.name}</option>)}
               </select>

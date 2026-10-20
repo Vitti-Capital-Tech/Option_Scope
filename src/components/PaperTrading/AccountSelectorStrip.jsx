@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { User, ChevronDown, Columns, Check, Edit, Plus, Trash2, LogOut, Users } from 'lucide-react';
+import { User, ChevronDown, ChevronRight, Columns, Check, Edit, Plus, Trash2, LogOut, Users, Crown, CornerDownRight } from 'lucide-react';
+import { groupLeaderId } from './groupLeader';
 
 function LiveBadge({ account }) {
   if (!account || account.mode !== 'live') return null;
@@ -104,6 +105,70 @@ export default function AccountSelectorStrip({
 
   const activeAccount = accounts.find(acc => acc.id === activeAccountId);
 
+  // Nested list: a group shows only its LEADER (the account the group follows, migration 064)
+  // at the top level; the followers appear under it when the group is expanded. Ungrouped
+  // accounts are listed as before. Order follows `accounts` (a group sits at its first member).
+  const [expanded, setExpanded] = useState(() => new Set());
+  const entries = [];
+  const seenGroups = new Set();
+  for (const acc of accounts) {
+    const group = acc.group_id ? groups.find(g => g.id === acc.group_id) : null;
+    if (!group) { entries.push({ acc }); continue; }
+    if (seenGroups.has(group.id)) continue;
+    seenGroups.add(group.id);
+    const leaderId = groupLeaderId(group, accounts);
+    entries.push({
+      group,
+      acc: accounts.find(a => a.id === leaderId) ?? acc,
+      followers: accounts.filter(a => a.group_id === group.id && a.id !== leaderId),
+    });
+  }
+  // Opening the menu expands the group of the active account if it is a follower, so the
+  // selected account is always visible.
+  const toggleMenu = () => {
+    const group = activeAccount?.group_id ? groups.find(g => g.id === activeAccount.group_id) : null;
+    if (!isOpen && group && groupLeaderId(group, accounts) !== activeAccount.id) {
+      setExpanded(s => (s.has(group.id) ? s : new Set(s).add(group.id)));
+    }
+    setIsOpen(!isOpen);
+  };
+  const toggleGroup = (id) => setExpanded(s => {
+    const next = new Set(s);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
+  const renderItem = (acc, { nested = false, leader = false } = {}) => {
+    const isSelected = acc.id === activeAccountId;
+    return (
+      <button
+        key={acc.id}
+        type="button"
+        className={`account-dropdown-item ${isSelected ? 'selected' : ''} ${nested ? 'nested' : ''}`}
+        onClick={() => {
+          setActiveAccountId(acc.id);
+          setIsOpen(false);
+        }}
+      >
+        <div className="account-dropdown-item-left">
+          {nested
+            ? <CornerDownRight className="account-dropdown-item-icon" size={13} strokeWidth={2.5} />
+            : leader
+              ? <Crown className="account-dropdown-item-icon" size={14} strokeWidth={2.5} stroke="#a371f7" />
+              : <Columns className="account-dropdown-item-icon" size={14} strokeWidth={2.5} />}
+          <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={acc.name}>{acc.name}</span>
+          {acc.paused
+            ? <PausedBadge account={acc} />
+            : <LiveBadge account={acc} />}
+          {leader && <GroupBadge account={acc} groups={groups} />}
+        </div>
+        {isSelected && (
+          <Check className="account-selected-checkmark" size={14} strokeWidth={3} stroke="var(--accent)" />
+        )}
+      </button>
+    );
+  };
+
   return (
 
     <div className="account-selector-strip">
@@ -115,7 +180,7 @@ export default function AccountSelectorStrip({
           <button 
             type="button"
             className="account-dropdown-trigger" 
-            onClick={() => setIsOpen(!isOpen)}
+            onClick={toggleMenu}
           >
             <div className="account-dropdown-trigger-content">
               <User className="account-icon-avatar" size={14} strokeWidth={2.5} />
@@ -144,30 +209,29 @@ export default function AccountSelectorStrip({
             <div className="account-dropdown-menu">
               <div className="account-dropdown-menu-header">Select Trading Account</div>
               <div className="account-dropdown-list">
-                {accounts.map(acc => {
-                  const isSelected = acc.id === activeAccountId;
+                {entries.map(({ acc, group, followers }) => {
+                  if (!group) return renderItem(acc);
+                  const open = expanded.has(group.id);
                   return (
-                    <button
-                      key={acc.id}
-                      type="button"
-                      className={`account-dropdown-item ${isSelected ? 'selected' : ''}`}
-                      onClick={() => {
-                        setActiveAccountId(acc.id);
-                        setIsOpen(false);
-                      }}
-                    >
-                      <div className="account-dropdown-item-left">
-                        <Columns className="account-dropdown-item-icon" size={14} strokeWidth={2.5} />
-                        <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={acc.name}>{acc.name}</span>
-                        {acc.paused
-                          ? <PausedBadge account={acc} />
-                          : <LiveBadge account={acc} />}
-                        <GroupBadge account={acc} groups={groups} />
+                    <div key={`g-${group.id}`} className="account-dropdown-group">
+                      <div className="account-dropdown-group-row">
+                        {renderItem(acc, { leader: true })}
+                        {followers.length > 0 && (
+                          <button
+                            type="button"
+                            className="account-dropdown-expand"
+                            onClick={() => toggleGroup(group.id)}
+                            title={open ? 'Hide the accounts that follow this one' : `Show the ${followers.length} account${followers.length === 1 ? '' : 's'} that follow ${acc.name}`}
+                            aria-expanded={open}
+                          >
+                            +{followers.length}
+                            <ChevronRight size={12} strokeWidth={2.5}
+                              style={{ transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s ease' }} />
+                          </button>
+                        )}
                       </div>
-                      {isSelected && (
-                        <Check className="account-selected-checkmark" size={14} strokeWidth={3} stroke="var(--accent)" />
-                      )}
-                    </button>
+                      {open && followers.map(f => renderItem(f, { nested: true }))}
+                    </div>
                   );
                 })}
               </div>

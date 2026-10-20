@@ -4167,6 +4167,54 @@ body.light-theme .pt-btn-apply.active {
   flex: 1 1 auto;
 }
 
+/* Nested account list: a group shows its leader; its followers expand underneath. */
+.account-dropdown-menu { min-width: 300px; }
+.account-dropdown-list { max-height: 360px; }
+
+.account-dropdown-group + .account-dropdown-group,
+.account-dropdown-group + .account-dropdown-item,
+.account-dropdown-item + .account-dropdown-group {
+  border-top: 1px solid var(--border);
+}
+
+.account-dropdown-group-row {
+  display: flex;
+  align-items: stretch;
+}
+
+.account-dropdown-group-row > .account-dropdown-item {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.account-dropdown-expand {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  padding: 0 10px;
+  border: 0;
+  border-left: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  font-family: 'Inter', sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.account-dropdown-expand:hover {
+  background: var(--bg3);
+  color: var(--accent);
+}
+
+.account-dropdown-item.nested {
+  padding-left: 28px;
+  font-size: 12.5px;
+  background: rgba(163, 113, 247, 0.03);
+}
+
 .account-dropdown-item-icon {
   color: var(--text-dim);
 }
@@ -7244,6 +7292,14 @@ details.dr-note p {
 }
 
 .ag-chip button:hover:not(:disabled) { color: #f85149; }
+
+/* Group leader (migration 064): the account the group follows. */
+.ag-chip.leader {
+  border-color: #a371f7;
+  background: rgba(163, 113, 247, 0.18);
+  font-weight: 600;
+}
+.ag-chip.leader > svg { color: #a371f7; }
 
 .ag-add,
 .ag-actions {
