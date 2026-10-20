@@ -6670,8 +6670,12 @@ async function startSingleAccountEngine(account) {
               // contractValue) keep the notional-lot basis unchanged.
               const rawNet = t.sellQty * t.entrySellPrice - t.entryBuyPrice * ratioLong;
               const netUsd = t.buyLeg.contractValue ? rawNet * t.buyLeg.contractValue : rawNet;
-              log(`[${accountState.name}] ▼ ENTRY: ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} | Qty: ${ratioLong.toFixed(2)}:${t.sellQty} | Net: $${netUsd.toFixed(2)}`);
-              notifyTrade({ title: '📥 LIVE ENTRY', detail: `${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} · qty ${ratioLong.toFixed(2)}:${t.sellQty} · net $${netUsd.toFixed(2)} · spot ${Math.round(t.entrySpotPrice)}` });
+              // Triplet: the hedge (3rd long) that was actually bought — strike × contracts @ entry.
+              const hedgeNote = (t.hedgeLeg?.symbol && (t.hedgeLeg.lotSize || 0) > 0)
+                ? ` · hedge ${t.hedgeLeg.strike} × ${longContracts(t.hedgeLeg)} @ $${Number(t.hedgeLeg.entryPrice ?? 0).toFixed(2)}`
+                : '';
+              log(`[${accountState.name}] ▼ ENTRY: ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} | Qty: ${ratioLong.toFixed(2)}:${t.sellQty} | Net: $${netUsd.toFixed(2)}${hedgeNote}`);
+              notifyTrade({ title: '📥 LIVE ENTRY', detail: `${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} · qty ${ratioLong.toFixed(2)}:${t.sellQty} · net $${netUsd.toFixed(2)}${hedgeNote} · spot ${Math.round(t.entrySpotPrice)}` });
             }
           } catch (err) { logError(`[${accountState.name}] Entry persistence error:`, err); }
         }
