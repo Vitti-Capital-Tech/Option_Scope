@@ -323,6 +323,8 @@ async function startSingleAccountEngine(account) {
     // USD, null = the underlying's default (BTC 15, ETH 10, XAUT 5).
     oiFilterEnabled: false,
     oiMaxCapM: null,
+    // OI filter mode (migration 065): 'lock' = Delta's lock only; 'cap' = lock or OI ≥ oiMaxCapM.
+    oiFilterMode: 'lock',
     // Partial scale-down controls (migration 063) — PAPER only; live keeps 10 / 10 / 50.
     partialScaleEnabled: true,
     partialScaleLotPct: 10,
@@ -629,6 +631,7 @@ async function startSingleAccountEngine(account) {
           // Delta OI-limit filter (migration 062; paper AND live).
           oiFilterEnabled: data.oi_filter_enabled ?? false,
           oiMaxCapM: data.oi_max_cap_m != null ? Number(data.oi_max_cap_m) : null,
+          oiFilterMode: data.oi_filter_mode === 'cap' ? 'cap' : 'lock',
           // Partial scale-down controls (migration 063) — paper only.
           partialScaleEnabled: data.partial_scale_enabled ?? true,
           partialScaleLotPct: data.partial_scale_lot_pct != null ? Number(data.partial_scale_lot_pct) : 10,
@@ -3564,7 +3567,8 @@ async function startSingleAccountEngine(account) {
       // pool and the hedge picker, like an excluded strike. Pricing lookups (ATM intrinsics)
       // still see the full chain. New entries only — open positions are left alone.
       const oiFilterOn = !!config.oiFilterEnabled;
-      const oiCapM = effectiveOiCapM(config.oiMaxCapM, underlying);
+      // Mode 'lock' (default, migration 065) → null cap = Delta's lock only.
+      const oiCapM = config.oiFilterMode === 'cap' ? effectiveOiCapM(config.oiMaxCapM, underlying) : null;
       const oiOk = (t) => !oiFilterOn || !isOiBlocked(t, oiCapM);
       const oiBlocked = { call: [], put: [] };
       if (oiFilterOn) {
@@ -3854,7 +3858,7 @@ async function startSingleAccountEngine(account) {
           .slice(0, 3)
           .map(([k, v]) => `${k}:${v}`)
           .join(' ');
-        log(`[${accountState.name}] Evaluating ${topSpreads.length} candidate spreads for entry (Spot: ${spotPrice}, ATM Strike: ${atmStrike})${rejSummary ? ` | pool ${callTickers.length}c/${putTickers.length}p, top rejects: ${rejSummary}` : ''}${excludedStrikes.size ? ` | excluded strikes: ${[...excludedStrikes].sort((a, b) => a - b).join(',')}` : ''}${oiFilterOn && (oiBlocked.call.length || oiBlocked.put.length) ? ` | OI-blocked (≥ $${oiCapM}M or locked):${oiBlocked.call.length ? `calls ${oiBlocked.call.sort((a, b) => a - b).join(',')}` : ''}${oiBlocked.call.length && oiBlocked.put.length ? ' · ' : ''}${oiBlocked.put.length ? `puts ${oiBlocked.put.sort((a, b) => a - b).join(',')}` : ''}` : ''}`);
+        log(`[${accountState.name}] Evaluating ${topSpreads.length} candidate spreads for entry (Spot: ${spotPrice}, ATM Strike: ${atmStrike})${rejSummary ? ` | pool ${callTickers.length}c/${putTickers.length}p, top rejects: ${rejSummary}` : ''}${excludedStrikes.size ? ` | excluded strikes: ${[...excludedStrikes].sort((a, b) => a - b).join(',')}` : ''}${oiFilterOn && (oiBlocked.call.length || oiBlocked.put.length) ? ` | OI-blocked (${oiCapM != null ? `≥ $${oiCapM}M or locked` : 'Delta-locked'}):${oiBlocked.call.length ? `calls ${oiBlocked.call.sort((a, b) => a - b).join(',')}` : ''}${oiBlocked.call.length && oiBlocked.put.length ? ' · ' : ''}${oiBlocked.put.length ? `puts ${oiBlocked.put.sort((a, b) => a - b).join(',')}` : ''}` : ''}`);
         if (topSpreads.length === 0) {
           // Log top rejection reason to diagnose why 0 candidates
           const topFilter = Object.entries(totalRejected)

@@ -102,10 +102,14 @@ export function effectiveOiCapM(capM, underlying) {
   const n = Number(capM);
   return capM != null && capM !== '' && Number.isFinite(n) && n > 0 ? n : defaultOiCapM(underlying);
 }
-/** True when no new leg may be opened on this ticker: Delta locked it, or OI ≥ cap. Unknown OI → allowed. */
+/**
+ * True when no new leg may be opened on this ticker: Delta locked it, or OI ≥ cap.
+ * capM null = Delta's lock only (OI filter mode 'lock', migration 065). Unknown OI → allowed.
+ */
 export function isOiBlocked(t, capM) {
   if (!t) return false;
   if (t.oiLocked === true) return true;
+  if (capM == null) return false;
   const oi = Number(t.oiUsd);
   return t.oiUsd != null && Number.isFinite(oi) && oi >= Number(capM) * 1e6;
 }

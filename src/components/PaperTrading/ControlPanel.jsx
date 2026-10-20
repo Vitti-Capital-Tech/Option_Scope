@@ -307,7 +307,7 @@ export default function ControlPanel({
               <div className="pt-cluster-fields">
                 <div key="oiFilterEnabled" className="form-group">
                   <label htmlFor="oiFilterEnabled" className="pt-field-label" style={{ marginBottom: 0, cursor: 'pointer' }}
-                    title="Delta's contract-level OI limit: once a strike's total open interest reaches the cap, Delta allows only reduce-only orders there. On: no new leg (long, short or hedge) on a strike that Delta has locked or whose OI (USD) is at/over Max OI. New entries only.">
+                    title="Delta's contract-level OI limit: once a strike's total open interest reaches the cap, Delta allows only reduce-only orders there. On: no new leg (long, short or hedge) on a strike that Delta has locked (or, in Manual mode, whose OI (USD) is at/over Max OI). New entries only.">
                     OI Limit
                   </label>
                   <div style={{ height: 34, display: 'flex', alignItems: 'center' }}>
@@ -319,6 +319,25 @@ export default function ControlPanel({
                   </div>
                 </div>
                 {draftConfig?.oiFilterEnabled && (
+                  <div key="oiFilterMode" className="form-group">
+                    <label className="pt-field-label" style={{ marginBottom: 0 }}
+                      title="Delta Lock: skip only the strikes Delta has locked (reduce-only). Manual: also skip strikes whose OI (USD) is at/over the Max OI you set.">
+                      Block By
+                    </label>
+                    <div style={{ height: 34, display: 'flex', alignItems: 'center' }}>
+                      <div className="pt-seg" role="group" aria-label="OI filter mode">
+                        {[['lock', 'Delta Lock'], ['cap', 'Manual']].map(([m, label]) => (
+                          <button key={m} type="button"
+                            className={`pt-seg-btn ${(draftConfig?.oiFilterMode ?? 'lock') === m ? 'on' : ''}`}
+                            onClick={() => updateDraftConfig('oiFilterMode', m)}>
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {draftConfig?.oiFilterEnabled && draftConfig?.oiFilterMode === 'cap' && (
                   <div key="oiMaxCapM" className="form-group">
                     <label className="pt-field-label" style={{ marginBottom: 0 }}
                       title={`Max open interest per strike, in millions of USD. Default for ${underlying || 'BTC'}: $${defaultOiCapM(underlying)}M (Delta's cap).`}>
