@@ -27,7 +27,12 @@ A `paper_trading_accounts` row now carries two extra columns:
 | `mode`         | `'paper'` (simulated, default) or `'live'` (linked to Delta Exchange).  |
 | `live_enabled` | Kill-switch. Real orders stay OFF until this is explicitly `true`.      |
 
-Switching an account back to `paper` in the UI also forces `live_enabled = false`.
+`mode` is chosen when the account is created and is **read-only afterwards** (2026-10-24):
+the Edit modal passes `lockedMode` (the account's own mode) to `DeltaCredentialsSection`, so
+Paper/Live shows as a fixed badge, and `handleEditSubmit` saves the stored mode whatever the
+form holds. A paper↔live switch would hand an account with open positions from one engine
+flow to the other (and is a prerequisite for the planned live/paper engine split) — create a
+new account instead. A paper account always saves `live_enabled = false`.
 
 ## Strategy version (live = stable)
 
@@ -63,11 +68,17 @@ the testbed. Full mechanism:
 > 1. **Min IV Edge (`min_iv_diff`)** is now configured per schedule window (default 5%) and removed from the global Control Panel filter bar for all accounts.
 > 2. **All Positions Same Type (`all_same_type` & `same_type`)** can be enabled per schedule window to dedicate 100% of that window's combined capacity strictly to Calls or Puts (e.g. `4C / 0P` or `0C / 4P`), bypassing `Split %`. Live execution filters candidates to only open the selected type.
 > 
-> **Hedge Leg (3rd long) promoted to Live (2026-10-13):** the per-window **Hedge** toggle, Hedge Lot %, Max Hedge Price and Hedge IV Diff are shown on live windows (any strategy version) and are **off by default**. With it on, an armed entry sends three orders — long, short, then the hedge long (`${id}-HB`, chased like the entry legs with `ENTRY_CHASE`) — and the hedge carries a spot-triggered **TP bracket at the same level as the first long's TP** (moved with it by `syncExitBrackets` when exit points change). The hedge is a whole number of contracts (short contracts × Hedge Lot %, rounded; < 1 contract skips the spread) on the long's contract-value basis. If the hedge still has not filled after the chase, the spread is kept as a plain 2-leg, the hedge dropped, and a Telegram failure alert is sent ("Hedge leg (3rd long) did not fill after the entry chase"). Strike choice, the 3-leg Max Net Debit gate and the ATM P&L gate are the same as paper; the resting/catch-all exit closes the hedge with the long and short (`-HX`). If the hedge's own TP bracket fires on Delta first, the catch-all books it at the bid (approximate). The bracket re-arm path does not re-arm a missing hedge bracket. **Shared hedge strikes (live):** several pairs may hold their hedge on the same strike. Delta nets a symbol into one position with ONE bracket that closes the whole position, so: (1) each pair's hedge is exited by the engine at **its own pair's level** (catch-all, reduce-only, only that pair's contracts; `sweepResidualLegs` keeps the contracts other pairs' hedges hold on the symbol, `closedHedgeIds`); (2) the Delta TP bracket on the symbol is only the safety net and sits at the **farthest** of the sharing pairs' levels (call: highest, put: lowest) — `syncSharedHedgeBrackets`, run after every cycle and on bracket re-syncs, cancel + recreate when a pair is added/exits or exit params change (`hedgeLeg.brkComputed` = the pair's own level, `hedgeLeg.brkLevel` = the level resting on Delta; failed moves retry every minute with one Telegram alert, since a bracket left at a nearer pair's level would close every pair's hedge qty there; a hedge that joins a shared strike moves the bracket at once, during entry, not at the end of the cycle). A hedge bought onto a symbol another hedge already holds goes without a bracket. Hedges still never share a symbol with a main long/short (`liveHedgeBlocked`; new longs/shorts also skip held hedge strikes), because the long/short size checks and brackets assume one leg per symbol; if the gate's hedge strike was taken by a long/short meanwhile, the next-best hedge is used only if it still passes the ATM P&L / ROI floors. **The hedge always leaves with its pair:** besides the catch-all (TP/SL level, expiry) and manual / Close All exits, which close it inline, `closeHedgeWithPair` closes this pair's hedge contracts (reduce-only MARKET) and books `${id}-HX` when the long ladder fully fills, when reconcile finds both legs closed on Delta (a bracket fired or a manual close there), when the last leg is closed by hand, and when a long-only is replaced by a new pair; a failed close raises a Telegram alert.
+> **Hedge Leg (3rd long) promoted to Live (2026-10-13):** the per-window **Hedge** toggle, Hedge Lot %, Max Hedge Price and Hedge IV Diff are shown on live windows (any strategy version) and are **off by default**. With it on, an armed entry sends three orders — long, short, then the hedge long (`${id}-HB`, chased like the entry legs with `ENTRY_CHASE`) — and the hedge carries a spot-triggered **TP bracket at the same level as the first long's TP** (moved with it by `syncExitBrackets` when exit points change). The hedge is a whole number of contracts (short contracts × Hedge Lot %, rounded; < 1 contract skips the spread) on the long's contract-value basis. If the hedge still has not filled after the chase, the spread is kept as a plain 2-leg, the hedge dropped, and a Telegram failure alert is sent ("Hedge leg (3rd long) did not fill after the entry chase"). Strike choice, the 3-leg Max Net Debit gate and the ATM P&L gate are the same as paper; the resting/catch-all exit closes the hedge with the long and short (`-HX`). If the hedge's own TP bracket fires on Delta first, the catch-all books it at the bid (approximate). The bracket re-arm path does not re-arm a missing hedge bracket. **Shared hedge strikes (live):** several pairs may hold their hedge on the same strike. Delta nets a symbol into one position with ONE bracket that closes the whole position, so: (1) each pair's hedge is exited by the engine at **its own pair's level** (catch-all, reduce-only, only that pair's contracts; `sweepResidualLegs` keeps the contracts other pairs' hedges hold on the symbol, `closedHedgeIds`); (2) the Delta TP bracket on the symbol is only the safety net and sits at the **farthest** of the sharing pairs' levels (call: highest, put: lowest) — `syncSharedHedgeBrackets`, run after every cycle and on bracket re-syncs, cancel + recreate when a pair is added/exits or exit params change (`hedgeLeg.brkComputed` = the pair's own level, `hedgeLeg.brkLevel` = the level resting on Delta; failed moves retry every minute with one Telegram alert, since a bracket left at a nearer pair's level would close every pair's hedge qty there; a hedge that joins a shared strike moves the bracket at once, during entry, not at the end of the cycle). A hedge bought onto a symbol another hedge already holds goes without a bracket. Hedges still never share a symbol with a main long/short (`liveHedgeBlocked`; new longs/shorts also skip held hedge strikes), because the long/short size checks and brackets assume one leg per symbol; if the gate's hedge strike was taken by a long/short meanwhile, the next-best hedge is used only if it still passes the ATM P&L / ROI floors. **The hedge always leaves with its pair:** besides the catch-all (TP/SL level, expiry) and manual / Close All exits, which close it inline, `closeHedgeWithPair` closes this pair's hedge contracts (reduce-only MARKET) and books `${id}-HX` when the **short is bought back** (2026-10-23 — see [Hedge exit with the short](#hedge-exit-with-the-short--failed-hedge-closes-2026-10-19--23)), when the long ladder fully fills, when reconcile finds both legs closed on Delta (a bracket fired or a manual close there), when the last leg is closed by hand, and when a long-only is replaced by a new pair. A failed close is never booked: the hedge stays tracked and is retried (same section).
+>
+> **Hedge depth fallback (2026-10-21).** If the chosen hedge strike's ask depth is smaller than the hedge contracts, the candidate loop switches to the best other qualifying hedge strike (`hedgeOptionsFor`) whose ask depth fits and that still clears the ATM P&L / ROI floors (`spread.atmMinPnl` / `atmMinRoi`) and Max Net Debit — log `↪ … hedge X ask depth D < N needed — using Y instead`. None fits → that candidate is skipped. Before this, the execute-time depth guard skipped the whole entry (Dg PUT 83600/82200, while 81400 / 81000 also qualified).
+>
+> **Partial Scale-Down settings promoted to Live (2026-10-23):** the Control Panel **Partial Scale-Down** section (migration `063`: on/off, Lot Step %, P&L Step %, Max of Long %) is shown for live accounts too, and `applyAtmRatioScaling` reads it for every account (defaults ON / 10 / 10 / 50 — the same values live used before, so nothing changes until edited; no migration needed).
 >
 > Schedule windows copied into a live account (Schedule Panel **Copy from account**, or **Copy Schedule Windows From** at account creation) keep their hedge settings (Shared Long Strikes is still forced to 0 — paper only). Applying a copied set replaces every window at once, so with open positions the UI asks for confirmation first — caps and exit rules change immediately.
 
-> **Open Interest limit filter (migration `062`, promoted to Live 2026-10-14):** Delta makes an option strike reduce-only once its market-wide open interest reaches the cap (BTC 15M, ETH 10M, XAUT 5M; ticker field `oi_reduce_only_mode`, OI in USD `oi_value_usd`) — an opening order there is rejected. Control Panel → **Open Interest → OI Limit** (off by default) with **Max OI** ($M; default by underlying) makes the engine skip every strike that is locked or at/over the cap for the long, the short and the hedge — new entries only; exits (reduce-only) are unaffected.
+> **Open Interest limit filter (migration `062`, promoted to Live 2026-10-14):** Delta makes an option strike reduce-only once its market-wide open interest reaches the cap (BTC 15M, ETH 10M, XAUT 5M; ticker field `oi_reduce_only_mode`, OI in USD `oi_value_usd`) — an opening order there is rejected. Control Panel → **Open Interest → OI Limit** (off by default) makes the engine skip every blocked strike for the long, the short and the hedge — new entries only; exits (reduce-only) are unaffected. **Block By** (`oi_filter_mode`, migration `065`): **Delta Lock** (default, `lock`) skips only strikes Delta has locked; **Manual** (`cap`) also skips strikes whose OI is at/over **Max OI** ($M; empty = BTC 15 / ETH 10 / XAUT 5). Lock became the default because Delta's real cap is higher than $15M — strikes at $17–21M stayed open while only a ~$30M strike was locked; rows that already had a Max OI set were migrated to Manual.
+
+> **Delta `trading_status` filter (all accounts):** products whose `trading_status` is not `operational` (from the shared product list, `getSharedProducts`, refreshed every few minutes) are left out of the entry scan and the hedge picker (`tradableOk`), logged once per change (`⊘ Delta trading disrupted on N product(s)`). Open positions are unaffected.
 
 ## Daily report (`live_daily_stats`, migration 045)
 
@@ -253,7 +264,7 @@ Telegram outage can never crash or block the engine.
 | --- | --- | --- |
 | `TELEGRAM_BOT_TOKEN` | yes | Bot token from **@BotFather** (one bot serves every chat) |
 | `TELEGRAM_CHAT_ID` | no | **Default/fallback** chat id — used for accounts without their own (per-account) chat id |
-| `TELEGRAM_ERROR_CHAT_ID` | no | **Dedicated error channel.** When set, every 🚨 LIVE TRADING FAILURE alert (incl. admin alerts) goes **only** here, so account / default chats get trade entries and exits only. Add the bot as an admin of the channel. Unset = errors go to the account / default chat |
+| `TELEGRAM_ERROR_CHAT_ID` | no | **Dedicated error channel.** When set, every live failure alert (🔴 / 🟠 / 🟡, incl. admin alerts) and every ✅ RESOLVED message goes **only** here, so account / default chats get trade entries and exits only. Add the bot as an admin of the channel. Unset = errors go to the account / default chat |
 | `TELEGRAM_DEDUPE_MS` | no (default `60000`) | Suppress identical **failure** alerts within this window (trade events are never deduped) |
 | `TELEGRAM_MIN_GAP_MS` | no (default `1200`) | Minimum gap between two sends to the **same** chat |
 | `TELEGRAM_GLOBAL_GAP_MS` | no (default `150`) | Minimum gap between **any** two sends, bot-wide across every chat |
@@ -266,6 +277,51 @@ Telegram outage can never crash or block the engine.
 Only the **bot token** is fundamentally required now; a message is sent when the token
 is set **and** a destination resolves (a per-account chat id, else the global
 `TELEGRAM_CHAT_ID`). If neither resolves, alerts are **silently disabled** (logged once).
+
+**Severity (2026-10-24).** Every failure alert is graded by `classifyAlert({ context, errMsg,
+extra, severity })` and titled **🔴 CRITICAL**, **🟠 CHECK SOON** or **🟡 NO MONEY RISK — LIVE
+ALERT** (replacing `🚨 LIVE TRADING FAILURE`), with a closing *Money at risk: YES / POSSIBLE /
+NO* line. A caller may force `severity`; otherwise, in order:
+
+| Level | Matches |
+| --- | --- |
+| 🔴 critical | error codes `orphan-unprotected-unknown`, `untracked-short`, `untracked-long-with-short`, `untracked-long-breached`, `short-without-long` |
+| 🟠 high | error codes `positions-all-missing`, `close-unverified`, `short-close-unverified`, `orphan-protected`, `orphan-collision-protected`, `swap-not-flat`, `hedge-close-failed`, `hedge-not-filled`, `pexclean-failed`, `hedge-bracket-move-failed` |
+| 🟡 low | `Entry ABORTED` / `Entry not persisted` (the account was left flat) |
+| 🟠 high | `Hedge close FAILED`, or a `-HX` / `-HXL` order tag |
+| 🔴 critical | `UNPROTECTED` (capitals — case-sensitive, so a failed bracket's "may be unprotected" is not critical), `Protective market close FAILED`, `NO Delta credentials` |
+| 🟡 / 🔴 / 🟠 | `Order send FAILED` / `CLOSE FAILED` / `STOP placement FAILED`: entry tags `-EB` / `-ES` / `-HB` → low; else `CLOSE FAILED` → critical (incl. the unwind closes `-EAB` / `-EAS` / `-ORPHX`); else high |
+| 🟠 high | anything else |
+
+**✅ RESOLVED.** Condition-based alerts are tracked in the engine (`openIssues`, `raiseIssue(key,
+args, { admin })` / `resolveIssue(key, how)`); when the condition clears, `notifyLiveResolved`
+sends one `✅ RESOLVED — LIVE ALERT` (*Was* / *Now* / *Open for*) to the same destination (an admin
+alert's resolution also goes to the global chat when no error channel is set). One-off events
+(aborted entry, rejected order) are not tracked. **In memory only** — a restart forgets open
+issues (a condition still present re-alerts).
+
+| Key | Resolves when |
+| --- | --- |
+| `orphan:<symbol>` | the untracked position is gone (closed) or now tracked (adopted) |
+| `positions-all-missing` | the tracked legs are back in Delta's list / all accounted for |
+| `short-close-unverified:<id>` | the short is visible again, its resting buy-back fill is booked, an external short exit is converted, or the row is gone |
+| `close-unverified:<id>` | the legs are visible again, or the row is gone |
+| `short-without-long:<id>` | the short is no longer open without its long, or the row is gone |
+| `hedge-close:<id>` | the hedge is sold / cash-settled (or the row left the book — then *confirm on Delta that the hedge is flat*) |
+| `hedge-brk:<symbol>` | the shared hedge TP moved to the farthest pair's level |
+| `sex-missing:<id>` | the short's buy-back rests on Delta, or the row is gone |
+
+Trade events go to the account / default chat. Strikes read long / short / hedge, and the
+same text is written to the engine log (`▼ ENTRY`, `▲ LIVE FULL EXIT` / `EXPIRY`, `✋ MANUAL EXIT`):
+
+- **📥 LIVE ENTRY** with a hedge: `PUT 81200/79600/78800 · qty L:S:H · long/short net $X · hedge @ $p
+  (−$cost) · total net $Y · spot …` — hedge cost = `hedgeLeg.lotSize × entryPrice`, total net =
+  long/short net − hedge premium. Without a hedge: `… · net $X`.
+- **🛡️ HEDGE EXIT** / **🛡️ HEDGE EXPIRY**: `PUT 81200/79600/78800 · hedge × N · entry $a → exit|settled
+  $b · <reason>`.
+- **📤 FULL EXIT** / **📤 EXPIRY EXIT** and **🙋 MANUAL EXIT**: the long/short/hedge strikes plus
+  ` · hedge × N $entry → [settled ]$exit (P&L ±$x)` for a hedge closed inside the exit (no exit fee at
+  expiry). A full exit whose hedge close failed adds ` · hedge <strike> close FAILED — retrying`.
 
 **Telegram groups (2026-10-14).** An account's alerts can go to a Telegram **group** instead of a personal chat: Edit → Telegram Alerts → **Connect Telegram** reveals, next to "Open Telegram & press Start", a **Connect a Group** button (`t.me/<bot>?startgroup=<code>`) — the user picks a group, Telegram adds the bot and posts `/start@<bot> <code>`, and the listener stores the group's (negative) chat id. If the bot is already in the group Telegram may not post the command, so the exact command is shown with a **Copy** button to send in the group by hand (the listener's `/start(@bot)? <code>` match handles both). Several accounts can link to one group (each alert names its account). **Group → supergroup:** the chat id changes; a send to the old id returns 400 `migrate_to_chat_id` → `telegram.js` resends to the new id, remembers old → new, and calls the engine's `migrateTelegramChat` (via `setChatMigrationHandler`), which rewrites every account linked to the old id; the listener does the same on Telegram's migration service message (`msg.migrate_to_chat_id`).
 
@@ -453,11 +509,23 @@ Two mechanisms run together — **resting profit exits** (engine-detected) and
   below), and a resting reduce-only **limit BUY** rests on the short leg @
   `shortExitPrice` (default $1.1), tag `${id}-SEX` — the short buy-back (profit),
   sitting in Open Orders.
+- **Missing buy-back re-placed (2026-10-24).** If that send failed (Shubham1 P-BTC-81600,
+  2026-10-21: Delta 502 — the short had no buy-back and never exited at the short-exit price),
+  `pos.sellLeg.exitOrderId` is empty. Every 2 min (`sexRetryAt`) the full-spread branch of
+  `handleLiveRestingExit` looks in `live.orders()` for an open **buy** on the short symbol whose
+  `client_order_id` starts with `${id}-SEX` and adopts it; else it places a reduce-only limit BUY
+  at `eff.shortExitPrice` tagged `${id}-SEX` (first try — dedupes a 5xx that did place it) or
+  `${id}-SEX-R<n>` once Delta has called the tag a duplicate with no such open order
+  (`sellLeg.sexRetryN`). Reduce-only *no position* (`alreadyClosed`) = the short is already flat →
+  no alert (reconcile converts it). On success `sell_leg` is persisted and the log reads
+  `◎ Short buy-back re-placed` / `found on Delta and adopted`; otherwise a one-time 🟠 issue
+  `sex-missing:<id>` is raised, resolved once the order rests or the position leaves the book.
 - **When the resting @1.1 fully fills** — detected by its `order_id` in recent
   `/v2/fills` (restart-safe, id persisted in `sell_leg`) **and** confirmed by the short
   leg's exchange position size reaching **0**: book the short exit (`${id}-SE` @ the limit
   price), convert to long-only, and place the **fixed long ladder** as resting **limit
-  SELL** orders. (The short's SL bracket auto-cancels once the short is flat.)
+  SELL** orders. (The short's SL bracket auto-cancels once the short is flat.) The **hedge** is
+  closed at the same moment (before the long-only margin is recomputed; `hedge_leg` persisted).
   - **Why the size-0 confirmation:** an `order_id` appears in `/v2/fills` on the **first
     partial fill**, not only a full one. Laddering on a partial would drop long exit slices
     while the short is still partly bought back ("lot qty not full but exit slices appear").
@@ -473,7 +541,7 @@ Two mechanisms run together — **resting profit exits** (engine-detected) and
 - **ATM-ratio scale-down (long leg):** while the spread is still full, each cycle runs
   the **shared** `applyAtmRatioScaling` helper — the *same* code the active model uses.
   When the live ATM ratio has risen and gross PnL clears the checkpoint threshold, it
-  reduces the long lot in fractional 10% steps, books each slice as an `${id}-PE-<lots>`
+  reduces the long lot in fractional steps (Lot Step %, default 10 — Control Panel *Partial Scale-Down*, live since 2026-10-23), books each slice as an `${id}-PE-<lots>`
   partial, and fires a **reduce-only MARKET close** (`live.closeSymbol`, IOC — `${id}-PEX-…`).
   Unlike the short buy-back and the long ladder, this trigger is **dynamic** (depends on the
   live ratio at the moment), so it can't sit as a resting order — it market-closes for an
@@ -759,8 +827,8 @@ qty)`**:
 `calcMargin` runs **low** against Delta. It assumes a flat 200× on the short, ignores the short's premium, and is only re-marked by the self-heal above. On 2026-09-23, Pk and Biswal Holdings were sized to a "remaining" $1,063 and $720. Delta had only ~$100 free, because it held ~30% more on the open book than the engine's `usedMargin`. Every short was rejected with `insufficient_margin` (Pk's first attempt with `insufficient_commission`), and each retry bought and unwound the long for a ~$6–9 loss per attempt. Four guards now sit on top of the sizing above. All of them use the engine's margin estimate as is, with no multiplier: the order uses all of Delta's free margin above the allocation reserve.
 
 1. **Free-margin cap.** Each sizing cycle reads `balance` **and** `available_balance` in one wallet call (`live.walletSnapshot()`). The allocation reserve is `balance × (100 − allocation)%`, and `liveAvailLeft = available_balance − reserve`. The remaining budget is capped at `liveAvailLeft`, so **all** of Delta's free margin above the reserve is used, with **no safety factor** on the estimate. The `¤ LIVE sizing` line shows `Delta free $… − reserve $… → cap $…`, with `(BINDING)` when Delta's free margin is lower than the engine's own figure. If Delta omits `available_balance`, the engine logs a warning and sizes as before.
-2. **Pre-order check.** Before any order goes out, the entry's estimated margin must fit in `liveAvailLeft`, otherwise the entry is skipped (`Entry … skipped: needs ~$… margin …`). This runs **before the long is bought**, so there is no lossy unwind. Each successful entry draws `liveAvailLeft` down, so a second entry in the same cycle is checked against what is left. It also blocks the "minimum one unit" trade when the budget is `$0`.
-3. **Order fitted to Delta's available margin.** Each live candidate is sized against what Delta actually has free: `liveAvailLeft` minus what candidates sized earlier in the same cycle already claimed. If that is below the normal part, the part shrinks to it (log `⤵ LIVE size … fitted to Delta's available margin: part $… → $…`). If rounding the long up pushes the estimate over the free margin, the long steps down one contract at a time. If even 1 unit doesn't fit, the candidate is skipped instead of trading the minimum unit.
+2. **Pre-order check.** Before any order goes out, the entry's estimated margin must fit in `liveAvailLeft`, otherwise the entry is skipped (`Entry … skipped: needs ~$… margin …`). This runs **before the long is bought**, so there is no lossy unwind. Each successful entry draws `liveAvailLeft` down, so a second entry in the same cycle is checked against what is left. It also blocks the "minimum one unit" trade when the budget is `$0`. The same check also runs **before the candidate is staged** (before the cross-account governor reserves depth and before it takes a cap slot): a candidate that can't afford `newPos.margin` (incl. hedge) against `liveAvailLeft − liveStagedMargin()` is skipped with `slot left for the next candidate`, instead of taking the last slot, blocking the next pair with "cap reached" and then failing at execute.
+3. **Order fitted to Delta's available margin.** Each live candidate is sized against what Delta actually has free: `liveAvailLeft` minus `liveStagedMargin()` (the margins of the entries actually staged this cycle; it replaced `liveSizedSoFar`). The per-unit margin includes the **hedge premium** (`unitHedgeCost = ratioToUse × hedgeLotPct% × hedge ask × contract value`, also in the long-step-down estimate) so spread + hedge fit — on 2026-10-23 Dg CALL 82400/83400 had $851 free and needed $873 every minute because the hedge was left out. The `LIVE size` log shows `(incl. hedge $x)`. If that is below the normal part, the part shrinks to it (log `⤵ LIVE size … fitted to Delta's available margin: part $… → $…`). If rounding the long up pushes the estimate over the free margin, the long steps down one contract at a time. If even 1 unit doesn't fit, the candidate is skipped instead of trading the minimum unit.
 4. **Retry on a Delta margin rejection.** If Delta still rejects with `insufficient_margin` or `insufficient_commission`, an entry retry is queued. The retry re-reads Delta's available balance and sizes the order to it. If it is rejected again (**2 in a row**, `LIVE_MARGIN_MAX_RESIZE_RETRIES`), new live entries pause for `LIVE_MARGIN_COOLDOWN_MS` (default **10 min**), because each attempt buys and unwinds the long. The Telegram alert says which of the two happened. A successful live entry resets the streak. Retries also respect the per-minute entry-retry budget. Exits and position management keep running throughout.
 
 Paper accounts keep the `$195k` / 200× branch **unchanged** (the balance-sizing branch is
@@ -985,12 +1053,16 @@ Realtime — the UI polls the row).
 > active window changes — `resyncRestingOrders` then re-prices it back to the config. Don't
 > change the qty of the engine's ladder slices or of in-flight entry orders.
 
-### Account groups on live (migrations 052–054, 058)
+### Account groups on live (migrations 052–054, 058, 064)
 
 Live accounts can be grouped like paper ones (same mode and strategy version). A group may
 hold accounts of **different users** — e.g. an admin's group of client accounts (migration
 `052`); only the group's owner or an admin can add accounts or copy settings across it, and a
-client editing their own grouped account saves it for that account only. When settings are
+client editing their own grouped account saves it for that account only. Since migration `064`
+each group has a **leader** (`account_groups.leader_account_id`, chosen as *Group follows* in the
+Groups modal; default = first-created member): only a save on the leader is copied to the others,
+a save on a follower stays on that account until the leader's next save, and changing the leader
+copies the new leader's settings to the group at once. When settings are
 copied, each other member's **window Exit Points** get a random ±10–50 offset from the saved
 value (unique within the group per window, stable while the base value is unchanged —
 migrations `053`/`054`; see the LLD), so the group's exits don't all sit on one spot level.
@@ -1001,7 +1073,7 @@ Since migration `058` each group chooses **Fixed** (the default, also for existi
 *From–To* range for Random, default 10–50). Fixed puts the saved account at its typed value and
 the others on an arithmetic progression around it — e.g. 5 accounts at step 25: −50, −25, 0, +25, +50,
 handed out in account creation order (a minus step that would go below 0 is replaced by the next plus
-step). Applying the setting re-copies the group's windows from its first-created account right away.
+step). Applying the setting re-copies the group's windows from the group leader right away.
 
 ### Excluded strikes on live (2026-10-07)
 
@@ -1286,6 +1358,8 @@ quantity is LESS THAN the top-of-book size on the side it would take**:
 | Short (sell) | BID | `bidSize` |
 | Hedge (buy) | ASK | `askSize` |
 
+A hedge strike too thin for the hedge size is swapped for another qualifying strike earlier, in the candidate loop (see the *Hedge depth fallback* note under [Strategy version](#strategy-version-live--stable)), so it rarely trips this guard.
+
 - **Source:** Delta's own L1 quote sizes — `quotes.bid_size` / `quotes.ask_size` (contracts),
   captured into the ticker as `bidSize` / `askSize` (`processTickerMessage` + `backfillTickers`,
   with a `best_bid_size` / `best_ask_size` fallback).
@@ -1312,6 +1386,99 @@ quantity is LESS THAN the top-of-book size on the side it would take**:
   what a stale size would produce, and guessing at a fix before measuring would be
   premature. Grep this line for a day to find out how old these numbers really run.
 - **Paper / dry-run / disarmed:** no-op (no real order is placed).
+
+### Entry quote gate (all accounts, 2026-10-21)
+
+Before the governor reserves depth and before a candidate takes a cap slot, every leg must
+have a live quote on the side it hits: the long and the short need a **two-sided** book; the
+long / hedge ask and the short bid must have a price — and, when Delta reports it, a size —
+updated within `ENTRY_QUOTE_FRESH_MS` (env, default `60000`) and a size > 0. The hedge (a cheap
+far strike) needs only its ask. Otherwise: `Entry candidate … skipped: no live two-sided quote — …`.
+Reason: at 21:57 UTC on 2026-10-21 `C-BTC-86400` showed a ~$35 bid while no buyer existed —
+8 accounts bought the long, could not sell the short even at $1, and unwound three minutes in a row.
+
+### Entry no-fill symbol block (armed live, 2026-10-24)
+
+When an entry is aborted because a leg was **accepted but nothing filled** — error exactly
+`long not filled after modifies`, `short not filled` or `<buy|sell> leg unfilled after chase`
+(not a rejection, margin, local `no-price` / `no-credentials` refusal, API error or partial
+long) — that leg's symbol is kept out of new entries for `ENTRY_NOFILL_BLOCK_MS` (env, default
+`180000`, min `30000`; map `noFillBlockedSymbols`). Log: `Entry candidate … skipped: <symbol>
+ignored until HH:MM:SS UTC — an entry leg on it did not fill (no buyer|seller)`. The 🟡 *Entry
+ABORTED* alert adds ` — <symbol> skipped for new entries for 3 min`. Reason: the same
+2026-10-21 21:57–21:59 UTC `C-BTC-86400` episode — 8 accounts × 3 tries each bought and unwound
+the long. (A Delta *rejection* keeps its own, longer `LIVE_REJECT_BLOCK_MS` block.)
+
+### Leg swap (replacing a long-only, 2026-10-21)
+
+When a better pair reuses a long-only's strike, the engine replaces it (`t._replaceableLongOnlyPos`
+→ `repPos` in the execute phase). The old long-only is now closed only **after every pre-check**
+passes — DB per-type / combined caps, buy / sell strike uniqueness (these queries exclude the row
+being replaced via `.neq('id', repPos.id)`), the depth guard, the margin check and the Delta
+pre-order position check (which ignores the old long's symbol). Any failed check leaves the old
+long-only untouched (Dg PUT 83600/82200: the long was sold and then the new pair was refused).
+The close is a reduce-only market order (`${id}-REPX`) + residual sweep; its hedge is closed
+too (kept as a hedge-only row if that fails). If the new pair trades the old long's symbol, the
+engine then waits up to 8 s for Delta to show it flat; if not, it logs, sends a Telegram failure
+(`swap-not-flat`) and skips the entry. If the old row was **parked as hedge-only** (its hedge
+close failed) and the new long is on the **same strike**, the new pair is **not placed** this
+cycle: the parked row still holds that `buy_strike`, and the unique index
+`(account, underlying, type, expiry, buy_strike)` would reject the insert after the Delta
+orders are already live.
+
+### Hedge exit with the short & failed hedge closes (2026-10-19 – 23)
+
+- **Exit with the short.** The hedge (3rd long) now leaves when the short is bought back,
+  instead of riding with the long ladder. Active model (paper, dry-run / disarmed live): the
+  short-leg-only exit calls `closeHedgeWithPair(pos, 'short leg exited')` before the long-only
+  margin is computed; any long-only row still holding a hedge closes it (`'short leg already
+  exited'`). Armed real (`handleLiveRestingExit`): the `-SEX` fill that places the ladder also
+  closes the hedge; the long-only branch closes a hedge still open on rows opened before this
+  change and retries a failed close every 5 min (`hedgeCloseRetryAt`).
+- **Failed close (AG Holdings 84800, 2026-10-19).** A market close rejected with
+  `no_liquidity_for_market_order` used to be booked as `-HX` anyway, the hedge nulled and the row
+  deleted — an untracked orphan on Delta. Now `closeHedgeWithPair` returns `false` and keeps the
+  hedge: it rests a reduce-only **limit SELL at the mark** (`${id}-HXL`, id/price stored in
+  `hedgeLeg.exitOrderId` / `exitOrderPx`, `hedge_leg` persisted) and raises a one-time 🟠 issue
+  `hedge-close:<id>` (✅ RESOLVED once the hedge is sold / settled). Retries every
+  `HEDGE_CLOSE_RETRY_MS` (5 min).
+- **Retry hardening (2026-10-24).** The resting `-HXL` is cancelled with
+  `live.cancelAndReadFill({ id, productId })`, which reads the fill from Delta's cancel response:
+
+  | Result | Action |
+  | --- | --- |
+  | `{ ok, filled ≥ contracts }` | book at the limit price (`exitOrderPx`) |
+  | `{ ok, 0 < filled < contracts }` | book the sold part as its own row (`trade_id` `${id}-HXP-${orderId}`), shrink the hedge, market-close the rest |
+  | `{ ok, filled 0 }` | market-close (re-rest at the new mark on failure) |
+  | `{ ok: false, gone: true }` (refused, confirmed off the open orders) + fill in `currentFillIds()` | filled — book at the limit |
+  | `gone` + no fill seen | wait one retry (`exitOrderGoneAt`) instead of market-selling — on a shared hedge strike that could sell another pair's contracts; still gone and unfilled next time → market-close |
+  | `{ ok: false, transient: true }` (cancel failed, may still rest) | return `false`, retry later |
+
+  Each retry uses a fresh `client_order_id` (Delta rejects a reused one): `hedgeLeg.closeAttempt`
+  → `-HX`/`-HXL`, then `-HX2`/`-HXL2`, `-HX3`/`-HXL3`, …. `cancelRestingOrders` **no longer**
+  cancels the hedge's `-HXL` (it would lose the fill read) — `closeHedgeWithPair` handles it.
+- **Hedge-only rows.** When a pair's main legs are gone but its hedge close failed, the row is
+  kept as a hedge-only row (long lot 0, `sell_qty` 0, margin = hedge premium) by `parkIfHedgeOpen`
+  instead of being deleted — on reconcile (pair closed on Delta), manual both-legs close, leg swap,
+  and when the ladder fully exits (still sends `🪜 LONG FULLY EXITED … hedge <strike> close pending
+  (retrying)`). Reconcile parks only positions that were really open on Delta (`_everOpenOnDelta`).
+  `handleLiveRestingExit` handles these rows first: retry every 5 min, delete the row once the
+  hedge is closed; past expiry, book at the `-HXL` limit price if that order filled before expiry
+  (id in fills), else at intrinsic (`expired (cash-settled)`), and delete. `reconcileOrphans` skips
+  them so they are not re-booked.
+- **Catch-all full exit (spot cross) checks the hedge close (2026-10-24).** A hedge with a resting
+  `-HXL` goes through `closeHedgeWithPair('full exit')` (booked as its own `-HX` row); otherwise the
+  `-HX` market close result is checked. On failure the hedge is left out of the exit's booking
+  (`heldHedge`), the pair is booked without it, the row is kept as hedge-only via `parkIfHedgeOpen`
+  (not deleted), a 🟠 `hedge-close:<id>` issue is raised and 📤 FULL EXIT adds
+  ` · hedge <strike> close FAILED — retrying`. (At expiry no order is sent — Delta cash-settles.)
+- **Manual exit.** `manualExitPosition` does the same for a hedge with a resting `-HXL`; a hedge
+  without one is market-closed (`-MXH`) and, if that close fails, it is likewise left out of the
+  booking, the row is kept as hedge-only and a 🟠 `hedge-close:<id>` issue is raised. A manual exit on a
+  **hedge-only** row closes just the hedge via `closeHedgeWithPair('manual exit')` and deletes the
+  row only if it closed.
+- **Cleanup.** `pruneOnceAlerts` drops per-position retry state (`hedgeCloseRetryAt`,
+  `sexRetryAt`) when a row leaves the book and resolves its `hedge-close` / `sex-missing` issues.
 
 ### Cross-account entry governor (shared depth budget)
 
@@ -1383,9 +1550,10 @@ live and a paper account chasing the same book contend with each other.
 > **Current behaviour (2026-10-06).** The broad pre-entry symbol guard ("Fix B" below) is **not** active — restored on
 > 2026-10-05 and reverted because it also blocked leg swaps. In its place (armed live only):
 >
-> - **Pre-order position check.** Right before each entry's orders are sent — after a leg swap has flattened its old
->   long — the engine reads Delta's positions and skips the entry if either leg's symbol already holds a position
->   (`skipped: Delta already has a position on …`). If positions can't be read, the entry is skipped (can't verify).
+> - **Pre-order position check.** Right before each entry's orders are sent the engine reads Delta's positions and
+>   skips the entry if either leg's symbol already holds a position (`skipped: Delta already has a position on …`). If
+>   positions can't be read, the entry is skipped (can't verify). For a leg swap the check runs **before** the old
+>   long-only is closed and ignores that long's symbol (see [Leg swap](#leg-swap-replacing-a-long-only-2026-10-21)).
 > - **Rejection by reason.** Margin rejections (`insufficient_margin` / `insufficient_commission`) re-size to Delta's
 >   available balance and retry (after 3 in a row, live entries pause 10 min) — unchanged. **Any other** Delta rejection
 >   (e.g. `bracket_order_position_exists`) blocks that symbol for `LIVE_REJECT_BLOCK_MS` (default 30 min) and alerts the
@@ -1651,7 +1819,9 @@ bookkeeping.
   the same spread render adjacently** under a group header — `<TYPE> · Buy <strike> / Sell
   <strike> · <expiry>`, the spread's **entry time** (⏱), and its **combined Net P&L** (both legs
   summed via `livePnlOf`, so the short's decay profit signs correctly). Legs with no engine row
-  form their own "Unlinked leg" group. A toolbar sorts/filters at the **group level** (pairs stay
+  form their own "Unlinked leg" group. Matching (`posBySymbol` in `TradingWorkspace.jsx`) maps
+  buy legs first and a sell leg only while `sellQty > 0` and never over a buy leg: a long-only
+  pair's stale `sellLeg` symbol used to pull another pair's long into its group. A toolbar sorts/filters at the **group level** (pairs stay
   together): **Sort** by Entry Time (newest↔oldest), Net P&L (winners↔losers), or Near TP/SL
   (spot's proximity to the nearest exit trigger across the group's legs); **Filter** by P&L
   (All / Winning / Losing) and Type (All / Calls / Puts). Defaults to entry-time, newest first.
@@ -1737,3 +1907,6 @@ forwards the signed headers unchanged, so the browser's HMAC stays valid.
 6. **Query-optimisation build:** run migrations `060` and `061` (`061` needs `055`/`057`
    first; its index builds briefly lock writes — run at a quiet time), restart the engine
    and redeploy the frontend.
+7. **Group leader / OI mode build:** run `064` (before deploying the frontend that reads
+   `leader_account_id`) and `065` (`oi_filter_mode`), restart the engine and redeploy the
+   frontend. The PM2 config (`engine/ecosystem.config.cjs`) sets `max_memory_restart: '900M'`.

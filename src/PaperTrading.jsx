@@ -472,7 +472,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     oiMaxCapM: null,
     // OI filter mode (migration 065): 'lock' = Delta's lock only (default); 'cap' = manual Max OI.
     oiFilterMode: 'lock',
-    // Paper-only partial scale-down controls (migration 063).
+    // Partial scale-down controls (migration 063) — paper AND live.
     partialScaleEnabled: true,
     partialScaleLotPct: 10,
     partialScaleThresholdPct: 10,
@@ -1329,11 +1329,17 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
 
   const handleEditSubmit = async (data) => {
     const trimmedName = data.name.trim();
-    const accountMode = data.mode === 'live' ? 'live' : 'paper';
+    // An account's mode never changes after creation (the edit form shows it read-only), so
+    // keep the stored mode whatever the form holds — a paper↔live switch would move an account
+    // with open positions between engine flows.
+    const editedAccount = accounts.find(a => a.id === activeAccountId);
+    const accountMode = editedAccount
+      ? (editedAccount.mode === 'live' ? 'live' : 'paper')
+      : (data.mode === 'live' ? 'live' : 'paper');
 
     setIsSavingAccount(true);
     try {
-      // Switching back to paper also disarms the live kill-switch.
+      // Mode is unchanged (read-only on edit); a paper account never keeps the live kill-switch armed.
       const updatePayload = accountMode === 'live'
         ? { name: trimmedName, mode: 'live' }
         : { name: trimmedName, mode: 'paper', live_enabled: false };
@@ -1344,10 +1350,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       const sellOff = Number.isFinite(data.entrySellOffset) ? data.entrySellOffset : 3;
       // Paper starting equity (initial + realized). Ignored by live accounts.
       const initBal = Number.isFinite(data.initialBalance) ? data.initialBalance : 3000;
-      const activeAccount = accounts.find(a => a.id === activeAccountId);
-      if (activeAccount?.default_config) {
+      if (editedAccount?.default_config) {
         updatePayload.default_config = {
-          ...activeAccount.default_config,
+          ...editedAccount.default_config,
           balanceAllocationPct: allocPct,
           initialBalance: initBal,
           entryBuyOffset: buyOff,
@@ -1921,7 +1926,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           oiFilterEnabled: data.oi_filter_enabled ?? false,
           oiMaxCapM: data.oi_max_cap_m != null ? Number(data.oi_max_cap_m) : null,
           oiFilterMode: data.oi_filter_mode === 'cap' ? 'cap' : 'lock',
-          // Paper-only partial scale-down controls (migration 063).
+          // Partial scale-down controls (migration 063) — paper AND live.
           partialScaleEnabled: data.partial_scale_enabled ?? true,
           partialScaleLotPct: data.partial_scale_lot_pct != null ? Number(data.partial_scale_lot_pct) : 10,
           partialScaleThresholdPct: data.partial_scale_threshold_pct != null ? Number(data.partial_scale_threshold_pct) : 10,

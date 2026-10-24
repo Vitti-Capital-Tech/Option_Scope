@@ -18,7 +18,7 @@ import { createHeartbeat } from './lib/heartbeat.js';
 import { createLiveExecutor, isLiveDryRun, longContracts, shortContracts, extractBalance } from './lib/liveExecution.js';
 import { reserveSpread as governorReserveSpread } from './lib/entryGovernor.js';
 import { createDailyStatsTracker } from './lib/dailyStats.js';
-import { notifyLiveFailure, notifyLiveTrade, sendTelegramMessage, setChatMigrationHandler, noteChatMigration } from './lib/telegram.js';
+import { notifyLiveFailure, notifyLiveResolved, notifyLiveTrade, sendTelegramMessage, setChatMigrationHandler, noteChatMigration } from './lib/telegram.js';
 import { getBalance } from './lib/deltaTradeApi.js';
 import { reportDbFailure, summarizeDbError } from './lib/dbHealth.js';
 import {
@@ -74,6 +74,11 @@ const ENTRY_LEG_MAX_MS = ENTRY_FILL_WAIT_MS * ENTRY_MODIFY_TRIES + 20000;
 // this long and the master is alerted, so the same doomed entry can't repeat every minute
 // (Biswal Holdings, 2026-10-05). Margin rejections are re-sized instead (see below).
 const LIVE_REJECT_BLOCK_MS = Math.max(60000, Number(process.env.LIVE_REJECT_BLOCK_MS ?? 1800000));
+// An entry leg that was ACCEPTED but could not fill (no buyer / seller even after the modifies —
+// e.g. C-BTC-86400 short, 2026-10-21 21:57–21:59, 8 accounts × 3 tries, each buying and unwinding
+// the long) keeps that symbol out of new entries this long, so the next minutes try other pairs
+// instead of paying the unwind again. Short on purpose: liquidity usually returns within minutes.
+const ENTRY_NOFILL_BLOCK_MS = Math.max(30000, Number(process.env.ENTRY_NOFILL_BLOCK_MS ?? 180000));
 const ENTRY_CHASE = {
   attempts: Math.max(0, Number(process.env.ENTRY_CHASE_ATTEMPTS ?? 2)),
   pollMs: Math.max(200, Number(process.env.ENTRY_CHASE_POLL_MS ?? 1200)),
@@ -105,6 +110,11 @@ const ENTRY_WARMUP_RETRY_MS = Math.max(500, Number(process.env.ENTRY_WARMUP_RETR
 // (fail-open, unchanged) — this only makes the age visible so we can find out how old
 // these values actually run before deciding whether they should gate anything.
 const DEPTH_SIZE_STALE_MS = Math.max(1000, Number(process.env.DEPTH_SIZE_STALE_MS ?? 10000));
+
+// Entry quote gate: a candidate enters only if each leg's price on the side it hits (and its
+// size, when Delta reports one) was updated within this window. Stricter than the 120s scan
+// freshness — an order hits the book NOW.
+const ENTRY_QUOTE_FRESH_MS = Math.max(5000, Number(process.env.ENTRY_QUOTE_FRESH_MS ?? 60000));
 
 // How long one evaluation cycle may run before the watchdog abandons it. Recovery is
 // per-account (the stuck cycle is fenced, a fresh one takes over) — it no longer restarts
@@ -325,7 +335,7 @@ async function startSingleAccountEngine(account) {
     oiMaxCapM: null,
     // OI filter mode (migration 065): 'lock' = Delta's lock only; 'cap' = lock or OI ≥ oiMaxCapM.
     oiFilterMode: 'lock',
-    // Partial scale-down controls (migration 063) — PAPER only; live keeps 10 / 10 / 50.
+    // Partial scale-down controls (migration 063) — paper AND live; defaults on / 10 / 10 / 50.
     partialScaleEnabled: true,
     partialScaleLotPct: 10,
     partialScaleThresholdPct: 10,
@@ -343,6 +353,7 @@ async function startSingleAccountEngine(account) {
   let tickerData = {}; // Live ticker data from WS
   let wsHandle = null;
   let symbolMeta = {};
+  let lastNotOperationalKey = ''; // last logged set of Delta-disrupted products (log on change only)
   // Entry cadence: entries run ONCE per wall-clock minute. `lastEntryMinute` is the
   // minute index (epoch ms / 60000) of the last cycle that was ALLOWED to open entries,
   // and it is stamped when that cycle STARTS — not when it ends. Stamping on completion
@@ -368,6 +379,8 @@ async function startSingleAccountEngine(account) {
   // symbol → until (ms): Delta rejected an entry leg on it for a non-margin reason
   // (LIVE_REJECT_BLOCK_MS). Armed real live only.
   const rejectBlockedSymbols = new Map();
+  // symbol → until (ms): an entry leg on it was accepted but did not fill (ENTRY_NOFILL_BLOCK_MS).
+  const noFillBlockedSymbols = new Map();
   let lastWsReconnectTime = 0;
   // Paper 4:30 AM IST full-deployment fill (paper only). `lastEntryIstMin` tracks the
   // previous entry-eligible cycle's IST minute so we can detect the upward crossing of
@@ -466,6 +479,28 @@ async function startSingleAccountEngine(account) {
     if (accountState.telegram_chat_id) {
       notifyLiveFailure({ account: accountState.name, chatId: '', ...args });
     }
+  }
+
+  // ── Open issues → ✅ RESOLVED ─────────────────────────────────────────────
+  // Condition-based alerts (an orphan on Delta, a leg missing from the positions list, a hedge
+  // that couldn't be closed, …) are tracked by key while their condition holds; when it clears,
+  // the group gets one ✅ RESOLVED message saying how. One-off event alerts (an aborted entry,
+  // a rejected order) are not tracked — nothing to resolve. In memory: a restart forgets open
+  // issues (a still-present condition simply re-alerts).
+  const openIssues = new Map(); // key → { context, admin, at }
+  function raiseIssue(key, args = {}, { admin = false } = {}) {
+    if (!openIssues.has(key)) openIssues.set(key, { context: args.context || '', admin, at: Date.now() });
+    if (admin) notifyAdmin(args); else notifyFailure(args);
+  }
+  function resolveIssue(key, how) {
+    const it = openIssues.get(key);
+    if (!it) return;
+    openIssues.delete(key);
+    log(`[${accountState.name}] ✅ Resolved: ${it.context} — ${how}`);
+    notifyLiveResolved({
+      account: accountState.name, context: it.context, how, openMs: Date.now() - it.at,
+      chatId: accountState.telegram_chat_id, alsoDefault: it.admin,
+    });
   }
 
   // Load + decrypt Delta credentials for live accounts. Requires the engine to
@@ -632,7 +667,7 @@ async function startSingleAccountEngine(account) {
           oiFilterEnabled: data.oi_filter_enabled ?? false,
           oiMaxCapM: data.oi_max_cap_m != null ? Number(data.oi_max_cap_m) : null,
           oiFilterMode: data.oi_filter_mode === 'cap' ? 'cap' : 'lock',
-          // Partial scale-down controls (migration 063) — paper only.
+          // Partial scale-down controls (migration 063) — paper AND live.
           partialScaleEnabled: data.partial_scale_enabled ?? true,
           partialScaleLotPct: data.partial_scale_lot_pct != null ? Number(data.partial_scale_lot_pct) : 10,
           partialScaleThresholdPct: data.partial_scale_threshold_pct != null ? Number(data.partial_scale_threshold_pct) : 10,
@@ -1388,7 +1423,30 @@ async function startSingleAccountEngine(account) {
     for (const lo of (pos.buyLeg?.ladderOrders || [])) {
       if (lo.orderId && !lo.filled) toCancel.push({ id: lo.orderId, productId: lo.productId });
     }
+    // NOT the hedge's resting limit SELL (-HXL, from a failed close): closeHedgeWithPair cancels
+    // it itself and reads how much filled — cancelling it here would lose that fill.
     for (const o of toCancel) await live.cancelStop(o);
+  }
+
+  // A pair whose main legs are gone but whose hedge close FAILED (closeHedgeWithPair kept it
+  // tracked): instead of deleting the row — which would orphan the hedge on Delta — park it as
+  // a hedge-only row (long + short zeroed). handleLiveRestingExit retries the close every
+  // 5 min and deletes the row once the hedge is flat. Returns true when the row was parked.
+  async function parkIfHedgeOpen(pos) {
+    if (!hasOpenHedge(pos)) return false;
+    pos.buyLeg = { ...pos.buyLeg, lotSize: 0 };
+    pos.sellLeg = { ...pos.sellLeg, lotSize: 0, exitOrderId: null };
+    pos.sellQty = 0;
+    pos.margin = hedgePremiumMargin(pos);
+    hedgeCloseRetryAt.set(pos.id, Date.now() + HEDGE_CLOSE_RETRY_MS);
+    try {
+      await supabase.from('active_positions').update({
+        buy_leg: JSON.stringify(pos.buyLeg), sell_leg: JSON.stringify(pos.sellLeg), sell_qty: 0,
+        hedge_leg: JSON.stringify(pos.hedgeLeg), margin: pos.margin,
+      }).eq('id', pos.id);
+    } catch (e) { logError(`[${accountState.name}] Park hedge-only row failed for ${pos.id}:`, e); }
+    logWarn(`[${accountState.name}] ▤ ${pos.type.toUpperCase()} ${pos.buyLeg.strike}: pair closed but hedge ${pos.hedgeLeg.strike} still open — row kept as hedge-only until the hedge closes.`);
+    return true;
   }
   // NOTE: the long-TP / short-SL brackets are attached to the exchange positions;
   // Delta auto-cancels a bracket when its position closes, so they need no manual
@@ -1415,6 +1473,29 @@ async function startSingleAccountEngine(account) {
   // cycle and on bracket re-syncs; pure in-memory unless a symbol's bracket is off target
   // (a pair added / exited, exit params changed). Armed real only.
   const closedHedgeIds = new Set();  // hedges closed this cycle (still in `positions` until the book refreshes)
+  // A hedge whose close failed is retried this often (resting limit sell re-checked / re-placed).
+  const HEDGE_CLOSE_RETRY_MS = 5 * 60 * 1000;
+  // The position still holds a hedge (3rd long) with a size.
+  function hasOpenHedge(pos) { return !!(pos?.hedgeLeg && (pos.hedgeLeg.lotSize || 0) > 0); }
+  // Hedge-only row: the pair (long + short) is done, only its hedge is left — parkIfHedgeOpen
+  // keeps such a row after a failed hedge close so the hedge is retried, not orphaned.
+  function isHedgeOnlyRow(pos) { return pos.sellQty === 0 && (pos.buyLeg?.lotSize || 0) <= 0.0001 && hasOpenHedge(pos); }
+  // Telegram / log labels shared by the entry and exit messages.
+  // Strikes long / short / hedge, e.g. "PUT 81200/79600/78800" (short shown while open, or as
+  // the pair's middle strike whenever a hedge rides along).
+  function strikesLabel(pos, hedge = null) {
+    return `${pos.type.toUpperCase()} ${pos.buyLeg.strike}${(pos.sellQty > 0 || hedge) ? '/' + pos.sellLeg.strike : ''}${hedge ? '/' + hedge.strike : ''}`;
+  }
+  // " · hedge × N $entry → [settled ]$exit (P&L ±$x)" for a hedge closed inside a pair exit.
+  // feeFree: cash-settled at expiry (no close order → no exit fee).
+  function hedgeExitNote(hedge, exitPx, { settled = false, feeFree = false } = {}) {
+    if (!hedge) return '';
+    const hNet = (exitPx - (hedge.entryPrice || 0)) * hedge.lotSize - (hedge.entryFee || 0)
+      - (feeFree ? 0 : calculateFee(exitPx, spotPrice, hedge.lotSize, hedge.originalLotSize || 1));
+    return ` · hedge × ${longContracts(hedge)} $${Number(hedge.entryPrice ?? 0).toFixed(2)} → ${settled ? 'settled ' : ''}$${Number(exitPx).toFixed(2)} (P&L ${hNet < 0 ? '−' : ''}$${Math.abs(hNet).toFixed(2)})`;
+  }
+  const hedgeCloseRetryAt = new Map();     // position id → no live hedge-close retry before this time
+  const sexRetryAt = new Map();            // position id → no missing short buy-back (-SEX) retry before this time
   const hedgeBrkRetryAt = new Map(); // symbol → no retry before this time (after a failed move)
   const hedgeBrkAlerted = new Set(); // symbols whose failed move was already alerted (cleared on success)
   let hedgeBrkSyncRunning = false;
@@ -1464,6 +1545,7 @@ async function startSingleAccountEngine(account) {
         if (r.ok && !r.skipped && !r.dryRun) {
           engineBracketAt.set(symbol, Date.now());
           hedgeBrkAlerted.delete(symbol);
+          resolveIssue(`hedge-brk:${symbol}`, `Delta's TP on ${symbol} moved to the farthest pair's level (${target})`);
           log(`[${accountState.name}] ◎ Hedge bracket ${symbol}: TP @ spot ${target} (farthest of ${list.length} pair(s): ${desc}) [${reason}]`);
           for (const p of list) {
             p.hedgeLeg = { ...p.hedgeLeg, brkLevel: target };
@@ -1480,7 +1562,7 @@ async function startSingleAccountEngine(account) {
           hedgeBrkRetryAt.set(symbol, Date.now() + 60000);
           if (list.length > 1 && !hedgeBrkAlerted.has(symbol)) {
             hedgeBrkAlerted.add(symbol);
-            notifyFailure({
+            raiseIssue(`hedge-brk:${symbol}`, {
               context: `Shared hedge ${symbol}: could not move Delta's TP to the farthest pair's level (${target}) — until it moves, a nearer pair's TP could close ALL ${list.length} pairs' hedge qty. Retrying every minute.`,
               error: { message: r.error || r.code || 'hedge-bracket-move-failed' }, extra: desc,
             });
@@ -1745,6 +1827,7 @@ async function startSingleAccountEngine(account) {
     } catch (e) { logError(`[${accountState.name}] External short-exit persist failed for ${pos.id}:`, e); }
     log(`[${accountState.name}] ✂️ EXTERNAL SHORT EXIT (manual on Delta): ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | booked @ mark $${exitPx} | long ladder ${alloc.join('/')} contracts @ [${levels.join(',')}] | PnL $${net.toFixed(2)}`);
     notifyTrade({ title: '✂️ SHORT EXIT (manual on Delta)', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike} · short closed on Delta → converted to long-only, ladder placed`, pnl: net });
+    resolveIssue(onceKey('short-close-unverified', pos), 'confirmed: the short close showed up on Delta — converted to long-only, ladder placed');
   }
 
   // Reverse-reconcile (armed real) — exchange is the source of truth, DB is the fallback.
@@ -1826,14 +1909,14 @@ async function startSingleAccountEngine(account) {
       if (!sideLong) {
         logWarn(`[${accountState.name}] ⊘ Untracked SHORT ${symbol} (size ${size}) on Delta — no DB row. NOT closing; admin alerted.`);
         orphanHandled.add(symbol);
-        notifyAdmin({ context: `Untracked SHORT ${symbol} (size ${size}) open on Delta with no engine row. Engine is NOT closing it — check positions and act manually.`, error: { message: 'untracked-short' } });
+        raiseIssue(`orphan:${symbol}`, { context: `Untracked SHORT ${symbol} (size ${size}) open on Delta with no engine row. Engine is NOT closing it — check positions and act manually.`, error: { message: 'untracked-short' } }, { admin: true });
         continue;
       }
 
       if (untrackedShortOpen) {
         logWarn(`[${accountState.name}] ⊘ Untracked long ${symbol} (size ${size}) — untracked short(s) also open, so NOT adopting or touching it; admin alerted.`);
         orphanHandled.add(symbol);
-        notifyAdmin({ context: `Untracked LONG ${symbol} (size ${size}) open on Delta alongside untracked short(s). Engine is NOT adopting or closing it — check positions and act manually.`, error: { message: 'untracked-long-with-short' } });
+        raiseIssue(`orphan:${symbol}`, { context: `Untracked LONG ${symbol} (size ${size}) open on Delta alongside untracked short(s). Engine is NOT adopting or closing it — check positions and act manually.`, error: { message: 'untracked-long-with-short' } }, { admin: true });
         continue;
       }
 
@@ -1861,13 +1944,13 @@ async function startSingleAccountEngine(account) {
       // Can't adopt (unknown symbol, strike collision, or adopt failed) → PROTECT + ALERT.
       if (!meta) {
         logWarn(`[${accountState.name}] ⊘ UNPROTECTED orphan ${symbol} (size ${size}) not in symbolMeta → cannot compute a level; ALERT only.`);
-        notifyFailure({ account: accountState.name, context: `UNPROTECTED untracked Delta position ${symbol} (size ${size}) — no DB row and symbol unknown to the engine. Close/protect manually NOW.`, error: { message: 'orphan-unprotected-unknown' } });
+        raiseIssue(`orphan:${symbol}`, { account: accountState.name, context: `UNPROTECTED untracked Delta position ${symbol} (size ${size}) — no DB row and symbol unknown to the engine. Close/protect manually NOW.`, error: { message: 'orphan-unprotected-unknown' } });
         continue;
       }
       const level = computeIndexTriggerLevel(meta.type, meta.strike, effExit);
       if (bracketBySymbol[symbol]) {
         logWarn(`[${accountState.name}] ⊘ Orphan long ${symbol} (size ${size}) — couldn't adopt (strike taken) but IS bracket-protected → alerting, not managing.`);
-        notifyFailure({ account: accountState.name, context: `Untracked Delta long ${symbol} (size ${size}) — buy strike ${meta.strike} already tracked, so not adopted; it is bracket-protected but unmanaged. Review manually.`, error: { message: 'orphan-collision-protected' } });
+        raiseIssue(`orphan:${symbol}`, { account: accountState.name, context: `Untracked Delta long ${symbol} (size ${size}) — buy strike ${meta.strike} already tracked, so not adopted; it is bracket-protected but unmanaged. Review manually.`, error: { message: 'orphan-collision-protected' } });
         orphanHandled.add(symbol);
         continue;
       }
@@ -1878,11 +1961,11 @@ async function startSingleAccountEngine(account) {
         const r = await live.changePositionBracket({ productId: pidBySymbol[symbol], symbol, side: 'tp', stopPrice: level, tag });
         if (r.ok && !r.skipped && !r.dryRun) {
           orphanHandled.add(symbol);
-          notifyFailure({ account: accountState.name, context: `UNPROTECTED orphan long ${symbol} (size ${size}) — no DB row. Engine armed a protective bracket @ index ${level}; it is NOT being managed. Review/close manually.`, error: { message: 'orphan-protected' } });
+          raiseIssue(`orphan:${symbol}`, { account: accountState.name, context: `UNPROTECTED orphan long ${symbol} (size ${size}) — no DB row. Engine armed a protective bracket @ index ${level}; it is NOT being managed. Review/close manually.`, error: { message: 'orphan-protected' } });
         } else if (!r.ok && r.code === 'immediate_execution') {
           // Level already breached, so no bracket can rest. Untracked → ALERT ONLY, no close.
           orphanHandled.add(symbol);
-          notifyAdmin({ context: `UNPROTECTED untracked long ${symbol} (size ${size}) — exit level ${level} already breached, no bracket could be placed. Engine is NOT closing it — act manually.`, error: { message: 'untracked-long-breached' } });
+          raiseIssue(`orphan:${symbol}`, { context: `UNPROTECTED untracked long ${symbol} (size ${size}) — exit level ${level} already breached, no bracket could be placed. Engine is NOT closing it — act manually.`, error: { message: 'untracked-long-breached' } }, { admin: true });
         }
       } catch (e) {
         logError(`[${accountState.name}] protectOrphanExchangePositions failed for ${symbol}:`, e);
@@ -1894,6 +1977,14 @@ async function startSingleAccountEngine(account) {
     // Prune symbols that are no longer orphan so the grace window / latch reset cleanly.
     for (const sym of [...orphanSeenAt.keys()]) if (!liveOrphanSymbols.has(sym)) orphanSeenAt.delete(sym);
     for (const sym of [...orphanHandled]) if (!liveOrphanSymbols.has(sym)) orphanHandled.delete(sym);
+    // An untracked position that has gone (closed on Delta) or is now tracked (adopted) → resolved.
+    for (const key of [...openIssues.keys()]) {
+      if (!key.startsWith('orphan:')) continue;
+      const sym = key.slice('orphan:'.length);
+      if (liveOrphanSymbols.has(sym)) continue;
+      const nowOpen = livePos.some(p => p.product_symbol === sym && (Number(p.size) || 0) !== 0);
+      resolveIssue(key, nowOpen ? `${sym} is now tracked by the engine` : `${sym} is no longer open on Delta`);
+    }
   }
 
   // Adopt a LONG orphan (a long leg open on Delta with no engine row) as a managed long-only
@@ -2312,7 +2403,7 @@ async function startSingleAccountEngine(account) {
       logWarn(`[${accountState.name}] ⏸ ALL ${missing.length} tracked leg(s) missing from Delta's positions list — re-checking every ${ABSENCE_RECHECK_MS / 1000}s before booking anything.`);
       if (!absenceHoldAlerted) {
         absenceHoldAlerted = true;
-        notifyAdmin({ context: `Delta positions list shows NONE of the ${missing.length} tracked leg(s). Engine is re-checking Delta and is NOT booking or closing anything — check positions on Delta.`, error: { message: 'positions-all-missing' }, extra: missing.join(', ') });
+        raiseIssue('positions-all-missing', { context: `Delta positions list shows NONE of the ${missing.length} tracked leg(s). Engine is re-checking Delta and is NOT booking or closing anything — check positions on Delta.`, error: { message: 'positions-all-missing' }, extra: missing.join(', ') }, { admin: true });
       }
       while (allTrackedMissing(sizeBySymbol) && ![...legAbsence.keys()].every(confirmedAbsent)) {
         await sleepMs(ABSENCE_RECHECK_MS);
@@ -2323,6 +2414,7 @@ async function startSingleAccountEngine(account) {
       }
       if (!allTrackedMissing(sizeBySymbol)) {
         log(`[${accountState.name}] ✓ Tracked legs are back in Delta's positions list — it was a bad snapshot; nothing booked.`);
+        resolveIssue('positions-all-missing', "tracked legs are back in Delta's positions list (bad snapshot) — nothing was booked");
       }
     }
 
@@ -2415,12 +2507,17 @@ async function startSingleAccountEngine(account) {
     const missingNow = [...legAbsence.keys()];
     if (missingNow.length === 0) {
       absenceHoldAlerted = false;
+      resolveIssue('positions-all-missing', 'every tracked leg is accounted for again');
     } else if (!missingNow.every(confirmedAbsent)) {
       log(`[${accountState.name}] ⏸ Reconcile hold: ${missingNow.length} tracked leg(s) missing from Delta (${missingNow.join(', ')}) — waiting for ${ABSENCE_CONFIRM_PASSES} checks + ${ABSENCE_CONFIRM_MS / 1000}s; not booking yet.`);
     }
 
     for (const pos of [...positions]) {
       if (pos.underlying !== config.underlying) continue;
+      // Hedge-only row (pair closed, hedge close pending — parkIfHedgeOpen): it has no main
+      // leg to reconcile, and with nothing "expected" the absence check below would re-book it
+      // every pass. handleLiveRestingExit retries its hedge and deletes it once flat.
+      if (expectedLegs(pos).length === 0 && hasOpenHedge(pos)) continue;
       const shortSize = Math.abs(sizeBySymbol[pos.sellLeg?.symbol] ?? 0);
       const longSize = Math.abs(sizeBySymbol[pos.buyLeg?.symbol] ?? 0);
       const ageMs = now - new Date(pos.entryTime).getTime();
@@ -2445,7 +2542,7 @@ async function startSingleAccountEngine(account) {
             if (!onceAlerts.has(onceKey('short-close-unverified', pos))) {
               onceAlerts.add(onceKey('short-close-unverified', pos));
               logWarn(`[${accountState.name}] ⏸ Short ${pos.sellLeg.symbol} missing from Delta's positions list but no matching buy-back in order history — NOT converting to long-only; admin alerted.`);
-              notifyAdmin({ context: `Short ${pos.sellLeg.symbol} (${pos.type.toUpperCase()} ${pos.buyLeg.strike}/${pos.sellLeg.strike}) is missing from Delta's positions list, but order history shows no matching buy-back. Engine is NOT booking it or touching the long — check on Delta.`, error: { message: 'short-close-unverified' } });
+              raiseIssue(onceKey('short-close-unverified', pos), { context: `Short ${pos.sellLeg.symbol} (${pos.type.toUpperCase()} ${pos.buyLeg.strike}/${pos.sellLeg.strike}) is missing from Delta's positions list, but order history shows no matching buy-back. Engine is NOT booking it or touching the long — check on Delta.`, error: { message: 'short-close-unverified' } }, { admin: true });
             }
             continue;
           }
@@ -2461,15 +2558,22 @@ async function startSingleAccountEngine(account) {
         const longGone = longSize === 0
           && ((pos.buyLeg?.lotSize || 0) <= 0 || confirmedAbsent(pos.buyLeg?.symbol));
         const danglingShort = pos.sellQty > 0 && shortSize > 0 && longGone;
-        if (!danglingShort) onceAlerts.delete(onceKey('short-without-long', pos));
+        if (!danglingShort) {
+          onceAlerts.delete(onceKey('short-without-long', pos));
+          resolveIssue(onceKey('short-without-long', pos), 'the short is no longer open without its long');
+        }
         // The short is open again, so a pending "short close unverified" episode is over.
-        if (shortSize > 0) onceAlerts.delete(onceKey('short-close-unverified', pos));
+        if (shortSize > 0) {
+          onceAlerts.delete(onceKey('short-close-unverified', pos));
+          resolveIssue(onceKey('short-close-unverified', pos), `short ${pos.sellLeg.symbol} is visible on Delta again — it was a bad snapshot, nothing booked`);
+        }
         // Legs are visible on Delta again, so a pending "close unverified" episode is over.
         onceAlerts.delete(onceKey('close-unverified', pos));
+        resolveIssue(onceKey('close-unverified', pos), 'its legs are visible on Delta again — it was a bad snapshot, nothing booked');
         if (danglingShort && ageMs > 90000 && !onceAlerts.has(onceKey('short-without-long', pos))) {
           onceAlerts.add(onceKey('short-without-long', pos));
           logWarn(`[${accountState.name}] ⚠ Short ${pos.sellLeg.symbol} is open without its long ${pos.buyLeg.symbol} — NOT closing; admin alerted.`);
-          notifyAdmin({ context: `Short ${pos.sellLeg.symbol} (${pos.type.toUpperCase()} ${pos.buyLeg.strike}/${pos.sellLeg.strike}) is open on Delta WITHOUT its long. Engine is NOT closing it — check and act manually.`, error: { message: 'short-without-long' } });
+          raiseIssue(onceKey('short-without-long', pos), { context: `Short ${pos.sellLeg.symbol} (${pos.type.toUpperCase()} ${pos.buyLeg.strike}/${pos.sellLeg.strike}) is open on Delta WITHOUT its long. Engine is NOT closing it — check and act manually.`, error: { message: 'short-without-long' } }, { admin: true });
         }
         continue; // still open — book on a later cycle once flat
       }
@@ -2501,7 +2605,7 @@ async function startSingleAccountEngine(account) {
           onceAlerts.add(onceKey('close-unverified', pos));
           const label = `${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''}`;
           logWarn(`[${accountState.name}] ⏸ ${label} missing from Delta's positions list but no matching closing fill in order history — NOT booking, SL/TP left in place; admin alerted.`);
-          notifyAdmin({ context: `${label} is missing from Delta's positions list, but order history shows no matching closing fill. Engine is NOT booking it or cancelling its SL/TP — check on Delta.`, error: { message: 'close-unverified' } });
+          raiseIssue(onceKey('close-unverified', pos), { context: `${label} is missing from Delta's positions list, but order history shows no matching closing fill. Engine is NOT booking it or cancelling its SL/TP — check on Delta.`, error: { message: 'close-unverified' } }, { admin: true });
         }
         continue; // re-checked every pass; books as soon as the closing fill shows up
       }
@@ -2552,12 +2656,16 @@ async function startSingleAccountEngine(account) {
         if (pos._everOpenOnDelta) {
           await closeHedgeWithPair(pos, `pair closed on Delta: ${label.replace(/^\S+\s/, '')}`).catch(e => logError(`[${accountState.name}] hedge close (reconcile) failed for ${pos.id}:`, e));
         }
-        await supabase.from('active_positions').delete().eq('id', pos.id);
-        // Drop it from memory HERE. The Realtime DELETE listener can't be relied on for this:
-        // it subscribes with an account_id filter, and Supabase doesn't deliver filtered
-        // DELETE events. Left in memory, every later pass re-booked it and re-sent the
-        // Telegram alert until the 5-minute full reload (seen 2026-09-24, Dg PUT 83600/82800).
-        positions = positions.filter(p => p.id !== pos.id);
+        // Hedge close failed → keep the row as hedge-only (retried) instead of orphaning it.
+        // Only for a pair that was really open on Delta — a never-filled entry has no hedge.
+        if (!(pos._everOpenOnDelta && await parkIfHedgeOpen(pos))) {
+          await supabase.from('active_positions').delete().eq('id', pos.id);
+          // Drop it from memory HERE. The Realtime DELETE listener can't be relied on for this:
+          // it subscribes with an account_id filter, and Supabase doesn't deliver filtered
+          // DELETE events. Left in memory, every later pass re-booked it and re-sent the
+          // Telegram alert until the 5-minute full reload (seen 2026-09-24, Dg PUT 83600/82800).
+          positions = positions.filter(p => p.id !== pos.id);
+        }
         heartbeat.update({ active_positions: positions.length });
         log(`[${accountState.name}] ♻️ RECONCILE-CLEAN: ${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} absent from Delta → ${pos._everOpenOnDelta ? 'booked + removed' : 'silently removed (never filled)'}`);
         if (pos._everOpenOnDelta) {
@@ -2577,6 +2685,17 @@ async function startSingleAccountEngine(account) {
       const id = k.slice(k.indexOf(':') + 1);
       if (!ids.has(id)) onceAlerts.delete(k);
     }
+    // Issues tied to a position that is no longer in the book (exit booked / row removed).
+    for (const k of [...openIssues.keys()]) {
+      const kind = k.slice(0, k.indexOf(':'));
+      if (!['short-close-unverified', 'close-unverified', 'short-without-long', 'sex-missing', 'hedge-close'].includes(kind)) continue;
+      if (ids.has(k.slice(k.indexOf(':') + 1))) continue;
+      resolveIssue(k, kind === 'hedge-close'
+        ? 'the position is no longer tracked by the engine — confirm on Delta that the hedge is flat'
+        : 'the position was closed and booked');
+    }
+    // Per-position retry / alert state for rows that have left the book.
+    for (const m of [hedgeCloseRetryAt, sexRetryAt]) for (const id of [...m.keys()]) if (!ids.has(String(id))) m.delete(id);
   }
 
   // ── Manual exit (UI-initiated) ───────────────────────────────────────────
@@ -2590,12 +2709,38 @@ async function startSingleAccountEngine(account) {
     // so the legs are gone — just cancel resting orders, book, and delete.
     const { skipExchangeClose = false } = opts;
     lastDbWrite = Date.now();
+    // Hedge-only row (pair already closed and booked under pos.id; its hedge close had failed —
+    // parkIfHedgeOpen): close just the hedge through closeHedgeWithPair, which books it as its
+    // own -HX row (booking under pos.id would be dropped as a duplicate) and keeps it tracked if
+    // the close fails again. The row goes only once the hedge is really flat.
+    if (isHedgeOnlyRow(pos)) {
+      const closed = await closeHedgeWithPair(pos, 'manual exit')
+        .catch(e => { logError(`[${accountState.name}] hedge close (manual exit) failed for ${pos.id}:`, e); return false; });
+      if (closed) {
+        hedgeCloseRetryAt.delete(pos.id);
+        try { await supabase.from('active_positions').delete().eq('id', pos.id); }
+        catch (e) { logError(`[${accountState.name}] Delete hedge-only row (manual exit) failed for ${pos.id}:`, e); }
+        positions = positions.filter(p => p.id !== pos.id);
+        heartbeat.update({ active_positions: positions.length });
+      }
+      return;
+    }
     const tBuy = tickerData[pos.buyLeg.symbol];
     const tSell = tickerData[pos.sellLeg.symbol];
     const exitLong = tBuy?.bid ?? tBuy?.markPrice ?? tBuy?.lastPrice ?? pos.entryBuyPrice;
     const exitShort = tSell?.ask ?? tSell?.markPrice ?? tSell?.lastPrice ?? pos.entrySellPrice;
     // Attached hedge leg (3rd long) — closed together with a manual triplet exit.
-    const hedge = (pos.hedgeLeg && (pos.hedgeLeg.lotSize || 0) > 0) ? pos.hedgeLeg : null;
+    let hedge = hasOpenHedge(pos) ? pos.hedgeLeg : null;
+    let heldHedge = null;
+    if (hedge && hedge.exitOrderId != null && !skipExchangeClose) {
+      // A resting -HXL sell from an earlier failed close: closeHedgeWithPair cancels it, books
+      // what filled and closes the rest as its own -HX row; if it still can't close, the row is
+      // kept as hedge-only below instead of orphaning the hedge.
+      const done = await closeHedgeWithPair(pos, 'manual exit')
+        .catch(e => { logError(`[${accountState.name}] hedge close (manual exit) failed for ${pos.id}:`, e); return false; });
+      if (!done && hasOpenHedge(pos)) heldHedge = pos.hedgeLeg;
+      hedge = null;
+    }
     const tHedge = hedge ? tickerData[hedge.symbol] : null;
     const exitHedge = hedge ? (tHedge?.bid ?? tHedge?.markPrice ?? tHedge?.lastPrice ?? hedge.entryPrice ?? 0) : 0;
     try { await cancelRestingOrders(pos); } catch (e) { /* best-effort */ }
@@ -2612,8 +2757,21 @@ async function startSingleAccountEngine(account) {
         await live.closeSymbol({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: longContracts(pos.buyLeg), tag: `${pos.id}-MXB` });
       }
       if (hedge) {
-        await live.closeSymbol({ symbol: hedge.symbol, side: 'sell', contracts: longContracts(hedge), tag: `${pos.id}-MXH` });
-        closedHedgeIds.add(pos.id);
+        const hc = await live.closeSymbol({ symbol: hedge.symbol, side: 'sell', contracts: longContracts(hedge), tag: `${pos.id}-MXH` })
+          .catch(e => ({ ok: false, error: e.message }));
+        if (hc && !hc.ok && !hc.alreadyClosed && !hc.skipped && !hc.dryRun) {
+          // Hedge still OPEN on Delta: leave it out of this exit's booking and keep the row as
+          // hedge-only (below) so it is retried, instead of deleting the row and orphaning it.
+          heldHedge = hedge;
+          hedge = null;
+          raiseIssue(`hedge-close:${pos.id}`, {
+            severity: 'high',
+            context: `Hedge close FAILED on manual exit — ${pos.type.toUpperCase()} hedge ${heldHedge.strike} (${longContracts(heldHedge)} contract(s)) is still OPEN on Delta. The pair is closed; the engine keeps the hedge tracked and retries every 5 min.`,
+            error: { message: hc.error || 'hedge-close-failed' }, extra: `[${pos.id}-MXH]`,
+          });
+        } else {
+          closedHedgeIds.add(pos.id);
+        }
       }
       // Sweep any residual (thin-book partial fill / integer drift) before the row is deleted,
       // else reconcileOrphans can't see it and the remainder orphans.
@@ -2643,13 +2801,17 @@ async function startSingleAccountEngine(account) {
         realized_gross_pnl: gross, realized_net_pnl: net, exit_fee: exitFee, total_fees: entryFee + exitFee,
         exit_reason: 'Manual Exit', is_partial: false, account_id: accountState.id,
       }], { onConflict: 'trade_id', ignoreDuplicates: true });
-      await supabase.from('active_positions').delete().eq('id', pos.id);
+      if (!heldHedge) await supabase.from('active_positions').delete().eq('id', pos.id);
     } catch (e) { logError(`[${accountState.name}] Manual exit booking failed for ${pos.id}:`, e); }
-    positions = positions.filter(p => p.id !== pos.id);
+    if (heldHedge) await parkIfHedgeOpen(pos); // hedge still open → row kept as hedge-only, retried
+    else positions = positions.filter(p => p.id !== pos.id);
     heartbeat.update({ active_positions: positions.length });
     const cumulativeNet = net + (pos.accumulatedSellPnl || 0);
-    log(`[${accountState.name}] ✋ MANUAL EXIT: ${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} | PnL $${cumulativeNet.toFixed(2)} (cumulative)`);
-    notifyTrade({ title: '🙋 MANUAL EXIT', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''}`, pnl: cumulativeNet });
+    // The hedge closed with this manual exit — show it with its own P&L.
+    const hedgeNote = hedgeExitNote(hedge, exitHedge);
+    const strikesLbl = strikesLabel(pos, hedge);
+    log(`[${accountState.name}] ✋ MANUAL EXIT: ${strikesLbl}${hedgeNote.replace(/ · /g, ' | ')} | PnL $${cumulativeNet.toFixed(2)} (cumulative)`);
+    notifyTrade({ title: '🙋 MANUAL EXIT', detail: `${strikesLbl}${hedgeNote}`, pnl: cumulativeNet });
   }
 
   // Poll for UI-requested exits and process them promptly.
@@ -2749,8 +2911,11 @@ async function startSingleAccountEngine(account) {
             try {
               if (fullyClosed) {
                 await closeHedgeWithPair(pos, 'both legs closed manually').catch(e => logError(`[${accountState.name}] hedge close (manual legs) failed for ${pos.id}:`, e));
-                await supabase.from('active_positions').delete().eq('id', pos.id);
-                positions = positions.filter(p => p.id !== pos.id);
+                // Hedge close failed → keep the row as hedge-only (retried) instead of orphaning it.
+                if (!(await parkIfHedgeOpen(pos))) {
+                  await supabase.from('active_positions').delete().eq('id', pos.id);
+                  positions = positions.filter(p => p.id !== pos.id);
+                }
               } else {
                 await supabase.from('active_positions').update({
                   buy_leg: JSON.stringify(pos.buyLeg), sell_leg: JSON.stringify(pos.sellLeg), sell_qty: pos.sellQty,
@@ -2950,23 +3115,124 @@ async function startSingleAccountEngine(account) {
    * Delta's actual close fill (else bid). Once per position (closedHedgeIds). The order goes
    * out for armed real accounts only; the booking happens either way.
    */
-  async function closeHedgeWithPair(pos, reason) {
-    const hedge = (pos.hedgeLeg && (pos.hedgeLeg.lotSize || 0) > 0) ? pos.hedgeLeg : null;
-    if (!hedge || closedHedgeIds.has(pos.id)) return;
+  // `settledPx`: the option already expired and Delta cash-settled it — book at that price
+  // (intrinsic) without sending an order.
+  async function closeHedgeWithPair(pos, reason, { settledPx = null } = {}) {
+    let hedge = hasOpenHedge(pos) ? pos.hedgeLeg : null;
+    if (!hedge || closedHedgeIds.has(pos.id)) return false;
     closedHedgeIds.add(pos.id);
-    const contracts = longContracts(hedge);
-    let fillPx = null;
-    if (accountState.mode === 'live' && accountState.live_enabled && !live.dryRun) {
-      const c = await live.closeSymbol({ symbol: hedge.symbol, side: 'sell', contracts, tag: `${pos.id}-HX` })
-        .catch(e => ({ ok: false, error: e.message }));
-      if (c && !c.ok && !c.alreadyClosed && !c.skipped && !c.dryRun) {
-        notifyFailure({
-          context: `Hedge close FAILED after its pair exited (${reason}) — ${pos.type.toUpperCase()} hedge ${hedge.strike} (${contracts} contract(s)) may still be OPEN on Delta`,
-          error: { message: c.error || 'hedge-close-failed' }, extra: `[${pos.id}-HX]`,
-        });
+    let contracts = longContracts(hedge);
+    let fillPx = settledPx;
+    // Fresh client_order_id per attempt: Delta rejects a reused one (duplicate_client_order_id),
+    // which would turn every retry after the first into a silent no-op. First attempt keeps the
+    // plain -HX / -HXL tags; later ones get -HX2 / -HXL2, -HX3 / -HXL3, …
+    const attempt = (Number(hedge.closeAttempt) || 0) + 1;
+    const tagN = attempt > 1 ? String(attempt) : '';
+    if (settledPx == null && accountState.mode === 'live' && accountState.live_enabled && !live.dryRun) {
+      // A resting limit SELL left by an earlier failed close (below). Cancel it and read how
+      // much really filled (Delta's cancel response): all → book it at its limit price; part →
+      // book that part, shrink the hedge to the rest and market-close the rest; gone from the
+      // book but no fill seen yet → wait one retry (a fill can lag the fills feed) rather than
+      // market-sell — on a SHARED hedge strike that could sell another pair's contracts.
+      let restingFilled = false;
+      if (hedge.exitOrderId != null) {
+        const restPx = Number(hedge.exitOrderPx) > 0 ? Number(hedge.exitOrderPx) : null;
+        const cr = await live.cancelAndReadFill({ id: hedge.exitOrderId, productId: hedge.exitProductId })
+          .catch(e => ({ ok: false, transient: true, error: e.message }));
+        if (cr.transient) {
+          // The cancel failed but the sell may still be resting — never market-sell on top of it.
+          closedHedgeIds.delete(pos.id);
+          return false;
+        }
+        const fids = currentFillIds();
+        const fillSeen = !!(fids && fids.has(String(hedge.exitOrderId)));
+        const clearOrder = (h) => ({ ...h, exitOrderId: null, exitProductId: null, exitOrderPx: null, exitOrderGoneAt: null });
+        if (cr.ok && cr.filled != null && cr.filled >= contracts) {
+          restingFilled = true;
+          fillPx = restPx;
+        } else if (cr.ok && cr.filled != null && cr.filled > 0) {
+          // Partial fill: book the sold contracts as their own -HX row, keep the rest.
+          const perC = hedge.lotSize / contracts;
+          const soldLot = perC * cr.filled;
+          const soldEntryFee = (hedge.entryFee || 0) * (cr.filled / contracts);
+          const pPx = restPx ?? 0;
+          const pExitFee = calculateFee(pPx, spotPrice, soldLot, hedge.originalLotSize || 1);
+          const pGross = (pPx - (hedge.entryPrice || 0)) * soldLot;
+          try {
+            await supabase.from('trade_history').upsert([{
+              trade_id: `${pos.id}-HXP-${hedge.exitOrderId}`,
+              underlying: pos.underlying, expiry: pos.expiry, type: pos.type,
+              buy_leg: JSON.stringify({ ...hedge, lotSize: soldLot }), sell_leg: JSON.stringify({ lotSize: 0 }),
+              hedge_leg: JSON.stringify(hedge), sell_qty: 0, strike_diff: 0,
+              entry_time: pos.entryTime instanceof Date ? pos.entryTime.toISOString() : (pos.entryTime || new Date().toISOString()),
+              entry_buy_price: hedge.entryPrice ?? 0, entry_sell_price: 0, entry_spot_price: pos.entrySpotPrice ?? spotPrice,
+              margin: 0, exit_time: new Date().toISOString(),
+              exit_buy_price: pPx, exit_sell_price: null, exit_spot_price: spotPrice,
+              realized_gross_pnl: pGross, realized_net_pnl: pGross - soldEntryFee - pExitFee,
+              exit_fee: pExitFee, total_fees: soldEntryFee + pExitFee,
+              exit_reason: `Hedge Exit (partial, resting sell, ${reason})`, is_partial: true, lot_size: soldLot,
+              account_id: accountState.id,
+            }], { onConflict: 'trade_id', ignoreDuplicates: true });
+          } catch (e) { logError(`[${accountState.name}] Failed to book partial hedge exit for ${pos.id}:`, e); }
+          log(`[${accountState.name}] ✚ HEDGE partial exit (resting sell): ${pos.type.toUpperCase()} ${hedge.strike} ${cr.filled}/${contracts} @ $${pPx} — closing the rest`);
+          hedge = clearOrder({ ...hedge, lotSize: Number((perC * (contracts - cr.filled)).toFixed(6)), entryFee: (hedge.entryFee || 0) - soldEntryFee });
+          contracts -= cr.filled;
+          pos.hedgeLeg = hedge;
+        } else if (!cr.ok && fillSeen) {
+          // No longer on the book and its fill is in the feed → it sold in full.
+          restingFilled = true;
+          fillPx = restPx;
+        } else if (!cr.ok && !hedge.exitOrderGoneAt) {
+          // Gone from the book, no fill seen yet: re-check on the next retry before selling.
+          pos.hedgeLeg = { ...hedge, exitOrderGoneAt: Date.now() };
+          try { await supabase.from('active_positions').update({ hedge_leg: JSON.stringify(pos.hedgeLeg) }).eq('id', pos.id); }
+          catch (e) { logError(`[${accountState.name}] Persist hedge order state failed for ${pos.id}:`, e); }
+          closedHedgeIds.delete(pos.id);
+          return false;
+        } else {
+          // Cancelled with nothing filled, or still gone and unfilled a retry later
+          // (cancelled elsewhere) → close it at the market below.
+          hedge = clearOrder(hedge);
+          pos.hedgeLeg = hedge;
+        }
       }
-      const fills = await live.fills().catch(() => []);
-      fillPx = closingFillPriceFrom(fills, hedge.symbol, 'sell', contracts);
+      if (!restingFilled) {
+        const c = await live.closeSymbol({ symbol: hedge.symbol, side: 'sell', contracts, tag: `${pos.id}-HX${tagN}` })
+          .catch(e => ({ ok: false, error: e.message }));
+        if (c && !c.ok && !c.alreadyClosed && !c.skipped && !c.dryRun) {
+          // The hedge is still OPEN on Delta (e.g. no_liquidity_for_market_order): do NOT book
+          // it or drop it from the position — that is how a failed close became an untracked
+          // orphan (AG Holdings 84800, 2026-10-19). Rest a reduce-only limit SELL at the mark
+          // so the first buyer that turns up takes it, keep the hedge tracked so the caller's
+          // row retries (cancel + market + re-rest at the new mark), and alert once.
+          closedHedgeIds.delete(pos.id);
+          const tkR = tickerData[hedge.symbol];
+          const restPx = Number(tkR?.markPrice ?? tkR?.lastPrice ?? tkR?.ask ?? hedge.entryPrice) || 0;
+          const rest = restPx > 0
+            ? await live.closeLeg({ symbol: hedge.symbol, side: 'sell', contracts, price: restPx, tag: `${pos.id}-HXL${tagN}` }).catch(() => null)
+            : null;
+          pos.hedgeLeg = {
+            ...hedge,
+            closeAttempt: attempt,
+            exitOrderId: rest?.order?.id ?? null,
+            exitProductId: rest?.order?.product_id ?? null,
+            exitOrderPx: rest?.order?.id != null ? restPx : null,
+          };
+          try { await supabase.from('active_positions').update({ hedge_leg: JSON.stringify(pos.hedgeLeg) }).eq('id', pos.id); }
+          catch (e) { logError(`[${accountState.name}] Persist hedge resting sell failed for ${pos.id}:`, e); }
+          logWarn(`[${accountState.name}] ⚠ Hedge close failed (${c.error || 'unknown'}) — ${pos.type.toUpperCase()} hedge ${hedge.strike} × ${contracts} kept tracked${pos.hedgeLeg.exitOrderId != null ? `; resting limit SELL @ $${restPx}` : ''}; retrying.`);
+          if (!openIssues.has(`hedge-close:${pos.id}`)) { // alert once; retries stay quiet
+            raiseIssue(`hedge-close:${pos.id}`, {
+              severity: 'high',
+              context: `Hedge close FAILED (${reason}) — ${pos.type.toUpperCase()} hedge ${hedge.strike} (${contracts} contract(s)) is still OPEN on Delta. ${pos.hedgeLeg.exitOrderId != null ? `A reduce-only limit SELL rests @ $${restPx}; the engine` : 'The engine'} keeps it tracked and retries every 5 min.`,
+              error: { message: c.error || 'hedge-close-failed' }, extra: `[${pos.id}-HX]`,
+            });
+          }
+          return false;
+        }
+        const fills = await live.fills().catch(() => []);
+        fillPx = closingFillPriceFrom(fills, hedge.symbol, 'sell', contracts);
+      }
     }
     const tk = tickerData[hedge.symbol];
     const px = fillPx ?? tk?.bid ?? tk?.markPrice ?? tk?.lastPrice ?? hedge.entryPrice ?? 0;
@@ -2992,8 +3258,14 @@ async function startSingleAccountEngine(account) {
       }], { onConflict: 'trade_id', ignoreDuplicates: true });
     } catch (e) { logError(`[${accountState.name}] Failed to book hedge exit for ${pos.id}:`, e); }
     log(`[${accountState.name}] ✚ HEDGE EXIT with pair (${reason}): ${pos.type.toUpperCase()} ${hedge.strike} × ${contracts} @ $${Number(px).toFixed(2)} | net $${net.toFixed(2)}`);
-    notifyTrade({ title: '🛡️ HEDGE EXIT', detail: `${pos.type.toUpperCase()} hedge ${hedge.strike} · ${reason}`, pnl: net });
+    notifyTrade({
+      title: settledPx != null ? '🛡️ HEDGE EXPIRY' : '🛡️ HEDGE EXIT',
+      detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike}/${pos.sellLeg.strike}/${hedge.strike} · hedge × ${contracts} · entry $${Number(hedge.entryPrice ?? 0).toFixed(2)} → ${settledPx != null ? 'settled' : 'exit'} $${Number(px).toFixed(2)} · ${reason}`,
+      pnl: net,
+    });
+    resolveIssue(`hedge-close:${pos.id}`, `hedge ${hedge.strike} × ${contracts} ${settledPx != null ? 'cash-settled' : 'sold'} @ $${Number(px).toFixed(2)} — booked`);
     pos.hedgeLeg = null;
+    return true;
   }
 
   async function sweepResidualLegs(pos, symbols, tagSuffix = 'SWEEP') {
@@ -3039,6 +3311,36 @@ async function startSingleAccountEngine(account) {
     const expiryTs = new Date(pos.expiry).getTime();
     const atExpiry = Date.now() >= expiryTs - 120000;
 
+    // ── Hedge-only row (pair done, hedge close pending — parkIfHedgeOpen / ladder) ──
+    // Only the hedge is left: retry its close every 5 min (resting limit filled → booked,
+    // else cancel + market + re-rest at the new mark) and drop the row once it is flat.
+    // Handled before the catch-all, which would market-close it again without a check.
+    if (isHedgeOnlyRow(pos)) {
+      const expired = Date.now() >= expiryTs;
+      if (expired || Date.now() >= (hedgeCloseRetryAt.get(pos.id) ?? 0)) {
+        // Past expiry Delta has cash-settled it at intrinsic — book that, no order.
+        const h = pos.hedgeLeg;
+        // A resting -HXL sell that filled before expiry sold at its limit, not at intrinsic.
+        const restFilled = expired && h.exitOrderId != null && !!currentFillIds()?.has(String(h.exitOrderId));
+        const settledPx = !expired ? null
+          : (restFilled && Number(h.exitOrderPx) > 0) ? Number(h.exitOrderPx)
+            : (pos.type === 'call' ? Math.max(0, spotPrice - h.strike) : Math.max(0, h.strike - spotPrice));
+        if (expired && h.exitOrderId != null) await live.cancelStop({ id: h.exitOrderId, productId: h.exitProductId }).catch(() => {});
+        const closed = await closeHedgeWithPair(pos, expired ? (restFilled ? 'resting sell filled before expiry' : 'expired (cash-settled)') : 'pair already closed', { settledPx })
+          .catch(e => { logError(`[${accountState.name}] hedge close (hedge-only) failed for ${pos.id}:`, e); return false; });
+        if (closed) {
+          hedgeCloseRetryAt.delete(pos.id);
+          try { await supabase.from('active_positions').delete().eq('id', pos.id); }
+          catch (e) { logError(`[${accountState.name}] Delete hedge-only row failed for ${pos.id}:`, e); }
+          log(`[${accountState.name}] ▤ HEDGE-ONLY CLOSED: ${pos.type.toUpperCase()} ${pos.buyLeg.strike} — hedge exited, row removed`);
+          return; // not pushed to `remaining` → leaves the book
+        }
+        hedgeCloseRetryAt.set(pos.id, Date.now() + HEDGE_CLOSE_RETRY_MS);
+      }
+      remaining.push(pos);
+      return;
+    }
+
     // ── Catch-all: spot crossed the strike (SL), or expiry → cancel resting +
     //    market-close the remainder + book a single full exit.
     if (spotCross || atExpiry) {
@@ -3055,8 +3357,10 @@ async function startSingleAccountEngine(account) {
         : Math.max(0, strike - spotPrice);
       const exitLong = atExpiry ? intrinsicAt(pos.buyLeg.strike) : (longBid ?? pos.entryBuyPrice);
       const exitShort = atExpiry ? intrinsicAt(pos.sellLeg.strike) : (shortAsk ?? pos.entrySellPrice);
-      // Attached hedge leg (3rd long) rides the triplet and closes here with it.
-      const hedge = (pos.hedgeLeg && (pos.hedgeLeg.lotSize || 0) > 0) ? pos.hedgeLeg : null;
+      // Attached hedge leg (3rd long) rides the triplet and closes here with it. `let`: a hedge
+      // whose market close FAILS is taken out of this exit (heldHedge) and retried on its own.
+      let hedge = hasOpenHedge(pos) ? pos.hedgeLeg : null;
+      let heldHedge = null;
       const tHedge = hedge ? tickerData[hedge.symbol] : null;
       const exitHedge = hedge
         ? (atExpiry ? intrinsicAt(hedge.strike) : ((tHedge?.bid ?? tHedge?.markPrice ?? tHedge?.lastPrice) ?? hedge.entryPrice ?? 0))
@@ -3075,9 +3379,31 @@ async function startSingleAccountEngine(account) {
         if (longLot > 0) {
           await live.closeSymbol({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: longContracts(pos.buyLeg), tag: `${pos.id}-CAXB` });
         }
-        if (hedge) {
-          await live.closeSymbol({ symbol: hedge.symbol, side: 'sell', contracts: longContracts(hedge), tag: `${pos.id}-HX` });
-          closedHedgeIds.add(pos.id);
+        if (hedge && hedge.exitOrderId != null) {
+          // A resting -HXL sell from an earlier failed close: closeHedgeWithPair cancels it, books
+          // what filled and market-closes the rest as its own -HX row — so it's left out of this
+          // exit's booking; kept tracked (heldHedge) if it still can't close.
+          const done = await closeHedgeWithPair(pos, 'full exit')
+            .catch(e => { logError(`[${accountState.name}] hedge close (full exit) failed for ${pos.id}:`, e); return false; });
+          if (!done && hasOpenHedge(pos)) heldHedge = pos.hedgeLeg;
+          hedge = null;
+        } else if (hedge) {
+          const hc = await live.closeSymbol({ symbol: hedge.symbol, side: 'sell', contracts: longContracts(hedge), tag: `${pos.id}-HX` })
+            .catch(e => ({ ok: false, error: e.message }));
+          if (hc && !hc.ok && !hc.alreadyClosed && !hc.skipped && !hc.dryRun) {
+            // Hedge still OPEN on Delta (e.g. no_liquidity_for_market_order): leave it out of
+            // this exit — not booked, not swept — and keep the row as hedge-only below so the
+            // hedge-only path retries it (resting limit sell, every 5 min) instead of orphaning it.
+            heldHedge = hedge;
+            hedge = null;
+            raiseIssue(`hedge-close:${pos.id}`, {
+              severity: 'high',
+              context: `Hedge close FAILED on full exit — ${pos.type.toUpperCase()} hedge ${heldHedge.strike} (${longContracts(heldHedge)} contract(s)) is still OPEN on Delta. The pair is closed; the engine keeps the hedge tracked and retries every 5 min.`,
+              error: { message: hc.error || 'hedge-close-failed' }, extra: `[${pos.id}-HX]`,
+            });
+          } else {
+            closedHedgeIds.add(pos.id);
+          }
         }
         // Safety net: a market IOC on a thin book can leave a few contracts (partial fill) or
         // integer drift after ATM-ratio scale steps. Sweep the true residual on every closed
@@ -3113,11 +3439,20 @@ async function startSingleAccountEngine(account) {
           realized_gross_pnl: gross, realized_net_pnl: net, exit_fee: exitFee, total_fees: entryFee + exitFee,
           exit_reason: reason, is_partial: false, account_id: accountState.id,
         }], { onConflict: 'trade_id', ignoreDuplicates: true });
-        await supabase.from('active_positions').delete().eq('id', pos.id);
+        // Hedge close failed → keep the row as hedge-only (retried, booked as its own -HX).
+        if (!heldHedge) await supabase.from('active_positions').delete().eq('id', pos.id);
       } catch (e) { logError(`[${accountState.name}] Resting full-exit booking failed for ${pos.id}:`, e); }
+      if (heldHedge) {
+        await parkIfHedgeOpen(pos);
+        remaining.push(pos);
+      }
       const cumulativeNet = net + (pos.accumulatedSellPnl || 0);
-      log(`[${accountState.name}] ▲ LIVE ${atExpiry ? 'EXPIRY' : 'FULL EXIT'}: ${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} | ${reason} | PnL $${cumulativeNet.toFixed(2)} (cumulative)`);
-      notifyTrade({ title: atExpiry ? '📤 EXPIRY EXIT' : '📤 FULL EXIT', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike}${pos.sellQty > 0 ? '/' + pos.sellLeg.strike : ''} · ${reason}`, pnl: cumulativeNet });
+      // The hedge closed (or cash-settled) inside this exit — show it with its own P&L.
+      const hedgeNote = hedgeExitNote(hedge, exitHedge, { settled: atExpiry, feeFree: atExpiry });
+      const strikesLbl = strikesLabel(pos, hedge);
+      log(`[${accountState.name}] ▲ LIVE ${atExpiry ? 'EXPIRY' : 'FULL EXIT'}: ${strikesLbl} | ${reason}${hedgeNote.replace(/ · /g, ' | ')} | PnL $${cumulativeNet.toFixed(2)} (cumulative)`);
+      const heldNote = heldHedge ? ` · hedge ${heldHedge.strike} close FAILED — retrying` : '';
+      notifyTrade({ title: atExpiry ? '📤 EXPIRY EXIT' : '📤 FULL EXIT', detail: `${strikesLbl} · ${reason}${hedgeNote}${heldNote}`, pnl: cumulativeNet });
       return; // closed
     }
 
@@ -3132,6 +3467,53 @@ async function startSingleAccountEngine(account) {
       // and it leaves pos.sellQty untouched so the short-fill logic below is unaffected.
       if (typeof applyAtmRatioScaling === 'function' && longBid != null && shortAsk != null) {
         await applyAtmRatioScaling(pos, { liveExitBuy: longBid, liveExitSell: shortAsk, tickerBuy });
+      }
+
+      // ── Missing resting short buy-back (-SEX) → (re)place it ──
+      // Placed right after entry; if that send failed (Shubham1 P-BTC-81600, 2026-10-21: Delta
+      // 502) the short had NO buy-back and never exited at the short-exit price. Every 2 min:
+      // adopt the order if Delta did accept it (a 5xx can still place it), else place it again
+      // with the SAME tag — Delta rejects a duplicate client_order_id, so this can't double it.
+      if (!pos.sellLeg.exitOrderId && Date.now() >= (sexRetryAt.get(pos.id) ?? 0)) {
+        sexRetryAt.set(pos.id, Date.now() + 2 * 60 * 1000);
+        // First try reuses the entry's tag (adopts / dedupes a 5xx that did place it); once Delta
+        // has called that tag a duplicate with no such open order (it was used up — filled or
+        // cancelled), later tries use -SEX-R1, -SEX-R2, … so they can actually place.
+        const sexN = Number(pos.sellLeg.sexRetryN) || 0;
+        const sexTag = sexN > 0 ? `${pos.id}-SEX-R${sexN}` : `${pos.id}-SEX`;
+        const exitPx = eff.shortExitPrice ?? config.shortExitPrice ?? 1.1;
+        const open = await live.orders();
+        const existing = (open || []).find(o => o.product_symbol === pos.sellLeg.symbol && String(o.side) === 'buy'
+          && String(o.client_order_id || '').startsWith(`${pos.id}-SEX`));
+        let orderId = existing?.id ?? null;
+        let productId = existing?.product_id ?? null;
+        let px = existing ? Number(existing.limit_price) || exitPx : exitPx;
+        let shortFlat = false;
+        if (!existing) {
+          const r = await live.closeLeg({ symbol: pos.sellLeg.symbol, side: 'buy', contracts: shortContracts(pos.sellQty), price: exitPx, tag: sexTag });
+          orderId = r?.order?.id ?? null;
+          productId = r?.order?.product_id ?? null;
+          px = exitPx;
+          // Reduce-only found no short to close → it is already flat on Delta (e.g. its SL fired);
+          // reconcile converts / books it. Nothing to place, nothing to alert.
+          if (r?.alreadyClosed) shortFlat = true;
+          // Tag used up (not an open order) → next try with a fresh tag.
+          if (r?.duplicate) pos.sellLeg = { ...pos.sellLeg, sexRetryN: sexN + 1 };
+          if (orderId == null && !shortFlat) logWarn(`[${accountState.name}] ◎ Short buy-back for ${pos.id} (${pos.sellLeg.symbol}) still not resting${r?.duplicate ? ' — tag already used on Delta; retrying with a fresh one' : ''}; retrying in 2 min.`);
+        }
+        if (orderId != null) {
+          pos.sellLeg = { ...pos.sellLeg, exitOrderId: orderId, exitProductId: productId, exitOrderPx: px };
+          sexRetryAt.delete(pos.id);
+          try { await supabase.from('active_positions').update({ sell_leg: JSON.stringify(pos.sellLeg) }).eq('id', pos.id); }
+          catch (e) { logError(`[${accountState.name}] Persist short buy-back for ${pos.id} failed:`, e); }
+          log(`[${accountState.name}] ◎ Short buy-back ${existing ? 'found on Delta and adopted' : 're-placed'}: limit BUY ${pos.sellLeg.symbol} @ $${px} (id ${orderId}) [${pos.id}]`);
+          resolveIssue(`sex-missing:${pos.id}`, `the short's buy-back @ $${px} is now resting on Delta`);
+        } else if (!shortFlat && !openIssues.has(`sex-missing:${pos.id}`)) {
+          raiseIssue(`sex-missing:${pos.id}`, {
+            severity: 'high',
+            context: `Short ${pos.sellLeg.symbol} (${pos.type.toUpperCase()} ${pos.buyLeg.strike}/${pos.sellLeg.strike}) has NO resting buy-back @ $${exitPx} — it will not exit at the short-exit price until one rests. Engine retries every 2 min.`,
+          });
+        }
       }
 
       // The exit order id appears in `fillIds` on the FIRST partial fill, not only a
@@ -3196,18 +3578,54 @@ async function startSingleAccountEngine(account) {
         });
       }
       pos.buyLeg = { ...pos.buyLeg, longExitBaseLot: baseLot, ladderOrders };
+      // The hedge (3rd long) exits together with the short buy-back (2026-10-23, as paper).
+      // A failed close keeps it on the row; the long-only branch retries it every 5 min.
+      if (hasOpenHedge(pos)) {
+        const hedgeClosed = await closeHedgeWithPair(pos, 'short leg exited')
+          .catch(e => { logError(`[${accountState.name}] hedge close (short exit) failed for ${pos.id}:`, e); return false; });
+        if (!hedgeClosed) hedgeCloseRetryAt.set(pos.id, Date.now() + HEDGE_CLOSE_RETRY_MS);
+      }
       pos.margin = longOnlyMargin(pos);
       try {
         await supabase.from('active_positions').update({
           buy_leg: JSON.stringify(pos.buyLeg), sell_leg: JSON.stringify(pos.sellLeg),
           sell_qty: 0, entry_fee: pos.entryFee, margin: pos.margin,
           accumulated_sell_pnl: pos.accumulatedSellPnl,
+          hedge_leg: pos.hedgeLeg ? JSON.stringify(pos.hedgeLeg) : null,
         }).eq('id', pos.id);
       } catch (e) { logError(`[${accountState.name}] Resting short-exit persist failed for ${pos.id}:`, e); }
       log(`[${accountState.name}] ✂️ RESTING SHORT EXIT: ${pos.type.toUpperCase()} ${pos.buyLeg.strike} @ $${exitPx} | ladder ${alloc.join('/')} contracts @ [${levels.join(',')}] | PnL $${net.toFixed(2)}`);
       notifyTrade({ title: '✂️ SHORT EXIT', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike} · short bought back @ $${exitPx} · long ladder placed`, pnl: net });
+      resolveIssue(onceKey('short-close-unverified', pos), `confirmed: the short's resting buy-back @ $${exitPx} filled — exit booked, long ladder placed`);
       remaining.push(pos);
       return;
+    }
+
+    // ── Long-only with its hedge still open → close the hedge ──
+    // The hedge exits with the short (2026-10-23). This catches long-only rows opened before
+    // that, and retries a hedge whose market close failed (e.g. no liquidity) every 5 min —
+    // the hedge stays tracked on the row until Delta confirms the close.
+    if (hasOpenHedge(pos) && Date.now() >= (hedgeCloseRetryAt.get(pos.id) ?? 0)) {
+      const closed = await closeHedgeWithPair(pos, 'short leg exited')
+        .catch(e => { logError(`[${accountState.name}] hedge close (long-only) failed for ${pos.id}:`, e); return false; });
+      if (!closed) {
+        hedgeCloseRetryAt.set(pos.id, Date.now() + HEDGE_CLOSE_RETRY_MS);
+      } else {
+        hedgeCloseRetryAt.delete(pos.id);
+        const ladderDone = (pos.buyLeg.lotSize || 0) <= 0.0001
+          || ((pos.buyLeg.ladderOrders || []).length > 0 && pos.buyLeg.ladderOrders.every(lo => lo.filled));
+        if (ladderDone) {
+          // Kept only because the hedge close had failed — the pair is now fully done.
+          try { await supabase.from('active_positions').delete().eq('id', pos.id); }
+          catch (e) { logError(`[${accountState.name}] Delete after hedge retry failed for ${pos.id}:`, e); }
+          log(`[${accountState.name}] ▤ PAIR CLOSED after hedge retry: ${pos.type.toUpperCase()} ${pos.buyLeg.strike}`);
+          return;
+        }
+        pos.margin = longOnlyMargin(pos);
+        try {
+          await supabase.from('active_positions').update({ hedge_leg: null, margin: pos.margin }).eq('id', pos.id);
+        } catch (e) { logError(`[${accountState.name}] Persist long-only hedge exit failed for ${pos.id}:`, e); }
+      }
     }
 
     // ── Long-only: book any ladder slices that have filled ──
@@ -3277,6 +3695,20 @@ async function startSingleAccountEngine(account) {
         }
         // The pair is done → its hedge exits too (only this pair's contracts).
         await closeHedgeWithPair(pos, 'long ladder fully exited').catch(e => logError(`[${accountState.name}] hedge close (ladder) failed for ${pos.id}:`, e));
+        if (hasOpenHedge(pos)) {
+          // Hedge close failed → keep the row as hedge-only (long zeroed — it is flat on Delta,
+          // swept above) so the hedge-only path retries it; deleting now would orphan it.
+          try {
+            await supabase.from('active_positions').update({
+              entry_fee: pos.entryFee, accumulated_sell_pnl: pos.accumulatedSellPnl,
+            }).eq('id', pos.id);
+          } catch (e) { logError(`[${accountState.name}] Persist (hedge pending) failed for ${pos.id}:`, e); }
+          await parkIfHedgeOpen(pos);
+          log(`[${accountState.name}] ▤ LONG FULLY EXITED (resting ladder): ${pos.type.toUpperCase()} ${pos.buyLeg.strike} — hedge close pending, retrying`);
+          notifyTrade({ title: '🪜 LONG FULLY EXITED', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike} · ${newlyFilled.length} slice(s) this cycle · hedge ${pos.hedgeLeg.strike} close pending (retrying)`, pnl: pos.accumulatedSellPnl });
+          remaining.push(pos);
+          return;
+        }
         try { await supabase.from('active_positions').delete().eq('id', pos.id); }
         catch (e) { logError(`[${accountState.name}] Resting ladder final delete failed for ${pos.id}:`, e); }
         log(`[${accountState.name}] ▤ LONG FULLY EXITED (resting ladder): ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | ${newlyFilled.length} slice(s) this cycle`);
@@ -3570,6 +4002,25 @@ async function startSingleAccountEngine(account) {
       // Mode 'lock' (default, migration 065) → null cap = Delta's lock only.
       const oiCapM = config.oiFilterMode === 'cap' ? effectiveOiCapM(config.oiMaxCapM, underlying) : null;
       const oiOk = (t) => !oiFilterOn || !isOiBlocked(t, oiCapM);
+
+      // ── Delta trading status (all accounts) ──
+      // A live product whose trading_status is not 'operational' (Delta disrupted it, e.g.
+      // cancel-only / post-only) would reject or mis-handle new orders, so it is left out of
+      // the entry scan and the hedge picker. From the product list (refreshed every few
+      // minutes); open positions on it are untouched. Unknown status → treated as tradable.
+      const notOperational = new Set((products || [])
+        .filter(p => p?.symbol && p.trading_status && p.trading_status !== 'operational')
+        .map(p => p.symbol));
+      const tradableOk = (t) => !notOperational.has(t.symbol);
+      if (notOperational.size > 0) {
+        const key = [...notOperational].sort().join(',');
+        if (key !== lastNotOperationalKey) {
+          lastNotOperationalKey = key;
+          logWarn(`[${accountState.name}] ⊘ Delta trading disrupted on ${notOperational.size} product(s) — skipped for new entries: ${[...notOperational].slice(0, 12).join(', ')}${notOperational.size > 12 ? ' …' : ''}`);
+        }
+      } else {
+        lastNotOperationalKey = '';
+      }
       const oiBlocked = { call: [], put: [] };
       if (oiFilterOn) {
         for (const t of allTickers) {
@@ -3578,8 +4029,8 @@ async function startSingleAccountEngine(account) {
       }
 
       // A. Local Scan: top candidates per type
-      const callTickers = allTickers.filter(t => t.type === 'call' && t.expiry === config.expiry && (atmStrike === null || t.strike >= atmStrike) && !occupiedStrikes.call.has(Number(t.strike)) && !excludedStrikes.has(Number(t.strike)) && oiOk(t));
-      const putTickers = allTickers.filter(t => t.type === 'put' && t.expiry === config.expiry && (atmStrike === null || t.strike <= atmStrike) && !occupiedStrikes.put.has(Number(t.strike)) && !excludedStrikes.has(Number(t.strike)) && oiOk(t));
+      const callTickers = allTickers.filter(t => t.type === 'call' && t.expiry === config.expiry && (atmStrike === null || t.strike >= atmStrike) && !occupiedStrikes.call.has(Number(t.strike)) && !excludedStrikes.has(Number(t.strike)) && oiOk(t) && tradableOk(t));
+      const putTickers = allTickers.filter(t => t.type === 'put' && t.expiry === config.expiry && (atmStrike === null || t.strike <= atmStrike) && !occupiedStrikes.put.has(Number(t.strike)) && !excludedStrikes.has(Number(t.strike)) && oiOk(t) && tradableOk(t));
 
       if (!onlyExits) {
         const now = Date.now();
@@ -3751,6 +4202,7 @@ async function startSingleAccountEngine(account) {
           && t.symbol !== spread.buyLeg.symbol && t.symbol !== spread.sellLeg.symbol
           && !excludedStrikes.has(Number(t.strike)) // user-excluded (migration 040)
           && oiOk(t)                                // Delta OI limit (migration 062)
+          && tradableOk(t)                          // Delta trading_status = operational
           && !liveHedgeBlocked.has(t.symbol)        // live: symbol held as a main long/short (see above)
           && quote(t) > 0);
         return listHedgeStrikes(pool, type, Number(spread.sellLeg.strike), spread.sellIv, spread.strikeDiff, hedgeFilters)
@@ -4107,16 +4559,15 @@ async function startSingleAccountEngine(account) {
       // partial trade_history row and fires a reduce_only SELL to Delta when armed.
       // Full spreads only. Closes over atmStrike / getTickerPrice / spotPrice.
       async function applyAtmRatioScaling(pos, { liveExitBuy, liveExitSell, tickerBuy }) {
-        // Scale-down settings (migration 063). PAPER accounts read them from the Control Panel
-        // (toggle + lot step % + P&L step % + max % of the long); LIVE keeps the fixed
-        // 10% / 10% / 50% and is always on. Out-of-range values fall back to the defaults.
-        const isPaperAcct = accountState.mode !== 'live';
+        // Scale-down settings (migration 063) — paper AND live (promoted to live 2026-10-23).
+        // Every account reads them from the Control Panel (toggle + lot step % + P&L step % +
+        // max % of the long); defaults ON / 10% / 10% / 50%. Out-of-range values fall back to
+        // the defaults.
         const pctOr = (v, def, ok) => { const n = Number(v); return v != null && Number.isFinite(n) && ok(n) ? n : def; };
-        const scaleOn = isPaperAcct ? config.partialScaleEnabled !== false : true;
-        if (!scaleOn) return;
-        const lotStepPct = isPaperAcct ? pctOr(config.partialScaleLotPct, 10, n => n > 0 && n <= 100) : 10;
-        const pnlStepPct = isPaperAcct ? pctOr(config.partialScaleThresholdPct, 10, n => n >= 0 && n <= 1000) : 10;
-        const maxScalePct = isPaperAcct ? pctOr(config.partialScaleMaxPct, 50, n => n > 0 && n < 100) : 50;
+        if (config.partialScaleEnabled === false) return;
+        const lotStepPct = pctOr(config.partialScaleLotPct, 10, n => n > 0 && n <= 100);
+        const pnlStepPct = pctOr(config.partialScaleThresholdPct, 10, n => n >= 0 && n <= 1000);
+        const maxScalePct = pctOr(config.partialScaleMaxPct, 50, n => n > 0 && n < 100);
         // Dynamic ATM ratio-based scaling (full spreads only — skipped once long-only)
         if (atmStrike !== null && pos.sellQty > 0) {
           // LOT PRECISION. Every lot quantity below is rounded before it is compared, so
@@ -4494,11 +4945,12 @@ async function startSingleAccountEngine(account) {
           continue;
         }
 
-        // PAPER ONLY: a long-only row (short already bought back) still holding its hedge —
-        // left by builds before the hedge exited with the short — closes that hedge now at
-        // its live bid. The main long keeps laddering; margin drops the hedge premium.
-        if (accountState.mode !== 'live' && !isHedgeOnly && pos.sellQty === 0
-          && pos.hedgeLeg && (pos.hedgeLeg.lotSize || 0) > 0) {
+        // A long-only row (short already bought back) still holding its hedge — left by
+        // builds before the hedge exited with the short — closes that hedge now at its live
+        // bid. The main long keeps laddering; margin drops the hedge premium. (Paper and
+        // dry-run / disarmed live; armed real live does the same in handleLiveRestingExit.)
+        if (!isHedgeOnly && pos.sellQty === 0
+          && hasOpenHedge(pos)) {
           await closeHedgeWithPair(pos, 'short leg already exited')
             .catch(e => logError(`[${accountState.name}] hedge close (long-only) failed for ${pos.id}:`, e));
           if (!pos.hedgeLeg) {
@@ -4583,10 +5035,11 @@ async function startSingleAccountEngine(account) {
             price: exitShortPrice, tag: `${pos.id}-SEX`,
           });
 
-          // PAPER ONLY: the hedge (3rd long) exits together with the short buy-back, at its
-          // live bid, instead of riding along with the long ladder. Closed BEFORE the
-          // long-only margin is recomputed so its premium drops out of the margin too.
-          if (accountState.mode !== 'live' && pos.hedgeLeg && (pos.hedgeLeg.lotSize || 0) > 0) {
+          // The hedge (3rd long) exits together with the short buy-back, at its live bid,
+          // instead of riding along with the long ladder. Closed BEFORE the long-only margin
+          // is recomputed so its premium drops out of the margin too. (Paper and dry-run /
+          // disarmed live; armed real live does the same in handleLiveRestingExit.)
+          if (hasOpenHedge(pos)) {
             await closeHedgeWithPair(pos, 'short leg exited')
               .catch(e => logError(`[${accountState.name}] hedge close (short exit) failed for ${pos.id}:`, e));
           }
@@ -4744,7 +5197,7 @@ async function startSingleAccountEngine(account) {
                 // Main long fully laddered out → the pair is done, so its hedge (3rd long)
                 // exits too, right now — same as live (2026-10-16; it used to ride on as a
                 // "hedge-only" row until the main-strike cross / expiry).
-                if (pos.hedgeLeg && (pos.hedgeLeg.lotSize || 0) > 0) {
+                if (hasOpenHedge(pos)) {
                   await closeHedgeWithPair(pos, 'long ladder fully exited')
                     .catch(e => logError(`[${accountState.name}] hedge close (ladder) failed for ${pos.id}:`, e));
                 }
@@ -4843,7 +5296,7 @@ async function startSingleAccountEngine(account) {
           // or expiry) — never short-bought-back / laddered / drained. Booked as its own
           // idempotent `-HX` row (is_partial) at the hedge's live bid, with a neutral
           // fallback to entry price if the hedge is momentarily unquoted.
-          if (pos.hedgeLeg && (pos.hedgeLeg.lotSize || 0) > 0) {
+          if (hasOpenHedge(pos)) {
             const hedge = pos.hedgeLeg;
             const hedgeBid = (liveExitHedge != null && liveExitHedge > 0) ? liveExitHedge : (hedge.entryPrice || 0);
             const hedgeExitFee = calculateFee(hedgeBid, spotPrice, hedge.lotSize, hedge.originalLotSize || 1);
@@ -5038,9 +5491,11 @@ async function startSingleAccountEngine(account) {
       // entry is checked against it before orders go out and it is drawn down per entry.
       // null = not read (paper, disarmed, or Delta sent no available_balance).
       let liveAvailLeft = null;
-      // Delta free margin already claimed by live candidates sized this cycle,
-      // so a second candidate is fitted to what is left, not to the full amount.
-      let liveSizedSoFar = 0;
+      // Delta free margin already claimed this cycle = the margin (incl. hedge) of the entries
+      // actually STAGED in newEntries, so a second candidate is fitted to what is left. Summed
+      // from newEntries (not a running total of every candidate sized) so a candidate that is
+      // sized and then skipped (hedge, governor, margin) doesn't starve the ones after it.
+      const liveStagedMargin = () => newEntries.reduce((sum, p) => sum + (p.margin || 0), 0);
       // Paper full-deployment clamp state (per cycle): the remaining allocated pool and
       // how much of it has been consumed by entries opened this cycle, so the 4:30
       // concentrate fill never deploys more than the pool.
@@ -5542,6 +5997,12 @@ async function startSingleAccountEngine(account) {
               logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: ${blockedSym} ignored until ${new Date(rejectBlockedSymbols.get(blockedSym)).toISOString().slice(11, 16)} UTC after a Delta rejection.`);
               continue;
             }
+            const noFillSym = [spread.sellLeg.symbol, spread.buyLeg.symbol]
+              .find(sym => sym && (noFillBlockedSymbols.get(sym) ?? 0) > nowMs);
+            if (noFillSym) {
+              logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: ${noFillSym} ignored until ${new Date(noFillBlockedSymbols.get(noFillSym)).toISOString().slice(11, 19)} UTC — an entry leg on it did not fill (no ${noFillSym === spread.sellLeg.symbol ? 'buyer' : 'seller'}).`);
+              continue;
+            }
           }
 
           // Diversification guard removed
@@ -5597,10 +6058,21 @@ async function startSingleAccountEngine(account) {
             }
             liveLongCV = longCV; // persist as the leg's margin basis for later long-only recompute
             liveShortCV = shortCV; // persist for the short leg object built after this block
-            const baseMargin = calcMargin(entryBuyPrice, longCV, spotPrice, ratioToUse, shortCV, config.underlying, config.expiry);
+            // Hedge (3rd long) premium per 1-long unit: ratio × Hedge Lot % contracts × ask × cv.
+            // It is paid up front and added to the entry's margin after sizing, so the unit
+            // must carry it — otherwise a margin-bound entry is sized to 100% of Delta's free
+            // margin, the hedge pushes it over, and the pre-order check skips it every minute
+            // (Dg CALL 82400/83400, 2026-10-23: $851 free, $873 needed).
+            let unitHedgeCost = 0;
+            if (hedgeOn) {
+              const hc = hedgeCandidateFor(spread);
+              const hcv = hc ? (symbolMeta[hc.ticker.symbol]?.contractValue ?? shortCV) : null;
+              if (hc && Number(hc.ask) > 0 && hcv != null) unitHedgeCost = ratioToUse * (hedgeLotPct / 100) * Number(hc.ask) * hcv;
+            }
+            const baseMargin = calcMargin(entryBuyPrice, longCV, spotPrice, ratioToUse, shortCV, config.underlying, config.expiry) + unitHedgeCost;
             // Fit the order to what Delta actually has free: Delta's available margin above
             // the reserve, minus what candidates sized earlier this cycle already claimed.
-            const liveFree = liveAvailLeft != null ? Math.max(0, liveAvailLeft - liveSizedSoFar) : null;
+            const liveFree = liveAvailLeft != null ? Math.max(0, liveAvailLeft - liveStagedMargin()) : null;
             let candPart = partMargin;
             if (liveFree != null) {
               if (baseMargin > liveFree) {
@@ -5621,7 +6093,8 @@ async function startSingleAccountEngine(account) {
             // Rounding the long UP can push the estimate back over what Delta has free —
             // step it down until the order fits (never below 1, which fits by the check above).
             if (liveFree != null) {
-              const estAt = (lc) => calcMargin(entryBuyPrice, longCV * lc, spotPrice, Math.max(1, Math.round(lc * ratioToUse)), shortCV, config.underlying, config.expiry);
+              const estAt = (lc) => calcMargin(entryBuyPrice, longCV * lc, spotPrice, Math.max(1, Math.round(lc * ratioToUse)), shortCV, config.underlying, config.expiry)
+                + lc * unitHedgeCost;
               while (longC > 1 && estAt(longC) > liveFree) longC--;
             }
 
@@ -5651,8 +6124,7 @@ async function startSingleAccountEngine(account) {
             adjustedLotSize = Number((longCV * longC).toFixed(4));
             adjustedSellQty = shortC;
             liveMargin = calcMargin(entryBuyPrice, longCV * longC, spotPrice, adjustedSellQty, shortCV, config.underlying, config.expiry);
-            if (liveFree != null) liveSizedSoFar += liveMargin;
-            log(`[${accountState.name}] ¤ LIVE size ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: unit margin $${baseMargin.toFixed(2)} | part $${candPart.toFixed(2)} → scale ${scale.toFixed(2)}× | long ${longC} short ${shortC} (base 1:${ratioToUse}) | est margin $${liveMargin.toFixed(2)} | cv ${longCV}/${shortCV}`);
+            log(`[${accountState.name}] ¤ LIVE size ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: unit margin $${baseMargin.toFixed(2)}${unitHedgeCost > 0 ? ` (incl. hedge $${unitHedgeCost.toFixed(2)})` : ''} | part $${candPart.toFixed(2)} → scale ${scale.toFixed(2)}× | long ${longC} short ${shortC} (base 1:${ratioToUse}) | est margin $${liveMargin.toFixed(2)} | cv ${longCV}/${shortCV}`);
           } else if (isPaperAccount && partMargin != null) {
             // PAPER (migration 027): scale the base 1:ratio unit so its margin fills the
             // per-position part (allocated pool ÷ the active window's combined cap), then
@@ -5753,7 +6225,7 @@ async function startSingleAccountEngine(account) {
               logWarn(`[${accountState.name}] ⛔ ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Hedge Leg is on but the hedge qty is 0 (short qty ${adjustedSellQty} × Hedge Lot % ${hedgeLotPct}).`);
               continue;
             }
-            const cand = hedgeCandidateFor(spread);
+            let cand = hedgeCandidateFor(spread);
             // Live: the gate's hedge strike may have been taken since by a long/short (Delta
             // position or a spread staged earlier this cycle) → the next-best hedge was picked; it
             // must still pass the same ATM P&L / ROI floors.
@@ -5765,11 +6237,39 @@ async function startSingleAccountEngine(account) {
               }
               log(`[${accountState.name}] ↪ ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: hedge strike now held as a long/short — using ${cand.ticker.strike} instead (ATM P&L $${r.atmPnl.toFixed(2)}, ROI ${(r.roi ?? 0).toFixed(2)}%).`);
             }
-            const best = cand ? cand.ticker : null;
-            const bestAsk = cand ? cand.ask : null;
+            let best = cand ? cand.ticker : null;
+            let bestAsk = cand ? cand.ask : null;
             if (!best) {
               logWarn(`[${accountState.name}] ⛔ ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Hedge Leg is on but no strike from one step beyond the short up to (width − one step) has price < ${hedgeFilters.maxPrice}, |IV − short IV| in [${hedgeFilters.ivMin}, ${hedgeFilters.ivMax}] and a 3-leg net within Max Net Debit — not entering unhedged.`);
               continue;
+            }
+            // Live: the chosen hedge's ask depth can't take the hedge size → the execute-time
+            // depth guard would skip the WHOLE entry (Dg PUT 83600/82200, 2026-10-21, while
+            // 81400 / 81000 also qualified). Switch to the best other qualifying hedge strike
+            // whose ask depth fits and that still clears the ATM P&L / ROI and Max Net Debit
+            // floors. Unknown depth = can't prove a shortfall (same as the guard) → kept.
+            if (liveArmed) {
+              const needC = Math.round(hedgeQty);
+              const askDepth = (sym) => { const n = Number(tickerData[sym]?.askSize); return Number.isFinite(n) ? n : null; };
+              const bestDepth = askDepth(best.symbol);
+              if (bestDepth != null && needC > bestDepth) {
+                const alts = hedgeOptionsFor(spread)
+                  .filter(h => h.ticker.symbol !== best.symbol)
+                  .map(h => ({ h, r: calculateAtmPnlAndRoi(spread, h), d: askDepth(h.ticker.symbol) }))
+                  .filter(x => x.d != null && needC <= x.d && x.r.atmPnl != null && x.r.ratioToUse != null
+                    && x.r.atmPnl >= (spread.atmMinPnl ?? 0) && (x.r.roi ?? 0) >= (spread.atmMinRoi ?? 0)
+                    && (x.r.ratioToUse * spread.sellPrice - spread.buyPrice - x.r.ratioToUse * (hedgeLotPct / 100) * x.h.ask) >= -effectiveConfig.maxNetPremium)
+                  .sort((a, b) => ((b.r.roi ?? 0) - (a.r.roi ?? 0)) || (b.r.atmPnl - a.r.atmPnl));
+                if (alts.length === 0) {
+                  logWarn(`[${accountState.name}] ⛔ ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: hedge ${best.strike} needs ${needC} contracts but its ask depth is ${bestDepth}, and no other qualifying hedge strike (${cand.optionStrikes.join(', ')}) has enough depth.`);
+                  continue;
+                }
+                const alt = alts[0];
+                log(`[${accountState.name}] ↪ ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: hedge ${best.strike} ask depth ${bestDepth} < ${needC} needed — using ${alt.h.ticker.strike} instead (depth ${alt.d}, ATM ROI ${(alt.r.roi ?? 0).toFixed(2)}%).`);
+                cand = { ...alt.h, roi: alt.r.roi, atmPnl: alt.r.atmPnl, optionCount: cand.optionCount, optionStrikes: cand.optionStrikes };
+                best = alt.h.ticker;
+                bestAsk = alt.h.ask;
+              }
             }
             // Combined-premium gate: the Max Net Debit now applies to ALL THREE legs.
             // Adding a long makes the debit larger, so the triplet gate is stricter than
@@ -5823,6 +6323,57 @@ async function startSingleAccountEngine(account) {
             margin: candidateMargin + hedgeMargin,
             _replaceableLongOnlyPos: replaceableLongOnlyPos,
           };
+
+          // ── Pre-stage checks — before the governor reserves shared depth and before the
+          //    candidate takes a cap slot, so a candidate that can't enter frees both. ──
+
+          // Live quote check (all accounts): every leg must have a TWO-SIDED, FRESH quote with
+          // size on the side we hit — long + hedge buy the ask, the short sells the bid. A
+          // strike just listed (empty book until market makers quote) or one whose quotes were
+          // pulled can still show a carried-forward price in the feed: 2026-10-21 21:57 UTC,
+          // C-BTC-86400 showed a ~$35 bid while no buyer existed, and 8 accounts bought the long,
+          // failed to sell the short even at $1, and unwound — three minutes in a row.
+          {
+            const nowQ = Date.now();
+            const fresh = (at) => Number(at) > 0 && (nowQ - Number(at)) <= ENTRY_QUOTE_FRESH_MS;
+            // twoSided: long + short need both sides (a live book). The hedge is a cheap far
+            // strike bought at the ask, where a missing bid is normal — only its ask is required.
+            const quoteIssue = (leg, sym, hitSide, twoSided = true) => {
+              const tq = tickerData[sym];
+              if (!tq) return `${leg} ${sym}: no quote`;
+              if (twoSided && (!(Number(tq.bid) > 0) || !(Number(tq.ask) > 0))) return `${leg} ${sym}: one-sided book (bid ${tq.bid ?? '—'} / ask ${tq.ask ?? '—'})`;
+              if (!(Number(hitSide === 'ask' ? tq.ask : tq.bid) > 0)) return `${leg} ${sym}: no ${hitSide}`;
+              const pxAt = hitSide === 'ask' ? tq.askUpdatedAt : tq.bidUpdatedAt;
+              if (!fresh(pxAt)) return `${leg} ${sym}: ${hitSide} price not updated in ${Math.round(ENTRY_QUOTE_FRESH_MS / 1000)}s`;
+              const sz = hitSide === 'ask' ? tq.askSize : tq.bidSize;
+              const szAt = hitSide === 'ask' ? tq.askSizeAt : tq.bidSizeAt;
+              if (sz != null && !(Number(sz) > 0)) return `${leg} ${sym}: ${hitSide} size is 0`;
+              if (sz != null && szAt != null && !fresh(szAt)) return `${leg} ${sym}: ${hitSide} size not updated in ${Math.round(ENTRY_QUOTE_FRESH_MS / 1000)}s`;
+              return null;
+            };
+            const issues = [
+              quoteIssue('long', spread.buyLeg.symbol, 'ask'),
+              adjustedSellQty > 0 ? quoteIssue('short', spread.sellLeg.symbol, 'bid') : null,
+              hedgeLeg ? quoteIssue('hedge', hedgeLeg.symbol, 'ask', false) : null,
+            ].filter(Boolean);
+            if (issues.length > 0) {
+              logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: no live two-sided quote — ${issues.join('; ')}.`);
+              continue;
+            }
+          }
+
+          // Live: the same free-margin check the execute phase runs, applied BEFORE the candidate
+          // is staged. A staged entry counts toward the per-type / combined caps for the rest of
+          // this scan, so one that can't afford its margin used to take the last slot, block
+          // the next good pair with "cap reached", and then fail at execute anyway.
+          if (liveArmed && liveAvailLeft != null) {
+            const freeNow = Math.max(0, liveAvailLeft - liveStagedMargin());
+            if ((newPos.margin || 0) > freeNow) {
+              logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: needs ~$${(newPos.margin || 0).toFixed(2)} margin (incl. hedge) but only $${freeNow.toFixed(2)} is free on Delta above the reserve — slot left for the next candidate.`);
+              continue;
+            }
+          }
+
           // ── Cross-account ENTRY GOVERNOR (paper + live) ───────────────────────────
           // Several accounts (all in THIS one process) can pick the SAME spread in the
           // same ~1s entry wave; their COMBINED contract size may exceed the real
@@ -5957,7 +6508,7 @@ async function startSingleAccountEngine(account) {
           const exitReason = 'Replaced (closer-to-ATM spread)';
           const latestBuy = (pos.buyLeg?.lotSize || 0) > 0 ? (rotateBid(pos.buyLeg.symbol) ?? pos.entryBuyPrice) : null;
           const latestSell = (pos.sellQty || 0) > 0 ? (rotateAsk(pos.sellLeg.symbol) ?? pos.entrySellPrice) : null;
-          if (pos.hedgeLeg && (pos.hedgeLeg.lotSize || 0) > 0) {
+          if (hasOpenHedge(pos)) {
             const hedge = pos.hedgeLeg;
             const hedgeBid = rotateBid(hedge.symbol) ?? hedge.entryPrice ?? 0;
             const hedgeExitFee = calculateFee(hedgeBid, spotPrice, hedge.lotSize, hedge.originalLotSize || 1);
@@ -6102,95 +6653,11 @@ async function startSingleAccountEngine(account) {
             continue;
           }
           try {
-            if (t._replaceableLongOnlyPos) {
-              const posToExit = t._replaceableLongOnlyPos;
-              // LIVE: flatten the old long-only on Delta BEFORE opening the new pair — the new
-              // long is often the SAME symbol (loStrike === bStrike), so an un-closed old long
-              // would net with it. Cancel its resting orders + bracket, reduce-only MARKET close,
-              // then sweep any residual. On close FAILURE, ABORT: keep the old long-only intact
-              // and skip this entry (retry next cycle) — never open a pair on top of an un-flat
-              // leg. Paper / dry-run: no real close, books + deletes as before.
-              if (liveArmed) {
-                let closeOk = false;
-                try {
-                  await cancelRestingOrders(posToExit);
-                  const c = await live.closeSymbol({ symbol: posToExit.buyLeg.symbol, side: 'sell', contracts: longContracts(posToExit.buyLeg), tag: `${posToExit.id}-REPX` });
-                  closeOk = !!(c.ok || c.alreadyClosed || c.dryRun || c.skipped);
-                  if (closeOk) await sweepResidualLegs(posToExit, [posToExit.buyLeg.symbol], 'REPX');
-                } catch (e) {
-                  logError(`[${accountState.name}] Replacement close error for long-only ${posToExit.id}:`, e);
-                }
-                if (!closeOk) {
-                  logWarn(`[${accountState.name}] ⇄ Replacement ABORTED: could not flatten long-only ${posToExit.id} (${posToExit.type.toUpperCase()} ${posToExit.buyLeg.strike}) on Delta — keeping it, skipping new pair ${t.buyLeg.strike}/${t.sellLeg.strike} this cycle.`);
-                  continue;
-                }
-              }
-              try {
-                const tickerBuyExit = tickerData[posToExit.buyLeg.symbol];
-                // Book the replaced long at Delta's ACTUAL close-fill (live) / current bid (paper).
-                const repFills = liveArmed ? await live.fills().catch(() => []) : [];
-                const fillPx = closingFillPriceFrom(repFills, posToExit.buyLeg.symbol, 'sell', longContracts(posToExit.buyLeg));
-                const exitPrice = fillPx ?? tickerBuyExit?.bid ?? tickerBuyExit?.lastPrice ?? posToExit.entryBuyPrice ?? 0;
-                const exitLotSize = posToExit.buyLeg.lotSize || 0;
-                const exitFee = calculateFee(exitPrice, spotPrice, exitLotSize, posToExit.buyLeg.originalLotSize || 1);
-                const entryFee = posToExit.entryFee || 0;
-                const grossPnl = (exitPrice - (posToExit.entryBuyPrice || 0)) * exitLotSize;
-                const netPnl = grossPnl - entryFee - exitFee;
-                const exitReason = 'Exited for Long/Short Pair';
-
-                const tradeId = `${posToExit.id}-REP`;
-                await supabase.from('trade_history').upsert([{
-                  trade_id: tradeId,
-                  underlying: posToExit.underlying,
-                  expiry: posToExit.expiry,
-                  type: posToExit.type,
-                  buy_leg: JSON.stringify({ ...posToExit.buyLeg, exitIv: tickerBuyExit?.bidIv ?? tickerBuyExit?.iv ?? null }),
-                  sell_leg: JSON.stringify({ lotSize: 0 }),
-                  sell_qty: 0,
-                  strike_diff: 0,
-                  entry_time: posToExit.entryTime ? (posToExit.entryTime instanceof Date ? posToExit.entryTime.toISOString() : posToExit.entryTime) : new Date().toISOString(),
-                  entry_buy_price: posToExit.entryBuyPrice ?? 0,
-                  entry_sell_price: 0,
-                  entry_spot_price: posToExit.entrySpotPrice ?? spotPrice,
-                  margin: posToExit.margin || 0,
-                  exit_time: new Date().toISOString(),
-                  exit_buy_price: exitPrice,
-                  exit_sell_price: null,
-                  exit_spot_price: spotPrice,
-                  realized_gross_pnl: grossPnl,
-                  realized_net_pnl: netPnl,
-                  exit_fee: exitFee,
-                  total_fees: entryFee + exitFee,
-                  exit_reason: exitReason,
-                  is_partial: false,
-                  lot_size: exitLotSize,
-                  account_id: accountState.id,
-                }], { onConflict: 'trade_id', ignoreDuplicates: true });
-
-                await closeHedgeWithPair(posToExit, 'replaced by a new pair').catch(e => logError(`[${accountState.name}] hedge close (replace) failed for ${posToExit.id}:`, e));
-                await supabase.from('active_positions').delete().eq('id', posToExit.id);
-
-                const remIndex = remaining.findIndex(p => p.id === posToExit.id);
-                if (remIndex !== -1) {
-                  remaining.splice(remIndex, 1);
-                }
-                exited.push({
-                  ...posToExit,
-                  exitTime: new Date(),
-                  exitBuyPrice: exitPrice,
-                  exitSpotPrice: spotPrice,
-                  realizedGrossPnl: grossPnl,
-                  realizedNetPnl: netPnl,
-                  exitReason,
-                });
-
-                await refreshRealizedPnl(true);
-                log(`[${accountState.name}] ⇄ ${isPaperAccount ? 'PAPER' : 'LIVE'}: Exited active long-only ${posToExit.id} (${posToExit.type.toUpperCase()} ${posToExit.buyLeg.strike} @ $${exitPrice.toFixed(2)} | PnL $${netPnl.toFixed(2)}) to enter new long/short pair ${t.buyLeg.strike}/${t.sellLeg.strike}.`);
-                notifyTrade({ title: '🔄 REPLACED (long → pair)', detail: `${posToExit.type.toUpperCase()} long-only ${posToExit.buyLeg.strike} exited → better pair ${t.buyLeg.strike}/${t.sellLeg.strike}`, pnl: netPnl + (posToExit.accumulatedSellPnl || 0) });
-              } catch (e) {
-                logError(`[${accountState.name}] Failed to exit long-only position for replacement:`, e);
-              }
-            }
+            // Replacing a long-only (leg swap)? Its close now happens AFTER every pre-check
+            // below (caps, strikes, depth, margin, Delta positions) — right before the new
+            // orders — so a failed check leaves the old long-only untouched instead of closing
+            // it for a pair that then never opens (Dg PUT 83600/82200, 2026-10-21).
+            const repPos = t._replaceableLongOnlyPos ?? null;
 
             // DB-level PER-TYPE count guard — count only full spreads (active short leg).
             // Long-only held positions (sell_qty === 0) don't count toward the cap. The cap
@@ -6243,14 +6710,18 @@ async function startSingleAccountEngine(account) {
             // duplicate through to real order placement — the unique index would then reject
             // the insert AFTER the Delta orders are live, orphaning them (the 65500/67000
             // incident). Skip the entry on a query error.
-            const { data: buyConflict, error: buyConflictError } = await supabase.from('active_positions')
+            // The long-only being replaced still has its row until the swap below, so it is left
+            // out of both strike checks (its strike is about to be freed).
+            let buyConflictQ = supabase.from('active_positions')
               // long_share_slot only exists after migration 044 — read it only when sharing
               // is on, so a not-yet-migrated DB never fails every account's guard.
               .select(sharedLongCount > 0 ? 'id, buy_strike, sell_strike, sell_qty, long_share_slot' : 'id, buy_strike, sell_strike, sell_qty')
               .eq('account_id', accountState.id)
               .eq('underlying', underlying).eq('type', t.type)
               .eq('expiry', config.expiry)
-              .or(`buy_strike.eq.${t.buyLeg.strike},and(sell_strike.eq.${t.buyLeg.strike},sell_qty.gt.0)`).limit(MAX_SPREADS_PER_SHARED_LONG + 1);
+              .or(`buy_strike.eq.${t.buyLeg.strike},and(sell_strike.eq.${t.buyLeg.strike},sell_qty.gt.0)`);
+            if (repPos) buyConflictQ = buyConflictQ.neq('id', repPos.id);
+            const { data: buyConflict, error: buyConflictError } = await buyConflictQ.limit(MAX_SPREADS_PER_SHARED_LONG + 1);
             if (buyConflictError) {
               logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} skipped — buy-strike uniqueness check failed (${buyConflictError.message}); failing safe.`);
               continue;
@@ -6282,11 +6753,13 @@ async function startSingleAccountEngine(account) {
             // open LONG strike — e.g. a long-only remnant's own long) has no index, so it is
             // enforced here by read: you cannot short a strike you are already long (they net
             // on Delta / conflict). FAIL-CLOSED for the same reason as the buy-strike check.
-            const { data: sellConflict, error: sellConflictError } = await supabase.from('active_positions').select('id')
+            let sellConflictQ = supabase.from('active_positions').select('id')
               .eq('account_id', accountState.id)
               .eq('underlying', underlying).eq('type', t.type)
               .eq('expiry', config.expiry)
-              .or(`buy_strike.eq.${t.sellLeg.strike},and(sell_strike.eq.${t.sellLeg.strike},sell_qty.gt.0)`).limit(1);
+              .or(`buy_strike.eq.${t.sellLeg.strike},and(sell_strike.eq.${t.sellLeg.strike},sell_qty.gt.0)`);
+            if (repPos) sellConflictQ = sellConflictQ.neq('id', repPos.id);
+            const { data: sellConflict, error: sellConflictError } = await sellConflictQ.limit(1);
             if (sellConflictError) {
               logWarn(`[${accountState.name}] DB Guard: Entry for ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} skipped — sell-strike uniqueness check failed (${sellConflictError.message}); failing safe.`);
               continue;
@@ -6384,10 +6857,10 @@ async function startSingleAccountEngine(account) {
             }
 
             // Pre-order position check (armed real live): read Delta's positions RIGHT before
-            // sending and enter only if neither leg's symbol already holds a position. Runs
-            // after a leg swap has flattened its old long, so swaps pass; anything else open
-            // there (another leg, an untracked/manual position) would make Delta reject the
-            // order. Positions unreadable → skip this entry (can't verify).
+            // sending and enter only if neither leg's symbol already holds a position. A leg
+            // swap's old long is ignored here (it is closed right after, then re-verified
+            // flat); anything else open there (another leg, an untracked/manual position)
+            // would make Delta reject the order. Positions unreadable → skip this entry.
             if (liveArmed && !live.dryRun) {
               const livePosNow = await live.positions();
               if (livePosNow == null) {
@@ -6395,20 +6868,134 @@ async function startSingleAccountEngine(account) {
                 continue;
               }
               const legSyms = [t.buyLeg.symbol, t.sellQty > 0 ? t.sellLeg.symbol : null].filter(Boolean);
-              const findOccupied = (rows) => rows.find(p => legSyms.includes(p.product_symbol) && (Number(p.size) || 0) !== 0);
-              let occupied = findOccupied(livePosNow);
-              // Leg swap: the old long-only was market-closed a moment ago, and Delta's list can
-              // lag that close by a second. Re-read a few times before calling it occupied, so a
-              // swap isn't left half-done (old long closed, new pair skipped).
-              const swapSym = t._replaceableLongOnlyPos?.buyLeg?.symbol ?? null;
-              for (let i = 0; occupied && swapSym && occupied.product_symbol === swapSym && i < 3; i++) {
-                await new Promise(r => setTimeout(r, 1000));
-                const again = await live.positions();
-                if (again == null) break;
-                occupied = findOccupied(again);
-              }
+              // Leg swap: the long-only being replaced still sits on its symbol — it is closed
+              // just below, after this check, so it is not a blocker here.
+              const swapSym = repPos?.buyLeg?.symbol ?? null;
+              const occupied = livePosNow.find(p => legSyms.includes(p.product_symbol)
+                && p.product_symbol !== swapSym && (Number(p.size) || 0) !== 0);
               if (occupied) {
                 logWarn(`[${accountState.name}] Entry ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} skipped: Delta already has a position on ${occupied.product_symbol} (size ${occupied.size}).`);
+                continue;
+              }
+            }
+
+            // ── Leg swap: close the long-only being replaced — only now, after every check ──
+            let swapParked = false;
+            if (repPos) {
+              const posToExit = repPos;
+              // LIVE: flatten the old long-only on Delta BEFORE opening the new pair — the new
+              // long is often the SAME symbol (loStrike === bStrike), so an un-closed old long
+              // would net with it. Cancel its resting orders + bracket, reduce-only MARKET close,
+              // then sweep any residual. On close FAILURE, ABORT: keep the old long-only intact
+              // and skip this entry (retry next cycle) — never open a pair on top of an un-flat
+              // leg. Paper / dry-run: no real close, books + deletes as before.
+              if (liveArmed) {
+                let closeOk = false;
+                try {
+                  await cancelRestingOrders(posToExit);
+                  const c = await live.closeSymbol({ symbol: posToExit.buyLeg.symbol, side: 'sell', contracts: longContracts(posToExit.buyLeg), tag: `${posToExit.id}-REPX` });
+                  closeOk = !!(c.ok || c.alreadyClosed || c.dryRun || c.skipped);
+                  if (closeOk) await sweepResidualLegs(posToExit, [posToExit.buyLeg.symbol], 'REPX');
+                } catch (e) {
+                  logError(`[${accountState.name}] Replacement close error for long-only ${posToExit.id}:`, e);
+                }
+                if (!closeOk) {
+                  logWarn(`[${accountState.name}] ⇄ Replacement ABORTED: could not flatten long-only ${posToExit.id} (${posToExit.type.toUpperCase()} ${posToExit.buyLeg.strike}) on Delta — keeping it, skipping new pair ${t.buyLeg.strike}/${t.sellLeg.strike} this cycle.`);
+                  continue;
+                }
+              }
+              try {
+                const tickerBuyExit = tickerData[posToExit.buyLeg.symbol];
+                // Book the replaced long at Delta's ACTUAL close-fill (live) / current bid (paper).
+                const repFills = liveArmed ? await live.fills().catch(() => []) : [];
+                const fillPx = closingFillPriceFrom(repFills, posToExit.buyLeg.symbol, 'sell', longContracts(posToExit.buyLeg));
+                const exitPrice = fillPx ?? tickerBuyExit?.bid ?? tickerBuyExit?.lastPrice ?? posToExit.entryBuyPrice ?? 0;
+                const exitLotSize = posToExit.buyLeg.lotSize || 0;
+                const exitFee = calculateFee(exitPrice, spotPrice, exitLotSize, posToExit.buyLeg.originalLotSize || 1);
+                const entryFee = posToExit.entryFee || 0;
+                const grossPnl = (exitPrice - (posToExit.entryBuyPrice || 0)) * exitLotSize;
+                const netPnl = grossPnl - entryFee - exitFee;
+                const exitReason = 'Exited for Long/Short Pair';
+
+                const tradeId = `${posToExit.id}-REP`;
+                await supabase.from('trade_history').upsert([{
+                  trade_id: tradeId,
+                  underlying: posToExit.underlying,
+                  expiry: posToExit.expiry,
+                  type: posToExit.type,
+                  buy_leg: JSON.stringify({ ...posToExit.buyLeg, exitIv: tickerBuyExit?.bidIv ?? tickerBuyExit?.iv ?? null }),
+                  sell_leg: JSON.stringify({ lotSize: 0 }),
+                  sell_qty: 0,
+                  strike_diff: 0,
+                  entry_time: posToExit.entryTime ? (posToExit.entryTime instanceof Date ? posToExit.entryTime.toISOString() : posToExit.entryTime) : new Date().toISOString(),
+                  entry_buy_price: posToExit.entryBuyPrice ?? 0,
+                  entry_sell_price: 0,
+                  entry_spot_price: posToExit.entrySpotPrice ?? spotPrice,
+                  margin: posToExit.margin || 0,
+                  exit_time: new Date().toISOString(),
+                  exit_buy_price: exitPrice,
+                  exit_sell_price: null,
+                  exit_spot_price: spotPrice,
+                  realized_gross_pnl: grossPnl,
+                  realized_net_pnl: netPnl,
+                  exit_fee: exitFee,
+                  total_fees: entryFee + exitFee,
+                  exit_reason: exitReason,
+                  is_partial: false,
+                  lot_size: exitLotSize,
+                  account_id: accountState.id,
+                }], { onConflict: 'trade_id', ignoreDuplicates: true });
+
+                await closeHedgeWithPair(posToExit, 'replaced by a new pair').catch(e => logError(`[${accountState.name}] hedge close (replace) failed for ${posToExit.id}:`, e));
+                // Hedge close failed → keep the old row as hedge-only (retried) instead of orphaning it.
+                swapParked = await parkIfHedgeOpen(posToExit);
+                if (!swapParked) {
+                  await supabase.from('active_positions').delete().eq('id', posToExit.id);
+                  const remIndex = remaining.findIndex(p => p.id === posToExit.id);
+                  if (remIndex !== -1) {
+                    remaining.splice(remIndex, 1);
+                  }
+                }
+                exited.push({
+                  ...posToExit,
+                  exitTime: new Date(),
+                  exitBuyPrice: exitPrice,
+                  exitSpotPrice: spotPrice,
+                  realizedGrossPnl: grossPnl,
+                  realizedNetPnl: netPnl,
+                  exitReason,
+                });
+
+                await refreshRealizedPnl(true);
+                log(`[${accountState.name}] ⇄ ${isPaperAccount ? 'PAPER' : 'LIVE'}: Exited active long-only ${posToExit.id} (${posToExit.type.toUpperCase()} ${posToExit.buyLeg.strike} @ $${exitPrice.toFixed(2)} | PnL $${netPnl.toFixed(2)}) to enter new long/short pair ${t.buyLeg.strike}/${t.sellLeg.strike}.`);
+                notifyTrade({ title: '🔄 REPLACED (long → pair)', detail: `${posToExit.type.toUpperCase()} long-only ${posToExit.buyLeg.strike} exited → better pair ${t.buyLeg.strike}/${t.sellLeg.strike}`, pnl: netPnl + (posToExit.accumulatedSellPnl || 0) });
+              } catch (e) {
+                logError(`[${accountState.name}] Failed to exit long-only position for replacement:`, e);
+              }
+              // The new pair trades the old long's symbol (as long or short): Delta's positions
+              // list can lag the close by a few seconds, so confirm it is flat before ordering.
+              const swapSym = posToExit.buyLeg?.symbol;
+              if (liveArmed && !live.dryRun && swapSym && [t.buyLeg.symbol, t.sellLeg.symbol].includes(swapSym)) {
+                let stillOpen = null;
+                for (let i = 0; i < 8; i++) {
+                  const rows = await live.positions();
+                  stillOpen = rows == null ? 'unreadable' : rows.find(p => p.product_symbol === swapSym && (Number(p.size) || 0) !== 0) || null;
+                  if (!stillOpen) break;
+                  await new Promise(r => setTimeout(r, 1000));
+                }
+                if (stillOpen) {
+                  const what = stillOpen === 'unreadable' ? 'Delta positions unreadable' : `still shows size ${stillOpen.size}`;
+                  logError(`[${accountState.name}] ⇄ Leg swap: old long-only ${posToExit.id} closed but ${swapSym} ${what} after 8s — new pair ${t.buyLeg.strike}/${t.sellLeg.strike} NOT placed.`);
+                  notifyFailure({ context: `Leg swap: old long-only ${posToExit.type.toUpperCase()} ${posToExit.buyLeg.strike} was closed, but ${swapSym} ${what} — the new pair ${t.buyLeg.strike}/${t.sellLeg.strike} was NOT placed. Check Delta.`, error: { message: 'swap-not-flat' } });
+                  continue;
+                }
+              }
+              // The old row was kept as hedge-only (its hedge close failed): it still holds its
+              // buy_strike, which the unique index (account, underlying, type, expiry, buy_strike)
+              // would reject for a new pair on the same strike — AFTER its Delta orders are live.
+              // Don't place the new pair; the scan retries once the hedge row is cleared.
+              if (swapParked && Number(posToExit.buyLeg.strike) === Number(t.buyLeg.strike)) {
+                logWarn(`[${accountState.name}] ⇄ Leg swap: old long-only ${posToExit.id} closed but its hedge is still open (row kept) — new pair ${t.buyLeg.strike}/${t.sellLeg.strike} NOT placed this cycle.`);
                 continue;
               }
             }
@@ -6476,6 +7063,19 @@ async function startSingleAccountEngine(account) {
                 if (badSym) {
                   rejectBlockedSymbols.set(badSym, Date.now() + LIVE_REJECT_BLOCK_MS);
                   pauseNote += ` — ${badSym} ignored for new entries for ${Math.round(LIVE_REJECT_BLOCK_MS / 60000)} min; check Delta for a position / order on it`;
+                }
+              }
+              // Accepted but not filled (not a rejection / margin / local refusal): skip that
+              // leg's symbol for a few minutes so the next scans try other pairs.
+              // Only a genuine "accepted but nothing filled" outcome — the timed path's 'long not
+              // filled after modifies' / 'short not filled' or the chase path's '<leg> leg unfilled
+              // after chase' — not an API error, an unreadable state or a partial long.
+              const noFill = /^(long not filled after modifies|short not filled|(buy|sell) leg unfilled after chase)$/i.test(String(liveEntry.error ?? ''));
+              if (noFill && !liveEntry.rejected && !marginReject && !localRefusal) {
+                const noFillSym = liveEntry.legFailed === 'buy' ? t.buyLeg.symbol : t.sellLeg.symbol;
+                if (noFillSym) {
+                  noFillBlockedSymbols.set(noFillSym, Date.now() + ENTRY_NOFILL_BLOCK_MS);
+                  pauseNote += ` — ${noFillSym} skipped for new entries for ${Math.round(ENTRY_NOFILL_BLOCK_MS / 60000)} min`;
                 }
               }
               notifyFailure({ account: accountState.name, context: `Entry ABORTED — ${liveEntry.legFailed} leg ${failMode}; position unwound, account left flat${pauseNote}`, error: liveEntry.error, extra: `${t.type?.toUpperCase?.() || ''} ${t.buyLeg.strike}/${t.sellLeg.strike}` });
@@ -6670,12 +7270,21 @@ async function startSingleAccountEngine(account) {
               // contractValue) keep the notional-lot basis unchanged.
               const rawNet = t.sellQty * t.entrySellPrice - t.entryBuyPrice * ratioLong;
               const netUsd = t.buyLeg.contractValue ? rawNet * t.buyLeg.contractValue : rawNet;
-              // Triplet: the hedge (3rd long) that was actually bought — strike × contracts @ entry.
-              const hedgeNote = (t.hedgeLeg?.symbol && (t.hedgeLeg.lotSize || 0) > 0)
-                ? ` · hedge ${t.hedgeLeg.strike} × ${longContracts(t.hedgeLeg)} @ $${Number(t.hedgeLeg.entryPrice ?? 0).toFixed(2)}`
-                : '';
-              log(`[${accountState.name}] ▼ ENTRY: ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} | Qty: ${ratioLong.toFixed(2)}:${t.sellQty} | Net: $${netUsd.toFixed(2)}${hedgeNote}`);
-              notifyTrade({ title: '📥 LIVE ENTRY', detail: `${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} · qty ${ratioLong.toFixed(2)}:${t.sellQty} · net $${netUsd.toFixed(2)}${hedgeNote} · spot ${Math.round(t.entrySpotPrice)}` });
+              // Triplet: the hedge (3rd long) that was actually bought — strike × contracts @ entry,
+              // its premium paid (lotSize = cv × contracts on live, so lotSize × price is USD) and
+              // the TOTAL net premium of the whole entry (long/short net − hedge premium).
+              const hasHedge = !!(t.hedgeLeg?.symbol && (t.hedgeLeg.lotSize || 0) > 0);
+              const hedgeUsd = hasHedge ? (t.hedgeLeg.lotSize || 0) * Number(t.hedgeLeg.entryPrice ?? 0) : 0;
+              const totalNetUsd = netUsd - hedgeUsd;
+              const usd = (v) => `${v < 0 ? '−' : ''}$${Math.abs(v).toFixed(2)}`;
+              // Strikes / qty read long / short / hedge, e.g. "PUT 81200/79600/78800 · qty 339:2204:1984".
+              const strikesLbl = strikesLabel(t, hasHedge ? t.hedgeLeg : null);
+              const qtyLbl = `${ratioLong.toFixed(2)}:${t.sellQty}${hasHedge ? `:${longContracts(t.hedgeLeg)}` : ''}`;
+              const netNote = hasHedge
+                ? ` · long/short net ${usd(netUsd)} · hedge @ $${Number(t.hedgeLeg.entryPrice ?? 0).toFixed(2)} (−$${hedgeUsd.toFixed(2)}) · total net ${usd(totalNetUsd)}`
+                : ` · net ${usd(netUsd)}`;
+              log(`[${accountState.name}] ▼ ENTRY: ${strikesLbl} | Qty: ${qtyLbl}${netNote.replace(/ · /g, ' | ')}`);
+              notifyTrade({ title: '📥 LIVE ENTRY', detail: `${strikesLbl} · qty ${qtyLbl}${netNote} · spot ${Math.round(t.entrySpotPrice)}` });
             }
           } catch (err) { logError(`[${accountState.name}] Entry persistence error:`, err); }
         }

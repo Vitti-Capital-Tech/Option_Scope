@@ -293,21 +293,63 @@ async function sendTelegram(text, chatId) {
   return enqueue(String(dest), text);
 }
 
+// ── Alert severity — can this cost money? ─────────────────────────────────────────
+// Every live alert is tagged with one of three levels so the group can tell at a glance
+// whether to act. Classified here, in one place, from the alert's error code, its text and
+// the order tag in `extra` — so every caller (engine + liveExecution) is covered. A caller
+// may force a level with `severity: 'critical' | 'high' | 'low'`.
+const SEVERITY = {
+  critical: { head: '🔴 <b>CRITICAL — LIVE ALERT</b>', risk: '💸 <b>Money at risk: YES</b> — a position may be open on Delta without protection or tracking. Act now.' },
+  high: { head: '🟠 <b>CHECK SOON — LIVE ALERT</b>', risk: '⚠️ <b>Money at risk: POSSIBLE</b> — the engine and Delta may disagree, or an exit order is not resting. Check soon.' },
+  low: { head: '🟡 <b>NO MONEY RISK — LIVE ALERT</b>', risk: '✅ <b>Money at risk: NO</b> — nothing was left open; at most a small fee / spread cost. No action needed.' },
+};
+// Order-tag suffixes (client_order_id) of ENTRY orders: a failed entry order leaves nothing open
+// (the entry is aborted / unwound). NOT the unwind closes (-EAB / -EAS / -ORPHX): if one of those
+// fails, a leg of the aborted entry is left open — that is critical. Everything else that fails
+// is an exit or protection order.
+const ENTRY_TAG_RE = /-(EB|ES|HB)\]?\s*$/i;
+const CRITICAL_CODES = new Set(['orphan-unprotected-unknown', 'untracked-short', 'untracked-long-with-short', 'untracked-long-breached', 'short-without-long']);
+const HIGH_CODES = new Set(['positions-all-missing', 'close-unverified', 'short-close-unverified', 'orphan-protected', 'orphan-collision-protected', 'swap-not-flat', 'hedge-close-failed', 'hedge-not-filled', 'pexclean-failed', 'hedge-bracket-move-failed']);
+
+export function classifyAlert({ context = '', errMsg = '', extra = '', severity = null } = {}) {
+  if (severity && SEVERITY[severity]) return severity;
+  const code = String(errMsg || '').trim();
+  if (CRITICAL_CODES.has(code)) return 'critical';
+  if (HIGH_CODES.has(code)) return 'high';
+  const c = String(context);
+  // Aborted / unwound entries: the account was left flat.
+  if (/Entry ABORTED|Entry not persisted/i.test(c)) return 'low';
+  // A hedge whose close failed stays tracked and is retried (resting limit sell) — check, not panic.
+  if (/Hedge close FAILED|-HXL?\d*\]/i.test(c + ' ' + extra)) return 'high';
+  // Case-sensitive on purpose: the real "nothing protects this leg" alerts say UNPROTECTED in
+  // capitals; "risk exit may be unprotected" (a failed bracket — the engine's own exit still
+  // runs) is a check-soon, not a critical.
+  if (/UNPROTECTED|Protective market close FAILED|NO Delta credentials/.test(c)) return 'critical';
+  // A failed order: entry orders leave nothing open; exit / close orders may leave a leg open.
+  if (/Order send FAILED|CLOSE FAILED|STOP placement FAILED/i.test(c)) {
+    if (ENTRY_TAG_RE.test(String(extra))) return 'low';
+    return /CLOSE FAILED/i.test(c) ? 'critical' : 'high';
+  }
+  // Unknown → assume it needs a look (never under-state a live problem).
+  return 'high';
+}
+
 /**
- * Alert the user to a critical LIVE trading failure. Fire-and-forget: callers do
- * NOT await it, and identical alerts within TELEGRAM_DEDUPE_MS are coalesced so a
- * failure that repeats every engine cycle doesn't spam the chat.
+ * Alert the user to a LIVE trading failure. Fire-and-forget: callers do NOT await it, and
+ * identical alerts within TELEGRAM_DEDUPE_MS are coalesced so a failure that repeats every
+ * engine cycle doesn't spam the chat. Each alert carries its severity (classifyAlert).
  *
  * @param {Object} p
  * @param {string} p.account  account name (for the message + dedupe key)
  * @param {string} p.context  short description of what failed
  * @param {any}    [p.error]  Error object or message string
  * @param {string} [p.extra]  optional extra line (e.g. strikes / order id)
+ * @param {string} [p.severity] force 'critical' | 'high' | 'low' (else classified)
  * @param {string} [p.chatId] per-account Telegram chat id (falls back to env default);
  *                            ignored when TELEGRAM_ERROR_CHAT_ID is set — errors then go
  *                            only to that channel
  */
-export function notifyLiveFailure({ account = '—', context = 'Live failure', error = '', extra = '', chatId = '' } = {}) {
+export function notifyLiveFailure({ account = '—', context = 'Live failure', error = '', extra = '', chatId = '', severity = null } = {}) {
   if (!ENABLED) return;
   const errMsg = error?.message ?? (error ? String(error) : '');
   const now = Date.now();
@@ -326,18 +368,54 @@ export function notifyLiveFailure({ account = '—', context = 'Live failure', e
   }
 
   const ts = new Date(now).toISOString().replace('T', ' ').slice(0, 19);
+  const sev = SEVERITY[classifyAlert({ context, errMsg, extra, severity })];
   const lines = [
-    '🚨 <b>LIVE TRADING FAILURE</b>',
+    sev.head,
     `<b>Account:</b> ${escapeHtml(account)}`,
     `<b>What:</b> ${escapeHtml(context)}`,
     errMsg ? `<b>Error:</b> ${escapeHtml(errMsg)}` : '',
     extra ? escapeHtml(extra) : '',
+    sev.risk,
     `<i>${ts} UTC</i>`,
   ].filter(Boolean);
 
   // Fire-and-forget — never block the engine on the network round-trip. Routes to the
   // error channel when configured, else the account's own chat, else the global default.
   sendTelegram(lines.join('\n'), dest).catch(() => {});
+}
+
+/**
+ * Tell the group that an earlier live alert has cleared (✅ RESOLVED). Sent once per
+ * resolved issue — the engine tracks which condition-based alerts are still open and calls
+ * this when the condition goes away. Same routing as notifyLiveFailure; `alsoDefault` (an
+ * alert that also went to the global chat, notifyAdmin) sends it there too.
+ *
+ * @param {Object} p
+ * @param {string} p.account  account name
+ * @param {string} p.context  the original alert's "What" text
+ * @param {string} p.how      how it resolved (one line)
+ * @param {number} [p.openMs] how long the issue was open
+ * @param {string} [p.chatId] per-account Telegram chat id
+ * @param {boolean} [p.alsoDefault] also send to the global default chat
+ */
+export function notifyLiveResolved({ account = '—', context = '', how = '', openMs = null, chatId = '', alsoDefault = false } = {}) {
+  if (!ENABLED) return;
+  const dest = ERROR_CHAT_ID || chatId || CHAT_ID;
+  const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  const dur = openMs == null ? '' : (openMs < 60000 ? `${Math.max(1, Math.round(openMs / 1000))}s`
+    : openMs < 3600000 ? `${Math.round(openMs / 60000)}m` : `${(openMs / 3600000).toFixed(1)}h`);
+  const text = [
+    '✅ <b>RESOLVED — LIVE ALERT</b>',
+    `<b>Account:</b> ${escapeHtml(account)}`,
+    context ? `<b>Was:</b> ${escapeHtml(context)}` : '',
+    how ? `<b>Now:</b> ${escapeHtml(how)}` : '',
+    dur ? `<b>Open for:</b> ${dur}` : '',
+    `<i>${ts} UTC</i>`,
+  ].filter(Boolean).join('\n');
+  sendTelegram(text, dest).catch(() => {});
+  if (alsoDefault && !ERROR_CHAT_ID && chatId && CHAT_ID && String(chatId) !== String(CHAT_ID)) {
+    sendTelegram(text, CHAT_ID).catch(() => {});
+  }
 }
 
 /**

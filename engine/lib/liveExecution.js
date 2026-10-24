@@ -858,6 +858,40 @@ export function createLiveExecutor(getCtx) {
      * so a stale reduce-only order can't later fire against a re-entered position on
      * the same symbol. `productId` is required by Delta's cancel endpoint.
      */
+    /**
+     * Cancel a resting order and report how much of it had filled, from Delta's cancel
+     * response (size − unfilled_size). { ok: true, filled, unfilled } on a cancel; { ok: false,
+     * gone: true } when Delta refuses the cancel (the order is no longer open — fully filled or
+     * already cancelled). Armed real only.
+     */
+    async cancelAndReadFill({ id, productId }) {
+      if (!armed() || DRY_RUN) return { ok: true, skipped: true, filled: null, unfilled: null };
+      const { accountName, creds } = getCtx();
+      if (!creds?.apiKey || id == null) return { ok: false, error: 'no-id-or-creds' };
+      try {
+        const c = await cancelOrder(creds, { id, product_id: productId });
+        const sz = Number(c?.size);
+        const uf = Number(c?.unfilled_size);
+        log(`[${accountName}] ⌫ Cancelled resting order id ${id}`);
+        return {
+          ok: true,
+          filled: Number.isFinite(sz) && Number.isFinite(uf) ? Math.max(0, Math.round(sz - uf)) : null,
+          unfilled: Number.isFinite(uf) ? Math.max(0, Math.round(uf)) : null,
+        };
+      } catch (e) {
+        // A refused cancel means "no longer open" ONLY if the order really is off the book — a
+        // timeout / 5xx / rate limit leaves it resting. Check the open orders before saying gone.
+        let stillOpen = null;
+        try {
+          const open = await getLiveOrders(creds, { states: 'open,pending' });
+          if (Array.isArray(open)) stillOpen = open.some(o => String(o.id) === String(id));
+        } catch { /* unknown */ }
+        if (stillOpen === false) return { ok: false, gone: true, error: e.message };
+        logWarn(`[${accountName}] cancel of order ${id} failed and it may still be open: ${e.message}`);
+        return { ok: false, transient: true, error: e.message };
+      }
+    },
+
     async cancelStop({ id, productId }) {
       if (!armed() || DRY_RUN) return { ok: true, skipped: true };
       const { accountName, creds } = getCtx();

@@ -253,15 +253,15 @@ export default function ControlPanel({
             </div>
           )}
 
-          {/* Partial scale-down (migration 063) — PAPER ONLY. The ATM-ratio scale-down sells
-              part of a full spread's long as the live ATM ratio rises; live keeps 10/10/50. */}
-          {!accountIsLive && (
+          {/* Partial scale-down (migration 063) — paper AND live (promoted to live 2026-10-23).
+              The ATM-ratio scale-down sells part of a full spread's long as the live ATM ratio
+              rises; defaults ON / 10% / 10% / 50%. */}
             <div className="pt-filter-cluster">
               <span className="pt-cluster-head">Partial Scale-Down</span>
               <div className="pt-cluster-fields">
                 <div key="partialScaleEnabled" className="form-group">
                   <label htmlFor="partialScaleEnabled" className="pt-field-label" style={{ marginBottom: 0, cursor: 'pointer' }}
-                    title="When the live ATM ratio rises and the spread's gross P&L clears the step, sell part of the long (full spreads only). Off: no partial scale-down. Paper accounts only — live always scales 10% / 10% / max 50%.">
+                    title="When the live ATM ratio rises and the spread's gross P&L clears the step, sell part of the long (full spreads only). Off: no partial scale-down. Defaults: on, 10% / 10% / max 50%.">
                     Scale Down
                   </label>
                   <div style={{ height: 34, display: 'flex', alignItems: 'center' }}>
@@ -296,7 +296,6 @@ export default function ControlPanel({
                 )}
               </div>
             </div>
-          )}
 
           {/* Delta OI limit (migration 062) — paper AND live. Delta makes a strike reduce-only
               once its market-wide open interest reaches the cap; with this on, the engine skips

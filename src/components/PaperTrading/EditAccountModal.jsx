@@ -54,12 +54,16 @@ export default function EditAccountModal({
           )}
         </div>
 
+        {/* Mode is fixed once the account exists (shown as a read-only badge): switching an
+            account between paper and live would hand it from one engine flow to the other
+            with its open positions, and is not supported. Create a new account instead. */}
         {watch && setValue && (
           <DeltaCredentialsSection
             register={register}
             watch={watch}
             setValue={setValue}
             existingMeta={credentialsMeta}
+            lockedMode={account?.mode === 'live' ? 'live' : 'paper'}
           />
         )}
 

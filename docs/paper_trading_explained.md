@@ -182,6 +182,7 @@ The engine refreshes the list of active option products (every 5 minutes, plus o
 3. **Scanner Rollover vs. Position Rollover**: 
    - **Scanner Rollover**: Changing `config.expiry` only shifts the engine's scanning focus. In the next minute loop, it runs a completely fresh scan for option spreads on the new expiry and will only enter trades if they meet all configuration parameters.
    - **No Position Rollover**: Active positions are never carried forward or rolled over. Instead, they are always exited 2 minutes prior to their expiration date and recorded as settled in the trade history, starting fresh.
+4. **New strikes come only from this refresh**: a 2026-10-23 test subscribed to Delta's public `product_updates` and `announcements` WebSocket channels for ~1 h across the 12:00 and 12:15 UTC new-strike launches and received no events — new listings are not announced there, so they reach the engine through the shared product refresh (`getSharedProducts`).
 
 ### The Evaluation Loop Decision
 
@@ -523,7 +524,7 @@ This is **cross-role**, not just same-role:
 > 
 > **Only a SHORT-EXIT-origin long-only is replaceable** — one that became long-only when its short leg was bought back, identified by `sellLeg.strike != null` (it retains its old short strike). An **adopted / manually-added** long (`sellLeg.strike === null`, `_adopted`) is **never** replaced. Paper never has adopted longs, so paper behaviour is unchanged.
 > 
-> **Live execution (promoted from paper).** For an armed-live account the old long-only must be flattened on Delta **before** the new pair opens — the new long is often the SAME symbol (long strike reused), so an un-closed old long would net with it. The engine: cancels the long-only's resting orders + bracket → **reduce-only MARKET close** (`-REPX`) → residual sweep → books `-REP` at Delta's **actual close-fill** (`closingFillPriceFrom`, mark fallback) → deletes the row → then the entry proceeds through the DB guards (which no longer see the deleted row) and `openSpread`. **On close failure the replacement ABORTS** — the old long-only is kept intact and the new pair is skipped for the cycle (retry next), so a pair is never opened on top of an un-flat leg. Paper / dry-run: no real close, books + deletes as before.
+> **Live execution (promoted from paper).** For an armed-live account the old long-only must be flattened on Delta **before** the new pair opens — the new long is often the SAME symbol (long strike reused), so an un-closed old long would net with it. **Every pre-check runs first (2026-10-21, Dg PUT 83600/82200):** the DB per-type / combined caps, buy / sell strike uniqueness (these queries exclude the row being replaced via `.neq('id', repPos.id)`), the depth guard, the margin check and the Delta pre-order position check (which ignores the old long's symbol). Any failed check leaves the old long-only untouched. Only then does the engine cancel the long-only's resting orders + bracket → **reduce-only MARKET close** (`-REPX`) → residual sweep → book `-REP` at Delta's **actual close-fill** (`closingFillPriceFrom`, mark fallback) → close its hedge (kept as a hedge-only row if that fails) → delete the row → `openSpread`. If the new pair trades the old long's symbol, the engine first waits up to 8 s for Delta to show that symbol flat; if it doesn't, it logs, sends a Telegram failure (`swap-not-flat`) and skips the entry. **On close failure the replacement ABORTS** — the old long-only is kept intact and the new pair is skipped for the cycle (retry next), so a pair is never opened on top of an un-flat leg. Paper / dry-run: no real close, books + deletes as before.
 > 
 > **Zero-Budget Starvation Fix (`effPartMargin`):** When all position slots are occupied (e.g. 4/4 slots full), `remainingBudget` evaluates to `$0`, yielding `partMargin = $0`. To prevent the paper budget check from starving a replacement candidate before it reaches the exit stage, the engine computes **`effPartMargin = freedMargin / remainingSlots`** (adding the replaceable long-only's freed margin into `effectivePoolLeft`), so the candidate passes the budget check and sizes properly.
 
@@ -598,6 +599,12 @@ The candidate's **short** strike must not be occupied by an active short (same-r
 - **Sell price** = the live **Bid** (you're selling, so you receive the bid price)
 
 This is **execution-realistic** — no cheating with mid-prices.
+
+### Entry quote & tradability gates (all accounts)
+
+- **Two-sided, fresh quote.** Before a candidate is staged (before the [governor](#cross-account-entry-governor-paper--live) reserves depth and before it takes a cap slot), the long and the short need a two-sided quote, and the side hit — long / hedge **ask**, short **bid** — must have a price (and, when reported, a size) updated within `ENTRY_QUOTE_FRESH_MS` (env, default 60 s) and a size > 0. The hedge needs only its ask. Added after 2026-10-21 21:57 UTC, when `C-BTC-86400` showed a ~$35 bid with no buyer behind it: 8 accounts bought the long, couldn't sell the short even at $1, and unwound three minutes in a row.
+- **Delta trading status.** Products whose `trading_status` is not `operational` are left out of the scan pool and the hedge picker (`tradableOk`), logged once per change (`⊘ Delta trading disrupted on N product(s)`). Open positions are unaffected.
+- **Live only — free margin before staging.** An armed live candidate whose margin (incl. the hedge premium) doesn't fit Delta's free margin above the reserve, minus what is already staged this cycle (`liveStagedMargin()`), is skipped here, so it no longer takes the last slot and blocks the next pair with "cap reached".
 
 ---
 
@@ -707,11 +714,15 @@ Normal sizing **reserves** budget for every empty combined slot (`partMargin = r
 
 ---
 
-### Open Interest limit (paper and live — migration 062)
+### Open Interest limit (paper and live — migrations 062 / 065)
 
 Delta Exchange applies a contract-level, market-wide **Open Interest (OI) limit** on options from 14 Oct 2026: once a strike's total open interest (all traders) reaches the cap — **BTC 15M, ETH 10M, XAUT 5M** — Delta switches that strike to **reduce-only**: new positions are rejected, closing is still allowed, existing orders are untouched. Delta flags it on every ticker (`oi_reduce_only_mode`) and reports the strike's OI in USD (`oi_value_usd`).
 
-Control Panel → **Open Interest → OI Limit** (`oi_filter_enabled`, **off by default**; paper and live accounts — promoted to live 2026-10-14). With it on, **Max OI** (`oi_max_cap_m`, in millions of USD; empty = the underlying's default, BTC 15 / ETH 10) applies: the engine skips every strike that Delta has locked or whose OI is at/over Max OI — for the long, the short and the hedge leg alike — like an excluded strike. New entries only; open positions are left alone. The entry log lists the blocked strikes (`OI-blocked (≥ $15M or locked): calls … · puts …`). Synced across the account's group like the other global filters.
+Control Panel → **Open Interest → OI Limit** (`oi_filter_enabled`, **off by default**; paper and live accounts — promoted to live 2026-10-14). With it on, **Block By** (`oi_filter_mode`, migration `065`) chooses what is skipped — for the long, the short and the hedge leg alike, like an excluded strike:
+- **Delta Lock** (`lock`, default): only the strikes Delta has locked (`oi_reduce_only_mode`). Delta's real cap turned out to be higher than $15M — strikes at $17–21M stayed open while only a ~$30M strike was locked — so Delta's own flag is the reliable signal.
+- **Manual** (`cap`): also strikes whose OI is at/over **Max OI** (`oi_max_cap_m`, in millions of USD; empty = the underlying's default, BTC 15 / ETH 10 / XAUT 5; shown only in this mode). Accounts that already had a Max OI set were migrated to Manual.
+
+(`isOiBlocked(t, capM)` — `capM` null in Lock mode.) The Ratio Spread Scanner keeps the cap rule. New entries only; open positions are left alone. The entry log lists the blocked strikes (`OI-blocked (≥ $15M or locked): calls … · puts …`). Synced across the account's group like the other global filters.
 
 ---
 
@@ -935,7 +946,7 @@ Both are stamped at **entry** and re-synced only when the active window's `exitT
 
 ## Partial Exit / Scaling Logic
 
-> **Paper controls (migration 063):** Control Panel → **Partial Scale-Down** — **Scale Down** on/off (default on), **Lot Step** % (default 10: each step sells this % of the initial long), **P&L Step** % (default 10: the threshold below uses this % of the checkpoint ATM P&L instead of 10%) and **Max of Long** % (default 50: the floor is the initial long × (1 − this/100)). The 10% / 10% / 50% figures in this section are those defaults. Live accounts always use 10 / 10 / 50.
+> **Controls (migration 063; paper, and live since 2026-10-23):** Control Panel → **Partial Scale-Down** — **Scale Down** on/off (default on), **Lot Step** % (default 10: each step sells this % of the initial long), **P&L Step** % (default 10: the threshold below uses this % of the checkpoint ATM P&L instead of 10%) and **Max of Long** % (default 50: the floor is the initial long × (1 − this/100)). The 10% / 10% / 50% figures in this section are those defaults. `applyAtmRatioScaling` reads them for every account, paper and live.
 
 This is the most complex part. Think of it as **gradually taking profit** by reducing the buy leg's lot size in steps while keeping the short leg untouched.
 
@@ -1010,6 +1021,7 @@ If shortLeg liveAsk ≤ shortExitPrice (default: 1.1) → buy back ONLY the shor
 3. The position becomes **long-only**: `sellQty = 0`, `sellLeg.lotSize = 0`, margin recomputed (`calcMargin(entryBuyPrice, buyLot, spot, 0, 1)`).
 4. The current long lot is **snapshotted** as `buyLeg.longExitBaseLot` (with `longExitStage = 0`) — this is the base for the laddered long exit below. Both are persisted in `buy_leg`.
 5. The position is **kept** in `active_positions` (not deleted) — the long leg continues to be held.
+6. If the spread carries a **hedge** (3rd long), it is closed in the same step (`closeHedgeWithPair(pos, 'short leg exited')`, booked `${id}-HX` at its bid) **before** the long-only margin is recomputed, so its premium drops out of the margin; `hedge_leg` is persisted. Any long-only row still holding a hedge (from older builds) has it closed on the next cycle (`'short leg already exited'`). Same on live (2026-10-23).
 
 ---
 
@@ -1361,14 +1373,16 @@ Replaces the old standalone "hedge overlay" with a **3rd long-only leg baked int
 
 **Entry** (per spread, in the entry loop): once the main long/short are sized, the engine attaches the hedge leg (stored in `hedge_leg`, not a separate row). The **Max Net Debit gate now applies to the combined premium of all three legs** — per 1-long unit: `combinedNet = ratio × sellBid − longAsk − (ratio × Hedge Lot %) × hedgeAsk`, where ratio is the ATM-scaled base short qty **before** position sizing (the same basis as the 2-leg scan gate and the scanner's Net Premium; using the sized short qty against a 1-lot long price wrongly rejected every sized-down hedged spread); if the combined debit exceeds `maxNetPremium` the **whole entry is skipped**. Adding a long makes the debit larger, so the triplet gate is strictly stricter than the 2-leg scan gate. The hedge cost is added to the position's margin; the hedge's own entry fee is tracked in `hedgeLeg.entryFee` (kept out of `pos.entryFee`, which the ladder/short-exit logic apportions for the main legs).
 
-**Exit** — the hedge **rides the triplet** and is closed **only** by the main long's **ATM/ITM/OTM spot-cross or expiry** catch-all. It is **never** short-bought-back, laddered, scaled, or drained:
-- The short leg buy-back ($1.1) and the long-only ladder act on the main legs only; the hedge is untouched.
-- If the main long fully ladders out first, the pair is done and the hedge **exits at once** with it (`closeHedgeWithPair`, booked as `${id}-HX` at the hedge bid) — same as live since 2026-10-16. (Older builds held the row as "hedge-only" until the catch-all; such rows are closed on the next cycle.)
+**Exit** — the hedge **exits with the short buy-back** (2026-10-23, paper and live). It is **never** laddered, scaled, or drained:
+- When the short leg is bought back ($1.1) the hedge is closed in the same step (`closeHedgeWithPair`, booked as `${id}-HX` at the hedge bid) — see [Short-Leg-Only Exit](#short-leg-only-exit). The long-only ladder then acts on the main long alone. A long-only row from an older build that still holds its hedge closes it on the next cycle.
+- If the pair exits another way first — ATM/ITM/OTM spot-cross, expiry, manual exit / Close All, or the main long fully laddering out — the hedge leaves with it.
+- **Live, failed close:** if the hedge's market close is rejected (e.g. no liquidity), it is **not** booked or dropped: a reduce-only limit SELL rests at the mark (`${id}-HXL`), the hedge stays tracked and the close is retried every 5 min with a fresh order tag (`-HX2`/`-HXL2`, …), reading how much of the resting sell filled from Delta's cancel response (a partial fill is booked as its own row). A pair whose main legs are gone is kept as a *hedge-only* row until then (past expiry it is booked at the resting sell's price if that filled, else at intrinsic). The spot-cross full exit (and a manual exit whose hedge already has a resting sell) checks the hedge close too: a failed one is left out of the pair's booking, the row is kept as hedge-only and the 📤 FULL EXIT message adds `hedge <strike> close FAILED — retrying`. Added after the AG Holdings 84800 orphan (2026-10-19). Details: [live_trading.md](./live_trading.md#hedge-exit-with-the-short--failed-hedge-closes-2026-10-19--23).
+- **Live, thin hedge book:** if the chosen hedge strike's ask depth can't take the hedge size, the next-best qualifying hedge strike whose depth fits (and that still clears the ATM P&L / ROI and Max Net Debit floors) is used; none → the candidate is skipped.
 - **Shared hedge strike:** several open pairs may hold their hedge on the same strike. Each pair's hedge qty still exits with that pair, at its own TP. The Active Positions **Dist. to Exit** cell shows the combined view under the meter: `H <strike> · shared ×N · TP ≥/≤ <level> (farthest) · qty <this pair>/<total>`, where the level is the exit of the sharing pair farthest from ATM (call: highest, put: lowest; the stored real exit level, else the meter trigger), i.e. the point where the hedge is fully out. A hedge on its own strike shows `H <strike> · exits with this pair · qty <qty>`.
 - On the full exit (or a manual exit / Close All), the hedge is sold at its live **bid** (neutral fallback to entry price if momentarily unquoted) and booked as its own idempotent `trade_history` row with `trade_id = ${pos.id}-HX`, `exit_reason = "Hedge Exit @ <ATM|ITM|OTM|Expiry>"`.
 
 > [!NOTE]
-> Logs: `🛡️ HEDGE EXIT`; entry skips log the reason (`no strike beyond the short with price < $… and |IV − short IV| in [… , …]` / `combined 3-leg net … per unit … below the Max Net Debit floor`). Live (armed-real): the hedge buy is a separate `-HB` order, chased like the entry legs, with a TP bracket at the first long's TP; if it does not fill the 2-leg spread is kept, the hedge dropped and a Telegram alert sent; the catch-all closes it with `-HX`. Legacy standalone `isHedge` overlay rows (migration `022`) close gracefully through the normal long-only ladder.
+> Logs: `🛡️ HEDGE EXIT`; entry skips log the reason (`no strike beyond the short with price < $… and |IV − short IV| in [… , …]` / `combined 3-leg net … per unit … below the Max Net Debit floor`). Live (armed-real): the hedge buy is a separate `-HB` order, chased like the entry legs, with a TP bracket at the first long's TP; if it does not fill the 2-leg spread is kept, the hedge dropped and a Telegram alert sent; it is closed with `-HX` (with the short buy-back, or the catch-all / manual exit). The live `📥 LIVE ENTRY` Telegram message reads `PUT 81200/79600/78800 · qty L:S:H · long/short net $X · hedge @ $p (−$cost) · total net $Y · spot …` (total net = long/short net − hedge premium); the hedge's own close is `🛡️ HEDGE EXIT` / `🛡️ HEDGE EXPIRY` (`… · hedge × N · entry $a → exit|settled $b · <reason>`), and `📤 FULL EXIT` / `📤 EXPIRY EXIT` / `🙋 MANUAL EXIT` add ` · hedge × N $entry → $exit (P&L ±$x)` when the hedge closed with the pair. Legacy standalone `isHedge` overlay rows (migration `022`) close gracefully through the normal long-only ladder.
 
 ---
 
@@ -1418,7 +1432,7 @@ Accounts are rows in `paper_trading_accounts`. Each account has:
 | Action | What Happens |
 |--------|-------------|
 | **Create** | Inserts into `paper_trading_accounts` + `paper_trading_config`; the engine starts automatically via Realtime |
-| **Edit** | Renames the account only (config is separate) |
+| **Edit** | Renames the account (config is separate). The **Paper/Live mode is read-only** once the account exists (`lockedMode` on the credentials section; the save keeps the stored mode) — a switch would hand an account with open positions between engine flows |
 | **Delete** | Pre-deletes the `engine_heartbeat` row first (prevents zombie heartbeat rows), then deletes the account row; the engine stops via Realtime |
 
 > [!NOTE]
@@ -1663,8 +1677,9 @@ flowchart TD
 | Long-only exit levels | 10 equidistant | Evenly-spaced **bid** levels in [current bid, max(entry, last 2hr high)]; exit 1/10 long per crossed level (bid-triggered) |
 | $195K cap | $195,000 | Max short notional value — same for every underlying |
 | Short-leg leverage | DTE 0/1: BTC 200× · ETH 100×; farther expiries: 100× | `leverageFor(underlying, expiry)`; divides the (capped) short notional to give its margin. DTE 0/1 = under 48h to the 17:30 IST settlement |
-| Scaling step | 10% | Lot size reduction per scaling event (full spreads only) |
-| Scaling floor | 50% | Minimum lot size as % of initial (full spreads only) |
+| Scaling step | 10% (Lot Step, configurable) | Lot size reduction per scaling event (full spreads only) |
+| Scaling floor | 50% (Max of Long, configurable) | Minimum lot size as % of initial (full spreads only) |
+| Entry quote freshness | 60 seconds (`ENTRY_QUOTE_FRESH_MS`) | Max age of the hit-side price / size for a new entry (all accounts) |
 | ATM P&L minimum (`minAtmPnl`) | $50 (configurable, paper) | Min simulated ATM profit for entry; scaled down by the ATM-ratio pct |
 | ATM ROI minimum (`minAtmRoi`) | 2% (configurable, paper) | Min simulated ATM ROI for entry; applied flat. Live ignores it |
 | ATM strike tolerance (BTC) | 1000 points | Bracket-and-average tolerance per side when a target strike is unlisted or its quote is stale |
@@ -1675,15 +1690,15 @@ flowchart TD
 | Exit Points | 0 | Default points distance threshold for ITM/OTM exits |
 | Leg Swap Net Premium | 0 | ⚠️ Deprecated/unused — leg swaps removed (config still loaded for back-compat) |
 
-## Account Groups (migration 050)
+## Account Groups (migrations 050, 064)
 
 Several accounts can share **one set of settings** while still trading on their own.
 
 - **What is shared**: everything you set — Control Panel filters, exits, trade days, full deploy, excluded strikes, allocation % / entry offsets / position caps, and all schedule windows (with their hedge, caps and exit overrides).
 - **What stays per account**: balance and initial balance, open positions, P&L and history, strategy version, credentials, Start Live / Disarm, Pause and Telegram. Sizing still uses each account's own balance.
-- **How it works**: settings are still saved per account. When the group's owner or an admin saves a change on any grouped account (Apply filters, Apply schedules, Edit account), the same settings are copied to every other member at once (`sync_account_group`). A client editing their own account that sits in someone else's group just saves it for that account. The engine sees each member's settings change exactly as if you had edited it.
+- **How it works**: settings are still saved per account. Each group has a **leader** (`account_groups.leader_account_id`, migration `064`; if none is set, or the leader left, the first-created member). When the group's owner or an admin saves a change on the **leader** (Apply filters, Apply schedules, Edit account), the same settings are copied to every other member at once (`sync_account_group` with the leader as source). A save on a follower stays on that account until the leader's next save — the banner says "this account follows X". A client editing their own account that sits in someone else's group just saves it for that account. The engine sees each member's settings change exactly as if you had edited it.
 - **Rules**: same mode (paper or live) and same strategy version. Members may belong to **different users** — e.g. an admin's group of client accounts (migration `052`); only the group's owner or an admin can add accounts to it. An account can be in one group at a time.
 - **Exit points differ per member (migrations `053`/`054`)**: when windows are copied, every other member's window **Exit Points** become the saved value ± a random whole number from 10 to 50 (only + if − would go below 0), so the accounts don't all exit at the same spot level. The account you saved from keeps exactly what you typed. A member keeps its offset while that window's value is unchanged and gets a new one when you change it; within one window no two accounts of the group end up on the same exit points. Typing a value directly into a member makes it the new base. Only schedule windows get the offset (not the account-level fallback), and an ATM exit ignores points.
 - **Random or Fixed difference (migration `058`)**: each group has an *Exit points difference* switch in the Groups modal — **Fixed** (the default, also for groups that existed before `058`) with a *Step* (default 25, editable), or **Random** (the ± offset above, drawn from the group's *From–To* range, default 10–50). Fixed keeps the saved account on its typed value and puts the others on an arithmetic progression around it, e.g. 5 accounts at step 25 → −50, −25, 0, +25, +50 (given out in account creation order, so each account keeps its place; a minus step that would go below 0 is replaced by the next plus step). Changing the setting re-applies it to the group's windows immediately. It can also be chosen when creating a group.
-- **Managing**: **Groups** button next to *New Account*. Create a group from two or more accounts and choose whose settings to copy. Adding an account replaces its settings with the group's. Removing an account, or deleting the group, leaves the accounts with their current settings; they just stop syncing.
-- Grouped accounts show a purple group badge in the account selector, and a banner above the Control Panel lists the other members.
+- **Managing**: **Groups** button next to *New Account*. Create a group from two or more accounts and choose which one the group follows (it becomes the leader). Each group has a *Group follows* selector to change the leader — the new leader's settings are copied to the others at once (`handleSetGroupLeader`); the leader's chip carries a crown. Adding an account replaces its settings with the leader's. Removing the leader falls back to the first-created member. Removing an account, or deleting the group, leaves the accounts with their current settings; they just stop syncing.
+- Grouped accounts show a purple group badge in the account selector, and a banner above the Control Panel says whether this account is the leader or which account it follows. The account dropdown is **nested**: a group shows one row (its leader, with a crown and the group badge) and a `+N ▸` expander that lists the followers indented; ungrouped accounts are listed as before, and opening the menu expands the active account's group when it is a follower.
