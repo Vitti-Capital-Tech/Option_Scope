@@ -4370,7 +4370,28 @@ async function startSingleAccountEngine(account) {
         // spread, and nothing in the log said WHICH input disagreed. `—` on either intrinsic
         // now means that strike has no fresh quote (candidate skipped, not mis-priced).
         const usd = (v) => (v != null ? `$${v.toFixed(2)}` : '—');
-        log(`[${accountState.name}] Candidate ${spread.buyLeg.type.toUpperCase()} ${spread.buyLeg.strike}/${spread.sellLeg.strike}: ATM P&L = $${atmPnl != null ? atmPnl.toFixed(2) : 'null'} (Min required: $${minAtmPnl.toFixed(2)}), ROI = ${roi != null ? roi.toFixed(2) : 0}% (Min required: ${minAtmRoi.toFixed(2)}%), Passed = ${passed} | ATM ${atmStrike} ${usd(buyIntrinsic)} / ${targetSellStrike} ${usd(sellIntrinsic)} → ratio ${atmRatio ?? '—'} → qty ${spread.sellQty}→${ratioToUse ?? '—'} | legs ${usd(spread.buyPrice)}/${usd(spread.sellPrice)}${atmHedge ? ` | hedge ${atmHedge.ticker.strike} ${usd(atmHedge.ask)} → ATM ${usd(hedgeAtAtm)} × ${hedgeLotPct}%` : ''}${hedgeMissing ? ` | no hedge strike (price < $${hedgeFilters.maxPrice}, |IV − short IV| in [${hedgeFilters.ivMin}, ${hedgeFilters.ivMax}]) → rejected` : ''}`);
+        // Say WHICH hedge rule failed: no strike passes price / IV at all, or strikes do but none
+        // keeps the 3-leg net (long + short + hedge, per 1 long) within Max Net Debit — the
+        // usual case when the short premium is thin and the hedge (Hedge Lot % of the short qty)
+        // costs more than the pair takes in.
+        let hedgeWhy = '';
+        if (hedgeMissing) {
+          const opts = hedgeOptionsFor(spread);
+          if (opts.length === 0) {
+            hedgeWhy = ` | no hedge strike (price < $${hedgeFilters.maxPrice}, |IV − short IV| in [${hedgeFilters.ivMin}, ${hedgeFilters.ivMax}]) → rejected`;
+          } else {
+            const nets = opts.map(h => {
+              const r = calculateAtmPnlAndRoi(spread, h);
+              return r.ratioToUse == null ? null
+                : { strike: h.ticker.strike, net: r.ratioToUse * spread.sellPrice - spread.buyPrice - r.ratioToUse * (hedgeLotPct / 100) * h.ask };
+            }).filter(Boolean);
+            const best = nets.sort((a, b) => b.net - a.net)[0];
+            hedgeWhy = best
+              ? ` | ${opts.length} hedge strike(s) pass price/IV but none keeps the 3-leg net within Max Net Debit (best ${best.strike}: net ${usd(best.net)} < floor ${usd(-effectiveConfig.maxNetPremium)}) → rejected`
+              : ` | ${opts.length} hedge strike(s) pass price/IV but the spread can't be priced at ATM → rejected`;
+          }
+        }
+        log(`[${accountState.name}] Candidate ${spread.buyLeg.type.toUpperCase()} ${spread.buyLeg.strike}/${spread.sellLeg.strike}: ATM P&L = $${atmPnl != null ? atmPnl.toFixed(2) : 'null'} (Min required: $${minAtmPnl.toFixed(2)}), ROI = ${roi != null ? roi.toFixed(2) : 0}% (Min required: ${minAtmRoi.toFixed(2)}%), Passed = ${passed} | ATM ${atmStrike} ${usd(buyIntrinsic)} / ${targetSellStrike} ${usd(sellIntrinsic)} → ratio ${atmRatio ?? '—'} → qty ${spread.sellQty}→${ratioToUse ?? '—'} | legs ${usd(spread.buyPrice)}/${usd(spread.sellPrice)}${atmHedge ? ` | hedge ${atmHedge.ticker.strike} ${usd(atmHedge.ask)} → ATM ${usd(hedgeAtAtm)} × ${hedgeLotPct}%` : ''}${hedgeWhy}`);
         if (passed) {
           processedSpreads.push({ ...spread, atmPnl, roi, atmMinPnl: minAtmPnl, atmMinRoi: minAtmRoi, atmHedgeSymbol: atmHedge?.ticker?.symbol ?? null });
         }
