@@ -23,7 +23,7 @@ import AccountGroupsModal from './components/PaperTrading/AccountGroupsModal';
 import { groupLeaderId } from './components/PaperTrading/groupLeader';
 import DeleteAccountModal from './components/PaperTrading/DeleteAccountModal';
 import ConfirmExitModal from './components/PaperTrading/ConfirmExitModal';
-import { showAlert, showConfirm } from './components/common/dialogService';
+import { showAlert, showConfirm, showChoice } from './components/common/dialogService';
 
 const UNDERLYINGS = ['BTC', 'ETH'];
 const HEARTBEAT_ONLINE_THRESHOLD = 60000;
@@ -1463,8 +1463,58 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     updateAccountFlags(accountId, { live_enabled: true, paused: false });
   };
   const triggerDisarmLive = (accountId) => updateAccountFlags(accountId, { live_enabled: false });
-  const triggerPauseAccount = (accountId) => updateAccountFlags(accountId, { paused: true });
-  const triggerResumeAccount = (accountId) => updateAccountFlags(accountId, { paused: false });
+  // Pause / Resume. On a group's LEADER (when the user owns the group or is admin) it asks
+  // whether to apply it to that account only or to the whole group; otherwise — a follower, an
+  // ungrouped account, a one-member group — it affects just that account, as before. Pause stops
+  // new entries only; open positions keep being managed.
+  const setPausedMaybeGroup = async (accountId, paused) => {
+    const acc = accounts.find(a => a.id === accountId);
+    const grp = acc?.group_id ? groups.find(g => g.id === acc.group_id) : null;
+    const canGroup = !!grp && groupLeaderId(grp, accounts) === accountId
+      && (userProfile?.role === 'admin' || grp.user_id === session?.user?.id);
+    const members = canGroup ? accounts.filter(a => a.group_id === grp.id) : [];
+    if (!canGroup || members.length < 2) return updateAccountFlags(accountId, { paused });
+
+    const verb = paused ? 'Pause' : 'Resume';
+    const others = members.filter(a => a.id !== accountId).map(a => a.name);
+    const choice = await showChoice(
+      `${verb} only "${acc.name}", or the whole group "${grp.name}"?
+
+`
+      + `Whole group also ${paused ? 'pauses' : 'resumes'}: ${others.join(', ')}.
+
+`
+      + (paused ? 'Pause stops NEW entries only — open positions keep being managed.' : 'Resume lets the account(s) open new positions again.'),
+      {
+        title: `${verb} — group leader`,
+        tone: paused ? 'warning' : 'primary',
+        choices: [
+          { value: 'one', label: `Only ${acc.name}` },
+          { value: 'group', label: `Whole group (${members.length})`, primary: true },
+        ],
+      },
+    );
+    if (!choice) return;
+    if (choice === 'one') return updateAccountFlags(accountId, { paused });
+
+    const ids = members.map(a => a.id);
+    setAccounts(prev => prev.map(a => (ids.includes(a.id) ? { ...a, paused } : a)));
+    // .select() returns the rows actually updated — a row the user may not change (RLS) is
+    // skipped silently by Postgres, so compare to report it instead of claiming success.
+    const { data, error } = await supabase.from('paper_trading_accounts').update({ paused }).in('id', ids).select('id');
+    if (error) {
+      console.error(`Group ${verb.toLowerCase()} failed:`, error);
+      showAlert(`Failed to ${verb.toLowerCase()} the group: ${error.message}`);
+    } else {
+      const done = new Set((data || []).map(r => r.id));
+      const missed = members.filter(a => !done.has(a.id)).map(a => a.name);
+      if (missed.length) showAlert(`${verb}d ${done.size} of ${members.length} accounts. Not changed (no permission): ${missed.join(', ')}.`, { tone: 'warning' });
+      else pushToast(`${verb}d the whole group "${grp.name}" (${members.length} accounts).`, 'success');
+    }
+    await fetchAccounts();
+  };
+  const triggerPauseAccount = (accountId) => setPausedMaybeGroup(accountId, true);
+  const triggerResumeAccount = (accountId) => setPausedMaybeGroup(accountId, false);
 
   // Actually flatten the account — flags every position; the engine exits them
   // (cancel resting + market-close) within ~1.5s. Runs after the in-app confirm.

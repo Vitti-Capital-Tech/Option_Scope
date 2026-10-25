@@ -41,6 +41,20 @@ export function showAlert(message, opts = {}) {
   return open({ kind: 'alert', message, tone, title, confirmLabel: opts.confirmLabel || 'OK' });
 }
 
+// Several answers, e.g. "This account only" / "Whole group": resolves the picked choice's
+// `value`, or null on Cancel / Escape / click outside.
+//   const v = await showChoice('Pause…?', { choices: [{ value: 'one', label: 'Only this' }, { value: 'all', label: 'Whole group', primary: true }] })
+export function showChoice(message, opts = {}) {
+  return open({
+    kind: 'choice',
+    message,
+    tone: opts.tone || 'primary',
+    title: opts.title || 'Please choose',
+    choices: Array.isArray(opts.choices) ? opts.choices : [],
+    cancelLabel: opts.cancelLabel || 'Cancel',
+  });
+}
+
 export function showConfirm(message, opts = {}) {
   return open({
     kind: 'confirm',

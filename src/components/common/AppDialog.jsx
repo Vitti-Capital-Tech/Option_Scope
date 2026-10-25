@@ -20,7 +20,7 @@ export function AppDialogHost() {
     if (!d) return undefined;
     okRef.current?.focus();
     const onKey = (e) => {
-      if (e.key === 'Escape') { e.preventDefault(); close(d.kind === 'confirm' ? false : undefined); }
+      if (e.key === 'Escape') { e.preventDefault(); close(d.kind === 'confirm' ? false : d.kind === 'choice' ? null : undefined); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -28,8 +28,34 @@ export function AppDialogHost() {
 
   if (!d) return null;
   const { color, Icon } = TONE[d.tone] || TONE.info;
-  const cancel = () => close(d.kind === 'confirm' ? false : undefined);
+  const cancel = () => close(d.kind === 'confirm' ? false : d.kind === 'choice' ? null : undefined);
   const ok = () => close(d.kind === 'confirm' ? true : undefined);
+
+  if (d.kind === 'choice') {
+    return (
+      <div className="modal-overlay-wrapper app-dialog-overlay" onClick={cancel} style={{ animation: 'fadeIn 0.15s ease-out' }}>
+        <div className="modal-container-delete app-dialog" role="alertdialog" aria-modal="true"
+          aria-labelledby={`app-dialog-title-${d.id}`} onClick={(e) => e.stopPropagation()}>
+          <h3 id={`app-dialog-title-${d.id}`} className="app-dialog-title" style={{ color }}>
+            <Icon size={18} strokeWidth={2.5} />
+            {d.title}
+          </h3>
+          <p className="app-dialog-message">{d.message}</p>
+          <div className="app-dialog-actions" style={{ flexWrap: 'wrap' }}>
+            <button type="button" className="app-dialog-btn" onClick={cancel}>{d.cancelLabel}</button>
+            {d.choices.map((c, i) => (
+              <button key={c.value} type="button" ref={i === 0 ? okRef : undefined}
+                className={`app-dialog-btn${c.primary ? ' primary' : ''}`}
+                style={c.primary ? { background: color, borderColor: color } : undefined}
+                onClick={() => close(c.value)}>
+                {c.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="modal-overlay-wrapper app-dialog-overlay" onClick={cancel} style={{ animation: 'fadeIn 0.15s ease-out' }}>
