@@ -410,6 +410,10 @@ export function processTickerMessage(msg, symbolMeta, prevData) {
   const oiUsd = toFiniteNumber(msg.oi_value_usd);
   const oiContracts = toFiniteNumber(msg.oi_contracts);
   const oiLocked = msg.oi_reduce_only_mode == null ? null : (msg.oi_reduce_only_mode === true || msg.oi_reduce_only_mode === 'true');
+  // Delta's trading status for the product, live on every tick ('operational', or a
+  // disrupted mode such as cancel-only) — the entry scan skips a non-operational product the
+  // moment it changes, instead of waiting for the next product-list refresh.
+  const tradingStatus = typeof msg.product_trading_status === 'string' && msg.product_trading_status ? msg.product_trading_status : null;
 
   const prev = prevData?.[sym];
 
@@ -442,6 +446,7 @@ export function processTickerMessage(msg, symbolMeta, prevData) {
     oiUsd: oiUsd ?? prev?.oiUsd ?? null,
     oiContracts: oiContracts ?? prev?.oiContracts ?? null,
     oiLocked: oiLocked ?? prev?.oiLocked ?? null,
+    tradingStatus: tradingStatus ?? prev?.tradingStatus ?? null,
   };
 }
 
@@ -476,6 +481,7 @@ export async function backfillTickers(underlying, symbolMeta, existingData = {})
       const oiUsd = toFiniteNumber(t.oi_value_usd);
       const oiContracts = toFiniteNumber(t.oi_contracts);
       const oiLocked = t.oi_reduce_only_mode == null ? null : (t.oi_reduce_only_mode === true || t.oi_reduce_only_mode === 'true');
+      const tradingStatus = typeof t.product_trading_status === 'string' && t.product_trading_status ? t.product_trading_status : null;
 
       const resolvedBid = bid ?? (prev?.bid ?? null);
       const resolvedAsk = ask ?? (prev?.ask ?? null);
@@ -509,6 +515,7 @@ export async function backfillTickers(underlying, symbolMeta, existingData = {})
         oiUsd: oiUsd ?? (prev?.oiUsd ?? null),
         oiContracts: oiContracts ?? (prev?.oiContracts ?? null),
         oiLocked: oiLocked ?? (prev?.oiLocked ?? null),
+        tradingStatus: tradingStatus ?? (prev?.tradingStatus ?? null),
       };
     }
 
