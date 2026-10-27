@@ -325,6 +325,9 @@ export function classifyAlert({ context = '', errMsg = '', extra = '', severity 
   // capitals; "risk exit may be unprotected" (a failed bracket — the engine's own exit still
   // runs) is a check-soon, not a critical.
   if (/UNPROTECTED|Protective market close FAILED|NO Delta credentials/.test(c)) return 'critical';
+  // A failed partial scale-down sell (-PEX-<lot>): nothing was sold and the engine puts the
+  // position back unchanged and retries — the long stays exactly as tracked.
+  if (/-PEX-[\d.]+\]/i.test(String(extra))) return 'low';
   // A failed order: entry orders leave nothing open; exit / close orders may leave a leg open.
   if (/Order send FAILED|CLOSE FAILED|STOP placement FAILED/i.test(c)) {
     if (ENTRY_TAG_RE.test(String(extra))) return 'low';

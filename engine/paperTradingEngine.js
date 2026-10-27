@@ -74,6 +74,14 @@ const ENTRY_LEG_MAX_MS = ENTRY_FILL_WAIT_MS * ENTRY_MODIFY_TRIES + 20000;
 // this long and the master is alerted, so the same doomed entry can't repeat every minute
 // (Biswal Holdings, 2026-10-05). Margin rejections are re-sized instead (see below).
 const LIVE_REJECT_BLOCK_MS = Math.max(60000, Number(process.env.LIVE_REJECT_BLOCK_MS ?? 1800000));
+// A short leg rejected with `only_reduce_only_orders_allowed` = Delta OI-locked the strike, often
+// in the very second other accounts' entries pushed its OI over the cap (2026-10-26 15:58 UTC,
+// P-BTC-77200: Prasham + TG1 rejected after the rest of the group filled). Not a 30-min block:
+// the strike is held back for every account in this process for OI_LOCK_REJECT_HOLD_MS — long
+// enough for the live ticker to carry Delta's lock flag — and from then on Delta's own
+// oi_reduce_only_mode decides, so the strike is selectable again as soon as Delta unlocks it.
+const OI_LOCK_REJECT_HOLD_MS = Math.max(10000, Number(process.env.OI_LOCK_REJECT_HOLD_MS ?? 60000));
+const oiLockRejectedUntil = new Map(); // symbol → until (ms) — shared by every account engine in this process
 // An entry leg that was ACCEPTED but could not fill (no buyer / seller even after the modifies —
 // e.g. C-BTC-86400 short, 2026-10-21 21:57–21:59, 8 accounts × 3 tries, each buying and unwinding
 // the long) keeps that symbol out of new entries this long, so the next minutes try other pairs
@@ -1505,6 +1513,9 @@ async function startSingleAccountEngine(account) {
   }
   const hedgeCloseRetryAt = new Map();     // position id → no live hedge-close retry before this time
   const sexRetryAt = new Map();            // position id → no missing short buy-back (-SEX) retry before this time
+  // position id → no partial scale-down retry before this time (its market sell failed)
+  const pexRetryAt = new Map();
+  const PEX_RETRY_MS = 3 * 60 * 1000;
   const hedgeBrkRetryAt = new Map(); // symbol → no retry before this time (after a failed move)
   const hedgeBrkAlerted = new Set(); // symbols whose failed move was already alerted (cleared on success)
   let hedgeBrkSyncRunning = false;
@@ -2440,36 +2451,64 @@ async function startSingleAccountEngine(account) {
     }
 
     // Stale `-PEX` cleanup / auto-reconcile. Older builds placed the ATM-ratio partial
-    // scale-down as a resting GTC limit (`-PEX`) at the bid, booked it optimistically, then
-    // left it unfilled once the price moved — so the engine's book shows the long reduced while
-    // the exchange still holds those contracts. New builds market-close the scale-down, so ANY
-    // resting `-PEX` limit is stale by definition (market/IOC orders never rest here). Cancel it
-    // and reduce-only market-close its remaining size to bring the exchange back in line with the
-    // already-booked reduction. Runs every armed-live sweep and self-heals to a no-op once clean.
+    // scale-down as a resting GTC LIMIT (`-PEX`) at the bid, booked it optimistically, then left
+    // it unfilled once the price moved — so the engine's book shows the long reduced while the
+    // exchange still holds those contracts. Current builds sell the scale-down with a reduce-only
+    // MARKET order, which can still show in the open-orders list for a moment before it fills.
+    // That moment used to be read as "stale" and market-closed a SECOND time (2026-10-26 06:17
+    // UTC, P-BTC-79400: 48 + 48 sold for one 48-contract step). So a `-PEX` order counts as
+    // stale only once it has been open PEX_STALE_MS (5 s — a market order is filled or gone by
+    // then; waiting longer lets the price run away), and it is then re-priced IN PLACE to the bid
+    // (the SAME order — never a second order that could also fill). Only if that edit fails is
+    // it cancelled — and the
+    // remainder market-closed only after the cancel is confirmed, sized from what the cancel
+    // says was still unfilled.
     if (Array.isArray(liveOrders)) {
-      const stalePex = liveOrders.filter(o => /-PEX(\b|-)/.test(String(o.client_order_id || '')));
+      const PEX_STALE_MS = 5000;
+      const nowPex = Date.now();
+      const orderAgeMs = (o) => {
+        const t = new Date(o.created_at || o.updated_at || 0).getTime();
+        return Number.isFinite(t) && t > 0 ? nowPex - t : 0;
+      };
+      const stalePex = liveOrders.filter(o => /-PEX(\b|-)/.test(String(o.client_order_id || ''))
+        && orderAgeMs(o) >= PEX_STALE_MS);
       for (const o of stalePex) {
         const sym = o.product_symbol;
         const remaining = Math.abs(Number(o.unfilled_size ?? o.size) || 0);
-        if (remaining >= 1) {
-          // Market-close FIRST (reduce-only, capped at the open long), then cancel the now-
-          // redundant resting limit. Close-first is retry-safe: on a transient close failure
-          // the resting `-PEX` order is left in place so the next sweep tries again. The
-          // resting limit sits above market (at the stale bid), so it can't fill during this.
-          const c = await live.closeSymbol({ symbol: sym, side: 'sell', contracts: remaining, tag: `PEXCLEAN-${sym}` }).catch(() => ({ ok: false }));
-          const done = !!(c.ok || c.dryRun || c.skipped || c.alreadyClosed);
-          if (done) {
-            await live.cancelStop({ id: o.id, productId: o.product_id }).catch(() => {});
-            logWarn(`[${accountState.name}] ⌫ Stale -PEX cleanup: market-closed ${remaining} contract(s) on ${sym} + cancelled the resting scale-down limit.`);
-            notifyTrade({ title: '🧹 PARTIAL EXIT (reconcile)', detail: `${sym} · stale resting scale-down cancelled → market-closed ${remaining} contract(s)` });
-          } else {
-            logWarn(`[${accountState.name}] ⌫ Stale -PEX cleanup: market-close FAILED on ${sym} (${remaining} contract(s)) — resting limit left in place, will retry next sweep.`);
-            notifyFailure({ account: accountState.name, context: `Stale -PEX cleanup market-close FAILED on ${sym} — leg may still be OPEN`, error: { message: c.error || 'pexclean-failed' }, extra: `${remaining} contract(s) — will retry` });
-          }
-        } else {
-          // Nothing to close (order already fully consumed) — just drop the empty resting limit.
+        if (!(remaining >= 1)) {
+          // Nothing left to sell (fully consumed) — just drop the empty resting limit.
           await live.cancelStop({ id: o.id, productId: o.product_id }).catch(() => {});
-          log(`[${accountState.name}] ⌫ Stale -PEX cleanup: cancelled resting scale-down on ${sym} (nothing to market-close).`);
+          log(`[${accountState.name}] ⌫ Stale -PEX cleanup: cancelled resting scale-down on ${sym} (nothing left to sell).`);
+          continue;
+        }
+        // 1) Re-price the SAME order to the current bid so it sells now.
+        const bid = Number(tickerData[sym]?.bid);
+        if (bid > 0 && Number(o.limit_price) !== bid) {
+          const ed = await live.editOrder({ id: o.id, symbol: sym, price: bid, size: Number(o.size) || remaining, tag: `${o.client_order_id || 'PEX'}-reprice` })
+            .catch(e => ({ ok: false, error: e.message }));
+          if (ed.ok) {
+            logWarn(`[${accountState.name}] ⌫ Stale -PEX cleanup: re-priced the resting scale-down on ${sym} (${remaining} left) to the bid $${bid} — same order, no second sell.`);
+            continue; // re-checked next sweep: filled → gone; still resting → handled again
+          }
+        }
+        // 2) Edit not possible → cancel first; sell only what the cancel confirms was unfilled.
+        const cr = await live.cancelAndReadFill({ id: o.id, productId: o.product_id })
+          .catch(e => ({ ok: false, transient: true, error: e.message }));
+        if (!cr.ok) {
+          // gone = already filled / cancelled elsewhere → nothing to do; transient = may still
+          // rest → retry next sweep. Never sell on top of a possibly live order.
+          if (cr.transient) logWarn(`[${accountState.name}] ⌫ Stale -PEX cleanup: cancel on ${sym} failed (${cr.error}) — will retry next sweep.`);
+          continue;
+        }
+        const toSell = cr.unfilled != null ? cr.unfilled : remaining;
+        if (!(toSell >= 1)) continue;
+        const c = await live.closeSymbol({ symbol: sym, side: 'sell', contracts: toSell, tag: `PEXCLEAN-${sym}` }).catch(e => ({ ok: false, error: e.message }));
+        if (c.ok || c.dryRun || c.skipped || c.alreadyClosed) {
+          logWarn(`[${accountState.name}] ⌫ Stale -PEX cleanup: cancelled the resting scale-down and market-closed its ${toSell} unfilled contract(s) on ${sym}.`);
+          notifyTrade({ title: '🧹 PARTIAL EXIT (reconcile)', detail: `${sym} · stale resting scale-down cancelled → market-closed ${toSell} contract(s)` });
+        } else {
+          logWarn(`[${accountState.name}] ⌫ Stale -PEX cleanup: market-close FAILED on ${sym} (${toSell} contract(s)) after cancelling the resting limit.`);
+          notifyFailure({ account: accountState.name, context: `Stale -PEX cleanup market-close FAILED on ${sym} — the resting scale-down was cancelled, ${toSell} contract(s) of the long may still be OPEN beyond the booked reduction`, error: { message: c.error || 'pexclean-failed' }, extra: `${toSell} contract(s)` });
         }
       }
     }
@@ -2704,7 +2743,7 @@ async function startSingleAccountEngine(account) {
         : 'the position was closed and booked');
     }
     // Per-position retry / alert state for rows that have left the book.
-    for (const m of [hedgeCloseRetryAt, sexRetryAt]) for (const id of [...m.keys()]) if (!ids.has(String(id))) m.delete(id);
+    for (const m of [hedgeCloseRetryAt, sexRetryAt, pexRetryAt]) for (const id of [...m.keys()]) if (!ids.has(String(id))) m.delete(id);
   }
 
   // ── Manual exit (UI-initiated) ───────────────────────────────────────────
@@ -4072,9 +4111,16 @@ async function startSingleAccountEngine(account) {
       // cancel-only / post-only) would reject or mis-handle new orders, so it is left out of
       // the entry scan and the hedge picker. From the product list (refreshed every few
       // minutes); open positions on it are untouched. Unknown status → treated as tradable.
+      // Two sources, whichever is newer wins on "disrupted": the live ticker's
+      // product_trading_status (every WS tick — immediate) and the product list (refreshed every
+      // few minutes; covers a symbol whose ticker hasn't said yet).
       const notOperational = new Set((products || [])
         .filter(p => p?.symbol && p.trading_status && p.trading_status !== 'operational')
         .map(p => p.symbol));
+      for (const t of Object.values(tickerData)) {
+        if (t?.symbol && t.tradingStatus && t.tradingStatus !== 'operational') notOperational.add(t.symbol);
+        else if (t?.symbol && t.tradingStatus === 'operational') notOperational.delete(t.symbol);
+      }
       const tradableOk = (t) => !notOperational.has(t.symbol);
       if (notOperational.size > 0) {
         const key = [...notOperational].sort().join(',');
@@ -4267,6 +4313,8 @@ async function startSingleAccountEngine(account) {
           && !excludedStrikes.has(Number(t.strike)) // user-excluded (migration 040)
           && oiOk(t)                                // Delta OI limit (migration 062)
           && tradableOk(t)                          // Delta trading_status = operational
+          && t.oiLocked !== true                    // Delta OI-locked (reduce-only) — a hedge buy there is rejected
+          && !((oiLockRejectedUntil.get(t.symbol) ?? 0) > Date.now()) // just OI-lock-rejected (any account)
           && !liveHedgeBlocked.has(t.symbol)        // live: symbol held as a main long/short (see above)
           && quote(t) > 0);
         return listHedgeStrikes(pool, type, Number(spread.sellLeg.strike), spread.sellIv, spread.strikeDiff, hedgeFilters)
@@ -4723,6 +4771,14 @@ async function startSingleAccountEngine(account) {
             // A zero step can never reduce the lot: the loop below would spin on an
             // unchanged lot and emit duplicate slice rows. Nothing to scale — bail.
             if (!(deltaBuyQty > 0)) return;
+            // A scale-down sell that failed (thin book) waits PEX_RETRY_MS before the next try.
+            if (Date.now() < (pexRetryAt.get(pos.id) ?? 0)) return;
+            // Pre-scale state — restored if the live market sell below fails, so nothing is booked
+            // for contracts that were never sold.
+            const preScale = {
+              buyLeg: { ...pos.buyLeg }, entryFee: pos.entryFee,
+              accumulatedSellPnl: pos.accumulatedSellPnl, margin: pos.margin,
+            };
             let currentLotSize = pos.buyLeg.lotSize;
             let hypotheticalLotSize = roundLot(currentLotSize - deltaBuyQty);
             const shortCV = pos.sellLeg?.contractValue ?? pos.buyLeg?.contractValue ?? null;
@@ -4920,11 +4976,24 @@ async function startSingleAccountEngine(account) {
               const contractsToSell = Math.max(0,
                 Math.round(lotBefore / exitBase) - Math.round(pos.buyLeg.lotSize / exitBase));
               if (contractsToSell >= 1) {
-                await live.closeSymbol({
+                const pexRes = await live.closeSymbol({
                   symbol: pos.buyLeg.symbol, side: 'sell',
                   contracts: contractsToSell,
                   tag: `${pos.id}-PEX-${pos.buyLeg.lotSize}`,
-                });
+                }).catch(e => ({ ok: false, error: e.message }));
+                if (pexRes && !pexRes.ok && !pexRes.alreadyClosed && !pexRes.skipped && !pexRes.dryRun) {
+                  // The market sell did NOT go through (e.g. no_liquidity_for_market_order): nothing
+                  // was sold, so book nothing — put the position back exactly as it was and retry
+                  // after PEX_RETRY_MS (a fresh market order then; an IOC leaves nothing resting).
+                  pos.buyLeg = preScale.buyLeg;
+                  pos.entryFee = preScale.entryFee;
+                  pos.accumulatedSellPnl = preScale.accumulatedSellPnl;
+                  pos.margin = preScale.margin;
+                  pexRetryAt.set(pos.id, Date.now() + PEX_RETRY_MS);
+                  logWarn(`[${accountState.name}] 🔻 Partial scale-down NOT done: market sell of ${contractsToSell} ${pos.buyLeg.symbol} failed (${pexRes.error || 'unknown'}) — nothing booked, position unchanged; retrying in ${Math.round(PEX_RETRY_MS / 60000)} min.`);
+                  return;
+                }
+                pexRetryAt.delete(pos.id);
                 // Engine-initiated reduce — mark the symbol so the partial-reduction
                 // reconcile treats any residual book↔Delta drift (fire-and-forget
                 // market-close fill/rounding) as engine drift, not a manual reduction.
@@ -6084,6 +6153,21 @@ async function startSingleAccountEngine(account) {
               logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: ${blockedSym} ignored until ${new Date(rejectBlockedSymbols.get(blockedSym)).toISOString().slice(11, 16)} UTC after a Delta rejection.`);
               continue;
             }
+            // Just OI-lock-rejected for another account (or this one): hold, then Delta's flag decides.
+            const oiHeldSym = [spread.sellLeg.symbol, spread.buyLeg.symbol]
+              .find(sym => sym && (oiLockRejectedUntil.get(sym) ?? 0) > nowMs);
+            if (oiHeldSym) {
+              logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: ${oiHeldSym} was just OI-locked on Delta (reduce-only) — held until ${new Date(oiLockRejectedUntil.get(oiHeldSym)).toISOString().slice(11, 19)} UTC, then Delta's live lock flag decides.`);
+              continue;
+            }
+            // Delta's live OI-lock flag on a leg we'd OPEN — skipped even with the OI filter off
+            // (an opening order there is rejected anyway).
+            const lockedLegSym = [spread.sellLeg.symbol, spread.buyLeg.symbol]
+              .find(sym => sym && tickerData[sym]?.oiLocked === true);
+            if (lockedLegSym) {
+              logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: ${lockedLegSym} is OI-locked on Delta (reduce-only only).`);
+              continue;
+            }
             const noFillSym = [spread.sellLeg.symbol, spread.buyLeg.symbol]
               .find(sym => sym && (noFillBlockedSymbols.get(sym) ?? 0) > nowMs);
             if (noFillSym) {
@@ -7145,7 +7229,16 @@ async function startSingleAccountEngine(account) {
               // (the alert below goes to the error channel). Local "no-price"/"no-credentials"
               // refusals are not Delta's, so they don't block.
               const localRefusal = /^(no-price|no-credentials)$/i.test(String(liveEntry.error ?? ''));
-              if (liveEntry.rejected && !marginReject && !localRefusal) {
+              const oiLockReject = /only_reduce_only_orders_allowed/i.test(String(liveEntry.error ?? ''));
+              if (liveEntry.rejected && oiLockReject) {
+                // Delta OI-locked the strike (reduce-only): hold it back briefly for ALL accounts,
+                // then let Delta's live lock flag decide — no 30-min block.
+                const lockedSym = liveEntry.legFailed === 'buy' ? t.buyLeg.symbol : t.sellLeg.symbol;
+                if (lockedSym) {
+                  oiLockRejectedUntil.set(lockedSym, Date.now() + OI_LOCK_REJECT_HOLD_MS);
+                  pauseNote += ` — ${lockedSym} is OI-locked on Delta (reduce-only): skipped by every account for ${Math.round(OI_LOCK_REJECT_HOLD_MS / 1000)}s, then selectable again as soon as Delta unlocks it`;
+                }
+              } else if (liveEntry.rejected && !marginReject && !localRefusal) {
                 const badSym = liveEntry.legFailed === 'buy' ? t.buyLeg.symbol : t.sellLeg.symbol;
                 if (badSym) {
                   rejectBlockedSymbols.set(badSym, Date.now() + LIVE_REJECT_BLOCK_MS);
@@ -7242,7 +7335,8 @@ async function startSingleAccountEngine(account) {
               } else if (t.hedgeLeg) {
                 // brkComputed = this pair's own level; brkLevel = what rests on Delta for the symbol.
                 t.hedgeLeg = { ...t.hedgeLeg, brkComputed: bracketLevel,
-                  brkLevel: hedgeShared ? (hedgeMates[0].hedgeLeg.brkLevel ?? null) : bracketLevel };
+                  brkLevel: hedgeShared ? (hedgeMates[0].hedgeLeg.brkLevel ?? null) : bracketLevel,
+                  entryOrderId: hres?.id ?? hres?.order?.id ?? null };
                 // Joined a shared strike → move its single Delta bracket to the farthest pair's
                 // level NOW, so a nearer pair's TP can only ever close that pair's own qty.
                 if (hedgeShared) {
@@ -7277,6 +7371,42 @@ async function startSingleAccountEngine(account) {
             // levels computed above: realExitLvl = the engine's real exit trigger, bracketLevel
             // = the decoy (= the exchange bracket level on live). Stamped on `t` too, so the
             // in-memory book carries them and the per-cycle drift-sync doesn't re-write next cycle.
+            // ── Book the ACTUAL fill prices (armed real live) ──
+            // The entry prices so far are the scan quotes (ask / bid at candidate time). The real
+            // orders fill worse — buy at ask + offset, sell at bid − offset, then the timed modifies
+            // / chase walk the price (2026-10-26 Dg: hedge 83600 quoted $4, filled $9). Read each
+            // leg's volume-weighted fill price from Delta's fills (by order id, else the newest fills
+            // on that symbol/side) and book THAT, so P&L, history and Telegram match Delta.
+            let quotedEntry = null;
+            if (liveArmed && !live.dryRun) {
+              quotedEntry = { buy: t.entryBuyPrice, sell: t.entrySellPrice, hedge: t.hedgeLeg?.entryPrice ?? null };
+              const fills = await live.fills().catch(() => []);
+              const fillPx = (orderId, symbol, side, contracts) => {
+                if (orderId != null) {
+                  const fs = (fills || []).filter(f => String(f.order_id) === String(orderId) && Number(f.size) > 0 && Number(f.price) > 0);
+                  const qty = fs.reduce((sum, f) => sum + Number(f.size), 0);
+                  if (qty > 0) return fs.reduce((sum, f) => sum + Number(f.size) * Number(f.price), 0) / qty;
+                }
+                return closingFillPriceFrom(fills, symbol, side, contracts);
+              };
+              const fBuy = fillPx(liveEntry?.buyOrder?.id, t.buyLeg.symbol, 'buy', longContracts(t.buyLeg));
+              const fSell = t.sellQty > 0 ? fillPx(liveEntry?.sellOrder?.id, t.sellLeg.symbol, 'sell', shortContracts(t.sellQty)) : null;
+              const fHedge = (t.hedgeLeg && (t.hedgeLeg.lotSize || 0) > 0)
+                ? fillPx(t.hedgeLeg.entryOrderId, t.hedgeLeg.symbol, 'buy', longContracts(t.hedgeLeg)) : null;
+              if (fBuy > 0) t.entryBuyPrice = Number(fBuy.toFixed(4));
+              if (fSell > 0) t.entrySellPrice = Number(fSell.toFixed(4));
+              if (fHedge > 0) {
+                const hp = Number(fHedge.toFixed(4));
+                t.hedgeLeg = { ...t.hedgeLeg, entryPrice: hp, entryFee: calculateFee(hp, t.entrySpotPrice, t.hedgeLeg.lotSize, 1) };
+              }
+              // Entry fee on the filled prices (same formula as the candidate's estimate).
+              t.entryFee = calculateFee(t.entryBuyPrice, t.entrySpotPrice, t.buyLeg.lotSize, t.buyLeg.originalLotSize || 1)
+                + (t.sellQty > 0 ? calculateFee(t.entrySellPrice, t.entrySpotPrice, t.sellQty, t.sellLeg.lotSize) : 0);
+              log(`[${accountState.name}] ⧉ Entry fills ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike}: long $${quotedEntry.buy} → $${t.entryBuyPrice}`
+                + `${t.sellQty > 0 ? ` | short $${quotedEntry.sell} → $${t.entrySellPrice}` : ''}`
+                + `${t.hedgeLeg && quotedEntry.hedge != null ? ` | hedge $${quotedEntry.hedge} → $${t.hedgeLeg.entryPrice}` : ''} (quoted → filled)`);
+            }
+
             t.realExitLevel = realExitLvl;
             t.decoyExitLevel = bracketLevel;
 
@@ -7367,9 +7497,18 @@ async function startSingleAccountEngine(account) {
               // Strikes / qty read long / short / hedge, e.g. "PUT 81200/79600/78800 · qty 339:2204:1984".
               const strikesLbl = strikesLabel(t, hasHedge ? t.hedgeLeg : null);
               const qtyLbl = `${ratioLong.toFixed(2)}:${t.sellQty}${hasHedge ? `:${longContracts(t.hedgeLeg)}` : ''}`;
+              // Quoted (scan) total net vs the filled one → slippage, when the fills were read.
+              let slipNote = '';
+              if (quotedEntry) {
+                const qRaw = t.sellQty * quotedEntry.sell - quotedEntry.buy * ratioLong;
+                const qNet = (t.buyLeg.contractValue ? qRaw * t.buyLeg.contractValue : qRaw)
+                  - (hasHedge && quotedEntry.hedge != null ? (t.hedgeLeg.lotSize || 0) * quotedEntry.hedge : 0);
+                const slip = totalNetUsd - qNet;
+                if (Math.abs(slip) >= 0.01) slipNote = ` (quoted ${usd(qNet)}, slippage ${usd(slip)})`;
+              }
               const netNote = hasHedge
-                ? ` · long/short net ${usd(netUsd)} · hedge @ $${Number(t.hedgeLeg.entryPrice ?? 0).toFixed(2)} (−$${hedgeUsd.toFixed(2)}) · total net ${usd(totalNetUsd)}`
-                : ` · net ${usd(netUsd)}`;
+                ? ` · long/short net ${usd(netUsd)} · hedge @ $${Number(t.hedgeLeg.entryPrice ?? 0).toFixed(2)} (−$${hedgeUsd.toFixed(2)}) · total net ${usd(totalNetUsd)}${slipNote}`
+                : ` · net ${usd(netUsd)}${slipNote}`;
               log(`[${accountState.name}] ▼ ENTRY: ${strikesLbl} | Qty: ${qtyLbl}${netNote.replace(/ · /g, ' | ')}`);
               notifyTrade({ title: '📥 LIVE ENTRY', detail: `${strikesLbl} · qty ${qtyLbl}${netNote} · spot ${Math.round(t.entrySpotPrice)}` });
             }
