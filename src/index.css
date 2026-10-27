@@ -6555,6 +6555,40 @@ body.light-theme .pt-btn-apply.active {
   color: var(--text-dim);
 }
 
+/* Daily Report account picker — reuses the Live Trading account dropdown styles. */
+.dr-account-picker {
+  width: 240px;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.dr-account-picker .account-dropdown-trigger {
+  height: 34px;
+  padding: 0 12px;
+}
+
+.dr-account-picker .account-dropdown-trigger-content {
+  overflow: hidden;
+}
+
+.dr-account-picker .account-dropdown-menu {
+  max-width: calc(100vw - 32px);
+}
+
+.dr-group-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  padding: 1px 5px;
+  border: 1px solid #a371f7;
+  border-radius: 4px;
+  color: #a371f7;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
 .dr-date {
   height: 34px;
   padding: 0 10px;

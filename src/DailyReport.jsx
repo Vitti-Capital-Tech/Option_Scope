@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { RefreshCw, Download, FileSpreadsheet, CalendarDays, Columns3 } from 'lucide-react';
 import Navbar from './components/PaperTrading/Navbar';
-import CustomSelect from './components/common/CustomSelect';
+import ReportAccountPicker from './components/DailyReport/ReportAccountPicker';
 import { DailyPnlChart, CumulativePnlChart } from './components/DailyReport/ReportCharts';
 import { supabase } from './supabase';
 import { exportCsv, exportXlsx } from './exportTable';
@@ -104,13 +104,13 @@ function combineByDate(perAccount, label = 'All') {
 }
 
 // Accounts whose names differ only by a trailing number (Shubham / Shubham2, Pk / PK 2) form a
-// name group. Groups of 2+ get their own entry in the account picker: selected, it combines its
+// name group; case, spaces and punctuation are ignored (JD Algo / JD algo2 / JDAlgo-3). Groups of 2+ get their own entry in the account picker: selected, it combines its
 // members like "All live accounts", and each member can still be opened on its own.
 function buildNameGroups(accounts) {
   const by = new Map();
   accounts.forEach(a => {
     const base = String(a.name ?? '').trim().replace(/[\s_-]*\d+$/, '').trim();
-    const key = base.toLowerCase();
+    const key = base.toLowerCase().replace(/[^a-z0-9]+/g, '');
     if (!key) return;
     if (!by.has(key)) by.set(key, { key: `group:${key}`, label: base, ids: [], names: [] });
     const g = by.get(key);
@@ -388,19 +388,10 @@ export default function DailyReport({ onNavigate, theme, toggleTheme, active }) 
             <div className="dr-toolbar">
               <span className="dr-title"><CalendarDays size={15} /> Live Daily Report</span>
               <div className="dr-filters">
-                <label className="dr-field">
+                <div className="dr-field">
                   <span>Account</span>
-                  <CustomSelect
-                    value={accountId}
-                    onChange={setAccountId}
-                    options={[
-                      { label: 'All live accounts', value: 'all' },
-                      ...nameGroups.map(g => ({ label: `${g.label} (group: ${g.names.join(' + ')})`, value: g.key })),
-                      ...accounts.map(a => ({ label: a.name, value: a.id })),
-                    ]}
-                    style={{ minWidth: 180 }}
-                  />
-                </label>
+                  <ReportAccountPicker accounts={accounts} groups={nameGroups} value={accountId} onChange={setAccountId} />
+                </div>
                 <div className="dr-field">
                   <span>Range</span>
                   <div className="dr-seg" role="group" aria-label="Date range presets">
