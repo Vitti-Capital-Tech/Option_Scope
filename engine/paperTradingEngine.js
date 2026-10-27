@@ -37,7 +37,8 @@ import {
   safeParseLeg, calculateFee, calcMargin, leverageFor, scanTickers,
   computeEntryAtmRatio, computeScaledSellQty,
   pickTopUniqueStrikes, pickHedgeStrike, listHedgeStrikes, log, logWarn, logError,
-  effectiveOiCapM, isOiBlocked, pickExpiry, expiryModeForDte
+  effectiveOiCapM, isOiBlocked, pickExpiry, expiryModeForDte,
+  normalizeExcludedStrikes, excludedStrikesFor
 } from './lib/utils.js';
 
 // Entry chase-fill tuning (armed-real only): re-price each entry leg toward the
@@ -637,10 +638,9 @@ async function startSingleAccountEngine(account) {
           // ATM edge floors (migration 039) — PAPER only, applied at the entry gate below.
           minAtmPnl: data.min_atm_pnl ?? 50,
           minAtmRoi: data.min_atm_roi ?? 2,
-          // Excluded strikes (migration 040) — PAPER only, applied to the scan pool below.
-          excludedStrikes: Array.isArray(data.excluded_strikes)
-            ? data.excluded_strikes.map(Number).filter(Number.isFinite)
-            : [],
+          // Excluded strikes (migration 040) — { strike, expiry } entries, applied to the scan
+          // pool below for the traded expiry only.
+          excludedStrikes: normalizeExcludedStrikes(data.excluded_strikes),
           atmRatioPctCall: data.atm_ratio_distance_call ?? 50,
           atmRatioPctPut: data.atm_ratio_distance_put ?? 25,
           daysToExpiry: data.days_to_expiry ?? 0,
@@ -4054,7 +4054,8 @@ async function startSingleAccountEngine(account) {
       // picker below. atmStrike and the intrinsic lookups still see the full chain: they
       // only PRICE the spread, and an excluded ATM must not shift every candidate's ratio.
       // New entries only — open positions on an excluded strike are left alone.
-      const excludedStrikes = new Set((config.excludedStrikes || []).map(Number));
+      // Only the exclusions made on the traded expiry (plus legacy all-expiry ones) apply.
+      const excludedStrikes = excludedStrikesFor(config.excludedStrikes, config.expiry);
 
       // ── Delta OI-limit filter (migration 062) — paper AND live, opt-in (Control Panel) ──
       // Delta puts a strike into reduce-only once its market-wide OI reaches the cap, so no

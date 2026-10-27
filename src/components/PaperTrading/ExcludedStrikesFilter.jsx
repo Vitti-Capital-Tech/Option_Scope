@@ -1,25 +1,24 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { ChevronDown, Check, X } from 'lucide-react';
-
-// Sorted, de-duplicated, finite numbers — the one shape excludedStrikes is ever stored in,
-// so the dirty check (element-wise compare) and the engine's Set both see a stable list.
-const normalize = (arr) => [...new Set(arr.map(Number).filter(Number.isFinite))].sort((a, b) => a - b);
+import { fmtExpiry } from '../../api';
+import { normalizeExcludedStrikes } from '../../scannerUtils';
 
 /**
- * Excluded Strikes (migration 040) — paper only. Two ways to build ONE list:
- *   • pick from the current expiry's chain (multi-select dropdown), or
- *   • type strikes manually (comma/space separated), e.g. for a strike not listed yet.
- * The engine drops these strikes from the entry pool for calls AND puts.
+ * Excluded Strikes (migration 040) — paper AND live. Strikes are picked from the current
+ * expiry's chain and each is stored with that expiry ({ strike, expiry }), so the engine
+ * skips it on that expiry only and the entry drops off once the expiry settles. Entries
+ * with no expiry (saved before this change) still apply to every expiry until removed.
  */
-export default function ExcludedStrikesFilter({ value, onChange, chainStrikes = [], spotPrice }) {
-  const selected = useMemo(() => normalize(Array.isArray(value) ? value : []), [value]);
-  const selectedSet = useMemo(() => new Set(selected), [selected]);
-  const chainSet = useMemo(() => new Set(chainStrikes), [chainStrikes]);
+export default function ExcludedStrikesFilter({ value, onChange, chainStrikes = [], expiry, spotPrice }) {
+  const entries = useMemo(() => normalizeExcludedStrikes(value), [value]);
+  // Strikes excluded on the expiry whose chain the picker shows.
+  const selectedSet = useMemo(
+    () => new Set(entries.filter(e => e.expiry === expiry).map(e => e.strike)),
+    [entries, expiry]
+  );
 
   const [isOpen, setIsOpen] = useState(false);
   const [search, setSearch] = useState('');
-  const [manual, setManual] = useState('');
-  const [manualError, setManualError] = useState('');
   const [menuCoords, setMenuCoords] = useState({ top: 0, left: 0, width: 0 });
   const containerRef = useRef(null);
   const menuRef = useRef(null);
@@ -74,28 +73,18 @@ export default function ExcludedStrikesFilter({ value, onChange, chainStrikes = 
   }, [isOpen, search]);
 
   const toggleStrike = (strike) => {
-    const next = selectedSet.has(strike) ? selected.filter(s => s !== strike) : [...selected, strike];
-    onChange(normalize(next));
+    if (!expiry) return;
+    const next = selectedSet.has(strike)
+      ? entries.filter(e => !(e.expiry === expiry && e.strike === strike))
+      : [...entries, { strike, expiry }];
+    onChange(normalizeExcludedStrikes(next));
   };
 
-  const removeStrike = (strike) => onChange(selected.filter(s => s !== strike));
+  const removeEntry = (entry) => onChange(entries.filter(e => !(e.expiry === entry.expiry && e.strike === entry.strike)));
 
-  const addManual = () => {
-    const tokens = manual.split(/[\s,;]+/).filter(Boolean);
-    if (!tokens.length) return;
-    const bad = tokens.filter(t => !(Number.isFinite(Number(t)) && Number(t) > 0));
-    if (bad.length) {
-      setManualError(`Not a valid strike: ${bad.join(', ')}`);
-      return;
-    }
-    onChange(normalize([...selected, ...tokens.map(Number)]));
-    setManual('');
-    setManualError('');
-  };
-
-  const triggerLabel = selected.length === 0
+  const triggerLabel = selectedSet.size === 0
     ? 'None excluded'
-    : `${selected.length} strike${selected.length === 1 ? '' : 's'} excluded`;
+    : `${selectedSet.size} strike${selectedSet.size === 1 ? '' : 's'} excluded`;
 
   return (
     <div className="pt-excl-strikes">
@@ -126,40 +115,25 @@ export default function ExcludedStrikesFilter({ value, onChange, chainStrikes = 
           </div>
         </div>
 
-        <div className="form-group">
-          <label className="pt-field-label" style={{ marginBottom: 0 }}>Enter Manually</label>
-          <div className="pt-excl-manual">
-            <input
-              type="text"
-              inputMode="decimal"
-              className={`custom-input-field ${manualError ? 'error' : ''}`}
-              style={{ width: 180 }}
-              placeholder="e.g. 78000, 78500"
-              value={manual}
-              onChange={e => { setManual(e.target.value); if (manualError) setManualError(''); }}
-              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addManual(); } }}
-            />
-            <button type="button" className="pt-excl-add-btn" onClick={addManual} disabled={!manual.trim()}>
-              Add
-            </button>
-          </div>
-        </div>
       </div>
 
-      {manualError && <div className="pt-excl-error">{manualError}</div>}
-
-      {selected.length > 0 && (
+      {entries.length > 0 && (
         <div className="pt-excl-chips">
-          {selected.map(strike => {
-            const offChain = chainStrikes.length > 0 && !chainSet.has(strike);
+          {entries.map(entry => {
+            // Excluded on another expiry (or, from before this change, on every expiry):
+            // shown dimmed — it does not apply to the chain on screen.
+            const otherExpiry = entry.expiry !== expiry;
+            const label = entry.expiry ? fmtExpiry(entry.expiry) : 'all expiries';
             return (
               <span
-                key={strike}
-                className={`pt-excl-chip ${offChain ? 'off-chain' : ''}`}
-                title={offChain ? 'Not listed on the current expiry' : undefined}
+                key={`${entry.expiry ?? ''}|${entry.strike}`}
+                className={`pt-excl-chip ${otherExpiry ? 'off-chain' : ''}`}
+                title={entry.expiry
+                  ? `Excluded on the ${label} expiry only${otherExpiry ? ' — not the expiry shown' : ''}`
+                  : 'Saved before strikes were tied to an expiry — applies to every expiry until removed'}
               >
-                {strike.toLocaleString()}
-                <button type="button" aria-label={`Remove ${strike}`} onClick={() => removeStrike(strike)}>
+                {entry.strike.toLocaleString()} <span className="pt-excl-chip-exp">· {label}</span>
+                <button type="button" aria-label={`Remove ${entry.strike} (${label})`} onClick={() => removeEntry(entry)}>
                   <X size={11} strokeWidth={3} />
                 </button>
               </span>

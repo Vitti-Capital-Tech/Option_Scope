@@ -4,7 +4,7 @@ import {
   loadProducts, getExpiries, getStrikes, getSpotPrice,
   fmtExpiry, createTickerStream, apiGet, getTickers
 } from './api';
-import { normalizeIv, toFiniteNumber, matchesOptionType, formatTime, formatDateTime, leverageFor, pickExpiry, expiryModeForDte } from './scannerUtils';
+import { normalizeIv, toFiniteNumber, matchesOptionType, formatTime, formatDateTime, leverageFor, pickExpiry, expiryModeForDte, normalizeExcludedStrikes } from './scannerUtils';
 import { useTabListener } from './useTabSync';
 import { supabase } from './supabase';
 import { sortSchedulesByStart, scannerToWindowFields } from './components/PaperTrading/scheduleShared';
@@ -248,7 +248,7 @@ const loadCopyFilters = async (sourceAccountId) => {
   for (const [col, key] of Object.entries(COPY_FILTER_COLUMNS)) {
     if (!Object.prototype.hasOwnProperty.call(data, col) || data[col] === undefined) continue;
     let v = data[col];
-    if (col === 'excluded_strikes') v = Array.isArray(v) ? v.map(Number).filter(Number.isFinite) : [];
+    if (col === 'excluded_strikes') v = normalizeExcludedStrikes(v);
     if (col === 'trade_days' && !Array.isArray(v)) continue;
     db[col] = v;
     ui[key] = v;
@@ -1704,7 +1704,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         long_exit_slices: newCfg.longExitSlices ?? 10,
         variable_exit_slices: newCfg.variableExitSlices ?? false,
         trade_days: Array.isArray(newCfg.tradeDays) ? newCfg.tradeDays : [0, 1, 2, 3, 4, 5, 6],
-        excluded_strikes: Array.isArray(newCfg.excludedStrikes) ? newCfg.excludedStrikes : [],
+        excluded_strikes: normalizeExcludedStrikes(newCfg.excludedStrikes),
         full_deploy_enabled: newCfg.fullDeployEnabled ?? false,
         full_deploy_time: newCfg.fullDeployTime ?? '04:30',
         // Migration 059 — sent only once the column exists (or when switched on), so saving
@@ -1865,7 +1865,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     return FILTER_KEYS.some(k => {
       const val1 = draftConfig[k];
       const val2 = config[k];
-      if (k === 'tradeDays' || k === 'excludedStrikes') {
+      if (k === 'excludedStrikes') {
+        // { strike, expiry } entries — compare their normalized form, not object identity.
+        return JSON.stringify(normalizeExcludedStrikes(val1)) !== JSON.stringify(normalizeExcludedStrikes(val2));
+      }
+      if (k === 'tradeDays') {
         const arr1 = Array.isArray(val1) ? val1 : [];
         const arr2 = Array.isArray(val2) ? val2 : [];
         if (arr1.length !== arr2.length) return true;
@@ -1994,9 +1998,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           // Weekdays new entries are allowed on (0=Sun..6=Sat). v2/paper entry-gate. See migration 021.
           tradeDays: Array.isArray(data.trade_days) ? data.trade_days : [0, 1, 2, 3, 4, 5, 6],
           // Strike prices no new leg may be entered on (migration 040) — paper only.
-          excludedStrikes: Array.isArray(data.excluded_strikes)
-            ? data.excluded_strikes.map(Number).filter(Number.isFinite)
-            : [],
+          excludedStrikes: normalizeExcludedStrikes(data.excluded_strikes),
           // Paper full-deployment fill (migration 030) — paper only.
           fullDeployEnabled: data.full_deploy_enabled ?? false,
           fullDeployTime: data.full_deploy_time ?? '04:30',

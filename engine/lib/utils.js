@@ -429,3 +429,32 @@ export function expiryModeForDte(dte) {
   if (n === 30) return 'monthly';
   return 'daily';
 }
+
+/**
+ * Excluded strikes (migration 040), tied to the expiry they were excluded on. Entries are
+ * { strike, expiry } with expiry = that expiry's settlement_time, so excluding 78,000 on
+ * today's chain leaves 78,000 open on the next expiry. A bare number (or expiry null), as
+ * stored before this change, still applies to every expiry. Returns de-duplicated entries
+ * sorted by expiry then strike, dropping entries whose expiry has already settled.
+ *
+ * Twin of src/scannerUtils.js normalizeExcludedStrikes / excludedStrikesFor — keep the two identical.
+ */
+export function normalizeExcludedStrikes(list, nowMs = Date.now()) {
+  const out = new Map();
+  for (const e of Array.isArray(list) ? list : []) {
+    const isObj = typeof e === 'object' && e !== null;
+    const strike = Number(isObj ? e.strike : e);
+    if (!Number.isFinite(strike) || strike <= 0) continue;
+    const expiry = isObj && e.expiry ? String(e.expiry) : null;
+    if (expiry && !(new Date(expiry).getTime() > nowMs)) continue; // settled (or invalid) expiry
+    out.set(`${expiry ?? ''}|${strike}`, { strike, expiry });
+  }
+  return [...out.values()].sort((a, b) => (a.expiry ?? '').localeCompare(b.expiry ?? '') || a.strike - b.strike);
+}
+
+/** Strikes no new leg may use on `expiry`: that expiry's entries plus any all-expiry ones. */
+export function excludedStrikesFor(list, expiry) {
+  return new Set(normalizeExcludedStrikes(list)
+    .filter(e => e.expiry == null || e.expiry === expiry)
+    .map(e => e.strike));
+}

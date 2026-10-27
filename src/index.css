@@ -5573,13 +5573,6 @@ body.light-theme .pt-btn-apply.active {
   gap: 10px;
 }
 
-.pt-excl-manual {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-
-.pt-excl-add-btn,
 .pt-excl-clear {
   border: 1px solid var(--border);
   background: var(--bg3);
@@ -5593,15 +5586,9 @@ body.light-theme .pt-btn-apply.active {
   transition: border-color 0.15s, color 0.15s;
 }
 
-.pt-excl-add-btn:hover:not(:disabled),
 .pt-excl-clear:hover {
   border-color: #3b82f6;
   color: #3b82f6;
-}
-
-.pt-excl-add-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 
 .pt-excl-clear {
@@ -5610,10 +5597,9 @@ body.light-theme .pt-btn-apply.active {
   background: transparent;
 }
 
-.pt-excl-error {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--danger);
+.pt-excl-chip-exp {
+  font-weight: 500;
+  opacity: 0.75;
 }
 
 .pt-excl-chips {

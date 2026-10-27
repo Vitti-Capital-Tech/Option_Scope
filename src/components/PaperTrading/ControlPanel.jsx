@@ -181,9 +181,10 @@ export default function ControlPanel({
           </div>
 
           {/* Excluded Strikes (migration 040) — paper AND live, global (not per window).
-              Strike prices the engine never enters a leg on, for calls and puts alike. Pick
-              them from the current expiry's chain or type them in; both build the same list.
-              Goes through Apply/Cancel like the other filters. Open positions are unaffected. */}
+              Strikes picked from the current expiry's chain, each tied to that expiry: the
+              engine skips them for calls and puts on that expiry only, and they drop off once
+              it settles. Goes through Apply/Cancel like the other filters. Open positions are
+              unaffected. */}
           <div className="pt-filter-cluster">
             <span className="pt-cluster-head">
               Excluded Strikes <span style={{ color: 'var(--text-dim)', fontWeight: 600, letterSpacing: '0.04em' }}>(calls &amp; puts, new entries only)</span>
@@ -192,6 +193,7 @@ export default function ControlPanel({
               value={draftConfig?.excludedStrikes ?? []}
               onChange={list => updateDraftConfig('excludedStrikes', list)}
               chainStrikes={chainStrikes}
+              expiry={selExpiry}
               spotPrice={spotPrice}
             />
           </div>
