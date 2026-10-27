@@ -383,3 +383,49 @@ export function logWarn(msg) {
 export function logError(msg, err) {
   console.error(formatLog(`✖ ${msg}`), err || '');
 }
+
+/**
+ * Expiry the account trades (paper expiry mode — see expiryModeForDte). `expiries` = sorted
+ * settlement_time ISO strings. Delta settles at 12:00 UTC (17:30 IST), so the UTC date is
+ * the IST expiry date, and an expiry that has settled drops out — on the Friday 17:30 IST
+ * roll (≈ "from Saturday") the next week's / month's expiry is picked up automatically.
+ *  • 'weekly'  — nearest live expiry on a Friday (that week's Friday expiry).
+ *  • 'monthly' — nearest live expiry on the LAST Friday of its month.
+ *  • 'daily' (default) — nearest live expiry at least `minDte` days out (per-window DTE).
+ * Weekly/monthly fall back to the daily rule when no such expiry is listed.
+ *
+ * Twin of src/scannerUtils.js pickExpiry — keep the two identical.
+ */
+export function pickExpiry(expiries, { mode = 'daily', minDte = 0, nowMs = Date.now() } = {}) {
+  const live = (expiries || []).filter(e => new Date(e).getTime() > nowMs);
+  if (live.length === 0) return (expiries || [])[0] ?? null;
+  const isFriday = (d) => d.getUTCDay() === 5;
+  const isLastFridayOfMonth = (d) => {
+    if (!isFriday(d)) return false;
+    const next = new Date(d.getTime() + 7 * 24 * 60 * 60 * 1000);
+    return next.getUTCMonth() !== d.getUTCMonth();
+  };
+  if (mode === 'weekly' || mode === 'monthly') {
+    const match = mode === 'weekly' ? isFriday : isLastFridayOfMonth;
+    const hit = live.find(e => match(new Date(e)));
+    if (hit) return hit;
+  }
+  for (const e of live) {
+    if ((new Date(e).getTime() - nowMs) / (24 * 60 * 60 * 1000) >= minDte) return e;
+  }
+  return live[0];
+}
+
+/**
+ * Paper expiry mode implied by a window's Days to Expiry: DTE 7 = 'weekly' (that week's
+ * Friday expiry), DTE 30 = 'monthly' (the month's last-Friday expiry), anything else =
+ * 'daily' (nearest expiry at least DTE days out). See pickExpiry.
+ *
+ * Twin of src/scannerUtils.js expiryModeForDte — keep the two identical.
+ */
+export function expiryModeForDte(dte) {
+  const n = Number(dte);
+  if (n === 7) return 'weekly';
+  if (n === 30) return 'monthly';
+  return 'daily';
+}

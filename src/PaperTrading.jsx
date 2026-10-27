@@ -4,7 +4,7 @@ import {
   loadProducts, getExpiries, getStrikes, getSpotPrice,
   fmtExpiry, createTickerStream, apiGet, getTickers
 } from './api';
-import { normalizeIv, toFiniteNumber, matchesOptionType, formatTime, formatDateTime, leverageFor } from './scannerUtils';
+import { normalizeIv, toFiniteNumber, matchesOptionType, formatTime, formatDateTime, leverageFor, pickExpiry, expiryModeForDte } from './scannerUtils';
 import { useTabListener } from './useTabSync';
 import { supabase } from './supabase';
 import { sortSchedulesByStart, scannerToWindowFields } from './components/PaperTrading/scheduleShared';
@@ -234,6 +234,7 @@ const COPY_FILTER_COLUMNS = {
   partial_scale_lot_pct: 'partialScaleLotPct',
   partial_scale_threshold_pct: 'partialScaleThresholdPct',
   partial_scale_max_pct: 'partialScaleMaxPct',
+  max_sl_pct: 'maxSlPct',
 };
 // Source account's config row → { db: columns to write, ui: draft-config keys }. Only
 // columns the source row actually has are copied. RLS limits sources like copySchedulesFrom.
@@ -476,7 +477,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     partialScaleEnabled: true,
     partialScaleLotPct: 10,
     partialScaleThresholdPct: 10,
-    partialScaleMaxPct: 50
+    partialScaleMaxPct: 50,
+    // Paper-only account max SL (migration 066): % of balance, 0 = off.
+    maxSlPct: 20
   }));
   const [draftConfig, setDraftConfig] = useState(() => ({ ...config }));
   const [isConfigLoaded, setIsConfigLoaded] = useState(false);
@@ -514,15 +517,25 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       : (config?.daysToExpiry || 0);
   }, [config?.daysToExpiry, schedules]);
 
+  // Paper expiry mode implied by the DTE (7 = weekly, 30 = monthly) — mirrors the engine's
+  // activeExpiryMode(); live accounts always use the plain DTE rule.
+  const activeAccountMode = accounts.find(a => a.id === activeAccountId)?.mode;
+  const expiryMode = activeAccountMode === 'live' ? 'daily' : expiryModeForDte(effectiveMinDte);
+
   const filteredExpiries = React.useMemo(() => {
     if (!expiries || expiries.length === 0) return [];
+    // Weekly / monthly: the account is pinned to one expiry — offer only that one.
+    if (expiryMode !== 'daily') {
+      const pinned = pickExpiry(expiries, { mode: expiryMode, minDte: effectiveMinDte });
+      return pinned ? [pinned] : expiries;
+    }
     const minDays = effectiveMinDte;
     const filtered = expiries.filter(exp => {
       const daysRemaining = (new Date(exp).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
       return daysRemaining >= minDays;
     });
     return filtered.length > 0 ? filtered : expiries;
-  }, [expiries, effectiveMinDte]);
+  }, [expiries, effectiveMinDte, expiryMode]);
 
   const [engineStatus, setEngineStatus] = useState({ status: 'offline', lastHeartbeat: null, data: null });
   const [walletBalance, setWalletBalance] = useState(null); // live USDT balance from heartbeat
@@ -579,6 +592,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   const hasOiFilterModeColRef = useRef(false);
   // Whether paper_trading_config has migration 063's partial scale-down columns (same guard).
   const hasPartialScaleColRef = useRef(false);
+  // Whether paper_trading_config has migration 066's max_sl_pct column (same guard).
+  const hasMaxSlColRef = useRef(false);
   // Session-open spot per underlying → drives the % change on the spot bar shown
   // above the tables (captured once, first time we see a spot for that underlying).
   const spotOpenRef = useRef({});
@@ -689,7 +704,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
 
   const handleLogout = async () => {
     try {
-      await supabase.auth.signOut();
+      // scope 'local': end only THIS device's session. supabase-js defaults to 'global',
+      // which revokes every refresh token of the user and logs out all other devices too.
+      await supabase.auth.signOut({ scope: 'local' });
       setIsAccountsLoaded(false);
       setAccounts([]);
     } catch (e) {
@@ -842,6 +859,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     if (isConfigLoaded && products.length > 0) {
       const exps = getExpiries(products);
       if (exps.length) {
+        // Paper weekly / monthly mode (DTE 7 / 30): pin the same Friday expiry the engine
+        // trades, so the dashboard never writes back a different (daily) one.
+        if (expiryMode !== 'daily') {
+          lastDaysToExpiryRef.current = effectiveMinDte;
+          const pinned = pickExpiry(exps, { mode: expiryMode, minDte: effectiveMinDte });
+          if (pinned && pinned !== selExpiry) updateConfig('expiry', pinned);
+          return;
+        }
         // Did the effective days-to-expiry filter actually change? (v2 = peak of windows)
         const daysFilterChanged = lastDaysToExpiryRef.current !== null && lastDaysToExpiryRef.current !== effectiveMinDte;
         lastDaysToExpiryRef.current = effectiveMinDte;
@@ -879,7 +904,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     } else if (isConfigLoaded) {
       lastDaysToExpiryRef.current = effectiveMinDte;
     }
-  }, [isConfigLoaded, products, selExpiry, effectiveMinDte]);
+  }, [isConfigLoaded, products, selExpiry, effectiveMinDte, expiryMode]);
 
   useEffect(() => {
     setExpiries([]);
@@ -1705,6 +1730,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
               partial_scale_threshold_pct: clampPct(newCfg.partialScaleThresholdPct, 10, 0, 1000),
               partial_scale_max_pct: clampPct(newCfg.partialScaleMaxPct, 50, 1, 99),
             } : {}),
+        // Migration 066 — sent once the column exists (or when changed from the default).
+        ...((hasMaxSlColRef.current || (newCfg.maxSlPct != null && Number(newCfg.maxSlPct) !== 20))
+          ? { max_sl_pct: clampPct(newCfg.maxSlPct, 20, 0, 100) } : {}),
         updated_at: new Date().toISOString()
       }).select();
       if (error) {
@@ -1751,7 +1779,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     'partialScaleEnabled',
     'partialScaleLotPct',
     'partialScaleThresholdPct',
-    'partialScaleMaxPct'
+    'partialScaleMaxPct',
+    'maxSlPct'
   ];
 
   const updateConfig = (keyOrObj, value) => {
@@ -1980,12 +2009,15 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           partialScaleEnabled: data.partial_scale_enabled ?? true,
           partialScaleLotPct: data.partial_scale_lot_pct != null ? Number(data.partial_scale_lot_pct) : 10,
           partialScaleThresholdPct: data.partial_scale_threshold_pct != null ? Number(data.partial_scale_threshold_pct) : 10,
-          partialScaleMaxPct: data.partial_scale_max_pct != null ? Number(data.partial_scale_max_pct) : 50
+          partialScaleMaxPct: data.partial_scale_max_pct != null ? Number(data.partial_scale_max_pct) : 50,
+          // Paper-only account max SL (migration 066).
+          maxSlPct: data.max_sl_pct != null ? Number(data.max_sl_pct) : 20
         };
         hasReplaceCloserAtmColRef.current = Object.prototype.hasOwnProperty.call(data, 'replace_closer_atm');
         hasOiFilterColRef.current = Object.prototype.hasOwnProperty.call(data, 'oi_filter_enabled');
         hasOiFilterModeColRef.current = Object.prototype.hasOwnProperty.call(data, 'oi_filter_mode');
         hasPartialScaleColRef.current = Object.prototype.hasOwnProperty.call(data, 'partial_scale_enabled');
+        hasMaxSlColRef.current = Object.prototype.hasOwnProperty.call(data, 'max_sl_pct');
         setConfig(loadedConfig);
         setDraftConfig(loadedConfig);
         setConfigDbId(data.id);

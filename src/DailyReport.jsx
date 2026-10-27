@@ -61,7 +61,7 @@ const PRESETS = [
 // per-account bases (opening + money added that day, as the engine does); max margin is the sum
 // of each account's own peak (they may not coincide, so it's an upper bound) and its % is
 // against the summed balances at those peaks.
-function combineByDate(perAccount) {
+function combineByDate(perAccount, label = 'All') {
   const byDate = new Map();
   perAccount.forEach(r => { if (!byDate.has(r.date)) byDate.set(r.date, []); byDate.get(r.date).push(r); });
   return [...byDate.entries()].sort((a, b) => b[0].localeCompare(a[0])).map(([date, day]) => {
@@ -78,7 +78,7 @@ function combineByDate(perAccount) {
     const marginEstimate = day.some(r => r.marginEstimate);
     return {
       date,
-      account: `All (${day.length})`,
+      account: `${label} (${day.length})`,
       accountNames: day.map(r => r.account).join(', '),
       accountId: 'all',
       openingBalance: sumOf('openingBalance'),
@@ -101,6 +101,23 @@ function combineByDate(perAccount) {
       status,
     };
   });
+}
+
+// Accounts whose names differ only by a trailing number (Shubham / Shubham2, Pk / PK 2) form a
+// name group. Groups of 2+ get their own entry in the account picker: selected, it combines its
+// members like "All live accounts", and each member can still be opened on its own.
+function buildNameGroups(accounts) {
+  const by = new Map();
+  accounts.forEach(a => {
+    const base = String(a.name ?? '').trim().replace(/[\s_-]*\d+$/, '').trim();
+    const key = base.toLowerCase();
+    if (!key) return;
+    if (!by.has(key)) by.set(key, { key: `group:${key}`, label: base, ids: [], names: [] });
+    const g = by.get(key);
+    g.ids.push(a.id);
+    g.names.push(a.name);
+  });
+  return [...by.values()].filter(g => g.ids.length > 1);
 }
 
 // Range summary. Sums and the return base come from the per-account rows (return = total net ÷
@@ -185,15 +202,21 @@ export default function DailyReport({ onNavigate, theme, toggleTheme, active }) 
       });
   }, [session]);
 
+  const nameGroups = useMemo(() => buildNameGroups(accounts), [accounts]);
+  const selectedGroup = nameGroups.find(g => g.key === accountId) ?? null;
+
   const fetchRows = useCallback(async () => {
-    const ids = accountId === 'all' ? accounts.map(a => a.id) : [accountId];
+    const ids = accountId === 'all' ? accounts.map(a => a.id)
+      : selectedGroup ? selectedGroup.ids
+      : accountId.startsWith('group:') ? [] // group no longer exists (accounts renamed / removed)
+      : [accountId];
     if (!session || ids.length === 0) return [];
     const { data, error: e } = await supabase.from('live_daily_stats').select('*')
       .in('account_id', ids).gte('trade_date', from).lte('trade_date', to)
       .order('trade_date', { ascending: false });
     if (e) throw e;
     return data || [];
-  }, [session, accounts, accountId, from, to]);
+  }, [session, accounts, accountId, selectedGroup, from, to]);
 
   const applyResult = useCallback((data) => {
     setRows(data);
@@ -249,8 +272,11 @@ export default function DailyReport({ onNavigate, theme, toggleTheme, active }) 
     status: r.is_backfilled ? 'Backfilled' : r.is_final ? 'Final' : (r.trade_date === today ? 'In progress' : 'Not final'),
   })), [rows, nameOf, today]);
 
-  const allAccounts = accountId === 'all';
-  const daily = useMemo(() => combineByDate(perAccount), [perAccount]);
+  // allAccounts = more than one account combined: "All live accounts" or a name group.
+  const allAccounts = accountId === 'all' || !!selectedGroup;
+  const selectionLabel = accountId === 'all' ? 'All live accounts'
+    : selectedGroup ? `${selectedGroup.label} (group)` : (nameOf[accountId] ?? '');
+  const daily = useMemo(() => combineByDate(perAccount, selectedGroup ? selectedGroup.label : 'All'), [perAccount, selectedGroup]);
   const combined = allAccounts && view === 'combined';
   const table = combined ? daily : perAccount;
   const totals = useMemo(() => summarize(perAccount, daily), [perAccount, daily]);
@@ -278,7 +304,7 @@ export default function DailyReport({ onNavigate, theme, toggleTheme, active }) 
     })));
     if (totals) {
       out.push({
-        date: 'TOTAL', account: allAccounts ? 'All live accounts' : (nameOf[accountId] ?? ''),
+        date: 'TOTAL', account: selectionLabel,
         netDeposits: r2(totals.netDeposits), realizedGross: r2(totals.realizedGross), feesActual: r2(totals.feesActual), feesEstimated: r2(totals.feesEstimated),
         netPnl: r2(totals.netPnl), returnPct: r2(totals.returnPct), maxMargin: r2(totals.maxMargin),
         maxMarginPct: r2(totals.maxMarginPct), exits: totals.exits,
@@ -288,7 +314,9 @@ export default function DailyReport({ onNavigate, theme, toggleTheme, active }) 
     }
     return out;
   };
-  const fileBase = `live-daily-report_${allAccounts ? (combined ? 'all-accounts' : 'all-accounts-split') : (nameOf[accountId] || 'account').replace(/[^\w-]+/g, '-')}_${from}_to_${to}`;
+  const selectionSlug = accountId === 'all' ? 'all-accounts'
+    : selectedGroup ? `${selectedGroup.label}-group` : (nameOf[accountId] || 'account');
+  const fileBase = `live-daily-report_${selectionSlug.replace(/[^\w-]+/g, '-')}${allAccounts && !combined ? '-split' : ''}_${from}_to_${to}`;
 
   const cell = (c, r) => {
     const v = r[c.key];
@@ -365,7 +393,11 @@ export default function DailyReport({ onNavigate, theme, toggleTheme, active }) 
                   <CustomSelect
                     value={accountId}
                     onChange={setAccountId}
-                    options={[{ label: 'All live accounts', value: 'all' }, ...accounts.map(a => ({ label: a.name, value: a.id }))]}
+                    options={[
+                      { label: 'All live accounts', value: 'all' },
+                      ...nameGroups.map(g => ({ label: `${g.label} (group: ${g.names.join(' + ')})`, value: g.key })),
+                      ...accounts.map(a => ({ label: a.name, value: a.id })),
+                    ]}
                     style={{ minWidth: 180 }}
                   />
                 </label>
@@ -446,7 +478,7 @@ export default function DailyReport({ onNavigate, theme, toggleTheme, active }) 
                     <strong>{fmtUsd(totals.feesActual)}</strong>
                     <em>{totals.feesPctOfRealized != null ? `${totals.feesPctOfRealized.toFixed(1)}% of realized P&L` : '—'}</em>
                   </div>
-                  <div className="dr-tile" title={allAccounts ? "Highest day; with all accounts, each account's own peak that day added together" : undefined}>
+                  <div className="dr-tile" title={allAccounts ? "Highest day; with several accounts, each account's own peak that day added together" : undefined}>
                     <span>Peak margin used</span>
                     <strong>{totals.maxMarginEstimate ? '~' : ''}{fmtUsd(totals.maxMargin)}{totals.maxMarginEstimate && <em className="dr-est"> est.</em>}</strong>
                     <em>{totals.maxMarginPct != null ? `${fmtPct(totals.maxMarginPct)} of balance` : '—'}{totals.maxMarginDate ? ` · ${fmtShort(totals.maxMarginDate)}` : ''}</em>
@@ -580,9 +612,10 @@ export default function DailyReport({ onNavigate, theme, toggleTheme, active }) 
               </p>
               {allAccounts && (
                 <p>
-                  With all accounts selected, the summary and charts combine every account: amounts are summed, return is the combined
+                  With all accounts or a group selected, the summary and charts combine those accounts: amounts are summed, return is the combined
                   net ÷ combined base, and a day's max margin is the sum of each account's own peak that day. Switch the daily breakdown to
-                  “Per account” or pick an account to see its own rows.
+                  “Per account” or pick an account to see its own rows. A group is accounts whose names differ only by a trailing
+                  number (e.g. Shubham and Shubham2).
                 </p>
               )}
             </details>

@@ -253,6 +253,33 @@ export default function ControlPanel({
             </div>
           )}
 
+          {/* Account max SL (migration 066) — PAPER ONLY. When the account's total unrealized
+              P&L reaches −(balance × Max SL %), the engine closes every open position. */}
+          {!accountIsLive && (
+            <div className="pt-filter-cluster">
+              <span className="pt-cluster-head">Account Stop Loss</span>
+              <div className="pt-cluster-fields">
+                <div key="maxSlPct" className="form-group">
+                  <label className="pt-field-label" style={{ marginBottom: 0 }}
+                    title="Close ALL positions of this account once its total unrealized P&L reaches −(balance × this %). E.g. balance $2,000 at 20% → close all at −$400 unrealized. 0 = off. Paper accounts only.">
+                    Max SL
+                  </label>
+                  <CustomInput type="number" step="1" min="0" max="100" suffix="%" showStepper width={90}
+                    value={draftConfig?.maxSlPct ?? 20}
+                    onChange={e => updateDraftConfig('maxSlPct', e.target.value)} />
+                </div>
+                {paperEquity != null && Number(draftConfig?.maxSlPct) > 0 && (
+                  <div className="form-group">
+                    <label className="pt-field-label" style={{ marginBottom: 0 }}>Closes At</label>
+                    <div style={{ height: 34, display: 'flex', alignItems: 'center', fontWeight: 600, color: 'var(--text-dim)' }}>
+                      −${(Number(paperEquity) * Number(draftConfig.maxSlPct) / 100).toFixed(2)} unrl.
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Partial scale-down (migration 063) — paper AND live (promoted to live 2026-10-23).
               The ATM-ratio scale-down sells part of a full spread's long as the live ATM ratio
               rises; defaults ON / 10% / 10% / 50%. */}

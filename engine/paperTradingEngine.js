@@ -37,7 +37,7 @@ import {
   safeParseLeg, calculateFee, calcMargin, leverageFor, scanTickers,
   computeEntryAtmRatio, computeScaledSellQty,
   pickTopUniqueStrikes, pickHedgeStrike, listHedgeStrikes, log, logWarn, logError,
-  effectiveOiCapM, isOiBlocked
+  effectiveOiCapM, isOiBlocked, pickExpiry, expiryModeForDte
 } from './lib/utils.js';
 
 // Entry chase-fill tuning (armed-real only): re-price each entry leg toward the
@@ -339,7 +339,10 @@ async function startSingleAccountEngine(account) {
     partialScaleEnabled: true,
     partialScaleLotPct: 10,
     partialScaleThresholdPct: 10,
-    partialScaleMaxPct: 50
+    partialScaleMaxPct: 50,
+    // Account max SL (migration 066) — PAPER ONLY. % of the paper balance; when the total
+    // unrealized P&L reaches −(balance × maxSlPct%), every position is closed. 0 = off.
+    maxSlPct: 20
   };
   let products = [];
   let expiries = [];
@@ -671,7 +674,9 @@ async function startSingleAccountEngine(account) {
           partialScaleEnabled: data.partial_scale_enabled ?? true,
           partialScaleLotPct: data.partial_scale_lot_pct != null ? Number(data.partial_scale_lot_pct) : 10,
           partialScaleThresholdPct: data.partial_scale_threshold_pct != null ? Number(data.partial_scale_threshold_pct) : 10,
-          partialScaleMaxPct: data.partial_scale_max_pct != null ? Number(data.partial_scale_max_pct) : 50
+          partialScaleMaxPct: data.partial_scale_max_pct != null ? Number(data.partial_scale_max_pct) : 50,
+          // Account max SL (migration 066) — paper only.
+          maxSlPct: data.max_sl_pct != null ? Number(data.max_sl_pct) : 20
         };
 
         if (config) {
@@ -875,9 +880,17 @@ async function startSingleAccountEngine(account) {
     return config.daysToExpiry || 0;
   }
 
+  // Expiry mode — PAPER ONLY, implied by the active window's DTE (expiryModeForDte): DTE 7
+  // pins the account to that week's Friday expiry, DTE 30 to the month's last-Friday expiry,
+  // held until it settles (Fri 17:30 IST) and then rolled. Live always uses the plain DTE rule.
+  function activeExpiryMode() {
+    return accountState.mode === 'live' ? 'daily' : expiryModeForDte(expirySelectionMinDte());
+  }
+
   async function refreshProducts() {
     try {
       const minDte = expirySelectionMinDte();
+      const expiryMode = activeExpiryMode();
       // Expiries still live (a cached list can hold one that settled minutes ago).
       const liveExpiriesOf = (list) => getExpiries(list).filter(e => new Date(e).getTime() > Date.now());
       const hasDteTarget = (exps) => exps.some(e => (new Date(e).getTime() - Date.now()) / (24 * 60 * 60 * 1000) >= minDte);
@@ -885,7 +898,7 @@ async function startSingleAccountEngine(account) {
       let exps = liveExpiriesOf(prods);
       // The window's DTE target isn't in the shared list (just listed on Delta) or the current
       // expiry is gone (just expired) → fetch fresh now (de-duplicated, ≤ 1/min per underlying).
-      if (exps.length === 0 || !hasDteTarget(exps) || (config.expiry && !exps.includes(config.expiry))) {
+      if (exps.length === 0 || (expiryMode === 'daily' && !hasDteTarget(exps)) || (config.expiry && !exps.includes(config.expiry))) {
         prods = await getSharedProducts(config.underlying, { force: true });
         exps = liveExpiriesOf(prods);
       }
@@ -894,13 +907,9 @@ async function startSingleAccountEngine(account) {
 
       if (expiries.length) {
         // Target = nearest available expiry at least `minDte` days out (≈ current date +
-        // minDte for daily expiries); nearest overall if none qualifies.
-        let target = null;
-        for (const exp of expiries) {
-          const daysRemaining = (new Date(exp).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
-          if (daysRemaining >= minDte) { target = exp; break; }
-        }
-        if (!target) target = expiries[0];
+        // minDte for daily expiries); nearest overall if none qualifies. Paper weekly /
+        // monthly mode: the nearest Friday / last-Friday-of-month expiry instead.
+        const target = pickExpiry(expiries, { mode: expiryMode, minDte });
 
         // The expiry FOLLOWS the active window (all accounts, paper AND live), so re-select
         // whenever the target differs — it must roll BOTH forward (to a farther window's DTE)
@@ -909,7 +918,7 @@ async function startSingleAccountEngine(account) {
 
         if (shouldSwitch && target !== config.expiry) {
           config.expiry = target;
-          log(`[${accountState.name}] Expiry auto-selected: ${config.expiry} (min dte ${minDte})`);
+          log(`[${accountState.name}] Expiry auto-selected: ${config.expiry} (${expiryMode === 'daily' ? `min dte ${minDte}` : `${expiryMode} expiry`})`);
           // Persist the auto-selected expiry back to Supabase
           if (configDbId) {
             await supabase.from('paper_trading_config').upsert({
@@ -2707,7 +2716,8 @@ async function startSingleAccountEngine(account) {
   async function manualExitPosition(pos, opts = {}) {
     // skipExchangeClose: the account was already flattened by a native close_all,
     // so the legs are gone — just cancel resting orders, book, and delete.
-    const { skipExchangeClose = false } = opts;
+    // exitReason: booked exit_reason (the account max SL books 'Max SL Exit').
+    const { skipExchangeClose = false, exitReason = 'Manual Exit' } = opts;
     lastDbWrite = Date.now();
     // Hedge-only row (pair already closed and booked under pos.id; its hedge close had failed —
     // parkIfHedgeOpen): close just the hedge through closeHedgeWithPair, which books it as its
@@ -2799,7 +2809,7 @@ async function startSingleAccountEngine(account) {
         margin: pos.margin, exit_time: new Date().toISOString(),
         exit_buy_price: exitLong, exit_sell_price: pos.sellQty > 0 ? exitShort : null, exit_spot_price: spotPrice,
         realized_gross_pnl: gross, realized_net_pnl: net, exit_fee: exitFee, total_fees: entryFee + exitFee,
-        exit_reason: 'Manual Exit', is_partial: false, account_id: accountState.id,
+        exit_reason: exitReason, is_partial: false, account_id: accountState.id,
       }], { onConflict: 'trade_id', ignoreDuplicates: true });
       if (!heldHedge) await supabase.from('active_positions').delete().eq('id', pos.id);
     } catch (e) { logError(`[${accountState.name}] Manual exit booking failed for ${pos.id}:`, e); }
@@ -2810,8 +2820,9 @@ async function startSingleAccountEngine(account) {
     // The hedge closed with this manual exit — show it with its own P&L.
     const hedgeNote = hedgeExitNote(hedge, exitHedge);
     const strikesLbl = strikesLabel(pos, hedge);
-    log(`[${accountState.name}] ✋ MANUAL EXIT: ${strikesLbl}${hedgeNote.replace(/ · /g, ' | ')} | PnL $${cumulativeNet.toFixed(2)} (cumulative)`);
-    notifyTrade({ title: '🙋 MANUAL EXIT', detail: `${strikesLbl}${hedgeNote}`, pnl: cumulativeNet });
+    const isMaxSl = exitReason === 'Max SL Exit';
+    log(`[${accountState.name}] ${isMaxSl ? '🛑 MAX SL EXIT' : '✋ MANUAL EXIT'}: ${strikesLbl}${hedgeNote.replace(/ · /g, ' | ')} | PnL $${cumulativeNet.toFixed(2)} (cumulative)`);
+    notifyTrade({ title: isMaxSl ? '🛑 MAX SL EXIT' : '🙋 MANUAL EXIT', detail: `${strikesLbl}${hedgeNote}`, pnl: cumulativeNet });
   }
 
   // Poll for UI-requested exits and process them promptly.
@@ -3088,6 +3099,55 @@ async function startSingleAccountEngine(account) {
     // Republish immediately so the flattened account shows empty on the UI within
     // ~1s rather than lingering until the next 20s snapshot tick.
     await publishLiveSnapshot(true).catch(() => {});
+  }
+
+  // ── Account max SL (migration 066) — PAPER ONLY ─────────────────────────
+  // When the account's total unrealized P&L (every open position marked like the dashboard:
+  // long @ bid, short @ ask, hedge @ bid, plus its booked partial short P&L) reaches
+  // −(paper balance × maxSlPct%) or below, close every position. The account is NOT paused —
+  // entries carry on as usual. Paper balance = initial balance + realized P&L — the wallet
+  // balance the dashboard shows. maxSlPct 0 / empty = off.
+  // Skipped while any held leg is unquoted (total unknown). Returns true when it fired.
+  async function checkAccountMaxSl() {
+    if (accountState.mode === 'live') return false;
+    const pct = Number(config.maxSlPct);
+    if (!(pct > 0) || positions.length === 0) return false;
+    const px = (sym, side) => {
+      const t = sym ? tickerData[sym] : null;
+      return t?.[side] ?? t?.lastPrice ?? t?.markPrice ?? null;
+    };
+    let unrealized = 0;
+    for (const p of positions) {
+      if ((p.buyLeg?.lotSize || 0) > 0) {
+        const b = px(p.buyLeg.symbol, 'bid');
+        if (b == null) return false;
+        unrealized += (b - (p.entryBuyPrice || 0)) * p.buyLeg.lotSize;
+      }
+      if ((p.sellQty || 0) > 0) {
+        const a = px(p.sellLeg?.symbol, 'ask');
+        if (a == null) return false;
+        unrealized += ((p.entrySellPrice || 0) - a) * p.sellQty * (p.sellLeg.lotSize || 1);
+      }
+      if (hasOpenHedge(p)) {
+        const h = px(p.hedgeLeg.symbol, 'bid');
+        if (h == null) return false;
+        unrealized += (h - (p.hedgeLeg.entryPrice || 0)) * p.hedgeLeg.lotSize;
+      }
+      unrealized += p.accumulatedSellPnl || 0;
+    }
+    const balance = getPaperEquity();
+    const limit = balance * pct / 100;
+    if (!(limit > 0) || unrealized > -limit) return false;
+
+    const open = [...positions];
+    logWarn(`[${accountState.name}] 🛑 MAX SL HIT — unrealized $${unrealized.toFixed(2)} ≤ −$${limit.toFixed(2)} (${pct}% of balance $${balance.toFixed(2)}). Closing all ${open.length} position(s).`);
+    notifyTrade({ title: '🛑 MAX SL HIT', detail: `Unrealized $${unrealized.toFixed(2)} reached −$${limit.toFixed(2)} (${pct}% of $${balance.toFixed(2)}) — closing all ${open.length} position(s)`, pnl: unrealized });
+    for (const pos of open) {
+      await manualExitPosition(pos, { exitReason: 'Max SL Exit' })
+        .catch(e => logError(`[${accountState.name}] Max SL exit failed for ${pos.id}:`, e));
+    }
+    await publishLiveSnapshot(true).catch(() => {});
+    return true;
   }
 
   /**
@@ -3836,6 +3896,10 @@ async function startSingleAccountEngine(account) {
         }
         return;
       }
+
+      // Account max SL (migration 066, paper only) — runs every tick, before the exit and
+      // entry logic. When it fires every position is closed, so this cycle ends here.
+      if (await checkAccountMaxSl()) return;
 
       // ── Apply active time-schedule overrides ──────────────────────────
       const activeSchedule = getActiveSchedule();
@@ -5865,8 +5929,10 @@ async function startSingleAccountEngine(account) {
           // Days to expiry guard. Uses effectiveConfig so every account (paper AND live)
           // applies the ACTIVE WINDOW's min-days-to-expiry, falling back to the
           // account-level config value when a window predates migration 019.
+          // Paper weekly / monthly expiry mode (DTE 7 / 30) trades its Friday expiry down to
+          // the last day, so the window DTE is not a minimum there.
           const daysRemaining = (new Date(config.expiry).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
-          if (daysRemaining < (effectiveConfig.daysToExpiry || 0)) {
+          if (activeExpiryMode() === 'daily' && daysRemaining < (effectiveConfig.daysToExpiry || 0)) {
             logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: days to expiry (${daysRemaining.toFixed(2)}) is less than min required (${effectiveConfig.daysToExpiry})`);
             continue;
           }
@@ -7704,14 +7770,11 @@ async function startSingleAccountEngine(account) {
       // differs, and `expirySyncing` prevents overlapping runs. Applies to all accounts.
       if (expiries.length && !expirySyncing) {
         const dte = expirySelectionMinDte();
-        let target = null;
-        for (const exp of expiries) {
-          if ((new Date(exp).getTime() - Date.now()) / (24 * 60 * 60 * 1000) >= dte) { target = exp; break; }
-        }
-        if (!target) target = expiries[0];
-        if (target !== config.expiry) {
+        const expiryMode = activeExpiryMode();
+        const target = pickExpiry(expiries, { mode: expiryMode, minDte: dte });
+        if (target && target !== config.expiry) {
           expirySyncing = true;
-          log(`[${accountState.name}] Active-window expiry target → ${target} (min dte ${dte}); re-syncing.`);
+          log(`[${accountState.name}] Active-window expiry target → ${target} (${expiryMode === 'daily' ? `min dte ${dte}` : `${expiryMode} expiry`}); re-syncing.`);
           syncExpirySubscription()
             .catch(e => logError(`[${accountState.name}] expiry re-sync failed:`, e))
             .finally(() => { expirySyncing = false; });
