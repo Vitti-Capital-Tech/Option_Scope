@@ -2446,8 +2446,20 @@ async function startSingleAccountEngine(account) {
     // resting `-PEX` limit is stale by definition (market/IOC orders never rest here). Cancel it
     // and reduce-only market-close its remaining size to bring the exchange back in line with the
     // already-booked reduction. Runs every armed-live sweep and self-heals to a no-op once clean.
+    // Only a RESTING LIMIT that has been open for a while is stale. The current scale-down's
+    // own reduce-only MARKET (IOC) order shows up in Delta's open orders for an instant before
+    // it fills; a sweep landing in that instant read it as stale and market-closed its size a
+    // SECOND time (Dg 2026-10-24 03:02:13 → 03:02:14: "PARTIAL SCALE-DOWN 39" then
+    // "PARTIAL EXIT (reconcile) 39" — the long sold twice). Unknown age → leave it alone.
+    const PEX_STALE_MIN_AGE_MS = 120000;
+    const isStalePex = (o) => {
+      if (!/-PEX(\b|-)/.test(String(o.client_order_id || ''))) return false;
+      if (String(o.order_type || '') === 'market_order') return false;
+      const t = new Date(o.created_at || 0).getTime();
+      return t > 0 && Date.now() - t >= PEX_STALE_MIN_AGE_MS;
+    };
     if (Array.isArray(liveOrders)) {
-      const stalePex = liveOrders.filter(o => /-PEX(\b|-)/.test(String(o.client_order_id || '')));
+      const stalePex = liveOrders.filter(isStalePex);
       for (const o of stalePex) {
         const sym = o.product_symbol;
         const remaining = Math.abs(Number(o.unfilled_size ?? o.size) || 0);
@@ -2821,7 +2833,7 @@ async function startSingleAccountEngine(account) {
     const hedgeNote = hedgeExitNote(hedge, exitHedge);
     const strikesLbl = strikesLabel(pos, hedge);
     const isMaxSl = exitReason === 'Max SL Exit';
-    log(`[${accountState.name}] ${isMaxSl ? '🛑 MAX SL EXIT' : '✋ MANUAL EXIT'}: ${strikesLbl}${hedgeNote.replace(/ · /g, ' | ')} | PnL $${cumulativeNet.toFixed(2)} (cumulative)`);
+    log(`[${accountState.name}] ${isMaxSl ? '⛔ MAX SL EXIT' : '✋ MANUAL EXIT'}: ${strikesLbl}${hedgeNote.replace(/ · /g, ' | ')} | PnL $${cumulativeNet.toFixed(2)} (cumulative)`);
     notifyTrade({ title: isMaxSl ? '🛑 MAX SL EXIT' : '🙋 MANUAL EXIT', detail: `${strikesLbl}${hedgeNote}`, pnl: cumulativeNet });
   }
 
@@ -3140,7 +3152,7 @@ async function startSingleAccountEngine(account) {
     if (!(limit > 0) || unrealized > -limit) return false;
 
     const open = [...positions];
-    logWarn(`[${accountState.name}] 🛑 MAX SL HIT — unrealized $${unrealized.toFixed(2)} ≤ −$${limit.toFixed(2)} (${pct}% of balance $${balance.toFixed(2)}). Closing all ${open.length} position(s).`);
+    logWarn(`[${accountState.name}] ⛔ MAX SL HIT — unrealized $${unrealized.toFixed(2)} ≤ −$${limit.toFixed(2)} (${pct}% of balance $${balance.toFixed(2)}). Closing all ${open.length} position(s).`);
     notifyTrade({ title: '🛑 MAX SL HIT', detail: `Unrealized $${unrealized.toFixed(2)} reached −$${limit.toFixed(2)} (${pct}% of $${balance.toFixed(2)}) — closing all ${open.length} position(s)`, pnl: unrealized });
     for (const pos of open) {
       await manualExitPosition(pos, { exitReason: 'Max SL Exit' })
