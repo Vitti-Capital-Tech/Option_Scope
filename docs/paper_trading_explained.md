@@ -178,7 +178,9 @@ The engine refreshes the list of active option products (every 5 minutes, plus o
 2. **Rolls both ways (paper)**: because the expiry follows the active window, it moves **forward** (to a farther window's DTE) **and back** (to a nearer one) as windows change. **Live (v1)** only auto-rolls **forward** when the current expiry is missing/expired/stale (unchanged).
 
 > [!NOTE]
-> **Which `daysToExpiry` drives expiry selection** (`expirySelectionMinDte`): on **v1 (live)** it is the account-level `config.daysToExpiry` (a minimum threshold; the engine rolls forward to the nearest expiry ≥ it). On **v2 (paper)** — where the value is per schedule window (migration `019`) — the traded expiry **follows the window that is live right now**, as **(current date + that window's `daysToExpiry`)**. So a window with `DTE 0` trades the current-day expiry, `DTE 1` the next day's, etc.; e.g. with windows `1:DTE 0` and `2:DTE 1` and today `15`, Window 1's slot trades `15` and Window 2's slot trades `16`, and both advance a day as the calendar rolls (Window 1 → `16`, Window 2 → `17` on the 16th). If **several windows overlap** the current moment, the **smallest (min) DTE** wins (nearest expiry); in an uncovered gap the most-recently-ended window carries forward. Each window still guards its own entries with its own value (Guard 2). See [Strategy Versioning](#strategy-versioning-paper-vs-live).
+> **Which `daysToExpiry` drives expiry selection** (`expirySelectionMinDte`): on **all accounts, paper and live** the value is per schedule window (migration `019`; the account-level `config.daysToExpiry` is used only when no window applies) — the traded expiry **follows the window that is live right now**, as **(current date + that window's `daysToExpiry`)**. So a window with `DTE 0` trades the current-day expiry, `DTE 1` the next day's, etc.; e.g. with windows `1:DTE 0` and `2:DTE 1` and today `15`, Window 1's slot trades `15` and Window 2's slot trades `16`, and both advance a day as the calendar rolls (Window 1 → `16`, Window 2 → `17` on the 16th). If **several windows overlap** the current moment, the **smallest (min) DTE** wins (nearest expiry); in an uncovered gap the most-recently-ended window carries forward. Each window still guards its own entries with its own value (Guard 2). See [Strategy Versioning](#strategy-versioning-paper-vs-live).
+
+> **Weekly / monthly by DTE (paper only).** A window DTE of **7** or **30** is not a day count: DTE 7 trades **that week's Friday** expiry and DTE 30 **the month's last-Friday** expiry (`expiryModeForDte` → `pickExpiry`). Delta settles at 17:30 IST (12:00 UTC); a settled expiry leaves the list, so the account holds one Friday expiry all week (or month) and rolls at the Friday 17:30 IST settlement. If no such Friday expiry is listed, the normal DTE rule applies. The DTE entry guard (Guard 2) is skipped in these modes. Live accounts always use the plain rule.
 3. **Scanner Rollover vs. Position Rollover**: 
    - **Scanner Rollover**: Changing `config.expiry` only shifts the engine's scanning focus. In the next minute loop, it runs a completely fresh scan for option spreads on the new expiry and will only enter trades if they meet all configuration parameters.
    - **No Position Rollover**: Active positions are never carried forward or rolled over. Instead, they are always exited 2 minutes prior to their expiration date and recorded as settled in the trade history, starting fresh.
@@ -349,7 +351,7 @@ The `scanTickers()` function is the **spread finder**. It works like this:
 Two kinds of strike are removed from both pools before the scan:
 
 - **Occupied strikes**: strikes already held by one of this account's full spreads (one leg per strike).
-- **Excluded strikes** (`excluded_strikes`, migration 040; **paper and live** since 2026-10-07): a global, account-level list the user sets in the Control Panel's *Excluded Strikes* cluster. They can pick strikes from the current expiry's chain in a multi-select dropdown, or type them in manually (comma separated). An excluded strike is dropped for **calls and puts alike**, so neither the long nor the short can land on it. The v2 hedge-leg picker skips it too. The ATM strike and intrinsic pricing still read the full chain, because they only *price* candidates. Open positions on an excluded strike are left alone; the list gates **new entries only**. The per-minute `Evaluating N candidate spreads…` log line lists the active exclusions.
+- **Excluded strikes** (`excluded_strikes`, migration 040; **paper and live** since 2026-10-07): a global, account-level list the user sets in the Control Panel's *Excluded Strikes* cluster. They pick an **Expiry** (any listed one; default the traded expiry) and then strikes from that expiry's chain in a multi-select dropdown (manual entry was removed). Each entry is stored with its expiry (`{ strike, expiry }`) and applies **only while that expiry is traded**; it drops off once the expiry settles (`normalizeExcludedStrikes` / `excludedStrikesFor`). Bare numbers saved before this change apply to every expiry until removed. An excluded strike is dropped for **calls and puts alike**, so neither the long nor the short can land on it. The v2 hedge-leg picker skips it too. The ATM strike and intrinsic pricing still read the full chain, because they only *price* candidates. Open positions on an excluded strike are left alone; the list gates **new entries only**. The per-minute `Evaluating N candidate spreads…` log line lists the active exclusions.
 
 ### Step 2: O(N²) pair scan
 
@@ -374,7 +376,7 @@ Every candidate pair must pass **all** of these filters to be considered:
 | 6 | **Ratio Deviation** | `maxRatioDeviation` (default: 0.25) | The premium ratio and delta notional ratio must not deviate by more than 25% |
 | 7 | **Max Sell Qty** | `maxSellQty` (default: 10) | The sell quantity (ratio) must not exceed 10 |
 | 8 | **Max Net Premium** | `maxNetPremium` (default: $20) | The net premium debit cannot exceed $20. **ATM Ratio Scaling is applied first**, so this is checked against the *scaled* short quantity (i.e., `scaledSellQty × sellPrice - buyPrice ≥ -$20`). When scaling is disabled, `scaledSellQty` equals the natural `sellQty`. **Now configured per schedule window** (see [Time-Based Filter Schedules](#time-based-filter-schedules)); the account base value is the gap fallback. |
-| 9 | **Days to Expiry** | `daysToExpiry` (default: 0) | The option expiry date must be at least this many days away from the current time. Options closer to expiry are rejected. **Location depends on `strategy_version`** (migration `019`): on **v1 (live)** it is an account-level Control Panel field; on **v2 (experimental paper)** it moves **per schedule window** (see [Time-Based Filter Schedules](#time-based-filter-schedules)) — each window guards its own entries, and the account-global traded expiry **follows the active window** as **(current date + that window's DTE)**, re-selected in ~realtime as windows change (smallest DTE wins on overlap). See [Strategy Versioning](#strategy-versioning-paper-vs-live). |
+| 9 | **Days to Expiry** | `daysToExpiry` (default: 0) | The option expiry date must be at least this many days away from the current time. Options closer to expiry are rejected. Set **per schedule window** on all accounts, paper and live (migration `019`; the account-level value is only the schedule-gap fallback) (see [Time-Based Filter Schedules](#time-based-filter-schedules)) — each window guards its own entries, and the account-global traded expiry **follows the active window** as **(current date + that window's DTE)**, re-selected in ~realtime as windows change (smallest DTE wins on overlap). See [Strategy Versioning](#strategy-versioning-paper-vs-live). |
 | 10 | **Max Combined Positions (#)** | `maxCombinedPositions` (default: 4) | Hard cap on TOTAL open **full-spread** positions (calls + puts) per underlying. Only positions with an active short leg (`sellQty > 0`) count — long-only held positions do **not** count. Governs entry caps for **ALL accounts** now — paper AND live (migration `027` combined model, promoted to live; migration `034` dropped the old `numberOfCalls`/`numberOfPuts`). Per schedule window. **0** (migration `038`) = no new entries in that window: the engine skips the whole entry cycle (scan, sizing, live wallet/positions calls) while exits keep running, and entries resume on the next entry minute after it is raised. |
 | 11 | **Split % (#)** | `combinedSplitPct` (default: 70) | Derives the per-**type** cap = `ceil(split% × maxCombined)`, applied to both calls and puts (but the combined total still can't exceed Max Combined). E.g. 4 / 70% → max 3 calls **and** 3 puts, ≤ 4 together. Per schedule window. *(Bypassed when **All Positions Same Type** is enabled).* |
 | 11b | **All Positions Same Type** | `allSameType` / `sameType` (default: false, 'call') | **Promoted to ALL accounts** (migration `037`). Toggle switch in each schedule window. When checked, forces all positions in this window to be of a single selected type (**Call** or **Put**), dedicating 100% of `maxCombinedPositions` to that type (e.g. `4C / 0P` or `0C / 4P`) while disabling and bypassing `Split %`. |
@@ -502,7 +504,7 @@ No point entering a trade that's about to expire.
 ```
 If daysRemaining < daysToExpiry → SKIP
 ```
-Requires the option's expiry to be at least `daysToExpiry` days away from the current time. On **v2 (paper)** accounts this uses the **currently-active schedule window's** value (`effectiveConfig.daysToExpiry`, migration `019`); on **v1 (live)** it uses the account-level config value. See [Strategy Versioning](#strategy-versioning-paper-vs-live).
+Requires the option's expiry to be at least `daysToExpiry` days away from the current time. **Skipped** on paper when the window DTE is 7 or 30 (weekly / monthly expiry mode), so that Friday expiry is traded to its last day. On **all accounts (paper and live)** this uses the **currently-active schedule window's** value (`effectiveConfig.daysToExpiry`, migration `019`), falling back to the account-level value in a schedule gap. See [Strategy Versioning](#strategy-versioning-paper-vs-live).
 
 ### Guards 3 & 4: Strike Conflict (Local) — one leg per strike
 
@@ -693,7 +695,7 @@ If the pool is exhausted (`partMargin ≈ 0`), new paper entries self-skip that 
 - Caps: 3 calls / 3 puts, ≤ 4 total. Each position is sized to use **exactly $675** of margin (below the $195K cap), so 4 positions consume the pool evenly ($2700); the next cycle sees `remainingBudget ≈ 0` and skips until a slot frees or equity grows. (Before the uncapped-`baseMargin` fix, each position over-consumed — e.g. ~$825 against a $675 target — so the pool drained early and the last slot(s) were starved down to a few dollars.)
 
 > [!NOTE]
-> **Log line**: watch for `💰 PAPER sizing: equity $… × …% = $… budget | used $… | remaining $… ÷ N free slot(s) (window combined cap M) = $…/position`.
+> **Log line**: watch for `¤ PAPER sizing: equity $… × …% = $… budget | used $… | remaining $… ÷ N free slot(s) (window combined cap M) = $…/position`.
 
 The dashboard's **Paper Balance** KPI tile surfaces equity, allocated, buffer, and per-position margin (`KpiDashboard.jsx`); the engine also publishes these via the heartbeat.
 
@@ -733,11 +735,15 @@ A Control Panel toggle (**Replace Closer to ATM → Replace Farther Pair**, `rep
 - **Which pair can go**: a call **or** a put pair — a put can make room for a call and vice versa — except when the **per-type cap** is what blocks the new spread: then only a pair of the same type frees that slot. It must be a full pair (short still open), whose **long strike is farther from spot** than the new spread's long strike. Among several, the farthest goes first.
 - **Cashflow > 0**: that pair's premium received on the short minus premium paid on the long and the hedge, on the legs' current quantities (`entrySellPrice × sellQty × short lot − entryBuyPrice × long lot − hedge entry × hedge lot`).
 - **Account unrealized P&L > that cashflow**: the total unrealized P&L of **every** open position (long at bid, short at ask, hedge at bid — the exit loop's prices) must be positive and larger than the pair's cashflow. If any open position is unquoted the total is unknown and nothing is replaced that cycle.
-- **Safe swap**: the old pair is only set aside while the new spread runs the remaining entry checks (expiry, strike conflict, hedge, governor…). Only when the new spread is actually staged is the old pair exited — booked like any strategy exit with `exit_reason = 'Replaced (closer-to-ATM spread)'` (its hedge as a `-HX` row) — and its margin goes back to the pool to size the new one. If the new spread fails a later check, the old pair stays.
+- **Safe swap**: the old pair is only set aside while the new spread runs the remaining entry checks (expiry, strike conflict, hedge, governor…). Only when the new spread is actually staged is the old pair exited — booked like any strategy exit with `exit_reason = 'Replace Farther Pair → <TYPE> <long>/<short>'` naming the new spread (its hedge as a `-HX` row, `Hedge Exit (Replace Farther Pair)`); Trade History shows these with their own pink badge. Before 2026-10-28 the reason was `Replaced (closer-to-ATM spread)`, which the history badge filed under ATM exits — and its margin goes back to the pool to size the new one. If the new spread fails a later check, the old pair stays.
 - **As many as qualify** per cycle; after each swap the replaced pair's unrealized P&L is taken out of the account total for the next check.
 
 > [!NOTE]
 > **Log lines**: `⇆ Closer-ATM replace candidate (margin full | per-type cap full | combined cap full): CALL 83000/84000 could replace T… (82000/83400, 1150 from spot) — cashflow $… < account unrealized $…` and `⇆ PAPER closer-ATM REPLACE: exiting … → entering ….`
+
+### 6. Account Max SL (paper only — migration 066)
+
+Control Panel → **Account Stop Loss → Max SL** (`max_sl_pct`, default **20**, 0 = off; hidden on live accounts and ignored by the engine there). Every tick, before exits and entries, `checkAccountMaxSl()` sums the account's unrealized gross P&L — long @ bid, short @ ask, hedge @ bid, plus each position's booked partial short P&L (the dashboard's *unrl.* figure, fees excluded) — and compares it with −(paper balance × Max SL %), paper balance = `initial_balance` + realized P&L (`getPaperEquity`). At or below the limit, **every** open position is closed through `manualExitPosition(pos, { exitReason: 'Max SL Exit' })` and a 🛑 MAX SL HIT message is sent. Example: balance $2,000 at 20% → close all at −$400 unrealized. The account is **not** paused, so entries continue on the next minute. The check is skipped for a tick when any held leg is unquoted.
 
 ## Cross-Account Entry Governor (Paper + Live)
 
@@ -841,7 +847,7 @@ For each position, the engine walks through this **priority tree** from top to b
 │                                                          │
 │  3. Long-only laddered exit? (long-only positions)       │
 │     → Exit 1/10 of the long per crossed BID level        │
-│       (10 equidistant: current bid → max(entry,2hr-hi))   │
+│       (10 equidistant: current bid → max(entry,4hr-hi))   │
 │                                                          │
 │  4. Partial Exit / Scaling? (full spreads only)          │
 │     → Scale down buy leg if profitable                   │
@@ -1060,7 +1066,7 @@ The first level (10) exits immediately when the ladder is created.
 5. **Catch-all still applies**: if levels aren't reached, the remaining long still exits via **expiry** or the **ATM/ITM/OTM Full Exit** (spot crossing the buy strike). A partial slice this cycle falls through to those checks for the remaining lot.
 
 > [!NOTE]
-> The level **range top is `max(entry, last 1-2hr high)`** (Delta candles, with entry as fallback). When the recent high is above entry, the ladder books **profit on the long leg** up to that high; when it's below entry, the top caps at entry (loss-recovery only). Either way the short leg's buy-back already booked the bulk of the trade's profit. Both the slice **trigger** and the **exit price** are the long's live **bid** (`liveExitBuy`) — they are the same value.
+> The level **range top is `max(entry, last 4hr high)`** (Delta candles, with entry as fallback). When the recent high is above entry, the ladder books **profit on the long leg** up to that high; when it's below entry, the top caps at entry (loss-recovery only). Either way the short leg's buy-back already booked the bulk of the trade's profit. Both the slice **trigger** and the **exit price** are the long's live **bid** (`liveExitBuy`) — they are the same value.
 
 ---
 
@@ -1170,7 +1176,7 @@ Here's every safety guard in one table:
 | Scaling floor (50%) | `paperTradingEngine.js` | Buy lot size can never go below 50% of initial (full-spread scaling only) |
 | Scaling ATM ratio guard | `paperTradingEngine.js` | Live ATM ratio must justify the lot reduction (full-spread scaling only) |
 | Short-leg exit trigger | `paperTradingEngine.js` | Short leg bought back when its live ask `≤ 1.1` (gap-safe, fires once); long leg held |
-| Long-only ladder | `paperTradingEngine.js` | Held long scaled out in 10 slices at 10 **equidistant bid** levels spanning [current bid, max(entry, last 2hr high)]; trigger and exit price are both the bid |
+| Long-only ladder | `paperTradingEngine.js` | Held long scaled out at fixed bid levels — **constant mode** (default): 5 levels `[10,20,30,40,50]` if bid < 25, else `[25,50,75,100,125]`; **variable mode**: `longExitSlices` (10) **equidistant bid** levels spanning [current bid, max(entry, last 4hr high)]. Trigger and exit price are both the bid. Armed live always uses the constant ladder. |
 | `lastDbWrite` cooldown (3s) | `paperTradingEngine.js` | Skips position refetch for 3s after a DB write |
 | Heartbeat timer delete | `paperTradingEngine.js` / `heartbeat.js` | Clears interval timer and deletes the DB row on account deletion to prevent zombie row resurrection |
 | Single-engine-per-account guard | `paperTradingEngine.js` | `startingEngines` set reserves an account synchronously before the async start, so a concurrent trigger can't spawn a second (zombie) evaluator |
@@ -1300,7 +1306,7 @@ The following parameters are scheduled per window:
 13. **Exit Points** — *Exit Pts* (`exitPoints`) — offset for ITM/OTM exit (migration `012`). In an [account group](#account-groups-migration-050) each member other than the one saved from gets a random ±10–50 on top (migrations `053`/`054`).
 14. **SL/TP Diff (pts)** — label *SL/TP Pts* (`slTpDecoyDiff`) — per-window SL/TP decoy trigger offset (migration `031`)
 15. **Short Exit Price / Variable Ladder** — *Short Exit*, *Var.*, *Slices* (`shortExitPrice`, `variableExitSlices`, `longExitSlices`) — per-window exit ladder controls (migration `033`)
-16. **Days to Expiry** — *Min DTE* (`daysToExpiry`) — **v2 (experimental paper) accounts only** (migration `019`). The window's value guards its own entries; the account-global traded expiry **follows the active window** as **(current date + that window's DTE)**, re-selected in ~realtime as windows change (smallest DTE wins on overlap). On v1 (live) this stays an account-level Control Panel field and is **not** shown per window. See [Strategy Versioning](#strategy-versioning-paper-vs-live).
+16. **Days to Expiry** — *Min DTE* (`daysToExpiry`; paper: **7** = weekly Friday expiry, **30** = monthly last-Friday expiry, see Product Refresh & Expiry Rollover) — **all accounts, paper and live** (migration `019`). The window's value guards its own entries; the account-global traded expiry **follows the active window** as **(current date + that window's DTE)**, re-selected in ~realtime as windows change (smallest DTE wins on overlap). See [Strategy Versioning](#strategy-versioning-paper-vs-live).
 17. **Hedge Leg** (`hedgeEnabled` + `hedgeLotPct`) — **paper v2 and live accounts** (off by default) (config migration `041`, leg column `023`). Adds a per-spread 3rd long-only leg (long/short/long triplet). See [Hedge Leg](#hedge-leg--per-spread-3rd-long-long--short--long-triplet).
 
 18. **Shared Long Strikes** (`sharedLongStrikes`, default `0` = off) — **v2 (experimental paper) accounts only** (migration `044`). See [Shared Long Strikes](#shared-long-strikes-paper-v2).
@@ -1674,7 +1680,7 @@ flowchart TD
 | Zombie threshold | 10 minutes | Past expiry, use expiry time as exit time |
 | Max **full-spread** positions | Configurable | Combined cap `maxCombinedPositions` (default: 4) + derived per-type cap `ceil(split% × maxCombined)`, all accounts; held long-only positions excluded |
 | Short-leg exit trigger | ask ≤ 1.1 | Short leg's live ask `≤ 1.1` → buy back short, hold long (gap-safe, once per position) |
-| Long-only exit levels | 10 equidistant | Evenly-spaced **bid** levels in [current bid, max(entry, last 2hr high)]; exit 1/10 long per crossed level (bid-triggered) |
+| Long-only exit levels | 5 fixed (constant) / 10 equidistant (variable) | Constant (default): `[10,20,30,40,50]` if bid < 25 else `[25,50,75,100,125]`. Variable: evenly-spaced **bid** levels in [current bid, max(entry, last 4hr high)], 1/10 long per crossed level. Bid-triggered; armed live always uses constant |
 | $195K cap | $195,000 | Max short notional value — same for every underlying |
 | Short-leg leverage | DTE 0/1: BTC 200× · ETH 100×; farther expiries: 100× | `leverageFor(underlying, expiry)`; divides the (capped) short notional to give its margin. DTE 0/1 = under 48h to the 17:30 IST settlement |
 | Scaling step | 10% (Lot Step, configurable) | Lot size reduction per scaling event (full spreads only) |
@@ -1684,7 +1690,7 @@ flowchart TD
 | ATM ROI minimum (`minAtmRoi`) | 2% (configurable, paper) | Min simulated ATM ROI for entry; applied flat. Live ignores it |
 | ATM strike tolerance (BTC) | 1000 points | Bracket-and-average tolerance per side when a target strike is unlisted or its quote is stale |
 | ATM strike tolerance (ETH) | 50 points | Bracket-and-average tolerance per side when a target strike is unlisted or its quote is stale |
-| Evaluation hang limit | 60 seconds | Max duration evaluation can run before process is restarted |
+| Evaluation hang limit | 60 seconds | Max duration a cycle can run before it is fenced and a fresh cycle takes over **for that account only** (no process restart; Telegram alert) |
 | Days to Expiry | User configured | Minimum days to expiry required for new spreads |
 | Exit Type | ATM | Default option exit type parameter (`ATM`, `ITM`, or `OTM`) |
 | Exit Points | 0 | Default points distance threshold for ITM/OTM exits |

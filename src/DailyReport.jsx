@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { RefreshCw, Download, FileSpreadsheet, CalendarDays, Columns3 } from 'lucide-react';
 import Navbar from './components/PaperTrading/Navbar';
 import ReportAccountPicker from './components/DailyReport/ReportAccountPicker';
+import ReportGroupsModal from './components/DailyReport/ReportGroupsModal';
 import { DailyPnlChart, CumulativePnlChart } from './components/DailyReport/ReportCharts';
 import { supabase } from './supabase';
 import { exportCsv, exportXlsx } from './exportTable';
@@ -202,8 +203,42 @@ export default function DailyReport({ onNavigate, theme, toggleTheme, active }) 
       });
   }, [session]);
 
-  const nameGroups = useMemo(() => buildNameGroups(accounts), [accounts]);
+  // The user's own report groups (report_account_groups, migration 067); null = none saved,
+  // so the automatic name groups apply. Ids of accounts no longer listed are skipped.
+  const [savedGroups, setSavedGroups] = useState(null);
+  const [editingGroups, setEditingGroups] = useState(false);
+  useEffect(() => {
+    if (!session) return;
+    supabase.from('report_account_groups').select('groups').eq('user_id', session.user.id).maybeSingle()
+      .then(({ data, error: e }) => { if (!e) setSavedGroups(Array.isArray(data?.groups) ? data.groups : null); });
+  }, [session]);
+  const nameGroups = useMemo(() => {
+    if (!savedGroups) return buildNameGroups(accounts);
+    const nameById = new Map(accounts.map(a => [a.id, a.name]));
+    return savedGroups
+      .map(g => {
+        const ids = (g.ids || []).filter(id => nameById.has(id));
+        return { key: `group:${g.id}`, label: g.label, ids, names: ids.map(id => nameById.get(id)) };
+      })
+      .filter(g => g.ids.length > 1);
+  }, [accounts, savedGroups]);
   const selectedGroup = nameGroups.find(g => g.key === accountId) ?? null;
+
+  // A selected group that the edit removed falls back to all accounts.
+  const leaveRemovedGroup = (keys) => setAccountId(id => (id.startsWith('group:') && !keys.includes(id) ? 'all' : id));
+  const saveReportGroups = async (list) => {
+    const { error: e } = await supabase.from('report_account_groups')
+      .upsert({ user_id: session.user.id, groups: list, updated_at: new Date().toISOString() });
+    if (e) throw new Error(`Couldn't save groups: ${e.message}`);
+    setSavedGroups(list);
+    leaveRemovedGroup(list.map(g => `group:${g.id}`));
+  };
+  const resetReportGroups = async () => {
+    const { error: e } = await supabase.from('report_account_groups').delete().eq('user_id', session.user.id);
+    if (e) throw new Error(`Couldn't reset groups: ${e.message}`);
+    setSavedGroups(null);
+    leaveRemovedGroup(buildNameGroups(accounts).map(g => g.key));
+  };
 
   const fetchRows = useCallback(async () => {
     const ids = accountId === 'all' ? accounts.map(a => a.id)
@@ -390,7 +425,8 @@ export default function DailyReport({ onNavigate, theme, toggleTheme, active }) 
               <div className="dr-filters">
                 <div className="dr-field">
                   <span>Account</span>
-                  <ReportAccountPicker accounts={accounts} groups={nameGroups} value={accountId} onChange={setAccountId} />
+                  <ReportAccountPicker accounts={accounts} groups={nameGroups} value={accountId} onChange={setAccountId}
+                    onEditGroups={() => setEditingGroups(true)} />
                 </div>
                 <div className="dr-field">
                   <span>Range</span>
@@ -426,6 +462,11 @@ export default function DailyReport({ onNavigate, theme, toggleTheme, active }) 
             </div>
 
             {error && <div className="dr-error">{error}</div>}
+
+            {editingGroups && (
+              <ReportGroupsModal accounts={accounts} groups={nameGroups} isCustom={savedGroups != null}
+                onSave={saveReportGroups} onReset={resetReportGroups} onClose={() => setEditingGroups(false)} />
+            )}
 
             {hasData && (
               <div className="dr-summary">

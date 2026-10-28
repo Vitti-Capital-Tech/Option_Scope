@@ -2506,6 +2506,13 @@ body.light-theme .scanner-logs-body::-webkit-scrollbar-thumb:hover {
   border: 1px solid rgba(255, 152, 0, 0.2);
 }
 
+/* Paper "Replace Farther Pair" exits (migration 059). */
+.pt-exit-badge.replace {
+  color: #ec4899;
+  background: rgba(236, 72, 153, 0.08);
+  border: 1px solid rgba(236, 72, 153, 0.2);
+}
+
 /* ── History stat line ───────────────────────────────── */
 .pt-history-stats {
   display: flex;
@@ -6559,6 +6566,12 @@ body.light-theme .pt-btn-apply.active {
 
 .dr-account-picker .account-dropdown-menu {
   max-width: calc(100vw - 32px);
+}
+
+.dr-account-picker .dr-edit-groups {
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 12px;
 }
 
 .dr-group-badge {

@@ -107,11 +107,12 @@ Rows carry `day_basis` (migration 049): `'utc'` for Delta's day, `'ist1730'` for
 
 ### Daily Report tab (`src/DailyReport.jsx`)
 
-- **Filters** — account (*All live accounts* or one), From / To dates, and **7D / 30D / 90D / MTD / YTD** presets (the matching preset is highlighted). Data refreshes every minute while the tab is open.
+- **Filters** — account (*All live accounts*, a report group, or one), From / To dates, and **7D / 30D / 90D / MTD / YTD** presets (the matching preset is highlighted). Data refreshes every minute while the tab is open.
 - **Summary** — net P&L for the range with return % (total net ÷ each account's first opening balance + Σ `net_deposits`) and realized − fees; up / down days and win rate (days with net P&L > 0 vs < 0), average day, best and worst day, **max drawdown** (largest fall of cumulative daily net P&L from its high in the range), fees paid on Delta as % of realized, peak margin used (highest day, % and date), and the current / ending balance (Σ each account's latest `closing_balance`) with net deposits.
 - **Charts** (`src/components/DailyReport/ReportCharts.jsx`) — *Daily net P&L* (columns above / below zero) and *Cumulative net P&L* (running total; deposits / withdrawals excluded), with hover tooltips.
 - **All live accounts = one combined row per day.** Amounts (balances, deposits, realized, fees, net, unrealized, exits) are summed; return = combined net ÷ Σ per-account bases (opening + max(0, deposits), as the engine computes it); max margin = Σ each account's own peak that day — an upper bound, since peaks may not coincide — and its % is against the summed balances at those peaks; max-margin time is blank; status shows the least-final one (*In progress* > *Not final* > *Backfilled* > *Final*); *est.* carries through if any account's figure was estimated. A **Combined / Per account** toggle on the table switches back to individual rows, and a **By account** table compares accounts (balance, deposits, net P&L, return, share of total P&L, fees, up / down days, best / worst day, drawdown, exits) — clicking a row opens that account. The summary always comes from the per-account rows, so its return matches either view.
 - **Table** — the **Realized P&L ($)** column (rows, *est.* rows and total) is plain text, not red/green; Net P&L, Return and Deposits keep their colour. Engine fee estimate, unrealized at close and max-margin time are hidden behind **More columns**; today's in-progress row is highlighted; the totals row follows the visible columns. CSV / Excel exports mirror the current rows (combined or per account) and always include every column. The calculation notes are under a collapsible *How these numbers are calculated*.
+- **Report groups** (`src/components/DailyReport/ReportAccountPicker.jsx`, `ReportGroupsModal.jsx`) — the account picker lists *All live accounts*, then groups, then ungrouped accounts (styled like the Live Trading leader/follower dropdown: a group row combines its members, its ▸ expands them, a member opens alone). By default a group = accounts whose names differ only by a trailing number, ignoring case, spaces and punctuation (`buildNameGroups`: Shubham / Shubham2, JD Algo / JD algo2 / JDalgo3). **Edit groups** (bottom of the picker) opens a dialog to rename groups, add / remove accounts (an account sits in one group; adding moves it), create or delete groups, or *Reset to automatic*. Saved per user in `report_account_groups` (migration `067`, one row per user, `groups` = `[{ id, label, ids }]`, RLS: own row only); no row = the automatic groups. A selected group combines exactly like *All live accounts*. Reporting only — trading Account Groups are untouched.
 
 ## Credential storage & security model
 
@@ -244,7 +245,7 @@ leg + stage (idempotency).
 **Safety layer**
 
 - `DELTA_LIVE_DRYRUN` (default **true**): intended orders are logged (`🧪 DRY-RUN…`)
-  but never sent.
+  but never sent. Since 2026-10-06 a live account opens **no entries** while disarmed or in dry-run (see *No simulation on live accounts*); dry-run only logs the closing orders of positions already open.
 - Per-account `live_enabled` kill-switch (schema + UI).
 - Missing service_role key or missing credentials ⇒ live trading disabled; paper
   trading unaffected.
@@ -480,10 +481,11 @@ scaled). Delta orders take an **integer number of contracts**. The current mappi
 (≈1 contract per long unit, rounded `sellQty` for the short) and rounds fractional
 scale-downs up to a minimum of 1 contract.
 
-**Before arming any account:** run in dry-run and confirm the logged `size` on each
-`🧪 DRY-RUN` line matches the real contract quantity you intend to trade. If your
-intended sizing differs (e.g. you trade fixed contract counts), the mapping needs to
-be adjusted to your convention first.
+**Before scaling up an account:** dry-run no longer opens live entries (see *No simulation on
+live accounts*), so validate the contract size on the first **armed** entries with a small
+allocation and Max Pos 1–2: check that the quantity Delta shows matches what you intend to
+trade. If your intended sizing differs (e.g. you trade fixed contract counts), the mapping
+needs to be adjusted to your convention first.
 
 ### Live exit model — two paths
 
@@ -769,7 +771,7 @@ qty)`**:
 - `longC` is capped to `maxLong` (min 1), `shortC` re-derived from it, with a final clamp
   so integer rounding can't push the short notional back over the cap.
 - Balance funds **less** than the cap → the balance size wins unchanged. Balance funds
-  **more** → the cap wins (logged `🧢 LIVE qty capped by ratio-spread max …: long X → Y`).
+  **more** → the cap wins (logged `⌃ LIVE qty capped by ratio-spread max …: long X → Y`).
 
 **Minimum one unit:** if even one unit's margin exceeds the part, `scale` stays `1` and the engine trades that single unit (warning `LIVE size: one unit … exceeds 1 part …`). The `$195k` clamp still applies. **Exception:** if that one unit doesn't fit in Delta's free margin above the reserve, the entry is **skipped** (`LIVE entry … skipped: even 1 unit needs ~$… margin …`), because Delta would reject the short after the long had already filled.
 
@@ -833,10 +835,11 @@ qty)`**:
 
 Paper accounts keep the `$195k` / 200× branch **unchanged** (the balance-sizing branch is
 gated on `mode==='live' && live_enabled`; only live adds the balance scale on top of the
-shared `$195k` notional ceiling). Dry-run logs the full breakdown
-(`💰 LIVE size <TYPE> <buy>/<sell>: unit margin $… | part $… → scale …× | long … short …
-(base 1:…) | est margin $… | cv …/…`) so the numbers — especially that the contract sizes
-and margins match Delta's actual figures — **must be validated before arming**.
+shared `$195k` notional ceiling). Each sizing cycle logs `¤ LIVE sizing: balance $… × …% =
+$… budget | used $… | remaining $… ÷ N free slot(s) … = $…/position` (plus `⤵ LIVE size … fitted
+to Delta's available margin` when the order is cut down). Dry-run opens no live entries, so
+validate that the contract sizes and margins match Delta's figures on the first armed entries
+with a small allocation.
 
 ### Account controls — Start / Pause (live only)
 
@@ -1082,6 +1085,13 @@ The Control Panel's **Excluded Strikes** filter (migration 040, `paper_trading_c
 leg (long or short) lands on them. Open positions on an excluded strike are untouched, and ATM / intrinsic pricing still
 reads the full chain. The per-minute `Evaluating N candidate spreads…` log lists the active exclusions. Shared by account
 groups like the other filters.
+
+**Per expiry (2026-10-28).** Each entry is stored as `{ strike, expiry }` (the expiry's `settlement_time`), so a strike
+excluded on today's chain is open again on the next expiry. The filter has its own **Expiry** dropdown (any listed
+expiry, the traded one marked *(traded)*) feeding the chain picker; manual entry was removed. The engine applies only the
+entries of `config.expiry` (`excludedStrikesFor`), and entries of a settled expiry are dropped on load / save
+(`normalizeExcludedStrikes`). Bare numbers saved before this change still apply to **every** expiry (chip
+"all expiries") until removed. No migration: the column is already JSONB.
 
 ### No simulation on live accounts (2026-10-06)
 
@@ -1555,7 +1565,7 @@ live and a paper account chasing the same book contend with each other.
 >   positions can't be read, the entry is skipped (can't verify). For a leg swap the check runs **before** the old
 >   long-only is closed and ignores that long's symbol (see [Leg swap](#leg-swap-replacing-a-long-only-2026-10-21)).
 > - **Rejection by reason.** Margin rejections (`insufficient_margin` / `insufficient_commission`) re-size to Delta's
->   available balance and retry (after 3 in a row, live entries pause 10 min) — unchanged. **Any other** Delta rejection
+>   available balance and retry (after 2 in a row, `LIVE_MARGIN_MAX_RESIZE_RETRIES`, live entries pause 10 min) — unchanged. **Any other** Delta rejection
 >   (e.g. `bracket_order_position_exists`) blocks that symbol for `LIVE_REJECT_BLOCK_MS` (default 30 min) and alerts the
 >   master via the error channel. Local refusals (`no-price`, `no-credentials`) don't block.
 >
@@ -1883,17 +1893,16 @@ forwards the signed headers unchanged, so the browser's HMAC stays valid.
 
 1. Set `SUPABASE_SERVICE_ROLE_KEY` in the engine env; keep `DELTA_LIVE_DRYRUN=true`.
 2. Restart the engine; confirm the log shows `Delta credentials loaded … Dry-run: ON`.
-3. Let it run in dry-run; watch the `🧪 DRY-RUN live order` lines at real entry/exit
-   events and validate sides, symbols, prices, and **sizes**. Note: dry-run uses the
-   **active** exit model, so this validates entry sizing but **not** the resting-order
-   exit flow (that needs a real exchange — step 4).
+3. Let it run in dry-run to check the engine starts cleanly and the accounts load. Since
+   2026-10-06 a live account opens **no entries** in dry-run (see *No simulation on live
+   accounts*), so entry sizing and the resting-order exit flow are validated in step 4.
 4. When satisfied, set `DELTA_LIVE_DRYRUN=false`, restart, and arm a single account
    (`live_enabled = true`) with **tiny** size. On the first entry, verify in the
    dashboard (or Delta directly):
-   - **Sizing:** the `💰 LIVE size …` log shows the `unit margin`, `part`, and `scale`,
-     with the scaled `long`/`short` holding the ratio and the margins matching Delta's real
-     figures (not 1000× off); if balance is large, confirm the `🧢 … capped by ratio-spread
-     max` line keeps the short notional ≤ `$195k`.
+   - **Sizing:** the `¤ LIVE sizing: …` log shows the balance, budget, used margin and the
+     per-position part; check the long/short contracts hold the ratio and the margins match
+     Delta's real figures (not 1000× off). If balance is large, confirm the `⌃ LIVE qty
+     capped by ratio-spread max` line keeps the short notional ≤ `$195k`.
    - **Open Orders:** the resting short buy-back `@ shortExitPrice` (`-SEX`).
    - **Positions/Stop Orders:** the long-TP and short-SL **brackets** at the exit
      level. Confirm the **PUT bracket does not fire immediately** on entry, and that

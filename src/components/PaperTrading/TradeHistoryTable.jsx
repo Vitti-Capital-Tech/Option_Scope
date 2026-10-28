@@ -57,6 +57,7 @@ export default function TradeHistoryTable({
   );
 
   const exitBadgeClass = (reason) => {
+    if (reason?.startsWith('Replace Farther Pair')) return 'replace';
     if (reason?.includes('Manual')) return 'manual';
     if (reason?.includes('Top 3')) return 'position';
     if (reason?.includes('ITM')) return 'itm';

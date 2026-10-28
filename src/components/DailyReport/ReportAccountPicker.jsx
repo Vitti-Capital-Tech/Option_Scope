@@ -1,11 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Check, ChevronDown, ChevronRight, Columns, CornerDownRight, Layers, Users } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Columns, CornerDownRight, Layers, Pencil, Users } from 'lucide-react';
 
 // Daily Report account picker, styled like the Live Trading account dropdown
 // (AccountSelectorStrip): "All live accounts", then each name group as one row whose members
 // expand underneath, then the accounts that are in no group. Picking a group row combines its
 // members; picking a member opens that account alone.
-export default function ReportAccountPicker({ accounts, groups, value, onChange }) {
+export default function ReportAccountPicker({ accounts, groups, value, onChange, onEditGroups }) {
   const [isOpen, setIsOpen] = useState(false);
   const [expanded, setExpanded] = useState(() => new Set());
   const ref = useRef(null);
@@ -95,6 +95,15 @@ export default function ReportAccountPicker({ accounts, groups, value, onChange 
             })}
             {ungrouped.map(a => item(a.id, a.id, <Columns className="account-dropdown-item-icon" size={14} strokeWidth={2.5} />, a.name))}
           </div>
+          {onEditGroups && (
+            <button type="button" className="account-dropdown-item dr-edit-groups"
+              onClick={() => { setIsOpen(false); onEditGroups(); }}>
+              <div className="account-dropdown-item-left">
+                <Pencil className="account-dropdown-item-icon" size={13} strokeWidth={2.5} />
+                <span>Edit groups</span>
+              </div>
+            </button>
+          )}
         </div>
       )}
     </div>

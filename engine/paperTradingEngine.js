@@ -6593,7 +6593,10 @@ async function startSingleAccountEngine(account) {
         // Book every committed closer-to-ATM replacement (059) as a regular strategy exit:
         // hedge leg as its own -HX row now, the pair via `exited` (Process exits below).
         for (const { victim: pos, entry } of rotateCommits) {
-          const exitReason = 'Replaced (closer-to-ATM spread)';
+          // Named after the Control Panel toggle ("Replace Farther Pair") and naming the spread
+          // that took its place, so a replacement is easy to find in Trade History. It must not
+          // contain "ATM": the history badge would then file it under ATM exits.
+          const exitReason = `Replace Farther Pair → ${String(entry.type || '').toUpperCase()} ${entry.buyLeg?.strike}/${entry.sellLeg?.strike}`;
           const latestBuy = (pos.buyLeg?.lotSize || 0) > 0 ? (rotateBid(pos.buyLeg.symbol) ?? pos.entryBuyPrice) : null;
           const latestSell = (pos.sellQty || 0) > 0 ? (rotateAsk(pos.sellLeg.symbol) ?? pos.entrySellPrice) : null;
           if (hasOpenHedge(pos)) {
@@ -6614,7 +6617,7 @@ async function startSingleAccountEngine(account) {
                 exit_buy_price: hedgeBid, exit_sell_price: null, exit_spot_price: spotPrice,
                 realized_gross_pnl: hedgeGrossPnl, realized_net_pnl: hedgeGrossPnl - hedgeEntryFee - hedgeExitFee,
                 exit_fee: hedgeExitFee, total_fees: hedgeEntryFee + hedgeExitFee,
-                exit_reason: 'Hedge Exit (replaced, closer-to-ATM)', is_partial: true, lot_size: hedge.lotSize,
+                exit_reason: 'Hedge Exit (Replace Farther Pair)', is_partial: true, lot_size: hedge.lotSize,
                 account_id: accountState.id,
               }], { onConflict: 'trade_id', ignoreDuplicates: true });
             } catch (e) { logError(`[${accountState.name}] Failed to book hedge exit for replaced ${pos.id}:`, e); }

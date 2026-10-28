@@ -3049,10 +3049,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       .join(',');
   }, [positions, underlying]);
 
-  // Strikes listed on the traded expiry — the pick list for the Excluded Strikes filter.
-  const chainStrikes = React.useMemo(
-    () => (selExpiry && products.length ? getStrikes(products, selExpiry) : []),
-    [products, selExpiry]
+  // Strikes listed on any expiry — the pick list for the Excluded Strikes filter.
+  const strikesForExpiry = useCallback(
+    (exp) => (exp && products.length ? getStrikes(products, exp) : []),
+    [products]
   );
 
   const getSymbolMeta = useCallback(() => {
@@ -3637,7 +3637,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
               isDefaultConfig={isDefaultConfig}
               handleResetFilters={handleResetFilters}
               spotPrice={spotPrice}
-              chainStrikes={chainStrikes}
+              allExpiries={expiries}
+              strikesForExpiry={strikesForExpiry}
               schedules={schedules}
               setSchedules={setSchedules}
               isSavingSchedules={isSavingSchedules}

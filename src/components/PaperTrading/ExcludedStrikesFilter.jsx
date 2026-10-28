@@ -2,19 +2,34 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { ChevronDown, Check, X } from 'lucide-react';
 import { fmtExpiry } from '../../api';
 import { normalizeExcludedStrikes } from '../../scannerUtils';
+import CustomSelect from '../common/CustomSelect';
 
 /**
- * Excluded Strikes (migration 040) — paper AND live. Strikes are picked from the current
- * expiry's chain and each is stored with that expiry ({ strike, expiry }), so the engine
- * skips it on that expiry only and the entry drops off once the expiry settles. Entries
- * with no expiry (saved before this change) still apply to every expiry until removed.
+ * Excluded Strikes (migration 040) — paper AND live. Pick any listed expiry, then strikes
+ * from its chain; each is stored with that expiry ({ strike, expiry }), so the engine skips
+ * it only while that expiry is the traded one, and the entry drops off once it settles.
+ * Entries with no expiry (saved before this change) still apply to every expiry until removed.
+ *
+ * `expiry` = the account's traded expiry (the picker's default); `expiries` = every listed
+ * expiry; `strikesForExpiry(exp)` = that expiry's strikes.
  */
-export default function ExcludedStrikesFilter({ value, onChange, chainStrikes = [], expiry, spotPrice }) {
+export default function ExcludedStrikesFilter({ value, onChange, expiry, expiries = [], strikesForExpiry, spotPrice }) {
   const entries = useMemo(() => normalizeExcludedStrikes(value), [value]);
+
+  // Listed expiries (live products only), and the one the picker shows — the traded one
+  // until another is chosen.
+  const liveExpiries = expiries;
+  const [pickedExpiry, setPickedExpiry] = useState(null);
+  const pickExpiry = pickedExpiry && liveExpiries.includes(pickedExpiry) ? pickedExpiry : expiry;
+  const chainStrikes = useMemo(
+    () => (pickExpiry && strikesForExpiry ? strikesForExpiry(pickExpiry) : []),
+    [pickExpiry, strikesForExpiry]
+  );
+
   // Strikes excluded on the expiry whose chain the picker shows.
   const selectedSet = useMemo(
-    () => new Set(entries.filter(e => e.expiry === expiry).map(e => e.strike)),
-    [entries, expiry]
+    () => new Set(entries.filter(e => e.expiry === pickExpiry).map(e => e.strike)),
+    [entries, pickExpiry]
   );
 
   const [isOpen, setIsOpen] = useState(false);
@@ -73,10 +88,10 @@ export default function ExcludedStrikesFilter({ value, onChange, chainStrikes = 
   }, [isOpen, search]);
 
   const toggleStrike = (strike) => {
-    if (!expiry) return;
+    if (!pickExpiry) return;
     const next = selectedSet.has(strike)
-      ? entries.filter(e => !(e.expiry === expiry && e.strike === strike))
-      : [...entries, { strike, expiry }];
+      ? entries.filter(e => !(e.expiry === pickExpiry && e.strike === strike))
+      : [...entries, { strike, expiry: pickExpiry }];
     onChange(normalizeExcludedStrikes(next));
   };
 
@@ -89,6 +104,18 @@ export default function ExcludedStrikesFilter({ value, onChange, chainStrikes = 
   return (
     <div className="pt-excl-strikes">
       <div className="pt-cluster-fields">
+        <div className="form-group">
+          <label className="pt-field-label" style={{ marginBottom: 0 }}>Expiry</label>
+          <CustomSelect
+            value={pickExpiry}
+            onChange={exp => { setPickedExpiry(exp); setSearch(''); setIsOpen(false); }}
+            disabled={!liveExpiries.length}
+            options={liveExpiries.length
+              ? liveExpiries.map(e => ({ label: `${fmtExpiry(e)}${e === expiry ? ' (traded)' : ''}`, value: e }))
+              : [{ label: 'Loading...', value: pickExpiry }]}
+            style={{ width: 160 }}
+          />
+        </div>
         <div className="form-group">
           <label className="pt-field-label" style={{ marginBottom: 0 }}>Pick From Chain</label>
           <div
@@ -120,8 +147,8 @@ export default function ExcludedStrikesFilter({ value, onChange, chainStrikes = 
       {entries.length > 0 && (
         <div className="pt-excl-chips">
           {entries.map(entry => {
-            // Excluded on another expiry (or, from before this change, on every expiry):
-            // shown dimmed — it does not apply to the chain on screen.
+            // Not on the traded expiry (or, from before this change, on every expiry): shown
+            // dimmed — it waits until its expiry is the traded one.
             const otherExpiry = entry.expiry !== expiry;
             const label = entry.expiry ? fmtExpiry(entry.expiry) : 'all expiries';
             return (
@@ -129,7 +156,7 @@ export default function ExcludedStrikesFilter({ value, onChange, chainStrikes = 
                 key={`${entry.expiry ?? ''}|${entry.strike}`}
                 className={`pt-excl-chip ${otherExpiry ? 'off-chain' : ''}`}
                 title={entry.expiry
-                  ? `Excluded on the ${label} expiry only${otherExpiry ? ' — not the expiry shown' : ''}`
+                  ? `Excluded on the ${label} expiry only${otherExpiry ? ' — applies once that expiry is traded' : ''}`
                   : 'Saved before strikes were tied to an expiry — applies to every expiry until removed'}
               >
                 {entry.strike.toLocaleString()} <span className="pt-excl-chip-exp">· {label}</span>
