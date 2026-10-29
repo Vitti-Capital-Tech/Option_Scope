@@ -128,17 +128,33 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
   }, [underlying, selExpiry, broadcastScannerTopSpreads, pickTopUniqueStrikes]);
 
 
+  // Underlying the latest product load is for — a slow response for the previous underlying
+  // must not overwrite the new one's expiries.
+  const underlyingRef = useRef(underlying);
+  // Declared before the product-load effect below, so it runs first on an underlying change.
+  useEffect(() => { underlyingRef.current = underlying; }, [underlying]);
+  // Expiry a saved setting asked for, applied once that underlying's expiries are loaded.
+  const pendingExpiryRef = useRef(null);
+
   const refreshProducts = useCallback(async () => {
+    const forUnderlying = underlying;
     try {
-      const prods = await loadProducts(underlying);
+      const prods = await loadProducts(forUnderlying);
+      if (underlyingRef.current !== forUnderlying) return;
       setProducts(prods);
       const exps = getExpiries(prods);
       setExpiries(exps);
-      if (exps.length && (!selExpiry || !exps.includes(selExpiry))) {
-        setSelExpiry(exps[0]);
-      }
+      if (!exps.length) return;
+      // Functional update: read the CURRENT selection. The closure's value was stale right
+      // after an underlying switch (it still held the old underlying's expiry, which is
+      // usually also listed for the new one — same daily dates — so nothing got selected).
+      const wanted = pendingExpiryRef.current;
+      pendingExpiryRef.current = null;
+      setSelExpiry(cur => (wanted && exps.includes(wanted)) ? wanted
+        : (cur && exps.includes(cur)) ? cur
+        : exps[0]);
     } catch (e) { console.error('Failed to load products:', e); }
-  }, [underlying, selExpiry]);
+  }, [underlying]);
 
   // ── Load products on underlying change ──────────────────────────────────
   useEffect(() => {
@@ -635,6 +651,20 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
     broadcastScannerTopSpreads(payload);
   }, [underlying, selExpiry, broadcastScannerTopSpreads]);
 
+  // A saved setting carries the underlying + expiry it was saved on: open that market.
+  // A different underlying reloads its expiries and picks `exp` once they arrive (else
+  // the nearest); the same underlying switches the expiry now if it is still listed.
+  const applyMarket = (u, exp) => {
+    if (u && UNDERLYINGS.includes(u) && u !== underlying) {
+      pendingExpiryRef.current = exp || null;
+      setUnderlying(u);
+      stopScan();
+    } else if (exp && exp !== selExpiry && expiries.includes(exp)) {
+      setSelExpiry(exp);
+      stopScan();
+    }
+  };
+
   const updateConfig = (keyOrObj, value) => {
     setConfig(c => {
       const updates = typeof keyOrObj === 'object' ? keyOrObj : { [keyOrObj]: value };
@@ -725,7 +755,8 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
           </div>
 
           {/* Saved settings · + Save · Send to window · Reset */}
-          <ScannerFilterToolbar config={config} updateConfig={updateConfig} onSendToWindow={onSendToWindow} />
+          <ScannerFilterToolbar config={config} updateConfig={updateConfig} onSendToWindow={onSendToWindow}
+            underlying={underlying} expiry={selExpiry} onApplyMarket={applyMarket} />
 
           <div className="hide-mobile" style={{ width: 1, height: 24, backgroundColor: 'var(--border)' }}></div>
 

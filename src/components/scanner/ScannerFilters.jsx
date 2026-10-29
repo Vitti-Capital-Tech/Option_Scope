@@ -6,6 +6,12 @@ import { showConfirm } from '../common/dialogService';
 
 const FIELD_KEYS = Object.keys(SCANNER_DEFAULTS);
 
+// "2026-10-29" → "29 Oct" for the saved-setting tooltip.
+const fmtExp = (d) => {
+  const t = Date.parse(`${d}T00:00:00Z`);
+  return Number.isFinite(t) ? new Date(t).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', timeZone: 'UTC' }) : d;
+};
+
 const same = (a, b) => (typeof a === 'boolean' || typeof b === 'boolean')
   ? !!a === !!b
   : Number(a) === Number(b);
@@ -28,9 +34,11 @@ function storeSaved(list) {
  * Top-bar toolbar: how many filters differ from default, the user's saved settings
  * (click to apply, × to delete, ⟳ to update the applied one with the current filters),
  * "+ Save" (name the current filters; an existing name is overwritten in place) and Reset.
- * Saved settings are a full snapshot of every filter, kept in this browser.
+ * Saved settings are a full snapshot of every filter plus the underlying + expiry they were
+ * saved on (applying one opens that market again), kept in this browser. Settings saved
+ * before the market was recorded apply their filters only.
  */
-export function ScannerFilterToolbar({ config, updateConfig, onSendToWindow }) {
+export function ScannerFilterToolbar({ config, updateConfig, onSendToWindow, underlying, expiry, onApplyMarket }) {
   const [saved, setSaved] = useState(loadSaved);
   const [naming, setNaming] = useState(false);
   const [name, setName] = useState('');
@@ -44,9 +52,9 @@ export function ScannerFilterToolbar({ config, updateConfig, onSendToWindow }) {
   const currentValues = () => Object.fromEntries(FIELD_KEYS.map(k => [k, val(k)]));
   // Save under `n`: an existing entry is overwritten IN PLACE (keeps its position), else appended.
   const saveAs = (n) => {
-    const values = currentValues();
+    const entry = { name: n, values: currentValues(), underlying: underlying || null, expiry: expiry || null };
     const exists = saved.some(p => p.name === n);
-    const next = exists ? saved.map(p => (p.name === n ? { name: n, values } : p)) : [...saved, { name: n, values }];
+    const next = exists ? saved.map(p => (p.name === n ? entry : p)) : [...saved, entry];
     setSaved(next);
     storeSaved(next);
     setAppliedName(n);
@@ -79,14 +87,19 @@ export function ScannerFilterToolbar({ config, updateConfig, onSendToWindow }) {
       )}
       {saved.length > 0 && <span className="scanner-toolbar-label">Saved</span>}
       {saved.map(p => {
-        const active = isActive(p.values);
+        const active = isActive(p.values) && (!p.underlying || p.underlying === underlying);
         const modified = !active && p.name === appliedName;
+        const market = p.underlying ? `${p.underlying}${p.expiry ? ` · ${fmtExp(p.expiry)}` : ''}` : '';
         return (
         <span key={p.name} className={`scanner-saved ${active ? 'on' : ''} ${modified ? 'modified' : ''}`}>
           <button type="button" className="scanner-saved-apply"
-            onClick={() => { updateConfig({ ...SCANNER_DEFAULTS, ...p.values }); setAppliedName(p.name); }}
-            title={modified ? `Filters changed since "${p.name}" was applied — click to re-apply it` : `Apply "${p.name}"`}>
-            {p.name}{modified ? ' •' : ''}
+            onClick={() => {
+              updateConfig({ ...SCANNER_DEFAULTS, ...p.values });
+              if (p.underlying && onApplyMarket) onApplyMarket(p.underlying, p.expiry);
+              setAppliedName(p.name);
+            }}
+            title={`${modified ? `Filters changed since "${p.name}" was applied — click to re-apply it` : `Apply "${p.name}"`}${market ? ` (opens ${market}; an expiry that has passed falls back to the nearest)` : ''}`}>
+            {p.name}{p.underlying ? <span className="scanner-saved-mkt"> {p.underlying}</span> : null}{modified ? ' •' : ''}
           </button>
           {modified && (
             <button type="button" className="scanner-saved-upd" onClick={() => update(p.name)}

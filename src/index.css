@@ -3587,6 +3587,14 @@ body.light-theme .pt-live-badge {
   white-space: nowrap;
 }
 
+/* The underlying a saved setting opens (BTC / ETH). */
+.scanner-saved-mkt {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+}
+
 .scanner-saved-del {
   display: inline-flex;
   background: none;
