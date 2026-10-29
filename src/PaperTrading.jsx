@@ -59,6 +59,42 @@ const ACCOUNT_CONFIG_DEFAULTS = {
   entryHedgeOffset: 2
 };
 
+// ── Entry-block notifications (🚦 panel / toast) ──
+// "C-BTC-83000-301026" → "83000".
+const strikeOfSymbol = (sym) => String(sym || '').split('-')[2] ?? '';
+// Which leg ran out of depth: a SELL is the short; a BUY on the long strike is the long, else the hedge.
+const blockedLegLabel = (d) => (d?.blocked_side === 'sell' ? 'Short'
+  : String(strikeOfSymbol(d?.blocked_symbol)) === String(d?.buy_strike) ? 'Long' : 'Hedge');
+const fmtBlockTime = (ts) => {
+  const t = new Date(ts);
+  const sameDay = t.toDateString() === new Date().toDateString();
+  return sameDay
+    ? t.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    : t.toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+};
+// One card per (blocked symbol, minute, cause): the same short blocking 3 longs in one wave
+// reads as one line "×3" instead of three near-identical ones. Newest first.
+const groupEntryBlocks = (list) => {
+  const groups = [];
+  const byKey = new Map();
+  for (const n of list) {
+    const d = n.details;
+    const key = d
+      ? `${d.blocked_symbol}|${String(n.created_at).slice(0, 16)}|${d.contended ? 1 : 0}|${d.type}|${d.sell_strike}`
+      : `id:${n.id}`;
+    let g = byKey.get(key);
+    if (!g) { g = { key, first: n, items: [] }; byKey.set(key, g); groups.push(g); }
+    g.items.push(n);
+  }
+  return groups;
+};
+const blockToastText = (n) => {
+  const d = n?.details;
+  if (!d) return n?.message || 'Entry blocked';
+  const avail = Number.isFinite(Number(d.available)) ? Number(d.available).toLocaleString() : '—';
+  return `🚦 ${String(d.type || '').toUpperCase()} ${d.buy_strike}/${d.sell_strike} blocked — ${blockedLegLabel(d).toLowerCase()} ${strikeOfSymbol(d.blocked_symbol)}: need ${Number(d.needed || 0).toLocaleString()}, got ${avail}${d.contended ? ' (other accounts first)' : ' (thin book)'}`;
+};
+
 const normalizeAccountDefaultConfig = (config = {}) => {
   return Object.keys(ACCOUNT_CONFIG_DEFAULTS).reduce((acc, key) => {
     acc[key] = config?.[key] ?? ACCOUNT_CONFIG_DEFAULTS[key];
@@ -2735,7 +2771,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           if (!n) return;
           setBlockNotifications(prev => [n, ...prev].slice(0, 50));
           setNotifUnread(c => c + 1);
-          pushToast(n.message || 'Entry blocked', 'error');
+          pushToast(blockToastText(n), 'error');
         }
       )
       .subscribe();
@@ -3583,23 +3619,47 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   const notifBadge = notifUnread > 0 && (
     <span className="eb-badge">{notifUnread > 99 ? '99+' : notifUnread}</span>
   );
+  const blockGroups = groupEntryBlocks(blockNotifications);
   const notifPanel = (
     <div className="eb-panel">
       <div className="eb-panel-head">
         <span>🚦 Entry Blocks</span>
         <button type="button" onClick={() => setNotifPanelOpen(false)} aria-label="Close">×</button>
       </div>
-      {blockNotifications.length === 0 ? (
+      {blockGroups.length === 0 ? (
         <div className="eb-panel-empty">
-          No entry blocks yet. When another account takes the available depth first, the missed entry shows up here.
+          No entry blocks yet. When the book at the best price can't take a spread's size, the missed entry shows up here.
         </div>
       ) : (
-        blockNotifications.map(n => (
-          <div key={n.id} className="eb-item">
-            <div className="eb-item-msg">{n.message}</div>
-            <div className="eb-item-time">{new Date(n.created_at).toLocaleString()}</div>
-          </div>
-        ))
+        blockGroups.map(g => {
+          const d = g.first.details;
+          if (!d) {
+            // Older rows without structured details: the plain message.
+            return (
+              <div key={g.key} className="eb-item">
+                <div className="eb-item-msg">{g.first.message}</div>
+                <div className="eb-item-time">{fmtBlockTime(g.first.created_at)}</div>
+              </div>
+            );
+          }
+          const available = Number(d.available);
+          const longs = [...new Set(g.items.map(n => n.details?.buy_strike).filter(v => v != null))];
+          return (
+            <div key={g.key} className={`eb-item ${d.contended ? 'contended' : 'thin'}`} title={g.first.message}>
+              <div className="eb-row">
+                <span className="eb-spread">
+                  {String(d.type || '').toUpperCase()} {longs.join(' · ')}/{d.sell_strike}
+                  {g.items.length > 1 && <span className="eb-count">×{g.items.length}</span>}
+                </span>
+                <span className="eb-item-time">{fmtBlockTime(g.first.created_at)}</span>
+              </div>
+              <div className="eb-line">
+                {blockedLegLabel(d)} {strikeOfSymbol(d.blocked_symbol)}: need <b>{Number(d.needed || 0).toLocaleString()}</b>, got <b>{Number.isFinite(available) ? available.toLocaleString() : '—'}</b>
+                <span className="eb-cause">{d.contended ? 'other accounts first' : 'thin book'}</span>
+              </div>
+            </div>
+          );
+        })
       )}
     </div>
   );

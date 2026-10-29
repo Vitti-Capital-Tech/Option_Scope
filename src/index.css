@@ -4832,6 +4832,54 @@ body.light-theme .pt-btn-apply.active {
   border-left: 3px solid var(--put);
 }
 
+.eb-item.contended {
+  border-left-color: #f0a020;
+}
+
+.eb-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.eb-line {
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.eb-line b {
+  color: var(--text);
+}
+
+.eb-cause {
+  margin-left: 6px;
+  color: var(--put);
+  font-weight: 600;
+}
+
+.eb-item.contended .eb-cause {
+  color: #f0a020;
+}
+
+.eb-spread {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.eb-count {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--text-dim);
+}
+
 .eb-item-msg {
   font-size: 12.5px;
   font-weight: 600;
