@@ -626,6 +626,95 @@ export function createLiveExecutor(getCtx) {
     },
 
     /**
+     * Open a HEDGED spread with all three entry orders sent AT THE SAME TIME (long `-EB`,
+     * short `-ES`, hedge `-HB`), so no leg waits on another and the quotes they were sized on
+     * are as fresh as possible. The caller only sends it after every pre-check passed for all
+     * three legs (fresh two-sided quotes, top-of-book depth, cross-account depth budget).
+     * Long / short fill exactly like openSpread's timed path (modify every waitMs); the hedge
+     * is chased but never above `hedgePrice` (its ask + Hedge Offset) and the rest cancelled.
+     * Then, all-or-nothing:
+     *   • every leg fully filled          → ok.
+     *   • any leg filled 0 (or rejected)  → the other legs are market-closed (-EAB / -EAS /
+     *                                       -HAB) and the entry aborts; account left flat.
+     *   • partial fills                   → all three are cut to the SMALLEST filled fraction
+     *                                       (excess closed: -EADJ / -SADJ / -HADJ), so the
+     *                                       1 : ratio : hedge proportions hold.
+     * A leg whose state can't be read is closed defensively at its full size (reduce-only can
+     * only close what exists) — except a hedge on a symbol another pair also holds
+     * (`hedgeShared`), which is reported instead (a full-size close could hit that pair's hedge).
+     * Returns { ok, longContracts, shortContracts, hedgeContracts, legFailed?, error?, rejected? }.
+     */
+    async openTriplet(pos, { long, short, hedge, buyPrice, sellPrice, hedgePrice, longTp = null, shortSl = null, hedgeTp = null, hedgeShared = false, timing, hedgeChase }) {
+      if (!armed()) return { ok: true, skipped: true };
+      const { accountName, creds } = getCtx();
+      const L = Math.max(1, Math.round(long));
+      const S = Math.max(1, Math.round(short));
+      const H = Math.max(1, Math.round(hedge));
+      const spotBracket = (k, lvl) => (lvl != null && Number.isFinite(Number(lvl)))
+        ? { [k]: String(lvl), bracket_stop_trigger_method: 'spot_price' } : null;
+
+      const [b, s, h] = await Promise.all([
+        submitTimed({ symbol: pos.buyLeg.symbol, side: 'buy', contracts: L, price: buyPrice, tag: `${pos.id}-EB`,
+          bracket: spotBracket('bracket_take_profit_price', longTp), timing }),
+        submitTimed({ symbol: pos.sellLeg.symbol, side: 'sell', contracts: S, price: sellPrice, tag: `${pos.id}-ES`,
+          bracket: spotBracket('bracket_stop_loss_price', shortSl), timing }),
+        submitChase({ symbol: pos.hedgeLeg.symbol, side: 'buy', contracts: H, price: hedgePrice, reduceOnly: false,
+          tag: `${pos.id}-HB`, bracket: spotBracket('bracket_take_profit_price', hedgeTp), chase: hedgeChase }),
+      ]);
+
+      // Hedge not fully filled: cancel what still rests and read what DID fill.
+      let hFilled = h.ok ? H : (Number(h.filled) || 0);
+      if (!h.ok && !h.rejected && h.id != null) {
+        try {
+          const c = await cancelOrder(creds, { id: h.id, product_id: h.productId });
+          const sz = Number(c?.size); const uf = Number(c?.unfilled_size);
+          if (Number.isFinite(sz) && Number.isFinite(uf)) hFilled = Math.max(0, Math.round(sz - uf));
+        } catch { /* already closed / gone — keep the chase's own count */ }
+      }
+
+      const legs = [
+        { name: 'long', res: b, want: L, filled: b.ok ? L : Math.min(L, Number(b.filled) || 0), symbol: pos.buyLeg.symbol, close: 'sell', ab: 'EAB', adj: 'EADJ' },
+        { name: 'short', res: s, want: S, filled: s.ok ? S : Math.min(S, Number(s.filled) || 0), symbol: pos.sellLeg.symbol, close: 'buy', ab: 'EAS', adj: 'SADJ' },
+        { name: 'hedge', res: h, want: H, filled: Math.min(H, hFilled), symbol: pos.hedgeLeg.symbol, close: 'sell', ab: 'HAB', adj: 'HADJ' },
+      ];
+      const closeLeg = (leg, n, tagSuffix) => (n > 0
+        ? marketClose({ symbol: leg.symbol, side: leg.close, contracts: n, tag: `${pos.id}-${tagSuffix}` }).catch(() => {})
+        : Promise.resolve());
+
+      const unknown = legs.filter(l => l.res.unknown);
+      const failed = legs.find(l => l.res.rejected || l.res.unknown || l.filled <= 0);
+      if (failed) {
+        // Abort: flatten every leg that filled (unknown → its full size, unless a shared hedge).
+        await Promise.all(legs.map(l => {
+          if (l.res.unknown) {
+            if (l.name === 'hedge' && hedgeShared) return Promise.resolve();
+            return closeLeg(l, l.want, l.ab);
+          }
+          return closeLeg(l, l.filled, l.ab);
+        }));
+        const fills = legs.map(l => `${l.name} ${l.res.unknown ? '?' : l.filled}/${l.want}`).join(', ');
+        logError(`[${accountName}] ⚠ Triplet entry ${pos.id} aborted — ${failed.name} ${failed.res.rejected ? 'rejected' : failed.res.unknown ? 'state unreadable' : 'not filled'} (${fills}); filled legs closed.`);
+        return {
+          ok: false,
+          legFailed: failed.name,
+          rejected: !!failed.res.rejected,
+          error: failed.res.rejected ? (failed.res.error || 'rejected') : `${failed.name} not filled${failed.name === 'long' ? ' after modifies' : ''}`,
+          unknownSharedHedge: unknown.some(l => l.name === 'hedge') && hedgeShared,
+        };
+      }
+
+      // Partial fills → cut all three to the smallest filled fraction.
+      const frac = Math.min(...legs.map(l => l.filled / l.want));
+      if (frac < 1) {
+        const keep = legs.map(l => Math.min(l.filled, Math.max(1, Math.round(l.want * frac))));
+        await Promise.all(legs.map((l, i) => closeLeg(l, l.filled - keep[i], l.adj)));
+        logWarn(`[${accountName}] ◐ Triplet entry ${pos.id}: filled ${legs.map(l => `${l.name} ${l.filled}/${l.want}`).join(', ')} — all cut to ${(frac * 100).toFixed(0)}%: long ${keep[0]}, short ${keep[1]}, hedge ${keep[2]}.`);
+        return { ok: true, buyOrder: b.order, sellOrder: s.order, longContracts: keep[0], shortContracts: keep[1], hedgeContracts: keep[2] };
+      }
+      return { ok: true, buyOrder: b.order, sellOrder: s.order, longContracts: L, shortContracts: S, hedgeContracts: H };
+    },
+
+    /**
      * Open the triplet's 3rd leg — a stand-alone LONG-ONLY hedge — after the main
      * spread is open. Kept separate from openSpread so its client tag (`-HB`) never
      * collides with the main long's `-EB`, and so a fill failure is NON-fatal: unlike

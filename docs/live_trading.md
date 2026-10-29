@@ -1132,11 +1132,13 @@ for those few seconds (exchange-side SL/TP brackets still protect open positions
 hedge leg (3rd long, `-HB`), with its own price: **ask + Hedge Offset** (`paper_trading_config.entry_hedge_offset`,
 migration `068`, default `$2`, editable per account next to Buy / Sell Offset; env `ENTRY_HEDGE_OFFSET` is only the
 fallback when the column is missing), and the chase never re-prices above that ceiling (`chase.maxPrice`).
-**Order (since 2026-10-29): hedge FIRST, then long, then short**, so a hedged account never holds a spread without
-its hedge. Hedge not fully filled → the rest is cancelled, the filled part sold back (`-HAB`), the entry skipped (long /
-short never placed) and a Telegram alert sent. Long / short then fail → the hedge is unwound with them (`-HAB`). Entry
-filled smaller than planned → the hedge is cut in the same proportion. (Before, the hedge was bought after the spread,
-best-effort: a failure kept the 2-leg spread and left the leftover hedge order resting on Delta.) The Buy Offset ($5–$10) is sized for a
+**Hedged entries (since 2026-10-29): long, short and hedge are sent AT THE SAME TIME** (`openTriplet`), after every
+pre-check passed for all three legs (fresh quotes, top-of-book depth, cross-account depth budget), so no leg waits on
+another. All-or-nothing: a leg that fills 0 (or is rejected) → the other legs are market-closed (`-EAB` / `-EAS` /
+`-HAB`), the entry aborts and a Telegram alert is sent; partial fills → all three are cut to the smallest filled
+fraction (`-EADJ` / `-SADJ` / `-HADJ`). A hedged account never holds a spread without its hedge. Plain 2-leg entries are
+unchanged (long, then short). (Before, the hedge was bought after the spread, best-effort: a failure kept the 2-leg
+spread and left the leftover hedge order resting on Delta.) The Buy Offset ($5–$10) is sized for a
 $100+ long; on a ~$5 hedge it let the order fill up to $15.
 
 | Env | Default | |
