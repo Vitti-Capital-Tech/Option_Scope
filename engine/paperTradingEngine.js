@@ -16,7 +16,7 @@
 import { supabase, hasServiceRole } from './lib/supabase.js';
 import { createHeartbeat } from './lib/heartbeat.js';
 import { createLiveExecutor, isLiveDryRun, longContracts, shortContracts, extractBalance } from './lib/liveExecution.js';
-import { reserveSpread as governorReserveSpread } from './lib/entryGovernor.js';
+import { reserveSpread as governorReserveSpread, releaseSpread as governorReleaseSpread } from './lib/entryGovernor.js';
 import { createDailyStatsTracker } from './lib/dailyStats.js';
 import { notifyLiveFailure, notifyLiveResolved, notifyLiveTrade, sendTelegramMessage, setChatMigrationHandler, noteChatMigration } from './lib/telegram.js';
 import { getBalance } from './lib/deltaTradeApi.js';
@@ -6617,6 +6617,8 @@ async function startSingleAccountEngine(account) {
                 .catch(() => {});
               continue; // do NOT persist — this account stays flat for this spread
             }
+            // Kept on the staged entry: if it is never placed, its depth is handed back.
+            newPos._govToken = gRes.token;
           }
 
           newEntries.push(newPos);
@@ -6786,7 +6788,14 @@ async function startSingleAccountEngine(account) {
       if (!onlyExits) {
         const entryPhaseStart = Date.now();
         let entryBudgetSpent = false;
+        // A staged entry that was not placed (skipped by a later check, deferred or aborted)
+        // hands its reserved depth back to the shared governor pool at once, so it can't block
+        // the other accounts of this wave with "another account drew …".
+        const releaseIfUnplaced = (e) => { if (e && !persistedEntryIds.has(e.id)) governorReleaseSpread(e._govToken); };
+        let prevEntry = null;
         for (const t of newEntries) {
+          releaseIfUnplaced(prevEntry);
+          prevEntry = t;
           if (stale()) break;   // fenced mid-placement — never open a NEW position
           // Stop placing once the phase budget is gone — the rest are retried next minute.
           // Checked BEFORE each entry so an in-flight one always completes (never leaves a
@@ -7471,6 +7480,13 @@ async function startSingleAccountEngine(account) {
             }
           } catch (err) { logError(`[${accountState.name}] Entry persistence error:`, err); }
         }
+      }
+
+      // Hand back the depth of every staged entry that was not placed (last one, the ones after
+      // a break, and exit-only cycles never reach the loop). Idempotent.
+      for (const e of newEntries) {
+        if (!persistedEntryIds.has(e.id)) governorReleaseSpread(e._govToken);
+        delete e._govToken;
       }
 
       // Update in-memory positions. Include ONLY entries confirmed written to

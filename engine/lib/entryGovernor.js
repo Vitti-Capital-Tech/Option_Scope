@@ -175,15 +175,38 @@ export function reserveSpread(legs, now = Date.now(), { isLive = false } = {}) {
     }
   }
 
-  // Consume. Everyone draws the shadow down; a real order additionally draws the real
-  // book (now purely observational — nothing gates on it, but it records what live took).
+  // Consume. Everyone draws the shadow down; a real order additionally draws the real book.
   // (Infinity - n === Infinity, so an unknown-depth pool stays unlimited.)
+  const draws = [];
   for (const { leg, pool } of resolved) {
     const need = Number(leg.qty);
+    const fromShadow = Math.min(pool.shadow, need);
+    const fromRemaining = isLive ? Math.min(pool.remaining, need) : 0;
     pool.shadow = Math.max(0, pool.shadow - need);
     if (isLive) pool.remaining = Math.max(0, pool.remaining - need);
+    draws.push({ key: poolKey(leg.symbol, leg.side), pool, fromShadow, fromRemaining });
   }
-  return { ok: true };
+  // `token` lets the caller hand the depth back if this entry is never placed (releaseSpread).
+  return { ok: true, token: { draws, released: false } };
+}
+
+/**
+ * Give back a reservation whose entry was NOT placed (skipped after staging — margin, caps,
+ * Delta already holding the symbol, the depth guard — or aborted). Without this, a candidate
+ * that never traded kept its depth until the window expired and blocked other accounts with
+ * "another account drew …" although nobody took it — an extra block on every skip once live
+ * was gated (2026-10-29). Only within the same window (an expired pool was re-snapshotted
+ * from the live book already). Idempotent.
+ */
+export function releaseSpread(token) {
+  if (!token || token.released) return;
+  token.released = true;
+  for (const d of token.draws || []) {
+    if (pools.get(d.key) !== d.pool) continue; // window rolled over — fresh snapshot already
+    if (Number.isFinite(d.pool.remaining)) d.pool.remaining = Math.min(d.pool.cap, d.pool.remaining + d.fromRemaining);
+    // shadow <= remaining always holds.
+    if (Number.isFinite(d.pool.shadow)) d.pool.shadow = Math.min(d.pool.remaining, d.pool.shadow + d.fromShadow);
+  }
 }
 
 /** Test / diagnostics helper: wipe all pools. */
