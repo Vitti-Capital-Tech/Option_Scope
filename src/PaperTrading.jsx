@@ -55,7 +55,8 @@ const ACCOUNT_CONFIG_DEFAULTS = {
   maxCombinedPositions: 4,
   combinedSplitPct: 70,
   entryBuyOffset: 10,
-  entrySellOffset: 3
+  entrySellOffset: 3,
+  entryHedgeOffset: 2
 };
 
 const normalizeAccountDefaultConfig = (config = {}) => {
@@ -419,6 +420,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       combinedSplitPct: 70,
       entryBuyOffset: 10,
       entrySellOffset: 3,
+      entryHedgeOffset: 2,
       copySchedulesFromId: ''
     }
   });
@@ -1171,7 +1173,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       maxCombinedPositions: data.maxCombinedPositions,
       combinedSplitPct: data.combinedSplitPct,
       entryBuyOffset: data.entryBuyOffset,
-      entrySellOffset: data.entrySellOffset
+      entrySellOffset: data.entrySellOffset,
+      entryHedgeOffset: data.entryHedgeOffset
     });
 
     setIsCreatingAccount(true);
@@ -1229,6 +1232,16 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           strategy_version: accountMode === 'live' ? 1 : 2,
           trade_days: [0, 1, 2, 3, 4, 5, 6]
         }]);
+
+        // Hedge offset (migration 068) in its own update: until that migration runs the column
+        // is missing, and putting it in the insert above would fail the whole config row.
+        if (accountMode === 'live') {
+          const hedgeOff = Number.isFinite(data.entryHedgeOffset) ? Math.max(0, data.entryHedgeOffset) : 2;
+          const { error: hoErr } = await supabase.from('paper_trading_config')
+            .update({ entry_hedge_offset: hedgeOff })
+            .eq('account_id', accData.id);
+          if (hoErr) console.warn('Hedge offset not saved (run migration 068):', hoErr.message);
+        }
 
         // For live accounts, store the (encrypted) Delta credentials via RPC.
         if (accountMode === 'live' && data.apiKey?.trim() && data.apiSecret?.trim()) {
@@ -1327,6 +1340,18 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   const triggerEditAccount = async () => {
     const activeAccount = accounts.find(a => a.id === activeAccountId);
     if (!activeAccount) return;
+    // Hedge offset is read from the engine's config row (group sync copies config columns,
+    // not this default_config key), so the form shows what the engine actually uses.
+    let hedgeOff = activeAccount.default_config?.entryHedgeOffset ?? 2;
+    if ((activeAccount.mode || 'paper') === 'live') {
+      const { data: hoRow } = await supabase.from('paper_trading_config')
+        .select('entry_hedge_offset')
+        .eq('account_id', activeAccount.id)
+        .maybeSingle();
+      if (hoRow?.entry_hedge_offset != null && Number.isFinite(Number(hoRow.entry_hedge_offset))) {
+        hedgeOff = Number(hoRow.entry_hedge_offset);
+      }
+    }
     resetEdit({
       name: activeAccount.name,
       mode: activeAccount.mode || 'paper',
@@ -1336,7 +1361,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       balanceAllocationPct: activeAccount.default_config?.balanceAllocationPct ?? 90,
       initialBalance: activeAccount.default_config?.initialBalance ?? 3000,
       entryBuyOffset: activeAccount.default_config?.entryBuyOffset ?? 10,
-      entrySellOffset: activeAccount.default_config?.entrySellOffset ?? 3
+      entrySellOffset: activeAccount.default_config?.entrySellOffset ?? 3,
+      entryHedgeOffset: hedgeOff
     });
     setEditCredentialsMeta(null);
     setIsEditModalOpen(true);
@@ -1373,6 +1399,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       const allocPct = Number.isFinite(data.balanceAllocationPct) ? data.balanceAllocationPct : 90;
       const buyOff = Number.isFinite(data.entryBuyOffset) ? data.entryBuyOffset : 10;
       const sellOff = Number.isFinite(data.entrySellOffset) ? data.entrySellOffset : 3;
+      const hedgeOff = Number.isFinite(data.entryHedgeOffset) ? Math.max(0, data.entryHedgeOffset) : 2;
       // Paper starting equity (initial + realized). Ignored by live accounts.
       const initBal = Number.isFinite(data.initialBalance) ? data.initialBalance : 3000;
       if (editedAccount?.default_config) {
@@ -1382,6 +1409,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           initialBalance: initBal,
           entryBuyOffset: buyOff,
           entrySellOffset: sellOff,
+          ...(accountMode === 'live' ? { entryHedgeOffset: hedgeOff } : {}),
         };
       }
 
@@ -1413,6 +1441,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       } else {
         setPendingAlloc({ accountId: activeAccountId, pct: allocPct, until: Date.now() + 180000 });
         fetchHeartbeat();
+      }
+      // Hedge offset (migration 068) in its own update, so a missing column can't block the
+      // allocation / buy / sell offsets above.
+      if (accountMode === 'live') {
+        const { error: hoErr } = await supabase.from('paper_trading_config')
+          .update({ entry_hedge_offset: hedgeOff, updated_at: new Date().toISOString() })
+          .eq('account_id', activeAccountId);
+        if (hoErr) showAlert(`Account saved, but the Hedge Offset could not be saved (run migration 068): ${hoErr.message}`);
       }
       await syncActiveGroup('config'); // allocation % + entry offsets are group settings
 

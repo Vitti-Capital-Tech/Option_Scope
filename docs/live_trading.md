@@ -1129,7 +1129,15 @@ The engine books exactly what is open (`lotSize`, `sell_qty`, margin and entry f
 `◐ LIVE entry … filled smaller than planned`. A failed entry is **not** retried within the minute. While an entry is in
 flight the hang guard is extended (`EVAL_HANG_MS + 2 × (ENTRY_FILL_WAIT_MS × ENTRY_MODIFY_TRIES + 20s) + 30s`); this account's exit ticks wait
 for those few seconds (exchange-side SL/TP brackets still protect open positions). The chase below is also used for the
-hedge leg (3rd long, `-HB`).
+hedge leg (3rd long, `-HB`), with its own price: **ask + Hedge Offset** (`paper_trading_config.entry_hedge_offset`,
+migration `068`, default `$2`, editable per account next to Buy / Sell Offset; env `ENTRY_HEDGE_OFFSET` is only the
+fallback when the column is missing), and the chase never re-prices above that ceiling (`chase.maxPrice`).
+**Order (since 2026-10-29): hedge FIRST, then long, then short**, so a hedged account never holds a spread without
+its hedge. Hedge not fully filled → the rest is cancelled, the filled part sold back (`-HAB`), the entry skipped (long /
+short never placed) and a Telegram alert sent. Long / short then fail → the hedge is unwound with them (`-HAB`). Entry
+filled smaller than planned → the hedge is cut in the same proportion. (Before, the hedge was bought after the spread,
+best-effort: a failure kept the 2-leg spread and left the leftover hedge order resting on Delta.) The Buy Offset ($5–$10) is sized for a
+$100+ long; on a ~$5 hedge it let the order fill up to $15.
 
 | Env | Default | |
 |---|---|---|
@@ -1507,12 +1515,24 @@ live and a paper account chasing the same book contend with each other.
 - **Rule:** first come, first served at **FULL qty**; **all-or-nothing per spread** (both
   legs have room, or neither pool is touched and the whole spread is blocked). A blocked
   account is never handed a smaller size — it retries next wave against fresh depth.
-- **A real order is never blocked.** Live reservations only *record* their draw; the gate
-  applies to simulations. Live already has two better-informed checks — the per-account
-  depth guard (live L1 sizes at placement time, not a frozen 8s snapshot) and the
-  all-or-nothing chase that unwinds cleanly — and "first come" here is decided by timer
-  **registration order**, fixed for the life of the process. At three live accounts that
-  is a nuisance; at forty the last-registered ~37 would never trade a contended strike.
+- **Live is gated (again, since 2026-10-29), on every leg** — long, short and the hedge (3rd
+  long) — against the real book (`remaining`). From 2026-08-31 to 2026-10-29 a real order was
+  never blocked (live only *recorded* its draw), on the reasoning that the per-account depth
+  guard and the all-or-nothing fill were enough, and that "first come" was fixed by timer
+  registration order. The guard checks only one account's size against the whole book, so
+  every account of a group passed it in the same second and together they swept the book:
+  - 2026-10-28 20:17: 8 live accounts sold `P-BTC-78400` (~17,900 contracts) in 2s — the first
+    four filled at $10, the next at $9.25, the last three at $8.90.
+  - 2026-10-27 23:04: 8 live accounts bought the `P-BTC-78600` hedge @ $5 (~14,900 contracts),
+    filled up to $15.
+
+  A blocked account skips the **whole** entry (nothing bought, 🚦 notification with
+  `long_qty` / `short_qty` / `hedge_qty`) and retries next minute.
+- **Fairness — entry stagger.** Each armed live account starts a fresh minute's entry scan after
+  a per-minute pseudo-random delay in `[0, ENTRY_STAGGER_MS)` (env, default `2000`; FNV hash of
+  account id + minute; `0` = off). The draw order therefore changes every minute instead of
+  being fixed by registration order. Quotes are read after the wait; same-minute retries and
+  paper accounts are not delayed.
 
 > [!IMPORTANT]
 > **Paper can never deprive live of depth.** Each pool carries **two** counters:

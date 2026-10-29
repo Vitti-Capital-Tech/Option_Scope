@@ -87,6 +87,28 @@ const ENTRY_CHASE = {
   bumpPct: Math.max(0, Number(process.env.ENTRY_CHASE_BUMP_PCT ?? 3)),
 };
 
+// Hedge (3rd long) entry: its OWN $ offset over the ask, and the chase is capped at that
+// price. It used the long's Buy Offset ($5–$10), sized for a $100+ premium; on a ~$5 hedge
+// that let the limit sit at $10–$15 and the order swept the book up to it (2026-10-27
+// 23:04, P-BTC-78600 @ $5: 8 accounts, ~14,900 contracts, filled up to $15).
+// Per account: paper_trading_config.entry_hedge_offset (migration 068, "Hedge Offset" in
+// the live account form). This is only the fallback when the column is missing.
+// Live entry-order fairness. The entry governor gates live accounts against a shared,
+// first-come-first-serve depth budget; "first" used to be fixed by timer registration order,
+// so the same accounts drew first every minute. Each armed live account now waits a
+// per-minute pseudo-random delay in [0, ENTRY_STAGGER_MS) before that minute's entry scan
+// (hash of account id + minute), so the draw order changes every minute. 0 = off.
+const ENTRY_STAGGER_MS = Math.max(0, Number(process.env.ENTRY_STAGGER_MS ?? 2000));
+function entryStaggerMs(accountId, minute) {
+  if (!(ENTRY_STAGGER_MS > 0)) return 0;
+  let h = 2166136261; // FNV-1a over "<account id>:<minute>"
+  const s = `${accountId}:${minute}`;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0) % ENTRY_STAGGER_MS;
+}
+
+const ENTRY_HEDGE_OFFSET = Math.max(0, Number(process.env.ENTRY_HEDGE_OFFSET ?? 2));
+
 // Retry a same-minute entry attempt that ABORTED because a leg could not fill. The minute
 // is claimed when a cycle starts (see lastEntryMinute), which is right for never skipping a
 // minute — but it also meant a failed attempt burned the whole minute: an abort at :34:08
@@ -659,6 +681,7 @@ async function startSingleAccountEngine(account) {
           combinedSplitPct: data.combined_split_pct ?? 70,
           entryBuyOffset: data.entry_buy_offset ?? 10,
           entrySellOffset: data.entry_sell_offset ?? 3,
+          entryHedgeOffset: data.entry_hedge_offset ?? ENTRY_HEDGE_OFFSET, // migration 068
           strategyVersion: data.strategy_version ?? 1,
           tradeDays: Array.isArray(data.trade_days) ? data.trade_days : [0, 1, 2, 3, 4, 5, 6],
           // Paper full-deployment fill (migration 030) — paper only.
@@ -3893,11 +3916,22 @@ async function startSingleAccountEngine(account) {
     // guards above are already past, so the scan really is going to run). A cycle that
     // overruns into the next minute therefore leaves that next minute unclaimed, and the
     // first tick after it finishes picks the minute up instead of skipping it.
+    // A fresh minute's entry cycle (not a same-minute retry) — the one the stagger applies to.
+    const freshEntryMinute = !onlyExits && Math.floor(evaluationStart / 60000) > lastEntryMinute;
     if (!onlyExits) {
       lastEntryMinute = Math.floor(evaluationStart / 60000);
       entryRetryAt = 0; // this cycle IS the retry (if one was pending) — don't run it twice
     }
     try {
+      // Live fairness: start this minute's entry scan after a per-minute pseudo-random delay
+      // (see ENTRY_STAGGER_MS), so the entry governor's "first come" draw order rotates.
+      // Scanned quotes are read after the wait, so nothing goes stale. Brackets on Delta
+      // still protect open positions during these ≤ 2s.
+      if (freshEntryMinute && accountState.mode === 'live' && accountState.live_enabled && !live.dryRun) {
+        const waitMs = entryStaggerMs(accountState.id, lastEntryMinute);
+        if (waitMs > 0) await new Promise(r => setTimeout(r, waitMs));
+        if (stale()) return;
+      }
       const allTickers = Object.values(tickerData);
       if (allTickers.length === 0) {
         if (!onlyExits) {
@@ -6494,12 +6528,15 @@ async function startSingleAccountEngine(account) {
           // Live keeps its per-account thin-book guard at execute time as a backstop.
           let gLongC = null;
           let gShortC = 0;
+          let gHedgeC = 0;
           if (liveArmed) {
             // adjustedLotSize = liveLongCV × longC and adjustedSellQty IS the short
             // contract count (see the `if (liveArmed)` sizing block above).
             if (liveLongCV != null && liveLongCV > 0) {
               gLongC = Math.max(1, Math.round(adjustedLotSize / liveLongCV));
               gShortC = adjustedSellQty > 0 ? Math.max(1, Math.round(adjustedSellQty)) : 0;
+              // The hedge order is exactly longContracts(hedgeLeg) (see the execute phase).
+              gHedgeC = (hedgeLeg && (hedgeLeg.lotSize || 0) > 0) ? longContracts(hedgeLeg) : 0;
             }
           } else if (isPaperAccount) {
             const gLongCV = symbolMeta[spread.buyLeg.symbol]?.contractValue ?? null;
@@ -6522,6 +6559,8 @@ async function startSingleAccountEngine(account) {
               if (gLongC > gMaxLongByNotional) gLongC = Math.max(1, gMaxLongByNotional);
               gShortC = Math.max(1, Math.round(gLongC * ratioToUse));
               if (Number.isFinite(gMaxShortByNotional) && gMaxShortByNotional >= 1 && gShortC > gMaxShortByNotional) gShortC = gMaxShortByNotional;
+              // Hedge mirrors live: short contracts × Hedge Lot %.
+              gHedgeC = (hedgeLeg && (hedgeLeg.lotSize || 0) > 0) ? Math.max(1, Math.round(gShortC * (hedgeLotPct / 100))) : 0;
             }
           }
 
@@ -6531,6 +6570,10 @@ async function startSingleAccountEngine(account) {
             const gBidSz = adjustedSellQty > 0 ? tickerData[spread.sellLeg.symbol]?.bidSize : null;
             const gLegs = [{ symbol: spread.buyLeg.symbol, side: 'buy', qty: gLongC, depth: gAskSz }];
             if (adjustedSellQty > 0) gLegs.push({ symbol: spread.sellLeg.symbol, side: 'sell', qty: gShortC, depth: gBidSz });
+            // The hedge buys the ask too. Without it, every account checked only its OWN hedge
+            // size against the book, so 8 accounts together swept a $5 hedge up to $15
+            // (2026-10-27 23:04). All-or-nothing like the other legs: no hedge depth → no entry.
+            if (gHedgeC > 0) gLegs.push({ symbol: hedgeLeg.symbol, side: 'buy', qty: gHedgeC, depth: tickerData[hedgeLeg.symbol]?.askSize });
 
             // Real orders draw the real book; paper AND dry-run live draw only the shadow
             // (dry-run sends nothing to the exchange, so it must not consume real depth).
@@ -6567,7 +6610,7 @@ async function startSingleAccountEngine(account) {
                   needed: bl.qty, available: Number.isFinite(bl.available) ? bl.available : null,
                   capacity: Number.isFinite(bl.capacity) ? bl.capacity : null,
                   contended: drawn > 0,
-                  long_qty: gLongC, short_qty: gShortC,
+                  long_qty: gLongC, short_qty: gShortC, hedge_qty: gHedgeC,
                   mode: accountState.mode === 'live' ? 'live' : 'paper',
                 },
               }]).then(({ error }) => { if (error) logWarn(`[${accountState.name}] entry_block_notifications insert failed: ${error.message}`); })
@@ -7104,6 +7147,83 @@ async function startSingleAccountEngine(account) {
             }
 
             liveEntryInFlight = true;
+
+            // ── Triplet 3rd leg FIRST: buy the hedge before the long / short ──────────────
+            // A hedged account must never hold a spread without its hedge. The hedge used to be
+            // bought AFTER the long+short (best-effort; a failure kept the 2-leg spread and left
+            // its leftover order resting on Delta, later adopted as an orphan long). Now it goes
+            // first and is all-or-nothing: not fully filled within its cap → cancel the rest,
+            // sell back what filled, and skip the entry (long / short never touched). If the
+            // long/short then fail, the hedge is unwound with them (below).
+            let hedgeBoughtC = 0;          // hedge contracts actually held for this entry
+            let hedgeShared = false;
+            let hedgeMates = [];
+            const unwindHedge = async (contracts, why) => {
+              if (!(contracts > 0) || !t.hedgeLeg) return;
+              const r = await live.closeSymbol({ symbol: t.hedgeLeg.symbol, side: 'sell', contracts, tag: `${t.id}-HAB` })
+                .catch(e => ({ ok: false, error: e.message }));
+              if (r && r.ok === false && !r.skipped) {
+                notifyFailure({
+                  context: `Hedge UNWIND failed (${why}) — ${contracts} contract(s) of ${t.hedgeLeg.symbol} may still be open on Delta with no position row. Close manually.`,
+                  error: { message: r.error || 'hedge-unwind-failed' },
+                  extra: `${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike}`,
+                });
+              }
+            };
+            if (t.hedgeLeg && (t.hedgeLeg.lotSize || 0) > 0) {
+              // Another open pair's hedge already on this strike? Delta has ONE bracket per symbol,
+              // so this buy goes WITHOUT a bracket; syncSharedHedgeBrackets moves the symbol's
+              // bracket to the farthest pair's level once the entry completes. Each pair's own
+              // hedge exit is the engine's catch-all at its own level, for its own contracts.
+              hedgeMates = [...remaining, ...newEntries.slice(0, newEntries.indexOf(t))]
+                .filter(p => p.id !== t.id && p.hedgeLeg?.symbol === t.hedgeLeg.symbol && (p.hedgeLeg.lotSize || 0) > 0);
+              hedgeShared = hedgeMates.length > 0;
+              if (hedgeShared) log(`[${accountState.name}] ⇉ Hedge ${t.hedgeLeg.symbol} shared with ${hedgeMates.map(p => p.id).join(', ')} — buying without a bracket; the symbol's bracket goes to the farthest pair's level.`);
+              // Hedge limit = its ask + the account's Hedge Offset (not the long's Buy Offset), and
+              // the chase never re-prices above it — the order fills at most that far over the ask.
+              const hedgeOff = Number.isFinite(Number(config.entryHedgeOffset))
+                ? Math.max(0, Number(config.entryHedgeOffset)) : ENTRY_HEDGE_OFFSET;
+              const hedgeLimitPx = t.hedgeLeg.entryPrice + hedgeOff;
+              const hedgeWantC = longContracts(t.hedgeLeg);
+              const hres = await live.openHedge(t, {
+                contracts: hedgeWantC,
+                price: hedgeLimitPx,
+                // Same TP as the first long (spot-triggered bracket on Delta) — unless shared.
+                tp: hedgeShared ? null : bracketLevel,
+                chase: {
+                  attempts: ENTRY_CHASE.attempts, pollMs: ENTRY_CHASE.pollMs,
+                  bump: ENTRY_CHASE.bump, bumpPct: ENTRY_CHASE.bumpPct,
+                  buyOffset: hedgeOff, sellOffset: sellOff,
+                  maxPrice: hedgeLimitPx,
+                  quote: (sym) => tickerData[sym],
+                },
+              });
+              if (hres && hres.ok === false && !hres.skipped) {
+                // Not fully filled. Cancel what still rests (so it can't fill later untracked),
+                // read what DID fill, and sell exactly that back.
+                let filledC = Number.isFinite(Number(hres.filled)) ? Number(hres.filled) : 0;
+                if (hres.id != null) {
+                  const c = await live.cancelAndReadFill({ id: hres.id, productId: hres.productId })
+                    .catch(e => ({ ok: false, error: e.message }));
+                  if (c && c.ok && Number.isFinite(Number(c.filled))) filledC = Number(c.filled);
+                }
+                // State unreadable: we can't know the fill. Without a shared hedge on the symbol,
+                // a reduce-only sell of the full size can only close what this order bought.
+                if (hres.unknown && !hedgeShared) filledC = hedgeWantC;
+                await unwindHedge(filledC, 'hedge not fully filled');
+                liveEntryInFlight = false;
+                logWarn(`[${accountState.name}] Entry ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} skipped: hedge ${t.hedgeLeg.symbol} filled ${filledC}/${hedgeWantC} within $${hedgeLimitPx} (${hres.error || 'not filled'}) — rest cancelled${filledC > 0 ? `, ${filledC} sold back` : ''}; long / short NOT placed.`);
+                notifyFailure({
+                  account: accountState.name,
+                  context: `Entry SKIPPED — hedge leg did not fully fill within ask + $${hedgeOff}${hres.unknown && hedgeShared ? ' (order state unreadable on a SHARED hedge symbol — check Delta for stray hedge contracts)' : ''}; long / short not placed, account left flat`,
+                  error: { message: hres.error || 'hedge-not-filled' },
+                  extra: `${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} · hedge ${t.hedgeLeg.symbol} ${filledC}/${hedgeWantC}`,
+                });
+                continue;
+              }
+              hedgeBoughtC = hres?.skipped ? 0 : hedgeWantC;
+            }
+
             const liveEntry = await live.openSpread(t, {
               long: longContracts(t.buyLeg),
               short: shortContracts(t.sellQty),
@@ -7130,6 +7250,9 @@ async function startSingleAccountEngine(account) {
             });
             liveEntryInFlight = false;
             if (!liveEntry.ok) {
+              // The long / short are already unwound (openSpread is all-or-nothing); the hedge
+              // bought first goes with them — never a lone hedge.
+              await unwindHedge(hedgeBoughtC, 'long / short entry aborted');
               // Distinguish a submit-time rejection (Delta refused the order — e.g. bracket
               // conflict) from a genuine chase timeout (accepted but never fully filled), so
               // the alert names the real cause instead of always saying "chase exhausted".
@@ -7202,6 +7325,22 @@ async function startSingleAccountEngine(account) {
                 t.margin = (t.margin || 0) * f;
                 t.entryFee = (t.entryFee || 0) * f;
                 logWarn(`[${accountState.name}] ◐ LIVE entry ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} filled smaller than planned: long ${plannedLong}→${gotLong}, short ${plannedShort}→${gotShort}.`);
+                // The hedge was bought first at the full planned size: keep it in the same
+                // proportion (short × Hedge Lot %) and sell the excess back.
+                if (hedgeBoughtC > 0 && t.hedgeLeg) {
+                  const keepC = Math.max(1, Math.round(hedgeBoughtC * f));
+                  if (keepC < hedgeBoughtC) {
+                    await unwindHedge(hedgeBoughtC - keepC, 'entry filled smaller than planned');
+                    const hcv = t.hedgeLeg.originalLotSize || t.hedgeLeg.contractValue || 1;
+                    t.hedgeLeg = {
+                      ...t.hedgeLeg,
+                      lotSize: Number((hcv * keepC).toFixed(6)),
+                      entryFee: (t.hedgeLeg.entryFee || 0) * (keepC / hedgeBoughtC),
+                    };
+                    logWarn(`[${accountState.name}] ◐ Hedge ${t.hedgeLeg.symbol} cut ${hedgeBoughtC}→${keepC} to match the smaller entry.`);
+                    hedgeBoughtC = keepC;
+                  }
+                }
               }
             }
             // Draw the cycle's free margin down so a second entry this cycle is checked
@@ -7222,49 +7361,17 @@ async function startSingleAccountEngine(account) {
               log(`[${accountState.name}] ◎ Brackets: long TP + short SL @ spot ${bracketLevel} (${effectiveConfig.exitType || 'ATM'})`);
             }
 
-            // Triplet 3rd leg: buy the hedge long (best-effort, no bracket). A fill
-            // failure drops the hedge but keeps the 2-leg position — do NOT abort entry.
+            // Triplet 3rd leg: already bought (first, above). Record its bracket level now that
+            // the whole triplet is open.
             if (t.hedgeLeg && (t.hedgeLeg.lotSize || 0) > 0) {
-              // Another open pair's hedge already on this strike? Delta has ONE bracket per symbol,
-              // so this buy goes WITHOUT a bracket; syncSharedHedgeBrackets (end of cycle) moves
-              // the symbol's bracket to the farthest pair's level. Each pair's own hedge exit is
-              // the engine's catch-all at its own level, for its own contracts.
-              const hedgeMates = [...remaining, ...newEntries.slice(0, newEntries.indexOf(t))]
-                .filter(p => p.id !== t.id && p.hedgeLeg?.symbol === t.hedgeLeg.symbol && (p.hedgeLeg.lotSize || 0) > 0);
-              const hedgeShared = hedgeMates.length > 0;
-              if (hedgeShared) log(`[${accountState.name}] ⇉ Hedge ${t.hedgeLeg.symbol} shared with ${hedgeMates.map(p => p.id).join(', ')} — buying without a bracket; the symbol's bracket goes to the farthest pair's level.`);
-              const hres = await live.openHedge(t, {
-                contracts: longContracts(t.hedgeLeg),
-                price: t.hedgeLeg.entryPrice + buyOff,
-                // Same TP as the first long (spot-triggered bracket on Delta) — unless shared.
-                tp: hedgeShared ? null : bracketLevel,
-                chase: {
-                  attempts: ENTRY_CHASE.attempts, pollMs: ENTRY_CHASE.pollMs,
-                  bump: ENTRY_CHASE.bump, bumpPct: ENTRY_CHASE.bumpPct,
-                  buyOffset: buyOff, sellOffset: sellOff,
-                  quote: (sym) => tickerData[sym],
-                },
-              });
-              if (hres && hres.ok === false && !hres.skipped) {
-                logWarn(`[${accountState.name}] Hedge leg buy failed for ${t.buyLeg.strike} (${hres.error}) — keeping the 2-leg spread, dropping hedge.`);
-                if (liveArmed && !live.dryRun) {
-                  notifyFailure({
-                    context: `Hedge leg (3rd long) did not fill after the entry chase — ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} is running as a 2-leg spread WITHOUT its hedge`,
-                    error: { message: hres.error || 'hedge-not-filled' },
-                    extra: `hedge ${t.hedgeLeg.symbol} × ${longContracts(t.hedgeLeg)}`,
-                  });
-                }
-                t.hedgeLeg = null;
-              } else if (t.hedgeLeg) {
-                // brkComputed = this pair's own level; brkLevel = what rests on Delta for the symbol.
-                t.hedgeLeg = { ...t.hedgeLeg, brkComputed: bracketLevel,
-                  brkLevel: hedgeShared ? (hedgeMates[0].hedgeLeg.brkLevel ?? null) : bracketLevel };
-                // Joined a shared strike → move its single Delta bracket to the farthest pair's
-                // level NOW, so a nearer pair's TP can only ever close that pair's own qty.
-                if (hedgeShared) {
-                  await syncSharedHedgeBrackets('hedge joined', [t])
-                    .catch(e => logWarn(`[${accountState.name}] hedge bracket sync (join) failed: ${e.message}`));
-                }
+              // brkComputed = this pair's own level; brkLevel = what rests on Delta for the symbol.
+              t.hedgeLeg = { ...t.hedgeLeg, brkComputed: bracketLevel,
+                brkLevel: hedgeShared ? (hedgeMates[0].hedgeLeg.brkLevel ?? null) : bracketLevel };
+              // Joined a shared strike → move its single Delta bracket to the farthest pair's
+              // level NOW, so a nearer pair's TP can only ever close that pair's own qty.
+              if (hedgeShared) {
+                await syncSharedHedgeBrackets('hedge joined', [t])
+                  .catch(e => logWarn(`[${accountState.name}] hedge bracket sync (join) failed: ${e.message}`));
               }
             }
 

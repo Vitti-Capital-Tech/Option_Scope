@@ -91,7 +91,7 @@ function getPool(symbol, side, depth, now) {
  * Reserve FULL qty on every leg of a spread, all-or-nothing.
  *
  * @param {Array<{symbol:string, side:'buy'|'sell', qty:number, depth:number|null}>} legs
- *   One entry per leg to govern (buy leg + sell leg; long-only entries pass just the
+ *   One entry per leg to govern (buy leg + sell leg + hedge; long-only entries pass just the
  *   buy leg). `qty` is the account's intended CONTRACT count for that leg.
  * @param {number} now  epoch ms (passed in so callers/tests control the clock)
  * @param {{isLive?:boolean}} opts
@@ -112,8 +112,8 @@ export function reserveSpread(legs, now = Date.now(), { isLive = false } = {}) {
 
   const resolved = active.map(l => ({ leg: l, pool: getPool(l.symbol, l.side, l.depth, now) }));
 
-  // ── A REAL ORDER IS NEVER BLOCKED HERE ──────────────────────────────────────
-  // Live only RECORDS its draw; the gate applies to simulations. Two reasons:
+  // ── HISTORY: from 2026-08-31 to 2026-10-29 a real order was never blocked here ──
+  // Live only RECORDED its draw; the gate applied to simulations. The two reasons given:
   //
   //   1. Correctness. Live already has two checks with better information than this
   //      one: the account's own top-of-book depth guard (live L1 sizes at placement
@@ -131,6 +131,34 @@ export function reserveSpread(legs, now = Date.now(), { isLive = false } = {}) {
   // Paper still contends — against `shadow`, which live's draws deplete — so a simulated
   // fill still reflects what the live book had left. That was the point of enrolling
   // paper, and it is preserved.
+  // ── LIVE IS GATED AGAIN (2026-10-29), on every leg, against the real book (`remaining`) ──
+  // The two reasons above did not hold up in production:
+  //   1. The per-account depth guard checks only THIS account's size against the whole
+  //      book, so every account of a group passes it in the same second and together they
+  //      sweep the book. 2026-10-28 20:17: 8 live accounts sold P-BTC-78400 (~17,900
+  //      contracts) inside 2s — the first four filled at $10, the next at $9.25, the last
+  //      three at $8.90. 2026-10-27 23:04: the same on a $5 hedge, filled up to $15.
+  //   2. Fairness is now handled outside this module: each live account starts its
+  //      minute's entry scan after a per-minute pseudo-random stagger (ENTRY_STAGGER_MS in
+  //      paperTradingEngine.js), so who draws first changes every minute instead of being
+  //      fixed by timer registration order.
+  // A blocked account skips the whole entry (nothing bought) and retries next minute.
+  if (isLive) {
+    for (const { leg, pool } of resolved) {
+      const need = Number(leg.qty);
+      if (Number.isFinite(pool.remaining) && pool.remaining < need) {
+        return {
+          ok: false,
+          blockedLeg: {
+            symbol: leg.symbol, side: leg.side, qty: need,
+            available: pool.remaining,
+            capacity: pool.cap,
+          },
+        };
+      }
+    }
+  }
+
   if (!isLive) {
     for (const { leg, pool } of resolved) {
       const need = Number(leg.qty);

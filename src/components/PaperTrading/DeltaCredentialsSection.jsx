@@ -246,10 +246,20 @@ export default function DeltaCredentialsSection({ register, watch, setValue, exi
                 style={fieldStyle}
               />
             </div>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <label style={labelStyle}>Hedge Offset (+$)</label>
+              <CustomInput
+                type="number" step="0.5" min="0"
+                {...register('entryHedgeOffset', { valueAsNumber: true })}
+                placeholder="2"
+                style={fieldStyle}
+              />
+            </div>
           </div>
           <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
             Live entry limit prices: buy at ask +offset, sell at bid −offset (premium $),
-            so marketable entries fill.
+            so marketable entries fill. The hedge leg buys at its ask +hedge offset and never
+            pays more than that.
           </span>
         </div>
       )}

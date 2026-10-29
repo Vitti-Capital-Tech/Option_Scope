@@ -427,11 +427,16 @@ export function createLiveExecutor(getCtx) {
       const quoted = marketableChasePrice(side, chase.quote?.(symbol), offset, bump, bumpPct);
       if (quoted == null) continue;
       // Ratchet against the best price sent so far (see above) — never step back.
-      const stepped = bestPx == null
+      let stepped = bestPx == null
         ? quoted
         : (side === 'buy' ? Math.max(bestPx, quoted) : Math.min(bestPx, quoted));
+      // Optional ceiling on a BUY chase (the hedge: never above its ask + hedge offset).
+      const cap = side === 'buy' && Number.isFinite(Number(chase.maxPrice)) ? Number(chase.maxPrice) : null;
+      if (cap != null) stepped = Math.min(stepped, cap);
       const newPx = cleanLimitPrice(stepped);
       if (!newPx) continue;
+      // Already at the ceiling — nothing better to send; keep polling for the fill.
+      if (cap != null && bestPx != null && Number(newPx) === bestPx) continue;
       bestPx = Number(newPx);
       try {
         // Send the ORIGINAL total size: Delta keeps the already-filled portion and
