@@ -87,7 +87,10 @@ export function ScannerFilterToolbar({ config, updateConfig, onSendToWindow, und
       )}
       {saved.length > 0 && <span className="scanner-toolbar-label">Saved</span>}
       {saved.map(p => {
-        const active = isActive(p.values) && (!p.underlying || p.underlying === underlying);
+        // Active = same filters AND the same underlying + expiry it was saved on. A setting saved
+        // before the market was recorded (no underlying) is never active, so once applied it
+        // offers ⟳ Update — which records the market it is used on.
+        const active = isActive(p.values) && p.underlying === underlying && (!p.expiry || p.expiry === expiry);
         const modified = !active && p.name === appliedName;
         const market = p.underlying ? `${p.underlying}${p.expiry ? ` · ${fmtExp(p.expiry)}` : ''}` : '';
         return (

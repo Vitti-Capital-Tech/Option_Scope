@@ -6,6 +6,14 @@ import {
 
 const UNDERLYINGS = ['BTC', 'ETH'];
 const SCANNER_TOP_KEY = 'vitti_scanner_top_spreads_v1';
+// Last underlying + expiry, so a page refresh reopens the market the filters were set for.
+const SCANNER_MARKET_KEY = 'vitti_scanner_market_v1';
+const loadMarket = () => {
+  try {
+    const m = JSON.parse(localStorage.getItem(SCANNER_MARKET_KEY) || 'null');
+    return m && UNDERLYINGS.includes(m.underlying) ? m : null;
+  } catch { return null; }
+};
 
 import ResultTable from './ResultTable';
 import { normalizeIv, toFiniteNumber, matchesOptionType, listHedgeStrikes, defaultOiCapM, effectiveOiCapM, isOiBlocked } from './scannerUtils';
@@ -18,7 +26,7 @@ import { ChevronDown } from 'lucide-react';
 
 // ── Main Scanner Component ──────────────────────────────────────────────────
 export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onSendToWindow }) {
-  const [underlying, setUnderlying] = useState('BTC');
+  const [underlying, setUnderlying] = useState(() => loadMarket()?.underlying ?? 'BTC');
   const [products, setProducts] = useState([]);
   const [expiries, setExpiries] = useState([]);
   const [selExpiry, setSelExpiry] = useState('');
@@ -133,8 +141,13 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
   const underlyingRef = useRef(underlying);
   // Declared before the product-load effect below, so it runs first on an underlying change.
   useEffect(() => { underlyingRef.current = underlying; }, [underlying]);
-  // Expiry a saved setting asked for, applied once that underlying's expiries are loaded.
-  const pendingExpiryRef = useRef(null);
+  // Expiry to select once that underlying's expiries are loaded: a saved setting's, or on
+  // first load the one this browser last used.
+  const pendingExpiryRef = useRef(loadMarket()?.expiry ?? null);
+  useEffect(() => {
+    if (!selExpiry) return;
+    try { localStorage.setItem(SCANNER_MARKET_KEY, JSON.stringify({ underlying, expiry: selExpiry })); } catch { /* storage unavailable */ }
+  }, [underlying, selExpiry]);
 
   const refreshProducts = useCallback(async () => {
     const forUnderlying = underlying;
