@@ -4738,6 +4738,141 @@ body.light-theme .pt-btn-apply.active {
   }
 }
 
+/* ── Entry-block notifications (🚦) ──
+   Desktop: a button in the navbar with the panel dropping down below it.
+   Mobile: a floating button above the bottom nav (the navbar tabs are hidden there). */
+.eb-nav-wrap {
+  position: relative;
+}
+
+.eb-nav-btn {
+  position: relative;
+  padding: 6px 8px;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.eb-badge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: var(--put);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.eb-panel-desk {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 9998;
+}
+
+.eb-panel {
+  width: 360px;
+  max-width: calc(100vw - 32px);
+  max-height: 420px;
+  overflow-y: auto;
+  background: rgba(10, 13, 18, 0.98);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
+  text-align: left;
+}
+
+.eb-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: rgba(10, 13, 18, 0.98);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.eb-panel-head button {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.eb-panel-empty {
+  padding: 18px 14px;
+  color: var(--text-dim);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.eb-item {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  border-left: 3px solid var(--put);
+}
+
+.eb-item-msg {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.45;
+}
+
+.eb-item-time {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+
+.eb-float {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .eb-nav-wrap {
+    display: none;
+  }
+
+  .eb-float {
+    position: fixed;
+    bottom: 72px; /* above the 56px bottom nav */
+    right: 16px;
+    z-index: 9998;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 10px;
+  }
+
+  .eb-fab {
+    position: relative;
+    width: 46px;
+    height: 46px;
+    border-radius: 50%;
+    background: rgba(10, 13, 18, 0.98);
+    border: 1px solid var(--border);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    cursor: pointer;
+    font-size: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+}
+
 /* ── Mobile Bottom Navigation Bar ── */
 .mobile-bottom-nav {
   display: none;
@@ -6767,6 +6902,29 @@ body.light-theme .dr-date {
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: #f0a020;
+}
+
+/* Slippage tab: quote → fill over the slippage, per leg. */
+.sl-leg {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  white-space: nowrap;
+}
+
+.sl-px {
+  font-variant-numeric: tabular-nums;
+}
+
+.sl-slip {
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.sl-muted {
+  color: var(--text-dim);
+  font-size: 11px;
 }
 
 .dr-status.backfilled {

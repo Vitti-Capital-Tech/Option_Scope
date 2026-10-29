@@ -3576,6 +3576,34 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     );
   }
 
+  // Entry-block notifications (bell + persisted panel). Fed by the cross-account entry
+  // governor: when the top-of-book depth is taken first, this account's missed entry is
+  // logged and surfaced here. Rendered in the navbar on desktop, floating on mobile.
+  const toggleNotifPanel = () => setNotifPanelOpen(o => { const next = !o; if (next) setNotifUnread(0); return next; });
+  const notifBadge = notifUnread > 0 && (
+    <span className="eb-badge">{notifUnread > 99 ? '99+' : notifUnread}</span>
+  );
+  const notifPanel = (
+    <div className="eb-panel">
+      <div className="eb-panel-head">
+        <span>🚦 Entry Blocks</span>
+        <button type="button" onClick={() => setNotifPanelOpen(false)} aria-label="Close">×</button>
+      </div>
+      {blockNotifications.length === 0 ? (
+        <div className="eb-panel-empty">
+          No entry blocks yet. When another account takes the available depth first, the missed entry shows up here.
+        </div>
+      ) : (
+        blockNotifications.map(n => (
+          <div key={n.id} className="eb-item">
+            <div className="eb-item-msg">{n.message}</div>
+            <div className="eb-item-time">{new Date(n.created_at).toLocaleString()}</div>
+          </div>
+        ))
+      )}
+    </div>
+  );
+
   return (
     <div className="app">
       <Navbar
@@ -3585,6 +3613,16 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         toggleTheme={toggleTheme}
         badgeLabel={engineStatusLabel}
         badgeColor={engineStatusColor}
+        extraHeaderContent={(
+          // Desktop: the entry-block bell sits in the navbar (it used to float bottom-right,
+          // over the positions table's close buttons); its panel drops down below it.
+          <div className="eb-nav-wrap">
+            <button className="nav-tab eb-nav-btn" onClick={toggleNotifPanel} title="Entry-block notifications">
+              🚦{notifBadge}
+            </button>
+            {notifPanelOpen && <div className="eb-panel-desk">{notifPanel}</div>}
+          </div>
+        )}
       />
 
       <div className="body trading-body" style={{ flexDirection: 'column', overflowY: 'auto' }}>
@@ -3932,52 +3970,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         })}
       </div>
 
-      {/* Entry-block notifications — bell + persisted panel (bottom-right). Fed by the
-          cross-account entry governor: when another account takes the available top-of-book
-          depth first, this account's missed entry is logged and surfaced here. */}
-      <div style={{ position: 'fixed', bottom: 20, right: 20, zIndex: 9998, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 10 }}>
-        {notifPanelOpen && (
-          <div style={{
-            width: 360, maxHeight: 420, overflowY: 'auto',
-            background: 'rgba(10, 13, 18, 0.98)', border: '1px solid var(--border)',
-            borderRadius: 10, boxShadow: '0 12px 32px rgba(0,0,0,0.6)',
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px', borderBottom: '1px solid var(--border)', position: 'sticky', top: 0, background: 'rgba(10,13,18,0.98)' }}>
-              <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>🚦 Entry Blocks</span>
-              <button onClick={() => setNotifPanelOpen(false)} style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 18, lineHeight: 1 }}>×</button>
-            </div>
-            {blockNotifications.length === 0 ? (
-              <div style={{ padding: '18px 14px', color: 'var(--text-dim)', fontSize: 12.5, lineHeight: 1.5 }}>
-                No entry blocks yet. When another account takes the available depth first, the missed entry shows up here.
-              </div>
-            ) : (
-              blockNotifications.map(n => (
-                <div key={n.id} style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', borderLeft: '3px solid var(--put)' }}>
-                  <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text)', lineHeight: 1.45 }}>{n.message}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 4 }}>{new Date(n.created_at).toLocaleString()}</div>
-                </div>
-              ))
-            )}
-          </div>
-        )}
-        <button
-          onClick={() => setNotifPanelOpen(o => { const next = !o; if (next) setNotifUnread(0); return next; })}
-          title="Entry-block notifications"
-          style={{
-            position: 'relative', width: 46, height: 46, borderRadius: '50%',
-            background: 'rgba(10,13,18,0.98)', border: '1px solid var(--border)',
-            boxShadow: '0 8px 24px rgba(0,0,0,0.5)', cursor: 'pointer', fontSize: 20,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}
-        >
-          🚦
-          {notifUnread > 0 && (
-            <span style={{
-              position: 'absolute', top: -4, right: -4, minWidth: 18, height: 18, padding: '0 4px',
-              borderRadius: 9, background: 'var(--put)', color: '#fff', fontSize: 11, fontWeight: 700,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-            }}>{notifUnread > 99 ? '99+' : notifUnread}</span>
-          )}
+      {/* Entry-block notifications on MOBILE — floating bell + panel above the bottom nav
+          (desktop shows them in the navbar instead: see notifBell / notifPanel). */}
+      <div className="eb-float">
+        {notifPanelOpen && <div className="eb-panel-mob">{notifPanel}</div>}
+        <button className="eb-fab" onClick={toggleNotifPanel} title="Entry-block notifications">
+          🚦{notifBadge}
         </button>
       </div>
     </div>
