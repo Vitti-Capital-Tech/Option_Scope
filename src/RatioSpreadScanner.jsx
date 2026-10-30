@@ -5,6 +5,9 @@ import {
 } from './api';
 
 const UNDERLYINGS = ['BTC', 'ETH'];
+// Call / Put Scaling as applied: up to 100 as entered; above 100 the entered value minus 100
+// (350 → 250%). The input keeps showing what was entered.
+const appliedScalingPct = (p) => { const n = Number(p) || 0; return n > 100 ? n - 100 : n; };
 const SCANNER_TOP_KEY = 'vitti_scanner_top_spreads_v1';
 // Last underlying + expiry, so a page refresh reopens the market the filters were set for.
 const SCANNER_MARKET_KEY = 'vitti_scanner_market_v1';
@@ -495,7 +498,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
 
           let scaledSellQty = sellQty;
           if (config.atmRatioScaling && atmRatio != null) {
-            const pct = buyLeg.type === 'call' ? config.atmRatioPctCall : config.atmRatioPctPut;
+            const pct = appliedScalingPct(buyLeg.type === 'call' ? config.atmRatioPctCall : config.atmRatioPctPut);
             const atmRatioVal = Math.round(atmRatio / 0.25) * 0.25;
             const diff = Math.max(0, atmRatioVal - sellQty);
             scaledSellQty = Math.max(sellQty, Math.round((sellQty + (pct / 100) * diff) / 0.25) * 0.25);
@@ -865,12 +868,14 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
                     <label>Call Scaling</label>
                     <CustomInput type="number" step="5" suffix="%" showStepper width={100} value={config.atmRatioPctCall ?? 50}
                       onChange={e => updateConfig('atmRatioPctCall', Number(e.target.value))}
+                      title={`Applied: ${appliedScalingPct(config.atmRatioPctCall ?? 50)}%`}
                     />
                   </div>
                   <div key="atmRatioPctPut" className="form-group row-inline">
                     <label>Put Scaling</label>
                     <CustomInput type="number" step="5" suffix="%" showStepper width={100} value={config.atmRatioPctPut ?? 50}
                       onChange={e => updateConfig('atmRatioPctPut', Number(e.target.value))}
+                      title={`Applied: ${appliedScalingPct(config.atmRatioPctPut ?? 50)}%`}
                     />
                   </div>
                 </>

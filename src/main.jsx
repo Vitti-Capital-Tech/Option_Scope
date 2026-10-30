@@ -2,6 +2,7 @@ import { createRoot } from 'react-dom/client'
 import { useState, useEffect } from 'react'
 import './index.css'
 import RatioSpreadScanner from './RatioSpreadScanner.jsx'
+import CalendarSpreadScanner from './CalendarSpreadScanner.jsx'
 import PaperTrading from './PaperTrading.jsx'
 import DailyReport from './DailyReport.jsx'
 import SlippageReport from './SlippageReport.jsx'
@@ -11,7 +12,7 @@ import { AppDialogHost } from './components/common/AppDialog.jsx'
 function Root() {
   const [page, setPage] = useState(() => {
     const path = window.location.pathname.replace(/^\//, '') || 'scanner';
-    return ['scanner', 'trading', 'live', 'report', 'slippage'].includes(path) ? path : 'scanner';
+    return ['scanner', 'calendar', 'trading', 'live', 'report', 'slippage'].includes(path) ? path : 'scanner';
   });
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
 
@@ -30,7 +31,7 @@ function Root() {
   useEffect(() => {
     const handlePopState = () => {
       const path = window.location.pathname.replace(/^\//, '') || 'scanner';
-      const validPages = ['scanner', 'trading', 'live', 'report', 'slippage'];
+      const validPages = ['scanner', 'calendar', 'trading', 'live', 'report', 'slippage'];
       if (validPages.includes(path)) {
         setPage(path);
       } else {
@@ -65,6 +66,9 @@ function Root() {
     <>
       <div style={{ display: page === 'scanner' ? 'block' : 'none', height: '100%', width: '100%' }}>
         <RatioSpreadScanner onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} broadcast={broadcast} onSendToWindow={sendToWindow} />
+      </div>
+      <div style={{ display: page === 'calendar' ? 'block' : 'none', height: '100%', width: '100%' }}>
+        <CalendarSpreadScanner onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} />
       </div>
       <div style={{ display: page === 'trading' ? 'block' : 'none', height: '100%', width: '100%' }}>
         <PaperTrading mode="paper" onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} broadcast={broadcast} scannerFill={scannerFill?.mode === 'paper' ? scannerFill : null} />

@@ -1562,7 +1562,10 @@ live and a paper account chasing the same book contend with each other.
   `live_enabled = false` is skipped — it is sized through the unarmed notional-cap branch
   with no `contractValue`, so there's no reliable contract count to reserve.
 - **Notification:** a blocked entry INSERTs into `entry_block_notifications` (migration
-  `035`) → the dashboard's **🚦 bell panel + toast**, *identical to paper*. No UI change was
+  `035`) → the dashboard's **🚦 panel + toast**, *identical to paper* (the 🚦 button sits in the navbar on
+  desktop, floating above the bottom bar on mobile; the panel groups blocks of one minute on one strike into one
+  two-line card: spread `×N`, time, the blocked leg and strike, need vs got, and the cause — *other accounts first*
+  or *thin book*). No UI change was
   needed: `main.jsx` renders the same component for `mode="live"`, and the panel/badge/toast
   and its Realtime subscription are scoped by `activeAccountId` only, never by mode. Live
   accounts are rows in the same `paper_trading_accounts` table, so `035`'s FK and Realtime
@@ -1572,10 +1575,12 @@ live and a paper account chasing the same book contend with each other.
   two (for the first account in a window the pool equals `askSize`, so governor-pass implies
   guard-pass). The guard is **kept** as the execute-time backstop for depth that thinned
   between the two checks.
-  > **Known interaction:** the checks read the feed at different moments and the governor
-  > freezes its pool for the window. If the governor reserves and the guard then skips the
-  > entry, that reservation stays consumed until the window expires (≤8s). Conservative and
-  > self-healing — it can only cause an *extra* block, never an over-fill.
+  > **Unplaced entries hand their depth back (2026-10-29).** The governor reserves at candidate time; a
+  > staged entry that is then not placed (a later check skips it — margin, caps, Delta already holding
+  > the symbol, the depth guard — the phase budget defers it, or it aborts) returns its reservation at
+  > once (`releaseSpread`, same window only). Before, it stayed consumed for the rest of the window and
+  > blocked other accounts with "another account drew …" although nobody had traded — every skip became
+  > an extra block once live was gated. Entries that were placed keep their reservation.
 
 ### Same-product collision guard & stuck-leg recovery
 

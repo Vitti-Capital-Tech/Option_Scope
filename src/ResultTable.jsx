@@ -81,7 +81,11 @@ export default function ResultTable({
   spotPrice,
   lastRefreshed,
   trueAtmStrike,
-  tickerData
+  tickerData,
+  // Optional per-leg price sources { buy, sell } (ticker maps). The Calendar Spread scanner
+  // prices the long at the LONG expiry and the short at the SHORT expiry; without it every
+  // lookup uses tickerData (one expiry — the Ratio Spread scanner).
+  priceSources = null
 }) {
   const [expandedStrikes, setExpandedStrikes] = useState({});
   // Anchored hover tooltip for the ATM intrinsic cells (see renderIntrinsic /
@@ -108,9 +112,10 @@ export default function ResultTable({
    */
   // Resolve the price for a strike AND report how it was resolved (for the tooltip).
   // Returns { price, detail } where detail.mode ∈ exact|bracket|single|none.
-  const resolveTickerPrice = useCallback((strike, optType, priceField) => {
+  const resolveTickerPrice = useCallback((strike, optType, priceField, side = null) => {
     const lowerType = optType.toLowerCase();
-    const allTickers = Object.values(tickerData || {}).filter(t => t.type === lowerType);
+    const source = (side && priceSources?.[side]) || tickerData || {};
+    const allTickers = Object.values(source).filter(t => t.type === lowerType);
     if (!allTickers.length) return { price: null, detail: { mode: 'none', strike } };
 
     // Exact match first
@@ -149,7 +154,7 @@ export default function ResultTable({
     if (pBelow != null && pAbove != null) { price = (pBelow + pAbove) / 2; mode = 'bracket'; }
     else if (pBelow != null || pAbove != null) { price = pBelow ?? pAbove; mode = 'single'; }
     return { price, detail: { mode, strike, tolerance: maxTolerance, below: belowInfo, above: aboveInfo } };
-  }, [tickerData]);
+  }, [tickerData, priceSources]);
 
   // Render an ATM intrinsic cell: the price, a "≈" marker when the value came from the
   // bracket-average / single-neighbour fallback, plus a styled hover card (renderTipContent)
@@ -229,10 +234,10 @@ export default function ResultTable({
     const processedResults = results.map(r => {
       // Use nearest-available strike when exact ATM is missing. Capture the resolution
       // detail (exact/bracket/single/none) so the cell can show a verification tooltip.
-      const buyInfo = resolveTickerPrice(atmStrike, type, 'bid');
+      const buyInfo = resolveTickerPrice(atmStrike, type, 'bid', 'buy');
       const buyIntrinsic = buyInfo.price;                                   // null if unavailable
       const targetSellStrike = type === 'CALL' ? atmStrike + r.strikeDiff : atmStrike - r.strikeDiff;
-      const sellInfo = resolveTickerPrice(targetSellStrike, type, 'ask');
+      const sellInfo = resolveTickerPrice(targetSellStrike, type, 'ask', 'sell');
       const sellIntrinsic = sellInfo.price;                                 // null if unavailable
       const lotSize = r.buyLeg.lotSize || 1;
 
@@ -287,7 +292,7 @@ export default function ResultTable({
         const qty = Math.round(adjustedSellQty * hedgePct * 100) / 100;
         const offset = Number(h.strike) - Number(r.buyLeg.strike);
         const atAtm = atmStrike != null
-          ? (resolveTickerPrice(atmStrike + offset, type, 'bid').price ?? 0)
+          ? (resolveTickerPrice(atmStrike + offset, type, 'bid', 'buy').price ?? 0)
           : 0;
         const term = (atAtm - h.price) * totalSellQty * hedgePct;
         const hMargin = h.price * adjustedSellQty * hedgePct;

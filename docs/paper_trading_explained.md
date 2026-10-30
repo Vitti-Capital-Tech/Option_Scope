@@ -775,7 +775,7 @@ This is the **only** place the two modes differ:
 
 ### Website notification (not Telegram)
 
-When an account is blocked, the engine appends a row to **`entry_block_notifications`** (migration `035`). The dashboard subscribes via Realtime (account-scoped) and shows a **toast** plus a persisted **🚦 bell panel** (last 50 blocks, each with the strikes, blocking leg, and needed-vs-available qty). This is deliberately a **website** notification — Telegram alerts stay reserved for armed-live failures.
+When an account is blocked, the engine appends a row to **`entry_block_notifications`** (migration `035`). The dashboard subscribes via Realtime (account-scoped) and shows a short **toast** plus a persisted **🚦 panel** (last 50 blocks; navbar button on desktop, floating above the bottom bar on mobile). Blocks of the same minute on the same strike and cause are grouped into one two-line card — spread with `×N`, time, then the blocked leg + strike, need vs got, and the cause: *other accounts first* (amber) or *thin book* (red); the full message is the card's tooltip. This is deliberately a **website** notification — Telegram alerts stay reserved for armed-live failures.
 
 **Live accounts get the identical bell + toast** with no UI change: `main.jsx` renders the *same* `PaperTrading` component for `mode="paper"` and `mode="live"`, and the panel, badge, toast and Realtime subscription are all scoped by `activeAccountId` alone — never by mode. Live accounts are rows in the same `paper_trading_accounts` table (`mode` column, `CHECK IN ('paper','live')`), so migration `035`'s foreign key and Realtime publication already cover them.
 

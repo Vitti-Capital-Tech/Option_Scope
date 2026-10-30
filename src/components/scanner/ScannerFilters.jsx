@@ -16,9 +16,9 @@ const same = (a, b) => (typeof a === 'boolean' || typeof b === 'boolean')
   ? !!a === !!b
   : Number(a) === Number(b);
 
-function loadSaved() {
+function loadSaved(key = SAVED_SETTINGS_KEY) {
   try {
-    const raw = localStorage.getItem(SAVED_SETTINGS_KEY);
+    const raw = localStorage.getItem(key);
     const list = raw ? JSON.parse(raw) : [];
     return Array.isArray(list) ? list.filter(p => p && p.name && p.values) : [];
   } catch {
@@ -26,8 +26,8 @@ function loadSaved() {
   }
 }
 
-function storeSaved(list) {
-  try { localStorage.setItem(SAVED_SETTINGS_KEY, JSON.stringify(list)); } catch { /* storage unavailable */ }
+function storeSaved(list, key = SAVED_SETTINGS_KEY) {
+  try { localStorage.setItem(key, JSON.stringify(list)); } catch { /* storage unavailable */ }
 }
 
 /**
@@ -38,8 +38,10 @@ function storeSaved(list) {
  * saved on (applying one opens that market again), kept in this browser. Settings saved
  * before the market was recorded apply their filters only.
  */
-export function ScannerFilterToolbar({ config, updateConfig, onSendToWindow, underlying, expiry, onApplyMarket }) {
-  const [saved, setSaved] = useState(loadSaved);
+// `savedKey` / `defaults`: another scanner (Calendar Spread) keeps its own saved settings and
+// defaults; `fmtExpiry` renders its expiry value (e.g. "short|long") in the tooltip.
+export function ScannerFilterToolbar({ config, updateConfig, onSendToWindow, underlying, expiry, onApplyMarket, savedKey = SAVED_SETTINGS_KEY, fmtExpiry = fmtExp }) {
+  const [saved, setSaved] = useState(() => loadSaved(savedKey));
   const [naming, setNaming] = useState(false);
   const [name, setName] = useState('');
   // The saved setting last applied here: once the filters are changed, its chip offers ⟳ Update.
@@ -56,7 +58,7 @@ export function ScannerFilterToolbar({ config, updateConfig, onSendToWindow, und
     const exists = saved.some(p => p.name === n);
     const next = exists ? saved.map(p => (p.name === n ? entry : p)) : [...saved, entry];
     setSaved(next);
-    storeSaved(next);
+    storeSaved(next, savedKey);
     setAppliedName(n);
   };
   const commit = async () => {
@@ -76,7 +78,7 @@ export function ScannerFilterToolbar({ config, updateConfig, onSendToWindow, und
   const remove = (n) => {
     const next = saved.filter(p => p.name !== n);
     setSaved(next);
-    storeSaved(next);
+    storeSaved(next, savedKey);
     if (appliedName === n) setAppliedName(null);
   };
 
@@ -92,7 +94,7 @@ export function ScannerFilterToolbar({ config, updateConfig, onSendToWindow, und
         // offers ⟳ Update — which records the market it is used on.
         const active = isActive(p.values) && p.underlying === underlying && (!p.expiry || p.expiry === expiry);
         const modified = !active && p.name === appliedName;
-        const market = p.underlying ? `${p.underlying}${p.expiry ? ` · ${fmtExp(p.expiry)}` : ''}` : '';
+        const market = p.underlying ? `${p.underlying}${p.expiry ? ` · ${fmtExpiry(p.expiry)}` : ''}` : '';
         return (
         <span key={p.name} className={`scanner-saved ${active ? 'on' : ''} ${modified ? 'modified' : ''}`}>
           <button type="button" className="scanner-saved-apply"

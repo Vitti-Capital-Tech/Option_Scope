@@ -1,5 +1,5 @@
 import React from 'react';
-import { TrendingUp, Target, Columns, Radio, FileSpreadsheet, Gauge, Sun, Moon } from 'lucide-react';
+import { TrendingUp, Target, Columns, Radio, FileSpreadsheet, Gauge, CalendarRange, Sun, Moon } from 'lucide-react';
 
 export default function Navbar({
   activeTab,
@@ -27,6 +27,14 @@ export default function Navbar({
             <span className="nav-tab-icon" aria-hidden="true">
               <Target size={14} />
             </span> <span className="nav-tab-text">Ratio Spread</span>
+          </button>
+          <button
+            className={`nav-tab ${activeTab === 'calendar' ? 'active' : ''}`}
+            onClick={() => onNavigate('calendar')}
+          >
+            <span className="nav-tab-icon" aria-hidden="true">
+              <CalendarRange size={14} />
+            </span> <span className="nav-tab-text">Calendar Spread</span>
           </button>
           <button
             className={`nav-tab ${activeTab === 'trading' ? 'active' : ''}`}
@@ -87,6 +95,15 @@ export default function Navbar({
             <Target size={18} />
           </span>
           <span className="mobile-bottom-text">Ratio Spread</span>
+        </button>
+        <button
+          className={`mobile-bottom-tab ${activeTab === 'calendar' ? 'active' : ''}`}
+          onClick={() => onNavigate('calendar')}
+        >
+          <span className="mobile-bottom-icon">
+            <CalendarRange size={18} />
+          </span>
+          <span className="mobile-bottom-text">Calendar</span>
         </button>
         <button
           className={`mobile-bottom-tab ${activeTab === 'trading' ? 'active' : ''}`}
