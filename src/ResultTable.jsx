@@ -275,7 +275,11 @@ export default function ResultTable({
 
       // Per underlying + expiry (BTC 200x / ETH 100x at DTE 0–1, farther expiries ≤ 100x) —
       // both read from the leg symbol (…-DDMMYY). Must match engine/lib/utils.js calcMargin().
-      const leverage = leverageFor(r.buyLeg?.symbol);
+      // From the SHORT leg's symbol: the leverage only divides the short value, and a short's
+      // margin follows its own expiry. Same thing for a ratio spread (one expiry); for a
+      // calendar the short sits on the near expiry (200x BTC at DTE 0–1) while the long is on
+      // a far one (≤ 100x), which used to over-state the margin.
+      const leverage = leverageFor(r.sellLeg?.symbol ?? r.buyLeg?.symbol);
 
       // Hedge leg (3rd long): qty = the SCALED short qty (after the $195k / leverage cap)
       // × Hedge Lot %. At ATM it is worth the bid at the ATM-shifted hedge strike (same

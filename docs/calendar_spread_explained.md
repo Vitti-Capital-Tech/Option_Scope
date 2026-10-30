@@ -47,6 +47,11 @@ market prices, the same proxy the Ratio Spread scanner uses, through `ResultTabl
 > At the short expiry the long still has time value left, so the real P&L there is usually **higher** than the ATM
 > P&L shown. Treat the column as an estimate.
 
+**Req. Margin** = long premium × lot + capped short value ÷ leverage. The leverage comes from the **short** leg's
+expiry, because it only divides the short value and a short's margin follows its own expiry: BTC 200x / ETH 100x
+within the near-expiry window, at most 100x beyond it. It used to come from the long, which over-stated a
+calendar's margin (a far long → 100x).
+
 Call / Put Scaling above 100 applies the entered value minus 100 (350 → 250%), as in the Ratio Spread scanner.
 
 ## Filters
