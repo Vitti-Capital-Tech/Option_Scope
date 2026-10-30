@@ -2400,6 +2400,22 @@ body.light-theme .scanner-logs-body::-webkit-scrollbar-thumb:hover {
   transform: scale(1.02);
 }
 
+/* Close Calls / Close Puts — outlined, next to the solid Close All. */
+.pt-btn-close-dir {
+  height: 28px;
+  margin-right: 6px;
+}
+
+.pt-btn-close-n {
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: rgba(246, 70, 93, 0.15);
+  font-size: 9.5px;
+  line-height: 15px;
+  text-align: center;
+}
+
 /* ── Empty States ────────────────────────────────────── */
 .pt-empty {
   display: flex;

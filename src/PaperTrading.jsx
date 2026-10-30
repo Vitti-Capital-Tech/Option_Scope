@@ -1661,6 +1661,49 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     });
   };
 
+  // Close every CALL or every PUT spread the engine tracks for the active account — one
+  // direction only. Flags each one's exit_requested (the per-row ✕ path); the engine closes
+  // each spread (long, short and hedge) on Delta, books it and deletes the row. Unlike Close
+  // All it does not flatten the whole Delta account, so untracked (orphan) legs stay open.
+  const performCloseType = async (type) => {
+    const targets = positions.filter(p => p.type === type);
+    if (!targets.length) return;
+    const { error } = await supabase
+      .from('active_positions')
+      .update({ exit_requested: true })
+      .eq('account_id', activeAccountId)
+      .eq('type', type);
+    if (error) {
+      console.error(`Close all ${type}s failed:`, error);
+      pushToast(`Failed to close ${type}s: ${error.message}`, 'error');
+      return;
+    }
+    const ids = new Set(targets.map(p => p.id));
+    setPositions(prev => prev.map(p => (ids.has(p.id) ? { ...p, exitRequested: true } : p)));
+    // Hide their legs from the live snapshot until the engine's snapshot drops them.
+    const now = Date.now();
+    const syms = new Set(targets.flatMap(p => [p.buyLeg?.symbol, p.sellLeg?.symbol, p.hedgeLeg?.symbol]).filter(Boolean));
+    syms.forEach(sym => pendingCloseRef.current.symbols.set(sym, { since: now }));
+    setLiveExchangeState(prev => prev ? {
+      ...prev,
+      positions: (prev.positions || []).filter(lp => !syms.has(lp.product_symbol)),
+    } : prev);
+    pushToast(`Closing ${targets.length} ${type} position${targets.length === 1 ? '' : 's'}…`, 'success');
+    setTimeout(() => syncAll(), 2500);
+    setTimeout(() => syncAll(), 6000);
+  };
+  const triggerCloseType = (type) => {
+    const count = positions.filter(p => p.type === type).length;
+    if (count === 0) { pushToast(`No open ${type} positions.`, 'info'); return; }
+    const label = type === 'call' ? 'Calls' : 'Puts';
+    setConfirmDialog({
+      title: `Close All ${label}`,
+      message: `Close all ${count} ${type.toUpperCase()} position${count === 1 ? '' : 's'} (long, short and hedge) at market? ${type === 'call' ? 'Put' : 'Call'} positions stay open.`,
+      confirmLabel: `Close ${label}`,
+      onConfirm: () => performCloseType(type),
+    });
+  };
+
   // Close a single Delta position by symbol (per-row ✕ on an orphan leg the engine
   // no longer tracks). The engine reduce_only-market-closes exactly that leg.
   const triggerCloseOrphan = async (symbol) => {
@@ -3864,6 +3907,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
               exitPoints={findActiveSchedule(schedules, now)?.exitPoints ?? config.exitPoints}
               onExitPosition={(p) => setPositionToExit(p)}
               onCloseAll={triggerCloseAll}
+              onCloseType={triggerCloseType}
+              callCount={positions.filter(p => p.type === 'call').length}
+              putCount={positions.filter(p => p.type === 'put').length}
               onCloseOrphan={triggerCloseOrphan}
               onCancelOrder={triggerCancelOrder}
               onEditOrder={triggerEditOrder}

@@ -1191,6 +1191,19 @@ export default function TradingWorkspace(props) {
                 <span className="pt-btn-text">{props.isSyncing ? 'Syncing…' : 'Sync'}</span>
               </button>
             )}
+            {/* One direction only: every CALL or every PUT spread the engine tracks. */}
+            {props.onCloseType && props.callCount > 0 && (
+              <button type="button" onClick={() => props.onCloseType('call')} className="pt-btn-close pt-btn-close-dir"
+                title={`Close all ${props.callCount} call position(s); puts stay open`}>
+                ✕ <span className="pt-btn-text">Calls</span> <span className="pt-btn-close-n">{props.callCount}</span>
+              </button>
+            )}
+            {props.onCloseType && props.putCount > 0 && (
+              <button type="button" onClick={() => props.onCloseType('put')} className="pt-btn-close pt-btn-close-dir"
+                title={`Close all ${props.putCount} put position(s); calls stay open`}>
+                ✕ <span className="pt-btn-text">Puts</span> <span className="pt-btn-close-n">{props.putCount}</span>
+              </button>
+            )}
             {props.onCloseAll && openCount > 0 && (
               <button type="button" onClick={props.onCloseAll} className="pt-btn-close"
                 style={{ background: '#f85149', color: '#fff', borderColor: '#f85149', fontWeight: 700 }}>
