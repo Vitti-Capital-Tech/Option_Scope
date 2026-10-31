@@ -4195,12 +4195,19 @@ async function startSingleAccountEngine(account) {
       let topSpreads = [];
       const totalRejected = {};
       if (wantEntries) {
-        const { pairs: localTopCalls, rejected: callRej } = scanTickers(callTickers, effectiveConfig, spotPrice, atmStrike, getTickerPrice);
-        const { pairs: localTopPuts, rejected: putRej } = scanTickers(putTickers, effectiveConfig, spotPrice, atmStrike, getTickerPrice);
+        // "All same type" window: only that type can enter, so the other type is not scanned
+        // at all. It used to be scanned, priced (ATM P&L / ROI, hedge pick, per-candidate logs)
+        // and only dropped at the candidate cut (maxCallCandidates / maxPutCandidates = 0).
+        const onlyType = effectiveConfig.allSameType ? String(effectiveConfig.sameType || 'call').toLowerCase() : null;
+        const skipScan = { pairs: [], rejected: {} };
+        const { pairs: localTopCalls, rejected: callRej } = onlyType === 'put' ? skipScan
+          : scanTickers(callTickers, effectiveConfig, spotPrice, atmStrike, getTickerPrice);
+        const { pairs: localTopPuts, rejected: putRej } = onlyType === 'call' ? skipScan
+          : scanTickers(putTickers, effectiveConfig, spotPrice, atmStrike, getTickerPrice);
         topSpreads = [...localTopCalls, ...localTopPuts];
 
         // Merge rejection counts from calls + puts
-        for (const k of Object.keys(callRej)) totalRejected[k] = (callRej[k] || 0) + (putRej[k] || 0);
+        for (const k of new Set([...Object.keys(callRej), ...Object.keys(putRej)])) totalRejected[k] = (callRej[k] || 0) + (putRej[k] || 0);
       }
 
       function getTickerPrice(strike, optType, priceField, expiry) {
