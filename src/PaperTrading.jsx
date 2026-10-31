@@ -3717,8 +3717,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         badgeLabel={engineStatusLabel}
         badgeColor={engineStatusColor}
         extraHeaderContent={(
-          // Desktop: the entry-block bell sits in the navbar (it used to float bottom-right,
-          // over the positions table's close buttons); its panel drops down below it.
+          // The entry-block bell sits in the navbar on every screen (it used to float
+          // bottom-right, over the positions table's close buttons); its panel drops down below
+          // it (full width under the navbar on phones).
           <div className="eb-nav-wrap">
             <button className="nav-tab eb-nav-btn" onClick={toggleNotifPanel} title="Entry-block notifications">
               🚦{notifBadge}
@@ -4076,14 +4077,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         })}
       </div>
 
-      {/* Entry-block notifications on MOBILE — floating bell + panel above the bottom nav
-          (desktop shows them in the navbar instead: see notifBell / notifPanel). */}
-      <div className="eb-float">
-        {notifPanelOpen && <div className="eb-panel-mob">{notifPanel}</div>}
-        <button className="eb-fab" onClick={toggleNotifPanel} title="Entry-block notifications">
-          🚦{notifBadge}
-        </button>
-      </div>
     </div>
   );
 }

@@ -4763,8 +4763,7 @@ body.light-theme .pt-btn-apply.active {
 }
 
 /* ── Entry-block notifications (🚦) ──
-   Desktop: a button in the navbar with the panel dropping down below it.
-   Mobile: a floating button above the bottom nav (the navbar tabs are hidden there). */
+   A button in the navbar on every screen; its panel drops down below it. */
 .eb-nav-wrap {
   position: relative;
 }
@@ -4909,39 +4908,19 @@ body.light-theme .pt-btn-apply.active {
   margin-top: 4px;
 }
 
-.eb-float {
-  display: none;
-}
-
 @media (max-width: 768px) {
-  .eb-nav-wrap {
-    display: none;
-  }
-
-  .eb-float {
+  /* Phones: the panel spans the screen under the navbar instead of hanging off the button. */
+  .eb-panel-desk {
     position: fixed;
-    bottom: 72px; /* above the 56px bottom nav */
-    right: 16px;
-    z-index: 9998;
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 10px;
+    top: 56px;
+    left: 8px;
+    right: 8px;
   }
 
-  .eb-fab {
-    position: relative;
-    width: 46px;
-    height: 46px;
-    border-radius: 50%;
-    background: rgba(10, 13, 18, 0.98);
-    border: 1px solid var(--border);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-    cursor: pointer;
-    font-size: 20px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+  .eb-panel-desk .eb-panel {
+    width: auto;
+    max-width: none;
+    max-height: 60vh;
   }
 }
 
