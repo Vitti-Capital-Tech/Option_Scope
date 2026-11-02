@@ -2400,6 +2400,12 @@ body.light-theme .scanner-logs-body::-webkit-scrollbar-thumb:hover {
   transform: scale(1.02);
 }
 
+/* Group header (Delta positions table): close the whole spread. */
+.pt-btn-close-spread {
+  padding: 3px 9px;
+  font-size: 10px;
+}
+
 /* Close Calls / Close Puts — outlined, next to the solid Close All. */
 .pt-btn-close-dir {
   height: 28px;

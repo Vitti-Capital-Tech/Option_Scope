@@ -1796,7 +1796,10 @@ async function startSingleAccountEngine(account) {
   // exactly as it would have had the engine bought the short back itself. The short exit
   // price is unknown (the fill wasn't ours), so it's booked at the short's current mark —
   // consistent with how reconcileOrphans books other externally-closed legs.
-  async function externalShortExitToLongLadder(pos) {
+  // `opts.manual`: the short was closed by the dashboard's per-leg ✕ (processCloseRequests)
+  // rather than outside the engine — same conversion, its own reason / alert text.
+  async function externalShortExitToLongLadder(pos, opts = {}) {
+    const how = opts.manual ? 'manual ✕ on the dashboard' : 'external/manual on Delta';
     lastDbWrite = Date.now(); // hold fetchActivePositions off during the convert+persist
     const tSell = tickerData[pos.sellLeg.symbol];
     const tBuy = tickerData[pos.buyLeg.symbol];
@@ -1822,7 +1825,7 @@ async function startSingleAccountEngine(account) {
         margin: pos.margin, exit_time: new Date().toISOString(),
         exit_buy_price: longBid, exit_sell_price: exitPx, exit_spot_price: spotPrice,
         realized_gross_pnl: gross, realized_net_pnl: net, exit_fee: exitFee, total_fees: entryFee + exitFee,
-        exit_reason: `Short Leg Exit (external/manual on Delta, holding long ${pos.buyLeg.strike})`,
+        exit_reason: `Short Leg Exit (${how}, holding long ${pos.buyLeg.strike})`,
         is_partial: true, account_id: accountState.id,
       }], { onConflict: 'trade_id', ignoreDuplicates: true });
     } catch (e) { logError(`[${accountState.name}] External short-exit booking failed for ${pos.id}:`, e); }
@@ -1857,8 +1860,8 @@ async function startSingleAccountEngine(account) {
         sell_qty: 0, entry_fee: pos.entryFee, margin: pos.margin, accumulated_sell_pnl: pos.accumulatedSellPnl,
       }).eq('id', pos.id);
     } catch (e) { logError(`[${accountState.name}] External short-exit persist failed for ${pos.id}:`, e); }
-    log(`[${accountState.name}] ✂️ EXTERNAL SHORT EXIT (manual on Delta): ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | booked @ mark $${exitPx} | long ladder ${alloc.join('/')} contracts @ [${levels.join(',')}] | PnL $${net.toFixed(2)}`);
-    notifyTrade({ title: '✂️ SHORT EXIT (manual on Delta)', detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike} · short closed on Delta → converted to long-only, ladder placed`, pnl: net });
+    log(`[${accountState.name}] ✂️ SHORT EXIT (${how}): ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | booked @ $${exitPx} | long ladder ${alloc.join('/')} contracts @ [${levels.join(',')}] | PnL $${net.toFixed(2)}`);
+    notifyTrade({ title: `✂️ SHORT EXIT (${opts.manual ? 'manual ✕' : 'manual on Delta'})`, detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike} · short closed → converted to long-only, ladder placed`, pnl: net });
     resolveIssue(onceKey('short-close-unverified', pos), 'confirmed: the short close showed up on Delta — converted to long-only, ladder placed');
   }
 
@@ -2924,13 +2927,36 @@ async function startSingleAccountEngine(account) {
       for (const r of fresh) {
         const sym = r.product_symbol;
         const sz = sizeBySymbol[sym] || 0;
+        // ✕ on the SHORT leg of a tracked spread whose long is still held: treat it like the
+        // strategy's own short exit — cancel the resting short buy-back, close the short, then
+        // convert to long-only and place the long's fixed SELL ladder (externalShortExitToLongLadder),
+        // instead of booking a bare "Manual Leg Close" that left the long with no ladder.
+        const ladderPos = sz < 0
+          ? positions.find(p => p.sellLeg?.symbol === sym && (p.sellQty || 0) > 0 && (p.buyLeg?.lotSize || 0) > 0)
+          : null;
+        // Latch first: the reconcile's dangling-long path (short gone, long open) must not
+        // convert this same position a second time while we close + convert it here.
+        if (ladderPos) ladderPos._danglingLongConverted = true;
+        if (ladderPos?.sellLeg?.exitOrderId != null) {
+          await live.cancelStop({ id: ladderPos.sellLeg.exitOrderId, productId: ladderPos.sellLeg.exitProductId }).catch(() => {});
+        }
+        let closedOk = true;
         if (sz !== 0) {
           const side = sz > 0 ? 'sell' : 'buy'; // close only this leg
-          await live.closeSymbol({ symbol: sym, side, contracts: Math.abs(sz), tag: `${sym}-CX` });
+          const cr = await live.closeSymbol({ symbol: sym, side, contracts: Math.abs(sz), tag: `${sym}-CX` });
+          closedOk = !!(cr && (cr.ok || cr.alreadyClosed));
         } else {
           log(`[${accountState.name}] Close request for ${sym}: no open size on Delta (already flat).`);
         }
         lastDbWrite = Date.now();
+        // Close failed → release the latch so the reconcile path can still convert it later.
+        if (ladderPos && !closedOk) ladderPos._danglingLongConverted = false;
+        if (ladderPos && closedOk) {
+          await externalShortExitToLongLadder(ladderPos, { manual: true })
+            .catch(e => logError(`[${accountState.name}] short exit → long ladder failed for ${ladderPos.id}:`, e));
+          await supabase.from('delta_close_requests').delete().eq('id', r.id);
+          continue; // converted — the per-leg booking below must not book the short again
+        }
         // Per-leg bookkeeping: zero ONLY the closed leg on the matching spread
         // (do NOT close the other leg). Delete the row only if both legs are gone.
         for (const pos of [...positions]) {

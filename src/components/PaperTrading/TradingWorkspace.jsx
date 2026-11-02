@@ -969,9 +969,19 @@ function DeltaPositionsTable({ positions, enginePositions, onExitPosition, onClo
                         <span style={{ fontWeight: 700, fontSize: 11, color: 'var(--text-dim)', letterSpacing: '0.3px' }}>{groupLabel}</span>
                         {ep?.entryTime && <span style={{ fontSize: 10, fontWeight: 500, color: 'var(--text-dim)', opacity: 0.85 }}>⏱ {fmtTs(ep.entryTime)}</span>}
                       </span>
-                      <span style={{ fontWeight: 700, fontSize: 11 }}>
-                        <span style={{ color: 'var(--text-dim)', letterSpacing: '0.3px' }}>NET P&amp;L </span>
-                        <span className={`pt-pnl ${groupPnl > 0 ? 'positive' : groupPnl < 0 ? 'negative' : 'zero'}`}>{groupPnl > 0 ? '+' : ''}{fmtNum(groupPnl)}</span>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 10, fontWeight: 700, fontSize: 11 }}>
+                        <span>
+                          <span style={{ color: 'var(--text-dim)', letterSpacing: '0.3px' }}>NET P&amp;L </span>
+                          <span className={`pt-pnl ${groupPnl > 0 ? 'positive' : groupPnl < 0 ? 'negative' : 'zero'}`}>{groupPnl > 0 ? '+' : ''}{fmtNum(groupPnl)}</span>
+                        </span>
+                        {/* Close the WHOLE spread (long + short + its hedge) in one go — the
+                            engine's manual exit. The per-row ✕ below closes one leg only. */}
+                        {ep && onExitPosition && (
+                          <button type="button" className="pt-btn-close pt-btn-close-spread" onClick={() => onExitPosition(ep)}
+                            title={ep.sellQty > 0 ? 'Close this spread: long, short and hedge together at market' : 'Close this long-only position (and its hedge) at market'}>
+                            ✕ <span className="pt-btn-text">{ep.sellQty > 0 ? 'Close spread' : 'Close'}</span>
+                          </button>
+                        )}
                       </span>
                     </div>
                   </td>
