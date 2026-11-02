@@ -2751,7 +2751,17 @@ async function startSingleAccountEngine(account) {
   // market-close the legs (no-op for paper / dry-run / disarmed) — books a Manual
   // Exit and deletes the row. This prevents the browser from deleting a live DB row
   // while the real Delta position stays open.
+  // Positions whose manual exit is running — a second call for the same position (the next
+  // request poll, Max SL, Close All) returns at once instead of closing + booking it again.
+  const manualExitInFlight = new Set();
+  let requestsRunning = false; // processRequests in progress (see there)
   async function manualExitPosition(pos, opts = {}) {
+    if (manualExitInFlight.has(pos.id)) return;
+    manualExitInFlight.add(pos.id);
+    try { return await manualExitPositionOnce(pos, opts); }
+    finally { manualExitInFlight.delete(pos.id); }
+  }
+  async function manualExitPositionOnce(pos, opts = {}) {
     // skipExchangeClose: the account was already flattened by a native close_all,
     // so the legs are gone — just cancel resting orders, book, and delete.
     // exitReason: booked exit_reason (the account max SL books 'Max SL Exit').
@@ -8243,6 +8253,17 @@ async function startSingleAccountEngine(account) {
     // request types the batched query found pending for THIS account, so we run
     // only those handlers (each self-gates by re-querying + acting).
     async processRequests(flags = {}) {
+      // The manager fires this every 1.5s without waiting for the previous run. A run that
+      // takes longer (several manual exits, each with market closes + a sweep + booking) used
+      // to overlap the next one, which picked up the same still-flagged rows and exited them
+      // AGAIN — repeated Telegram alerts and repeated reduce-only closes (✕ Puts, 2026-11-02:
+      // Dg's PUT 77400 exited 5×). One run at a time per account; the next tick re-checks.
+      if (requestsRunning) return;
+      requestsRunning = true;
+      try { await this.processRequestsOnce(flags); }
+      finally { requestsRunning = false; }
+    },
+    async processRequestsOnce(flags = {}) {
       if (flags.manualEx) await processManualExits().catch(() => {});
       if (flags.closeAll) await processCloseAll().catch(() => {});
       if (flags.closeReq) await processCloseRequests().catch(() => {});
