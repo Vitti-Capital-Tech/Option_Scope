@@ -18,8 +18,9 @@
  *   TELEGRAM_DEDUPE_MS  — (optional) suppress identical alerts within this window (default 60000)
  *   TELEGRAM_MIN_GAP_MS — (optional) minimum gap between two sends to the SAME chat (default 1200)
  *   TELEGRAM_GLOBAL_GAP_MS — (optional) minimum gap between ANY two sends, bot-wide (default 150)
- *   TELEGRAM_MAX_RETRIES— (optional) retries after a 429 / transient failure (default 3);
- *                         every retry waits the FULL `retry_after` Telegram asked for
+ *   TELEGRAM_MAX_RETRIES— (optional) retries after a 429 / other non-network failure (default 3);
+ *                         every retry waits the FULL `retry_after` Telegram asked for. A network
+ *                         timeout / 5xx instead backs off 2s → 60s and retries for up to 10 min
  *   TELEGRAM_MAX_QUEUE  — (optional) max messages queued per chat before dropping (default 200)
  *
  * Per-account routing: callers may pass a `chatId` (e.g. an account's own
@@ -93,6 +94,7 @@ const MAX_QUEUE = Math.max(1, Number(process.env.TELEGRAM_MAX_QUEUE ?? 200));
 const MAX_PARK_MS = 600000;       // 10 min — park a message this long at most, then drop it
 const FLOOD_THRESHOLD_MS = 60000; // a wait past this is a bot-wide ban, not a per-chat gap
 const FETCH_TIMEOUT_MS = 15000;
+const TRANSIENT_MAX_BACKOFF_MS = 60000; // longest gap between retries while Telegram is unreachable
 
 // dest → { chain: Promise, size: number, nextAt: epoch ms the next send may go out }
 const queues = new Map();
@@ -248,13 +250,19 @@ function enqueue(dest, text) {
           r = await postOnce(r.migrateTo, text);
         }
         if (r.ok) { q.nextAt = Date.now() + MIN_GAP_MS; return { ok: true }; }
+        // A network timeout / 5xx is Telegram (or the route to it) being down, not us sending
+        // too much: back off 2 → 4 → 8 … ≤ 60s and keep trying for the whole MAX_PARK_MS
+        // budget instead of MAX_RETRIES × 2s. 2026-11-03 01:46–01:55 UTC every chat timed out
+        // (+ getUpdates 502) for minutes, and entry alerts gave up after ~6s and were lost.
+        const transient = r.retryAfterMs != null && (r.status === 0 || r.status >= 500);
+        if (transient) r.retryAfterMs = Math.min(TRANSIENT_MAX_BACKOFF_MS, 2000 * 2 ** attempt);
         // Park the queue for the full wait either way — the ban outlives this message.
         // The gate loop at the top of the next attempt is what actually sleeps it out.
         const holdMs = holdQueue(q, r);
         // Give up when the NEXT wait would push this message past its budget, so
         // `parkedMs` stays the time actually waited and the message never outlives
         // MAX_PARK_MS.
-        const givingUp = r.retryAfterMs == null || attempt >= MAX_RETRIES
+        const givingUp = r.retryAfterMs == null || (!transient && attempt >= MAX_RETRIES)
           || parkedMs + holdMs >= MAX_PARK_MS;
         if (givingUp) {
           logError(`Telegram sendMessage failed: HTTP ${r.status} ${r.body}`
@@ -268,7 +276,7 @@ function enqueue(dest, text) {
         // The volume line is the whole point: a 429 with "2 to this chat, 38 bot-wide"
         // and one with "24 to this chat, 26 bot-wide" are different problems.
         log(`Telegram HTTP ${r.status} for chat ${dest} — retrying in ${Math.round(holdMs / 1000)}s `
-          + `(attempt ${attempt + 1}/${MAX_RETRIES}) · volume: ${volumeSummary(dest)}`);
+          + `(attempt ${attempt + 1}${transient ? `, ${Math.round(parkedMs / 1000)}s of ${MAX_PARK_MS / 1000}s` : `/${MAX_RETRIES}`}) · volume: ${volumeSummary(dest)}`);
       }
     } finally { q.size--; }
   });
