@@ -93,7 +93,8 @@ const MAX_QUEUE = Math.max(1, Number(process.env.TELEGRAM_MAX_QUEUE ?? 200));
 // and if that exceeds MAX_PARK_MS drop the message rather than retry inside the window.
 const MAX_PARK_MS = 600000;       // 10 min — park a message this long at most, then drop it
 const FLOOD_THRESHOLD_MS = 60000; // a wait past this is a bot-wide ban, not a per-chat gap
-const FETCH_TIMEOUT_MS = 15000;
+// Generous: a timed-out send is not retried (it may have been delivered), so wait for a slow answer.
+const FETCH_TIMEOUT_MS = 30000;
 const TRANSIENT_MAX_BACKOFF_MS = 60000; // longest gap between retries while Telegram is unreachable
 
 // dest → { chain: Promise, size: number, nextAt: epoch ms the next send may go out }
@@ -188,9 +189,17 @@ async function postOnce(dest, text) {
       // early only renews the ban — report it as non-retryable and let the queue log it.
       return { ok: false, status: 429, body: desc, askedMs, retryAfterMs: askedMs > MAX_PARK_MS ? null : askedMs };
     }
+    // 504: Telegram's gateway gave up waiting on its backend, which may still deliver the
+    // message — unconfirmed, not retried (see the catch below).
+    if (res.status === 504) return { ok: false, status: 504, body: desc, retryAfterMs: null, unconfirmed: true };
     return { ok: false, status: res.status, body: desc, retryAfterMs: res.status >= 500 ? 2000 : null };
   } catch (e) {
-    return { ok: false, status: 0, body: e?.message || String(e), retryAfterMs: 2000 };
+    // A TIMEOUT means the request was sent but no answer came back — Telegram may well have
+    // delivered it. Retrying those sent the same alert 8–14× once a slow Telegram caught up
+    // (2026-11-03 05:29–05:31 UTC), so a timed-out send is reported, not retried. A connection
+    // error (DNS, refused, reset before sending) did not reach Telegram → safe to retry.
+    const timedOut = e?.name === 'TimeoutError' || e?.name === 'AbortError';
+    return { ok: false, status: 0, body: e?.message || String(e), retryAfterMs: timedOut ? null : 2000, unconfirmed: timedOut };
   }
 }
 
@@ -250,10 +259,9 @@ function enqueue(dest, text) {
           r = await postOnce(r.migrateTo, text);
         }
         if (r.ok) { q.nextAt = Date.now() + MIN_GAP_MS; return { ok: true }; }
-        // A network timeout / 5xx is Telegram (or the route to it) being down, not us sending
-        // too much: back off 2 → 4 → 8 … ≤ 60s and keep trying for the whole MAX_PARK_MS
-        // budget instead of MAX_RETRIES × 2s. 2026-11-03 01:46–01:55 UTC every chat timed out
-        // (+ getUpdates 502) for minutes, and entry alerts gave up after ~6s and were lost.
+        // A connection error / 5xx (not a timeout or 504 — those are unconfirmed and not
+        // retried) means Telegram never took the message: back off 2 → 4 → 8 … ≤ 60s and keep
+        // trying for the whole MAX_PARK_MS budget instead of MAX_RETRIES × 2s.
         const transient = r.retryAfterMs != null && (r.status === 0 || r.status >= 500);
         if (transient) r.retryAfterMs = Math.min(TRANSIENT_MAX_BACKOFF_MS, 2000 * 2 ** attempt);
         // Park the queue for the full wait either way — the ban outlives this message.
@@ -266,7 +274,9 @@ function enqueue(dest, text) {
           || parkedMs + holdMs >= MAX_PARK_MS;
         if (givingUp) {
           logError(`Telegram sendMessage failed: HTTP ${r.status} ${r.body}`
-            + (r.retryAfterMs == null
+            + (r.unconfirmed
+              ? ' (no answer — Telegram may still deliver it; not retried, to avoid duplicates)'
+              : r.retryAfterMs == null
               ? ' (not retryable)'
               : ` (gave up after ${attempt + 1} attempts, ${Math.round(parkedMs / 1000)}s parked)`)
             + ` · volume: ${volumeSummary(dest)}`);
