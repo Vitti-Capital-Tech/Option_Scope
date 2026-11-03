@@ -61,6 +61,7 @@ export default function CalendarSpreadScanner({ onNavigate, theme, toggleTheme }
 
 
   const wsRef = useRef(null);
+  const scanGenRef = useRef(0); // bumped by every start / stop; a stale startScan bails out
   const scanIntervalRef = useRef(null);
   const spotIntervalRef = useRef(null);
   const tickerBufferRef = useRef({});
@@ -182,6 +183,9 @@ export default function CalendarSpreadScanner({ onNavigate, theme, toggleTheme }
       return;
     }
 
+    // This scan's generation: a stop / newer scan while the REST backfill is in flight makes it
+    // stale, and it must not open its (old-expiry) stream afterwards.
+    const gen = ++scanGenRef.current;
     // Close any existing WS
     if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
     if (scanIntervalRef.current) clearInterval(scanIntervalRef.current);
@@ -227,6 +231,7 @@ export default function CalendarSpreadScanner({ onNavigate, theme, toggleTheme }
     // REST Backfill
     try {
       const restTickers = await getTickers(underlying, allSymbols);
+      if (gen !== scanGenRef.current) return;
       if (restTickers && Array.isArray(restTickers)) {
         for (const t of restTickers) {
           const sym = t.symbol;
@@ -278,6 +283,7 @@ export default function CalendarSpreadScanner({ onNavigate, theme, toggleTheme }
     } catch (e) {
       console.error('REST backfill error in scanner:', e);
     }
+    if (gen !== scanGenRef.current) return;
 
     const stream = createTickerStream(
       allSymbols,
@@ -567,6 +573,7 @@ export default function CalendarSpreadScanner({ onNavigate, theme, toggleTheme }
 
   // ── Stop scanning ──────────────────────────────────────────────────────
   const stopScan = useCallback(() => {
+    scanGenRef.current++; // an in-flight startScan is now stale
     if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
     if (scanIntervalRef.current) clearInterval(scanIntervalRef.current);
     if (flushTimerRef.current) {
@@ -577,6 +584,26 @@ export default function CalendarSpreadScanner({ onNavigate, theme, toggleTheme }
     setScanning(false);
     setExpectedTickerCount(0);
   }, []);
+
+  // Changing an expiry: the old rows / tickers belong to the old expiry pair (rendered against the
+  // new one they showed "—" and mismatched prices), so they are cleared; a running scan restarts
+  // on the new pair instead of falling back to START SCAN.
+  const restartScanRef = useRef(false);
+  const changeExpiry = (setter, val) => {
+    restartScanRef.current = scanning;
+    setter(val);
+    stopScan();
+    setResultsCall([]);
+    setResultsPut([]);
+    setTickerData({});
+    latestTickerDataRef.current = {};
+  };
+  useEffect(() => {
+    // Wait for a valid pair: a new short expiry can re-pick the long one a render later.
+    if (!restartScanRef.current || !selExpiry || !longExpiry || longExpiry <= selExpiry) return;
+    restartScanRef.current = false;
+    startScan();
+  }, [startScan, selExpiry, longExpiry]);
 
   // A saved setting carries the underlying + expiry it was saved on: open that market.
   // A different underlying reloads its expiries and picks `exp` once they arrive (else
@@ -670,7 +697,7 @@ export default function CalendarSpreadScanner({ onNavigate, theme, toggleTheme }
               <label title="Expiry of the SHORT leg">Short Expiry:</label>
               <CustomSelect
                 value={selExpiry}
-                onChange={val => { setSelExpiry(val); stopScan(); }}
+                onChange={val => changeExpiry(setSelExpiry, val)}
                 disabled={!expiries.length}
                 options={!expiries.length ? [{ label: 'Loading...', value: selExpiry }] : expiries.slice(0, -1).map(e => ({ label: fmtExpiry(e), value: e }))}
                 style={{ width: '160px' }}
@@ -680,7 +707,7 @@ export default function CalendarSpreadScanner({ onNavigate, theme, toggleTheme }
               <label title="Expiry of the LONG leg — always after the short expiry">Long Expiry:</label>
               <CustomSelect
                 value={longExpiry}
-                onChange={val => { setLongExpiry(val); stopScan(); }}
+                onChange={val => changeExpiry(setLongExpiry, val)}
                 disabled={!longExpiryOptions.length}
                 options={!longExpiryOptions.length ? [{ label: 'Loading...', value: longExpiry }] : longExpiryOptions.map(e => ({ label: fmtExpiry(e), value: e }))}
                 style={{ width: '160px' }}
