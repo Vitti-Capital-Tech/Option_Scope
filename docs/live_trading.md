@@ -1500,6 +1500,37 @@ orders are already live.
 - **Cleanup.** `pruneOnceAlerts` drops per-position retry state (`hedgeCloseRetryAt`,
   `sexRetryAt`) when a row leaves the book and resolves its `hedge-close` / `sex-missing` issues.
 
+### OI-limit lock rejections (`only_reduce_only_orders_allowed`)
+
+Rules confirmed by Delta (2026-11-05): every options strike has a **market-wide** OI cap —
+`product_specs.max_oi_usd`, $30M BTC, $20M ETH / XAUT (subject to change; read per strike, never hard-coded).
+
+- Once a minute, **within :00–:01**, Delta compares the ticker's **`oi_value_usd`** with the cap: at / over it →
+  locked (reduce-only) for that minute; **below 95%** → released.
+- An order is checked **only against the current lock**, never against the OI it would add (OI changes on fills,
+  not orders). Between two checks OI can run past the cap; resting orders and closes are never affected.
+- The ticker's `oi_reduce_only_mode` lags the lock by up to ~5 s. `only_reduce_only_orders_allowed` is returned
+  only for this lock.
+
+Our entries scan at :00 and send at :03–:05 — after that minute's check, often before its flag. 2026-11-02
+C-BTC-80400: five accounts sold 8,571 contracts at 17:03 (accepted, pushing OI over the cap), the 17:04:00 check
+locked it, and Dg / Tushar / TG1 were rejected at 17:04:03 while the flag still read open. So the engine decides
+on OI (`oiLockReason`), not on the flag:
+
+- **Locked strikes are never entered — OI filter on or off** (scan pool, hedge picker, candidate stage). Locked =
+  **OI ≥ `OI_LOCK_PCT` (default 0.99) of the cap** at the scan (this minute's check locks it), the ticker's
+  `oiLocked`, the product list's `product_specs.oi_reduce_only_mode` (backup), or a rejection hold.
+- **Our order must not take OI past the cap.** Before a live entry, for each leg: the strike's OI + every account's
+  orders on it in the last 45 s + this order (contracts × contract value × spot) must stay below the cap; otherwise
+  the entry is skipped (`Entry blocked … OI cap on …`). Delta would accept it, but it would lock the strike from the
+  next minute. Shared across accounts like the depth governor; an entry that is not placed hands its OI back.
+  Unknown OI / cap → not gated.
+- **Sticky after a rejection.** The symbol is held for **every account in the process** until its OI is below 95% of
+  the cap (Delta's release rule), at least 2 min; 30 min if OI / cap are unknown. Replaces the old 30-min block on
+  the rejecting account only.
+- **Logs.** `OI-LOCK ON/OFF` (ticker flag changes, with OI) and `OI-LOCK REJECT` (OI / cap at a rejection) —
+  `grep "OI-LOCK"`; skipped candidates log the reason (`… ≥ 99% of the $30.00M cap …`).
+
 ### Cross-account entry governor (shared depth budget)
 
 The depth guard above is **per account** — it asks "is the book deep enough for *me*?" It
