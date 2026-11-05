@@ -34,29 +34,12 @@ function describeIntrinsic(detail, field) {
 // A fallback (not an exact strike) produced the price → flag it with a "≈" marker.
 const isApproxIntrinsic = (detail) => !!detail && (detail.mode === 'bracket' || detail.mode === 'single');
 
-// Hedge legs (3rd long) under the spread strikes — only when the Hedge toggle is on. The top 2
-// qualifying options by ATM ROI are listed (strikes from one step beyond the short up to width − one step,
-// under Max Hedge Price, inside the IV-diff range, 3-leg net within Max Debit); the ✓ one
-// (best ATM ROI) is what the row's Net Premium / ATM P&L / Margin / ROI use.
-function HedgeLine({ hedge, options }) {
+// Hedge leg (3rd long) under the spread strikes — only when the Hedge toggle is on: the strike
+// nearest the short (from one step beyond it up to width − one step, under Max Hedge Price, inside
+// the IV-diff range, 3-leg net within Max Debit) — same as paper trading. The row's Net Premium /
+// ATM P&L / Margin / ROI include it.
+function HedgeLine({ hedge }) {
   if (!hedge) return null;
-  if (options && options.length > 1) {
-    // Only the top 2 by ATM ROI (the ✓ one first) — the rest are left out to keep rows short.
-    const top = [...options]
-      .sort((a, b) => (b.chosen - a.chosen) || ((b.roi ?? -Infinity) - (a.roi ?? -Infinity)))
-      .slice(0, 2);
-    return (
-      <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2, lineHeight: 1.45 }}>
-        {top.map(o => (
-          <div key={o.strike} style={o.chosen ? { fontWeight: 700, color: 'var(--text)' } : undefined}
-            title={`Hedge long ${Number(o.strike).toLocaleString()} @ ${Number(o.price).toFixed(2)}${o.iv != null ? ` (${Number(o.iv).toFixed(1)}% IV)` : ''} × ${o.qty} · net premium ${Number(o.netPremium ?? 0).toFixed(2)}${o.atAtm != null ? ` · worth ${Number(o.atAtm).toFixed(2)} at ATM` : ''}${o.roi != null ? ` · ATM ROI ${o.roi.toFixed(2)}%` : ''}${o.chosen ? ' — used for this row (best ATM ROI)' : ''}`}>
-            H: <span className="scanner-buy">+{Number(o.strike).toLocaleString()}</span> @ ${Number(o.price).toFixed(2)} × {o.qty}
-            {o.roi != null && <> · {o.roi >= 0 ? '+' : ''}{o.roi.toFixed(2)}%</>}{o.chosen ? ' ✓' : ''}
-          </div>
-        ))}
-      </div>
-    );
-  }
   const price = Number(hedge.price);
   return (
     <div
@@ -304,15 +287,7 @@ export default function ResultTable({
         const m = baseMargin + hMargin;
         return { ...h, qty, atAtm, atAtmPnl: pnl, margin: m, roi: (pnl != null && m > 0) ? (pnl / m) * 100 : null };
       };
-      const pricedOptions = (r.hedgeOptions?.length ? r.hedgeOptions : (r.hedge ? [r.hedge] : [])).map(priceHedge);
-      let hedge = null;
-      for (const o of pricedOptions) {
-        if (!hedge) { hedge = o; continue; }
-        const a = o.roi ?? -Infinity;
-        const b = hedge.roi ?? -Infinity;
-        if (a > b || (a === b && (o.atAtmPnl ?? -Infinity) > (hedge.atAtmPnl ?? -Infinity))) hedge = o;
-      }
-      const hedgeOptions = pricedOptions.map(o => ({ ...o, chosen: o === hedge }));
+      const hedge = r.hedge ? priceHedge(r.hedge) : null;
 
       // Compute P&L scaled to the adjusted lot size
       const atAtmPnl = hedge ? hedge.atAtmPnl : (legsPnl != null ? legsPnl * adjustedLotSize : null);
@@ -346,7 +321,6 @@ export default function ResultTable({
         roundedAtmRatio,
         hasAtmData,
         hedge,
-        hedgeOptions,
         netDelta3: hedge?.netDelta3 ?? r.netDelta3,
       };
     });
@@ -503,7 +477,7 @@ export default function ResultTable({
                                 </span>
                               </div>
                               <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Δ: {bestRow.strikeDiff.toLocaleString()}</div>
-                              <HedgeLine hedge={bestRow.hedge} options={bestRow.hedgeOptions} />
+                              <HedgeLine hedge={bestRow.hedge} />
                             </div>
                           </div>
                         </td>
@@ -586,7 +560,7 @@ export default function ResultTable({
                                   </span>
                                 </div>
                                 <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Δ: {r.strikeDiff.toLocaleString()}</div>
-                                <HedgeLine hedge={r.hedge} options={r.hedgeOptions} />
+                                <HedgeLine hedge={r.hedge} />
                               </div>
                             </td>
                             <td>

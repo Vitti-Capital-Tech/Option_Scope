@@ -4363,8 +4363,9 @@ async function startSingleAccountEngine(account) {
           .map(ticker => ({ ticker, ask: quote(ticker) }));
       }
       // The hedge a spread uses this cycle: of its qualifying options that keep the 3-leg net
-      // premium within Max Net Debit, the one with the best ATM ROI (then ATM P&L). Cached per
-      // spread for the cycle so the ATM P&L gate and the entry use the SAME strike.
+      // premium within Max Net Debit — PAPER: the one NEAREST the short, regardless of ATM ROI /
+      // P&L (2026-11-05); LIVE: the one with the best ATM ROI (then ATM P&L). Cached per spread
+      // for the cycle so the ATM P&L gate and the entry use the SAME strike.
       const hedgeChoiceCache = new Map();
       function hedgeCandidateFor(spread) {
         if (!hedgeOn) return null;
@@ -4372,11 +4373,13 @@ async function startSingleAccountEngine(account) {
         if (hedgeChoiceCache.has(key)) return hedgeChoiceCache.get(key);
         const options = hedgeOptionsFor(spread);
         let best = null;
-        for (const h of options) {
+        const nearestHedge = accountState.mode !== 'live';
+        for (const h of options) { // nearest first (listHedgeStrikes)
           const r = calculateAtmPnlAndRoi(spread, h);
           if (r.atmPnl == null || r.ratioToUse == null) continue; // unpriceable at ATM → can't rank
           const net = r.ratioToUse * spread.sellPrice - spread.buyPrice - r.ratioToUse * (hedgeLotPct / 100) * h.ask;
           if (net < -effectiveConfig.maxNetPremium) continue;
+          if (nearestHedge) { best = { ...h, roi: r.roi, atmPnl: r.atmPnl }; break; }
           if (!best || r.roi > best.roi || (r.roi === best.roi && r.atmPnl > best.atmPnl)) best = { ...h, roi: r.roi, atmPnl: r.atmPnl };
         }
         const choice = best ? { ...best, optionCount: options.length, optionStrikes: options.map(o => Number(o.ticker.strike)) } : null;
@@ -6482,7 +6485,7 @@ async function startSingleAccountEngine(account) {
               contractValue: hedgeCV,
             };
             hedgeMargin = calcMargin(bestAsk, hedgeQty, spotPrice, 0, 1, config.underlying, config.expiry);
-            log(`[${accountState.name}] ✚ Hedge for ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: ${best.strike} @ ${bestAsk} (best ATM ROI ${cand.roi != null ? cand.roi.toFixed(2) + '%' : '—'} of ${cand.optionCount} qualifying: ${cand.optionStrikes.join(', ')}).`);
+            log(`[${accountState.name}] ✚ Hedge for ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: ${best.strike} @ ${bestAsk} (${accountState.mode === 'live' ? 'best ATM ROI' : 'nearest, ATM ROI'} ${cand.roi != null ? cand.roi.toFixed(2) + '%' : '—'} of ${cand.optionCount} qualifying: ${cand.optionStrikes.join(', ')}).`);
           }
 
           const id = `T${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;

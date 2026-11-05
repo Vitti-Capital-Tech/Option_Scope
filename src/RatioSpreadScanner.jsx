@@ -404,8 +404,8 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
       const hedgePool = config.hedgeEnabled ? sorted.filter(t => (t.ask ?? 0) > 0) : [];
       // Every qualifying hedge for a pair (listHedgeStrikes — same rule as paper trading):
       // strikes beyond the short from one strike step up to (width − one step) away, under
-      // Max Hedge Price and inside the IV-diff range. ResultTable prices each at ATM and uses
-      // the best ROI one for the row; all are listed under it.
+      // Max Hedge Price and inside the IV-diff range, nearest the short first. The row uses the
+      // nearest one within Max Debit (regardless of ATM ROI); only that one is shown.
       const hedgeOptionsFor = (buyLeg, sellLeg, shortQty, width) => {
         if (!config.hedgeEnabled || !(config.hedgeLotPct > 0)) return [];
         const pool = hedgePool.filter(t => t !== buyLeg && t !== sellLeg);
@@ -517,7 +517,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
             }))
             .filter(h => h.netPremium >= -config.maxNetPremium);
           if (config.hedgeEnabled && hedgeOptions.length === 0) continue;
-          // Provisional: nearest option (ResultTable switches to the best ATM ROI one).
+          // The nearest option within Max Debit — what ResultTable and paper trading use.
           const hedge = hedgeOptions[0] ?? null;
 
           // Max-debit (maxNetPremium) check on the post-scaling net premium.
@@ -546,8 +546,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
             netPremium: netPrem.toFixed(2),
             deltaDiff,
             netDelta3,
-            hedge,
-            hedgeOptions
+            hedge
           });
         }
       }
