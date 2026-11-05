@@ -249,9 +249,11 @@ export default function ResultTable({
       let adjustedSellQty = totalSellQty;
       let scale = 1;
 
-      // Cap follows the short leg's leverage (200x → $195k, 100x → $95k) — same as the engine.
+      // Size BOTH legs so the short notional equals the cap of the short leg's leverage
+      // (200x → $195k, 100x → $95k): scaled down when above it (BTC), up when below it (ETH's
+      // low spot) — every row is shown at the same notional.
       const notionalCap = shortNotionalCap(r.sellLeg?.symbol ?? r.buyLeg?.symbol);
-      if (shortValue >= notionalCap) {
+      if (shortValue > 0) {
         scale = notionalCap / shortValue;
         adjustedLotSize = Number((lotSize * scale).toFixed(2));
         adjustedSellQty = Number((totalSellQty * scale).toFixed(2));

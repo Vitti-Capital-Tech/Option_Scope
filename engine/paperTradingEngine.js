@@ -4413,8 +4413,11 @@ async function startSingleAccountEngine(account) {
         let adjustedSellQty = ratioToUse;
         let scale = 1;
 
-        const notionalCap = shortNotionalCap(config.underlying, config.expiry); // 200x $195k / 100x $95k
-        if (shortValue >= notionalCap) {
+        // Measured at a short notional EQUAL to the cap (200x $195k / 100x $95k): scaled down
+        // when above it (BTC), UP when below it (ETH's low spot) — same as the scanner
+        // (ResultTable), so the ATM P&L floor sees the same dollars on both. ROI is unchanged.
+        const notionalCap = shortNotionalCap(config.underlying, config.expiry);
+        if (shortValue > 0) {
           scale = notionalCap / shortValue;
           adjustedLotSize = Number((lotSize * scale).toFixed(2));
           adjustedSellQty = Number((ratioToUse * scale).toFixed(2));
@@ -4505,6 +4508,8 @@ async function startSingleAccountEngine(account) {
         // reads as single-digit dollars. Observed 2026-09-03 on JD Eth: CALL 2800/2900 at
         // **35.38% ROI** rejected for a $9.50 ATM P&L against a $25.00 floor. ROI is the
         // dimension that travels; the dollar floor stays for accounts tuned around it.
+        // (Since 2026-11-05 ETH candidates are scaled UP to the $95k cap as well, so their
+        // ATM P&L reads in the same range as BTC's.)
         const isPaperAccount = accountState.mode !== 'live';
         const basePnlFloor = isPaperAccount ? (effectiveConfig.minAtmPnl ?? 50) : 50;
 
