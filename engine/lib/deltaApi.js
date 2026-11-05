@@ -324,7 +324,10 @@ export function buildSymbolMeta(products, expiry, underlying, activePositions = 
       // Real per-contract underlying amount (e.g. 0.001 BTC) — used for LIVE margin
       // sizing so the estimate matches Delta. Distinct from the (paper) lotSize above.
       const contractValue = parseFloat(callProd.contract_value ?? callProd.contract_size ?? callProd.quoting_precision ?? 1);
-      symbolMeta[callProd.symbol] = { strike: parseFloat(strike), lotSize, contractValue, type: 'call', symbol: callProd.symbol, expiry };
+      // Delta's per-strike OI cap (product_specs.max_oi_usd — $30M BTC, $20M ETH / XAUT as of
+      // 2026-11-03); an opening order that would take the strike's OI past it is rejected.
+      const maxOiUsd = parseFloat(callProd.product_specs?.max_oi_usd) || null;
+      symbolMeta[callProd.symbol] = { strike: parseFloat(strike), lotSize, contractValue, maxOiUsd, type: 'call', symbol: callProd.symbol, expiry };
     }
 
     const putProd = products.find(p =>
@@ -335,7 +338,8 @@ export function buildSymbolMeta(products, expiry, underlying, activePositions = 
     if (putProd) {
       const lotSize = parseFloat(putProd.contract_size ?? putProd.quoting_precision ?? 1);
       const contractValue = parseFloat(putProd.contract_value ?? putProd.contract_size ?? putProd.quoting_precision ?? 1);
-      symbolMeta[putProd.symbol] = { strike: parseFloat(strike), lotSize, contractValue, type: 'put', symbol: putProd.symbol, expiry };
+      const maxOiUsd = parseFloat(putProd.product_specs?.max_oi_usd) || null;
+      symbolMeta[putProd.symbol] = { strike: parseFloat(strike), lotSize, contractValue, maxOiUsd, type: 'put', symbol: putProd.symbol, expiry };
     }
   }
 

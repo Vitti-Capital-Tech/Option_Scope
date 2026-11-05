@@ -75,6 +75,73 @@ const ENTRY_LEG_MAX_MS = ENTRY_FILL_WAIT_MS * ENTRY_MODIFY_TRIES + 20000;
 // this long and the master is alerted, so the same doomed entry can't repeat every minute
 // (Biswal Holdings, 2026-10-05). Margin rejections are re-sized instead (see below).
 const LIVE_REJECT_BLOCK_MS = Math.max(60000, Number(process.env.LIVE_REJECT_BLOCK_MS ?? 1800000));
+// Delta OI-limit lock (`only_reduce_only_orders_allowed`) — rules confirmed by Delta (2026-11-05):
+// every options strike has a market-wide OI cap (product_specs.max_oi_usd → symbolMeta.maxOiUsd:
+// $30M BTC, $20M ETH / XAUT). Once a minute, within :00–:01, Delta compares the ticker's
+// `oi_value_usd` with the cap: at / over it → the strike is locked (reduce-only) for that minute;
+// below 95% → released. An order is checked ONLY against the current lock — never against the OI
+// it would add — and the ticker's `oi_reduce_only_mode` lags the lock by up to ~5s. Our entries
+// scan at :00 and send at :03–:05, i.e. after that minute's check but often before its flag:
+// C-BTC-80400, 2026-11-02 — five accounts sold 8,571 contracts at 17:03 (accepted, pushing OI over
+// the cap), the 17:04:00 check locked it, and Dg / Tushar / TG1 were rejected at 17:04:03 while the
+// flag still read open (Dg / Kajal again at 17:50). So the lock is decided on OI, not the flag:
+//  1. At cap = locked: OI ≥ OI_LOCK_PCT (100% — Delta's own rule) of the cap at the scan → this minute's check locks
+//     it. Orders a wave adds DURING the minute cannot be rejected (the minute's lock is already set);
+//     they only lock the strike from the next minute, which rule 1 then sees.
+//  2. Sticky after a rejection: held for every account until OI < OI_RELEASE_PCT (95%) of the
+//     cap — Delta's release rule — at least OI_LOCK_MIN_HOLD_MS; OI_LOCK_FALLBACK_MS if OI / cap unknown.
+//  3. Our order must not take the strike past the cap (desk rule, 2026-11-05): a live entry is
+//     skipped if the strike's OI + every account's orders on it in the last OI_RESERVE_MS + this
+//     order (contracts × contract value × spot) would reach the cap. Delta would accept it, but it
+//     would lock the strike from the next minute.
+const OI_LOCK_REJECT_RE = /only_reduce_only_orders_allowed/i;
+const OI_LOCK_PCT = Math.min(1, Math.max(0.8, Number(process.env.OI_LOCK_PCT ?? 1)));
+const OI_RELEASE_PCT = 0.95;
+const OI_LOCK_MIN_HOLD_MS = 120000; // Delta's cron needs up to a minute to release; never retry sooner
+const OI_LOCK_FALLBACK_MS = 1800000;
+const oiLockHolds = new Map(); // symbol → rejected-at (epoch ms); shared by all accounts
+const oiNearCap = (oiUsd, cap) => cap > 0 && Number.isFinite(oiUsd) && oiUsd >= cap * OI_LOCK_PCT;
+function oiLockHeld(sym, oiUsd, cap, now = Date.now()) {
+  const since = oiLockHolds.get(sym);
+  if (since == null) return false;
+  if (now - since < OI_LOCK_MIN_HOLD_MS) return true;
+  const released = (cap > 0 && Number.isFinite(oiUsd)) ? oiUsd < cap * OI_RELEASE_PCT : now - since >= OI_LOCK_FALLBACK_MS;
+  if (released) oiLockHolds.delete(sym);
+  return !released;
+}
+// Shorter than a minute so the next wave never counts this wave twice (its fills are in the OI by then).
+const OI_RESERVE_MS = 45000;
+const oiReservations = new Map(); // symbol → [{ at, usd }]; shared by all accounts
+const oiReservedUsd = (sym, now) => {
+  const live = (oiReservations.get(sym) || []).filter(r => now - r.at < OI_RESERVE_MS && r.usd > 0);
+  oiReservations.set(sym, live);
+  return live.reduce((a, r) => a + r.usd, 0);
+};
+// legs: [{ symbol, usd, oiUsd, cap }]. All-or-nothing; a leg with an unknown OI or cap is not gated.
+function reserveOiHeadroom(legs, now = Date.now()) {
+  const add = new Map();
+  for (const l of legs) if (l.usd > 0) add.set(l.symbol, (add.get(l.symbol) ?? 0) + l.usd);
+  for (const l of legs) {
+    if (!(l.cap > 0) || !Number.isFinite(l.oiUsd) || !add.has(l.symbol)) continue;
+    const reserved = oiReservedUsd(l.symbol, now);
+    if (l.oiUsd + reserved + add.get(l.symbol) >= l.cap) {
+      return { ok: false, blocked: { symbol: l.symbol, oiUsd: l.oiUsd, reserved, add: add.get(l.symbol), cap: l.cap } };
+    }
+  }
+  const token = [];
+  for (const [sym, usd] of add) {
+    const r = { at: now, usd };
+    oiReservations.set(sym, [...(oiReservations.get(sym) || []), r]);
+    token.push(r);
+  }
+  return { ok: true, token };
+}
+// An entry that was not placed hands its OI back at once (idempotent).
+const releaseOiHeadroom = (token) => { for (const r of token || []) r.usd = 0; };
+const fmtUsdM = (v) => `$${(v / 1e6).toFixed(2)}M`;
+// Every lock / unlock the ticker reports is logged once (shared across accounts) with the
+// strike's OI then — to check the rule against Delta. grep "OI-LOCK".
+const oiLockSeen = new Map(); // symbol → last oiLocked seen (true / false)
 // An entry leg that was ACCEPTED but could not fill (no buyer / seller even after the modifies —
 // e.g. C-BTC-86400 short, 2026-10-21 21:57–21:59, 8 accounts × 3 tries, each buying and unwinding
 // the long) keeps that symbol out of new entries this long, so the next minutes try other pairs
@@ -368,6 +435,25 @@ async function startSingleAccountEngine(account) {
     maxSlPct: 20
   };
   let products = [];
+  // Backup lock source: the product list's product_specs.oi_reduce_only_mode (same flag as the
+  // ticker's, refreshed only every few minutes). A strike either source calls locked is locked.
+  let specOiLockedSrc = null;
+  let specOiLockedSet = new Set();
+  const specOiLocked = (sym) => {
+    if (specOiLockedSrc !== products) {
+      specOiLockedSrc = products;
+      specOiLockedSet = new Set((products || []).filter(p => p?.product_specs?.oi_reduce_only_mode === true).map(p => p.symbol));
+    }
+    return specOiLockedSet.has(sym);
+  };
+  const oiLockReason = (sym) => {
+    const oiUsd = Number(tickerData[sym]?.oiUsd ?? NaN);
+    const cap = symbolMeta[sym]?.maxOiUsd;
+    if (tickerData[sym]?.oiLocked === true || specOiLocked(sym)) return 'locked on Delta (reduce-only)';
+    if (oiLockHeld(sym, oiUsd, cap)) return `rejected as OI-locked — held until OI < ${Math.round(OI_RELEASE_PCT * 100)}% of the ${fmtUsdM(cap ?? 0)} cap`;
+    if (oiNearCap(oiUsd, cap)) return `OI ${fmtUsdM(oiUsd)} ≥ ${Math.round(OI_LOCK_PCT * 100)}% of the ${fmtUsdM(cap)} cap — Delta's minute check locks it`;
+    return null;
+  };
   let expiries = [];
   let spotPrice = null;
   let lastSpotUpdate = 0;
@@ -4148,7 +4234,11 @@ async function startSingleAccountEngine(account) {
       const oiFilterOn = !!config.oiFilterEnabled;
       // Mode 'lock' (default, migration 065) → null cap = Delta's lock only.
       const oiCapM = config.oiFilterMode === 'cap' ? effectiveOiCapM(config.oiMaxCapM, underlying) : null;
-      const oiOk = (t) => !oiFilterOn || !isOiBlocked(t, oiCapM);
+      // A strike that is OI-locked (oiLockReason: Delta's flag, a rejection hold, or OI at its
+      // cap) is never entered — filter on or off: Delta would reject the order anyway, after
+      // the long was already bought. The toggle only adds the pre-emptive cap rule.
+      const oiOk = (t) => !oiLockReason(t.symbol)
+        && (!oiFilterOn || !isOiBlocked(t, oiCapM));
 
       // ── Delta trading status (all accounts) ──
       // A live product whose trading_status is not 'operational' (Delta disrupted it, e.g.
@@ -4167,6 +4257,15 @@ async function startSingleAccountEngine(account) {
         }
       } else {
         lastNotOperationalKey = '';
+      }
+      for (const t of allTickers) {
+        if (!t?.symbol || (t.oiLocked !== true && t.oiLocked !== false)) continue;
+        const prev = oiLockSeen.get(t.symbol);
+        if (prev === t.oiLocked) continue;
+        oiLockSeen.set(t.symbol, t.oiLocked);
+        if (prev === undefined && !t.oiLocked) continue; // first sight of an open strike: nothing to report
+        const oiM = Number.isFinite(Number(t.oiUsd)) ? `$${(Number(t.oiUsd) / 1e6).toFixed(2)}M` : 'unknown';
+        log(`OI-LOCK ${t.oiLocked ? 'ON ' : 'OFF'} ${t.symbol} at OI ${oiM}${t.oiContracts != null ? ` (${t.oiContracts} contracts)` : ''}${prev === undefined ? ' (already locked at first sight)' : ''}`);
       }
       const oiBlocked = { call: [], put: [] };
       if (oiFilterOn) {
@@ -6175,6 +6274,14 @@ async function startSingleAccountEngine(account) {
 
           // Live: a symbol Delta recently refused to open (non-margin rejection) is ignored
           // for LIVE_REJECT_BLOCK_MS, so the same entry can't be retried every minute.
+          {
+            const heldSym = [spread.sellLeg.symbol, spread.buyLeg.symbol]
+              .find(sym => sym && oiLockReason(sym));
+            if (heldSym) {
+              logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: ${heldSym} — ${oiLockReason(heldSym)}.`);
+              continue;
+            }
+          }
           if (liveArmed) {
             const nowMs = Date.now();
             const blockedSym = [spread.sellLeg.symbol, spread.buyLeg.symbol]
@@ -6633,6 +6740,21 @@ async function startSingleAccountEngine(account) {
             // (dry-run sends nothing to the exchange, so it must not consume real depth).
             // Same predicate the resting-exit model uses for "this account trades for real".
             const gIsLive = accountState.mode === 'live' && !!accountState.live_enabled && !live.dryRun;
+            let oiToken = null;
+            if (gIsLive) {
+              const oiRes = reserveOiHeadroom(gLegs.map(l => ({
+                symbol: l.symbol,
+                usd: l.qty * (symbolMeta[l.symbol]?.contractValue ?? 0) * (spotPrice ?? 0),
+                oiUsd: Number(tickerData[l.symbol]?.oiUsd ?? NaN),
+                cap: symbolMeta[l.symbol]?.maxOiUsd,
+              })));
+              if (!oiRes.ok) {
+                const b = oiRes.blocked;
+                logWarn(`[${accountState.name}] ⚑ Entry blocked: ${spreadType.toUpperCase()} ${bStrike}/${sStrike} — OI cap on ${b.symbol}: OI ${fmtUsdM(b.oiUsd)} + other accounts ${fmtUsdM(b.reserved)} + this order ${fmtUsdM(b.add)} would reach Delta's ${fmtUsdM(b.cap)} cap.`);
+                continue;
+              }
+              oiToken = oiRes.token;
+            }
             const gRes = governorReserveSpread(gLegs, Date.now(), { isLive: gIsLive });
             if (!gRes.ok) {
               const bl = gRes.blockedLeg;
@@ -6669,10 +6791,12 @@ async function startSingleAccountEngine(account) {
                 },
               }]).then(({ error }) => { if (error) logWarn(`[${accountState.name}] entry_block_notifications insert failed: ${error.message}`); })
                 .catch(() => {});
+              releaseOiHeadroom(oiToken);
               continue; // do NOT persist — this account stays flat for this spread
             }
-            // Kept on the staged entry: if it is never placed, its depth is handed back.
+            // Kept on the staged entry: if it is never placed, its depth (and OI) is handed back.
             newPos._govToken = gRes.token;
+            newPos._oiToken = oiToken;
           }
 
           newEntries.push(newPos);
@@ -6845,7 +6969,9 @@ async function startSingleAccountEngine(account) {
         // A staged entry that was not placed (skipped by a later check, deferred or aborted)
         // hands its reserved depth back to the shared governor pool at once, so it can't block
         // the other accounts of this wave with "another account drew …".
-        const releaseIfUnplaced = (e) => { if (e && !persistedEntryIds.has(e.id)) governorReleaseSpread(e._govToken); };
+        const releaseIfUnplaced = (e) => {
+          if (e && !persistedEntryIds.has(e.id)) { governorReleaseSpread(e._govToken); releaseOiHeadroom(e._oiToken); }
+        };
         let prevEntry = null;
         for (const t of newEntries) {
           releaseIfUnplaced(prevEntry);
@@ -7325,7 +7451,15 @@ async function startSingleAccountEngine(account) {
               // openSpread names the leg 'buy' / 'sell'; openTriplet 'long' / 'short' / 'hedge'.
               const failedSym = ['buy', 'long'].includes(liveEntry.legFailed) ? t.buyLeg.symbol
                 : liveEntry.legFailed === 'hedge' ? t.hedgeLeg?.symbol : t.sellLeg.symbol;
-              if (liveEntry.rejected && !marginReject && !localRefusal) {
+              const oiLockReject = OI_LOCK_REJECT_RE.test(String(liveEntry.error ?? ''));
+              if (oiLockReject && failedSym) {
+                oiLockHolds.set(failedSym, Date.now());
+                const rOi = Number(tickerData[failedSym]?.oiUsd ?? NaN);
+                const rCap = symbolMeta[failedSym]?.maxOiUsd;
+                log(`OI-LOCK REJECT ${failedSym} [${accountState.name}] at OI ${Number.isFinite(rOi) ? fmtUsdM(rOi) : 'unknown'} / cap ${rCap ? fmtUsdM(rCap) : 'unknown'}, ticker lock ${tickerData[failedSym]?.oiLocked === true ? 'ON' : 'off'}`);
+                pauseNote += ` — ${failedSym} is OI-locked on Delta: held for all accounts until its OI is below ${Math.round(OI_RELEASE_PCT * 100)}% of the cap`;
+              }
+              if (liveEntry.rejected && !marginReject && !localRefusal && !oiLockReject) {
                 const badSym = failedSym;
                 if (badSym) {
                   rejectBlockedSymbols.set(badSym, Date.now() + LIVE_REJECT_BLOCK_MS);
@@ -7539,8 +7673,9 @@ async function startSingleAccountEngine(account) {
       // Hand back the depth of every staged entry that was not placed (last one, the ones after
       // a break, and exit-only cycles never reach the loop). Idempotent.
       for (const e of newEntries) {
-        if (!persistedEntryIds.has(e.id)) governorReleaseSpread(e._govToken);
+        if (!persistedEntryIds.has(e.id)) { governorReleaseSpread(e._govToken); releaseOiHeadroom(e._oiToken); }
         delete e._govToken;
+        delete e._oiToken;
       }
 
       // Update in-memory positions. Include ONLY entries confirmed written to
