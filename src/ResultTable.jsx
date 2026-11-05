@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useCallback } from 'react';
 import { RefreshCw, Target, ChevronRight } from 'lucide-react';
-import { leverageFor } from './scannerUtils';
+import { leverageFor, shortNotionalCap } from './scannerUtils';
 
 // Human-readable explanation of how an ATM intrinsic price was resolved for a target
 // strike — exact listed / bracket-average / single-neighbour / omitted. Rendered as a
@@ -249,11 +249,13 @@ export default function ResultTable({
       let adjustedSellQty = totalSellQty;
       let scale = 1;
 
-      if (shortValue >= 195000) {
-        scale = 195000 / shortValue;
+      // Cap follows the short leg's leverage (200x → $195k, 100x → $95k) — same as the engine.
+      const notionalCap = shortNotionalCap(r.sellLeg?.symbol ?? r.buyLeg?.symbol);
+      if (shortValue >= notionalCap) {
+        scale = notionalCap / shortValue;
         adjustedLotSize = Number((lotSize * scale).toFixed(2));
         adjustedSellQty = Number((totalSellQty * scale).toFixed(2));
-        shortValue = 195000;
+        shortValue = notionalCap;
       }
 
       // Per underlying + expiry (BTC 200x / ETH 100x at DTE 0–1, farther expiries ≤ 100x) —

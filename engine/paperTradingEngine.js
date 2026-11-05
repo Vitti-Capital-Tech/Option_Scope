@@ -34,7 +34,7 @@ import { subscribeTickers } from './lib/tickerHub.js';
 // copy for all account engines, last good list kept on a failed / empty fetch.
 import { getSharedProducts } from './lib/productHub.js';
 import {
-  safeParseLeg, calculateFee, calcMargin, leverageFor, scanTickers,
+  safeParseLeg, calculateFee, calcMargin, leverageFor, shortNotionalCap, scanTickers,
   computeEntryAtmRatio, computeScaledSellQty,
   pickTopUniqueStrikes, pickHedgeStrike, listHedgeStrikes, log, logWarn, logError,
   effectiveOiCapM, isOiBlocked, pickExpiry, expiryModeForDte,
@@ -4413,11 +4413,12 @@ async function startSingleAccountEngine(account) {
         let adjustedSellQty = ratioToUse;
         let scale = 1;
 
-        if (shortValue >= 195000) {
-          scale = 195000 / shortValue;
+        const notionalCap = shortNotionalCap(config.underlying, config.expiry); // 200x $195k / 100x $95k
+        if (shortValue >= notionalCap) {
+          scale = notionalCap / shortValue;
           adjustedLotSize = Number((lotSize * scale).toFixed(2));
           adjustedSellQty = Number((ratioToUse * scale).toFixed(2));
-          shortValue = 195000;
+          shortValue = notionalCap;
         }
 
         // Hedge leg in the ATM model: its qty is the short qty × Hedge Lot % (per unit here,
@@ -6280,11 +6281,11 @@ async function startSingleAccountEngine(account) {
 
             // Ratio-spread max-qty cap: never size the spread past what the ratio spread
             // itself supports. The SHORT notional (spot × short contracts × contract value)
-            // must not exceed $195k — the same ceiling paper applies — so a large balance
+            // must not exceed the cap (200x $195k / 100x $95k, shortNotionalCap) — the same ceiling paper applies — so a large balance
             // can't fund a position bigger than the spread's max qty. Final qty =
             // min(balance-allocated qty, notional-cap qty). Min 1 long is still honoured
             // even if a single unit is already over the cap.
-            const NOTIONAL_CAP = 195000;
+            const NOTIONAL_CAP = shortNotionalCap(config.underlying, config.expiry);
             const shortNotionalPerContract = spotPrice * shortCV;
             const maxShortByNotional = shortNotionalPerContract > 0
               ? Math.floor(NOTIONAL_CAP / shortNotionalPerContract) : Infinity;
@@ -6335,22 +6336,24 @@ async function startSingleAccountEngine(account) {
             // a large part (e.g. the 4:30 concentrate fill); normal per-slot sizing stays
             // below it, so estMargin == part there.
             let shortValue = spotPrice * adjustedSellQty * sellLotSize;
-            if (shortValue >= 195000) {
-              const capScale = 195000 / shortValue;
+            const notionalCap = shortNotionalCap(config.underlying, config.expiry); // 200x $195k / 100x $95k
+            if (shortValue >= notionalCap) {
+              const capScale = notionalCap / shortValue;
               adjustedLotSize = Number((adjustedLotSize * capScale).toFixed(4));
               adjustedSellQty = Number((adjustedSellQty * capScale).toFixed(4));
-              shortValue = 195000;
+              shortValue = notionalCap;
             }
             const estMargin = calcMargin(entryBuyPrice, adjustedLotSize, spotPrice, adjustedSellQty, sellLotSize, config.underlying, config.expiry);
             log(`[${accountState.name}] ¤ PAPER size ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: unit margin $${baseMargin.toFixed(2)} | part $${effectivePart.toFixed(2)} → scale ${scale.toFixed(2)}× | lot ${adjustedLotSize} short ${adjustedSellQty} (base 1:${ratioToUse}) | est margin $${estMargin.toFixed(2)}`);
           } else {
-            // LIVE-but-unarmed (no balance sizing): unchanged $195,000 / 200x notional cap.
+            // LIVE-but-unarmed (no balance sizing): the notional cap only (200x $195k / 100x $95k).
             let shortValue = spotPrice * ratioToUse * sellLotSize;
-            if (shortValue >= 195000) {
-              scale = 195000 / shortValue;
+            const notionalCap = shortNotionalCap(config.underlying, config.expiry);
+            if (shortValue >= notionalCap) {
+              scale = notionalCap / shortValue;
               adjustedLotSize = Number((originalLotSize * scale).toFixed(2));
               adjustedSellQty = Number((ratioToUse * scale).toFixed(2));
-              shortValue = 195000;
+              shortValue = notionalCap;
             }
           }
 
@@ -6598,7 +6601,7 @@ async function startSingleAccountEngine(account) {
               let gScale = gBaseMargin > 0 ? (partMargin / gBaseMargin) : 1;
               if (gScale < 1) gScale = 1;
               gLongC = Math.max(1, Math.round(gScale));
-              const G_NOTIONAL_CAP = 195000;
+              const G_NOTIONAL_CAP = shortNotionalCap(config.underlying, config.expiry);
               const gShortNotionalPerContract = spotPrice * gShortCV;
               const gMaxShortByNotional = gShortNotionalPerContract > 0 ? Math.floor(G_NOTIONAL_CAP / gShortNotionalPerContract) : Infinity;
               const gMaxLongByNotional = ratioToUse > 0 ? Math.floor(gMaxShortByNotional / ratioToUse) : Infinity;

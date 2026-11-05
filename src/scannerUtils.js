@@ -24,8 +24,8 @@ export function formatDateTime(d) {
  *
  * `underlyingOrSymbol`: the underlying ('ETH') or a full Delta symbol ('C-ETH-2800-030926').
  * `expiry`: the settlement time (ISO) or a symbol; omitted → read from `underlyingOrSymbol`
- * when it is a symbol. No expiry known → the full leverage (previous behaviour). The $195,000
- * short-notional cap is NOT per-underlying — it stays the same for both.
+ * when it is a symbol. No expiry known → the full leverage (previous behaviour). The short-
+ * notional cap follows the leverage (shortNotionalCap: 200x → $195k, 100x → $95k).
  */
 export const NEAR_EXPIRY_HOURS = 48;   // DTE 0 and DTE 1
 export const FAR_EXPIRY_MAX_LEVERAGE = 100;
@@ -44,6 +44,14 @@ export function leverageFor(underlyingOrSymbol, expiry = null, nowMs = Date.now(
   const expMs = expiryMsOf(expiry ?? underlyingOrSymbol);
   if (expMs == null) return full;
   return (expMs - nowMs) < NEAR_EXPIRY_HOURS * 3600000 ? full : Math.min(full, FAR_EXPIRY_MAX_LEVERAGE);
+}
+
+/**
+ * Short-notional cap for a ratio spread, tied to the leverage: 200x → $195,000, 100x (ETH, or
+ * an expiry beyond DTE 1) → $95,000. Same arguments as leverageFor.
+ */
+export function shortNotionalCap(underlyingOrSymbol, expiry = null, nowMs = Date.now()) {
+  return leverageFor(underlyingOrSymbol, expiry, nowMs) >= 200 ? 195000 : 95000;
 }
 
 /**

@@ -117,8 +117,8 @@ export function safeParseLeg(value) {
  *
  * `underlyingOrSymbol`: the underlying ('ETH') or a full Delta symbol ('C-ETH-2800-030926').
  * `expiry`: the settlement time (ISO) or a symbol; omitted → read from `underlyingOrSymbol`
- * when it is a symbol. No expiry known → the full leverage (previous behaviour). The $195,000
- * short-notional cap is NOT per-underlying — it stays the same for both.
+ * when it is a symbol. No expiry known → the full leverage (previous behaviour). The short-
+ * notional cap follows the leverage (shortNotionalCap: 200x → $195k, 100x → $95k).
  */
 export const NEAR_EXPIRY_HOURS = 48;   // DTE 0 and DTE 1
 export const FAR_EXPIRY_MAX_LEVERAGE = 100;
@@ -140,6 +140,14 @@ export function leverageFor(underlyingOrSymbol, expiry = null, nowMs = Date.now(
 }
 
 /**
+ * Short-notional cap for a ratio spread, tied to the leverage: 200x → $195,000, 100x (ETH, or
+ * an expiry beyond DTE 1) → $95,000. Same arguments as leverageFor.
+ */
+export function shortNotionalCap(underlyingOrSymbol, expiry = null, nowMs = Date.now()) {
+  return leverageFor(underlyingOrSymbol, expiry, nowMs) >= 200 ? 195000 : 95000;
+}
+
+/**
  * Tiered margin calculation matching Delta Exchange leverage tiers.
  * margin = (entryBuyPrice × buyLotSize) + (shortValue / leverageFor(underlying, expiry))
  *
@@ -149,7 +157,7 @@ export function leverageFor(underlyingOrSymbol, expiry = null, nowMs = Date.now(
  */
 export function calcMargin(buyPrice, buyLot, spot, sellQty, sellLot = 1, underlying = 'BTC', expiry = null) {
   const longMargin = (buyPrice || 0) * (buyLot || 1);
-  const shortValue = Math.min(195000, (spot || 0) * (sellQty || 0) * sellLot);
+  const shortValue = Math.min(shortNotionalCap(underlying, expiry), (spot || 0) * (sellQty || 0) * sellLot);
   return longMargin + (shortValue / leverageFor(underlying, expiry));
 }
 

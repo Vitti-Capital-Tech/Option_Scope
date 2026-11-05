@@ -4,7 +4,7 @@ import {
   loadProducts, getExpiries, getStrikes, getSpotPrice,
   fmtExpiry, createTickerStream, apiGet, getTickers
 } from './api';
-import { normalizeIv, toFiniteNumber, matchesOptionType, formatTime, formatDateTime, leverageFor, pickExpiry, expiryModeForDte, normalizeExcludedStrikes } from './scannerUtils';
+import { normalizeIv, toFiniteNumber, matchesOptionType, formatTime, formatDateTime, leverageFor, shortNotionalCap, pickExpiry, expiryModeForDte, normalizeExcludedStrikes } from './scannerUtils';
 import { useTabListener } from './useTabSync';
 import { supabase } from './supabase';
 import { sortSchedulesByStart, scannerToWindowFields } from './components/PaperTrading/scheduleShared';
@@ -3550,7 +3550,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     const spot = spotPrice || p.entrySpotPrice || 0;
     const sellQty = p.sellQty;
     const longMargin = buyPrice * buyLot;
-    const shortValue = Math.min(195000, spot * sellQty * sellLot);
+    const shortValue = Math.min(shortNotionalCap(p.underlying, p.expiry), spot * sellQty * sellLot);
     // Per underlying + expiry (BTC 200x / ETH 100x at DTE 0–1, farther expiries ≤ 100x) —
     // read off the position itself, so a mixed list stays correct. Must match
     // engine/lib/utils.js calcMargin().
