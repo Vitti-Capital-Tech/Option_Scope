@@ -3475,8 +3475,9 @@ async function startSingleAccountEngine(account) {
       }], { onConflict: 'trade_id', ignoreDuplicates: true });
     } catch (e) { logError(`[${accountState.name}] Failed to book hedge exit for ${pos.id}:`, e); }
     log(`[${accountState.name}] ✚ HEDGE EXIT with pair (${reason}): ${pos.type.toUpperCase()} ${hedge.strike} × ${contracts} @ $${Number(px).toFixed(2)} | net $${net.toFixed(2)}`);
-    notifyTrade({
-      title: settledPx != null ? '🛡️ HEDGE EXPIRY' : '🛡️ HEDGE EXIT',
+    // A hedge cash-settled at expiry is not sent to Telegram (desk rule, 2026-11-06).
+    if (settledPx == null) notifyTrade({
+      title: '🛡️ HEDGE EXIT',
       detail: `${pos.type.toUpperCase()} ${pos.buyLeg.strike}/${pos.sellLeg.strike}/${hedge.strike} · hedge × ${contracts} · entry $${Number(hedge.entryPrice ?? 0).toFixed(2)} → ${settledPx != null ? 'settled' : 'exit'} $${Number(px).toFixed(2)} · ${reason}`,
       pnl: net,
     });
@@ -3669,7 +3670,8 @@ async function startSingleAccountEngine(account) {
       const strikesLbl = strikesLabel(pos, hedge);
       log(`[${accountState.name}] ▲ LIVE ${atExpiry ? 'EXPIRY' : 'FULL EXIT'}: ${strikesLbl} | ${reason}${hedgeNote.replace(/ · /g, ' | ')} | PnL $${cumulativeNet.toFixed(2)} (cumulative)`);
       const heldNote = heldHedge ? ` · hedge ${heldHedge.strike} close FAILED — retrying` : '';
-      notifyTrade({ title: atExpiry ? '📤 EXPIRY EXIT' : '📤 FULL EXIT', detail: `${strikesLbl} · ${reason}${hedgeNote}${heldNote}`, pnl: cumulativeNet });
+      // Expiry exits are not sent to Telegram (desk rule, 2026-11-06) — still logged + booked.
+      if (!atExpiry) notifyTrade({ title: '📤 FULL EXIT', detail: `${strikesLbl} · ${reason}${hedgeNote}${heldNote}`, pnl: cumulativeNet });
       return; // closed
     }
 
