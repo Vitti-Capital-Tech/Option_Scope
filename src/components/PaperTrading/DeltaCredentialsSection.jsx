@@ -31,6 +31,8 @@ export default function DeltaCredentialsSection({ register, watch, setValue, exi
   const [result, setResult] = useState(null); // { ok, error }
 
   const selectedMode = watch('mode') || 'paper';
+  // Highlight Verify while a key + secret are entered but not yet verified.
+  const needsVerify = !!(watch('apiKey') && watch('apiSecret')) && !watch('credVerified');
   const mode = lockedMode ? (lockedMode === 'live' ? 'live' : 'paper') : selectedMode;
 
   // Keep the form field in step with a locked mode, so submit persists the right
@@ -179,9 +181,10 @@ export default function DeltaCredentialsSection({ register, watch, setValue, exi
               style={{
                 padding: '8px 14px',
                 borderRadius: 6,
-                border: '1px solid var(--border)',
-                background: 'transparent',
-                color: 'var(--text)',
+                border: needsVerify ? '1px solid #3b82f6' : '1px solid var(--border)',
+                background: needsVerify ? '#3b82f6' : 'transparent',
+                color: needsVerify ? '#fff' : 'var(--text)',
+                boxShadow: needsVerify ? '0 0 0 3px rgba(59,130,246,0.25)' : 'none',
                 cursor: verifying ? 'not-allowed' : 'pointer',
                 fontSize: 12,
                 fontWeight: 600,
@@ -198,6 +201,9 @@ export default function DeltaCredentialsSection({ register, watch, setValue, exi
                 </>
               ) : 'Verify Connection'}
             </button>
+            {needsVerify && !result && !verifying && (
+              <span style={{ fontSize: 12, fontWeight: 600, color: '#3b82f6' }}>← Verify the key before saving</span>
+            )}
 
             {result && (
               <span style={{ fontSize: 12, fontWeight: 600, color: result.ok ? '#3fb950' : '#f85149' }}>

@@ -24,20 +24,45 @@ import { Send, CheckCircle2, Loader2, ExternalLink, Users, Copy, Check } from 'l
  *   onDisconnect — () => clear this account's chat id (+ code)
  *   busy         — disables the buttons while a write is in flight
  */
-export default function TelegramConnect({ account, botUsername = '', onConnect, onDisconnect, busy = false }) {
+// navigator.clipboard exists only on HTTPS / localhost — on a plain-HTTP site it is undefined,
+// so Copy silently did nothing. Fall back to a hidden textarea + execCommand('copy').
+async function copyText(text) {
+  try {
+    if (navigator.clipboard?.writeText && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch { /* fall through to the legacy copy */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+export default function TelegramConnect({ account, botUsername: rawBotUsername = '', onConnect, onDisconnect, busy = false }) {
+  // Tolerate "@name", "https://t.me/name" or stray whitespace in VITE_TELEGRAM_BOT_USERNAME.
+  const botUsername = String(rawBotUsername || '').trim().replace(/^https?:\/\/t\.me\//i, '').replace(/^@/, '');
   const chatId = account?.telegram_chat_id || null;
   const code = account?.telegram_link_code || null;
   const link = code && botUsername ? `https://t.me/${botUsername}?start=${encodeURIComponent(code)}` : null;
   const groupLink = code && botUsername ? `https://t.me/${botUsername}?startgroup=${encodeURIComponent(code)}` : null;
   const groupCommand = code && botUsername ? `/start@${botUsername} ${code}` : '';
   const isGroup = chatId != null && String(chatId).startsWith('-'); // group / supergroup ids are negative
-  const [copied, setCopied] = useState(false);
-  const copyCommand = async () => {
-    try {
-      await navigator.clipboard.writeText(groupCommand);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch { /* clipboard blocked — the command is visible to copy by hand */ }
+  const [copied, setCopied] = useState(null); // 'command' | 'link' | 'failed' | null
+  const copy = async (what, text) => {
+    const ok = await copyText(text);
+    setCopied(ok ? what : 'failed');
+    setTimeout(() => setCopied(null), 2000);
   };
 
   const boxStyle = {
@@ -88,6 +113,10 @@ export default function TelegramConnect({ account, botUsername = '', onConnect, 
                   title="Pick a Telegram group — the bot is added to it and this account's alerts go to the group">
                   <Users size={13} strokeWidth={2.5} /> Connect a Group
                 </a>
+                <button type="button" onClick={() => copy('link', link)} style={btn('transparent', 'var(--text-dim)')}
+                  title="Copy the Start link — open it on the phone / Telegram account that should get the alerts">
+                  {copied === 'link' ? <Check size={13} strokeWidth={2.5} /> : <Copy size={13} strokeWidth={2.5} />} {copied === 'link' ? 'Link copied' : 'Copy link'}
+                </button>
               </div>
               <div style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--text-dim)' }}>
                 Bot already in the group (or nothing happened)? Send this message in the group:
@@ -96,10 +125,13 @@ export default function TelegramConnect({ account, botUsername = '', onConnect, 
                 <code style={{ fontSize: 11, padding: '6px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg2)', color: 'var(--text)', wordBreak: 'break-all' }}>
                   {groupCommand}
                 </code>
-                <button type="button" onClick={copyCommand} style={{ ...btn('transparent', 'var(--text-dim)'), padding: '6px 10px', fontSize: 11 }}>
-                  {copied ? <Check size={12} strokeWidth={2.5} /> : <Copy size={12} strokeWidth={2.5} />} {copied ? 'Copied' : 'Copy'}
+                <button type="button" onClick={() => copy('command', groupCommand)} style={{ ...btn('transparent', 'var(--text-dim)'), padding: '6px 10px', fontSize: 11 }}>
+                  {copied === 'command' ? <Check size={12} strokeWidth={2.5} /> : <Copy size={12} strokeWidth={2.5} />} {copied === 'command' ? 'Copied' : 'Copy'}
                 </button>
               </div>
+              {copied === 'failed' && (
+                <div style={{ fontSize: 11, color: '#f0883e' }}>Couldn't copy — select the text above and copy it by hand.</div>
+              )}
               <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>
                 Waiting for Telegram… this updates automatically once linked.
               </div>
