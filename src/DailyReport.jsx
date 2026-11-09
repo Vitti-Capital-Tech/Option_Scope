@@ -176,15 +176,21 @@ export default function DailyReport({ onNavigate, theme, toggleTheme, active }) 
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  // Live accounts this user can see (RLS: own accounts; admins all).
+  // Live accounts this user can see — the same rule as the Live Trading tab: a 'client'
+  // sees only their own accounts (user_id), everyone else all. No profile row → own only.
   useEffect(() => {
     if (!session) return;
-    supabase.from('paper_trading_accounts').select('id, name, mode')
-      .eq('mode', 'live').order('created_at', { ascending: true })
-      .then(({ data, error: e }) => {
-        if (e) setError(`Couldn't load accounts: ${e.message}`);
-        else setAccounts(data || []);
-      });
+    let cancelled = false;
+    (async () => {
+      const { data: prof } = await supabase.from('profiles').select('role').eq('id', session.user.id).maybeSingle();
+      let query = supabase.from('paper_trading_accounts').select('id, name, mode').eq('mode', 'live');
+      if (!prof || prof.role === 'client') query = query.eq('user_id', session.user.id);
+      const { data, error: e } = await query.order('created_at', { ascending: true });
+      if (cancelled) return;
+      if (e) setError(`Couldn't load accounts: ${e.message}`);
+      else setAccounts(data || []);
+    })();
+    return () => { cancelled = true; };
   }, [session]);
 
   // The user's own report groups (report_account_groups, migration 067); null = none saved,
