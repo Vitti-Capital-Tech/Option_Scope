@@ -303,7 +303,16 @@ function buildLongExitLevels(currentBid, upperBound, count = 10) {
   return levels;
 }
 
-async function getOrBuildLongExitLevels(longBid, pos, config) {
+async function getOrBuildLongExitLevels(longBid, pos, config, paper = false) {
+  // PAPER (2026-11-09): a fixed-step ladder, one level per slice — bid < 25 → 10, 20, 30 …,
+  // else 25, 50, 75 … — Long Exit Slices levels (default 5; 2 → 10/20 or 25/50). Paper only
+  // ladders with Variable ON (OFF exits the long with the short); live keeps the logic below.
+  if (paper) {
+    const n = Math.round(Number(config.longExitSlices));
+    const count = config.variableExitSlices && n >= 1 ? n : 5;
+    const stepPx = (longBid ?? 0) < 25 ? 10 : 25;
+    return Array.from({ length: count }, (_, i) => stepPx * (i + 1));
+  }
   if (config.variableExitSlices) {
     let upper = pos.entryBuyPrice;
     try {
@@ -5263,7 +5272,12 @@ async function startSingleAccountEngine(account) {
         // Active-window governs (migration 033): the short buy-back threshold follows the
         // live schedule window, not the account base (which is only the gap fallback).
         const targetShortExitPrice = effectiveConfig.shortExitPrice ?? 1.1;
-        if (pos.sellQty > 0 && shortLiveAsk <= targetShortExitPrice) {
+        // PAPER with Variable Exit Slices OFF (2026-11-09): the long is NOT held — the whole
+        // spread (short + long + hedge) market-exits together via the full-exit path below.
+        const isPaperAccount = accountState.mode !== 'live';
+        const shortExitFullClose = isPaperAccount && !effectiveConfig.variableExitSlices
+          && pos.sellQty > 0 && shortLiveAsk <= targetShortExitPrice;
+        if (!shortExitFullClose && pos.sellQty > 0 && shortLiveAsk <= targetShortExitPrice) {
           const shortLotSize = pos.sellLeg.lotSize || 1;
           const exitShortPrice = liveExitSell; // ask (<= targetShortExitPrice)
 
@@ -5333,7 +5347,7 @@ async function startSingleAccountEngine(account) {
           // Snapshot the long lot (base for the 10-slice laddered exit) and build 10
           // equidistant exit levels spanning the long's current bid up to its entry price.
           const longBidAtExit = liveExitBuy; // long leg's live bid (the realistic sell price)
-          const generatedLevels = await getOrBuildLongExitLevels(longBidAtExit, pos, effectiveConfig);
+          const generatedLevels = await getOrBuildLongExitLevels(longBidAtExit, pos, effectiveConfig, isPaperAccount);
 
           pos.entryFee = Math.max(0, (pos.entryFee || 0) - shortEntryFee);
           pos.sellLeg = { ...pos.sellLeg, lotSize: 0 };
@@ -5382,7 +5396,7 @@ async function startSingleAccountEngine(account) {
             pos.buyLeg.longExitStage = pos.buyLeg.longExitStage || 0;
           }
           if (!Array.isArray(pos.buyLeg.longExitLevels) || pos.buyLeg.longExitLevels.length === 0) {
-            pos.buyLeg.longExitLevels = await getOrBuildLongExitLevels(longBid, pos, effectiveConfig);
+            pos.buyLeg.longExitLevels = await getOrBuildLongExitLevels(longBid, pos, effectiveConfig, isPaperAccount);
           }
           const exitLevels = pos.buyLeg.longExitLevels;
           const baseLot = pos.buyLeg.longExitBaseLot || 0;
@@ -5507,15 +5521,16 @@ async function startSingleAccountEngine(account) {
               const remainingDisplay = pos.buyLeg.contractValue
                 ? `${longContracts(pos.buyLeg)} contract(s)`
                 : `lot ${pos.buyLeg.lotSize}`;
-              log(`[${accountState.name}] ▤ LONG SLICE EXIT: ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | ${longExitSlices.length} slice(s) | remaining ${remainingDisplay} | stage ${stage}/5`);
+              log(`[${accountState.name}] ▤ LONG SLICE EXIT: ${pos.type.toUpperCase()} ${pos.buyLeg.strike} | ${longExitSlices.length} slice(s) | remaining ${remainingDisplay} | stage ${stage}/${exitLevels.length}`);
               }
             }
           }
           // remaining long lot (if any) still falls through to expiry / ATM-ITM-OTM exit below
         }
 
-        // Dynamic ATM ratio-based scaling (shared helper — also runs in the armed-live resting model)
-        await applyAtmRatioScaling(pos, { liveExitBuy, liveExitSell, tickerBuy });
+        // Dynamic ATM ratio-based scaling (shared helper — also runs in the armed-live resting model).
+        // Skipped when the whole spread is about to exit on the short-exit price (paper, Variable OFF).
+        if (!shortExitFullClose) await applyAtmRatioScaling(pos, { liveExitBuy, liveExitSell, tickerBuy });
 
         const latestBuy = liveExitBuy;
         const latestSell = liveExitSell;
@@ -5543,6 +5558,13 @@ async function startSingleAccountEngine(account) {
         const exitFee = calculateFee(latestBuy, spotPrice, pos.buyLeg.lotSize, pos.buyLeg.originalLotSize || 1) +
           calculateFee(latestSell, spotPrice, pos.sellQty, pos.sellLeg.lotSize);
         const totalFees = (pos.entryFee || 0) + exitFee;
+
+        // Paper, Variable Exit Slices OFF: the short-exit price closes the WHOLE spread at market
+        // (short at the ask, long at the bid, hedge at its bid) instead of holding the long.
+        if (!shouldExit && shortExitFullClose) {
+          shouldExit = true;
+          exitReason = `Full Exit @ Short Exit Price (ask $${Number(shortLiveAsk).toFixed(2)})`;
+        }
 
         // Priority 3: Dynamic ATM/ITM/OTM exit
         if (!shouldExit) {

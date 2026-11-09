@@ -99,7 +99,7 @@ const DEFAULT_WINDOW = {
   slTpDecoyDiff: 0,
   shortExitPrice: 1.1,
   variableExitSlices: false,
-  longExitSlices: 10,
+  longExitSlices: 5,
   daysToExpiry: 0,
   hedgeEnabled: false,
   hedgeLotPct: 0,
@@ -914,7 +914,7 @@ export default function SchedulePanel({
                 </div>
 
                 <div className="schedule-item-block schedule-item-toggle-block">
-                  <span className="schedule-item-label" htmlFor={`variableExitSlices_${s.id}`} style={{ cursor: 'pointer' }} title="Variable Exit Slices — long-only ladder Variable mode: scale the held long out over N equidistant bid levels up to the recent high, instead of the fixed 5-step ladder.">Var.</span>
+                  <span className="schedule-item-label" htmlFor={`variableExitSlices_${s.id}`} style={{ cursor: 'pointer' }} title="Variable Exit Slices. Paper: OFF = when the short exit price is hit, the long (and hedge) is sold at market together with the short; ON = the long is held and sold in N slices at 10, 20, 30… (bid below 25) or 25, 50, 75… (N = Slices). Live: ON = N equidistant bid levels up to the recent high; armed live always uses the fixed 5-step ladder.">Var.</span>
                   <div style={{ height: 34, display: 'flex', alignItems: 'center' }}>
                     <label className="pt-switch">
                       <input type="checkbox" id={`variableExitSlices_${s.id}`} checked={s.variableExitSlices ?? false} onChange={e => handleChange(s.id, 'variableExitSlices', e.target.checked)} />
@@ -925,8 +925,8 @@ export default function SchedulePanel({
 
                 {s.variableExitSlices && (
                   <div className="schedule-item-block schedule-item-num-block">
-                    <span className="schedule-item-label" title="Long Exit Slices — number of scale-out slices for the held long leg in Variable mode.">Slices</span>
-                    <CustomInput type="number" min="1" step="1" value={s.longExitSlices ?? 10} onChange={e => handleChange(s.id, 'longExitSlices', Number(e.target.value))} />
+                    <span className="schedule-item-label" title="Long Exit Slices — number of scale-out slices for the held long leg in Variable mode (paper default 5: 2 → 10/20 or 25/50).">Slices</span>
+                    <CustomInput type="number" min="1" step="1" value={s.longExitSlices ?? 5} onChange={e => handleChange(s.id, 'longExitSlices', Number(e.target.value))} />
                   </div>
                 )}
 
