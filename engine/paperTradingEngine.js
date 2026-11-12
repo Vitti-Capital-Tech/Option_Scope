@@ -4684,8 +4684,11 @@ async function startSingleAccountEngine(account) {
         // The ROI floor is applied flat, matching the scanner UI's ATM Edge Floors.
         let minAtmPnl = basePnlFloor;
         if (effectiveConfig.atmRatioScaling) {
-          const pct = spread.buyLeg.type === 'call' ? effectiveConfig.atmRatioPctCall : effectiveConfig.atmRatioPctPut;
-          minAtmPnl = basePnlFloor * (1 - (pct || 0) / 100);
+          // Above 100 the value wraps: 250 → 150, 151 → 51 (same rule as the scanner's
+          // appliedScalingPct, 2026-11-12).
+          const rawPct = Number(spread.buyLeg.type === 'call' ? effectiveConfig.atmRatioPctCall : effectiveConfig.atmRatioPctPut) || 0;
+          const pct = rawPct > 100 ? rawPct - 100 : rawPct;
+          minAtmPnl = basePnlFloor * (1 - pct / 100);
         }
         const minAtmRoi = isPaperAccount ? (effectiveConfig.minAtmRoi ?? 2) : 0;
 
