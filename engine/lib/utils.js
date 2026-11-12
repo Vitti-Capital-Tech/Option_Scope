@@ -231,8 +231,26 @@ export function computeEntryAtmRatio(buyIntrinsic, sellIntrinsic) {
 export function computeScaledSellQty(baseSellQty, atmRatio, optType, config) {
   if (!config.atmRatioScaling || atmRatio == null) return baseSellQty;
   const pct = optType === 'call' ? config.atmRatioPctCall : config.atmRatioPctPut;
-  const diff = Math.max(0, atmRatio - baseSellQty);
-  return Math.max(baseSellQty, Math.round((baseSellQty + (pct / 100) * diff) / 0.25) * 0.25);
+  return scaleSellQtyToAtm(baseSellQty, atmRatio, pct);
+}
+
+/**
+ * ATM-ratio qty scaling (2026-11-12), shared by the scanners and the engine. `atmRatioVal` is the
+ * ATM ratio rounded to 0.25; `pct` the call/put scaling as typed.
+ *  - ATM ratio ABOVE the strike ratio (diff > 0): the short grows by pct% of the gap, pct used
+ *    as typed (130 → 1.3 × gap, 200 → 2 × gap).
+ *  - ATM ratio EQUAL to the strike ratio (diff 0): the short grows by pct% of the strike ratio
+ *    itself, a pct above 100 wrapping to pct − 100 (80 → base × 1.8, 150 → base × 1.5).
+ *  - ATM ratio below the strike ratio: unchanged.
+ * Rounded to 0.25 and never below the base qty.
+ */
+export function scaleSellQtyToAtm(baseSellQty, atmRatioVal, pct) {
+  const p = Number(pct) || 0;
+  const diff = atmRatioVal - baseSellQty;
+  let qty = baseSellQty;
+  if (diff > 1e-9) qty = baseSellQty + (p / 100) * diff;
+  else if (Math.abs(diff) <= 1e-9) qty = baseSellQty * (1 + (p > 100 ? p - 100 : p) / 100);
+  return Math.max(baseSellQty, Math.round(qty / 0.25) * 0.25);
 }
 
 /**
