@@ -7761,3 +7761,22 @@ details.dr-note p {
 .app-dialog-btn.primary { color: #fff; }
 .app-dialog-btn.primary:hover { filter: brightness(1.1); }
 .app-dialog-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Account switch: the previous account's filters/windows stay on screen until the new
+   account's load — dim and lock them so nothing is read or saved against the wrong account. */
+.pt-account-switching {
+  opacity: 0.35;
+  pointer-events: none;
+  user-select: none;
+  transition: opacity 0.15s;
+}
+.pt-account-loading {
+  margin: 8px 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.35);
+}

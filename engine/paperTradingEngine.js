@@ -924,9 +924,65 @@ async function startSingleAccountEngine(account) {
           }
         }
 
-        schedules = newSchedules;
+        if (newSchedules.length === 0 && isArmedLive() && lastGoodScheduleRows.length > 0) {
+          // Live windows vanished → keep trading on the last saved windows (not the base config)
+          // and write them back, instead of dropping to the base config.
+          await restoreLastWindows();
+        } else {
+          schedules = newSchedules;
+          if (data.length > 0) lastGoodScheduleRows = data;
+          await pauseIfNoWindows();
+        }
       }
     } catch (e) { logError(`[${accountState.name}] Schedule fetch error`, e); }
+  }
+
+  // LIVE safety (2026-11-12): the last non-empty window rows loaded for this account. If a live
+  // account's windows all disappear (2026-11-09: Dalgo's were moved onto another account by a
+  // mobile save mid-switch), the engine keeps using these — the base config is only a backup —
+  // and re-inserts them (fresh ids) so the UI shows them again. In memory only: after a restart
+  // with 0 windows there is nothing to restore, so pauseIfNoWindows pauses instead.
+  let lastGoodScheduleRows = [];
+  // Armed live only — unarmed live / dry-run accounts and paper are left alone (no restore,
+  // no pause, no alert).
+  const isArmedLive = () => accountState.mode === 'live' && !!accountState.live_enabled;
+  async function restoreLastWindows() {
+    const rows = lastGoodScheduleRows.map(({ id, created_at, updated_at, ...r }) => ({ ...r, account_id: accountState.id }));
+    const { error } = await supabase.from('paper_trading_schedules').insert(rows);
+    if (error) {
+      // `schedules` is left as is, so the account keeps trading on the last windows; the next
+      // check retries the write.
+      logError(`[${accountState.name}] Failed to restore the last schedule windows:`, error);
+      return;
+    }
+    log(`[${accountState.name}] ⌚ Schedule windows were all removed — restored the last saved ${rows.length} window(s) and kept trading on them.`);
+    notifyAdmin({
+      context: 'Schedule windows RESTORED',
+      extra: `All of this account's schedule windows disappeared. The engine kept trading on the last saved ${rows.length} window(s) and wrote them back. Check the windows in the dashboard.`,
+      severity: 'high',
+    });
+  }
+
+  // LIVE safety (2026-11-09): an armed live account with NO schedule windows (and none to
+  // restore, e.g. right after a restart) would silently trade on the account base config
+  // (getActiveSchedule → null). Pause it instead (new entries stop; open positions are still
+  // managed) and alert Telegram. Resume = add windows, then un-pause in the UI; un-pausing while
+  // it still has none re-pauses on the next check. A NEW account (no trade yet) is left alone —
+  // it trades on its base config until windows are added.
+  async function pauseIfNoWindows() {
+    if (!isArmedLive() || schedules.length > 0 || accountState.paused) return;
+    const { count: traded, error: thErr } = await supabase.from('trade_history')
+      .select('id', { count: 'exact', head: true }).eq('account_id', accountState.id).limit(1);
+    if (thErr || !traded) return; // new account (or unknown) → no pause, no alert
+    accountState.paused = true;
+    const { error } = await supabase.from('paper_trading_accounts').update({ paused: true }).eq('id', accountState.id);
+    if (error) logError(`[${accountState.name}] Failed to persist no-windows pause:`, error);
+    log(`[${accountState.name}] ⏸ No schedule windows — account PAUSED (new entries stopped; open positions still managed).`);
+    notifyAdmin({
+      context: 'Account PAUSED — no schedule windows',
+      extra: 'The account has 0 schedule windows, so it was paused instead of trading on the base settings. Open positions are still managed. Add the windows, then un-pause the account.',
+      severity: 'high',
+    });
   }
 
   async function fetchActivePositions() {
@@ -8158,6 +8214,21 @@ async function startSingleAccountEngine(account) {
     }
   }, 900000);
 
+  // Live accounts: check every minute that the account still has schedule windows. Realtime
+  // misses a window row moved to ANOTHER account (its new account_id no longer matches this
+  // filter), which otherwise surfaced only at the 15-min refresh. A cheap head-only count; on
+  // zero, the full fetch runs and restores the last windows (or pauses + alerts if none known).
+  const windowsGuardTimer = setInterval(async () => {
+    if (!isArmedLive()) return;
+    try {
+      const { count, error } = await supabase.from('paper_trading_schedules')
+        .select('id', { count: 'exact', head: true }).eq('account_id', accountState.id);
+      if (!error && count === 0) await fetchSchedules();
+    } catch (e) {
+      logError(`[${accountState.name}] Error in windowsGuardTimer:`, e);
+    }
+  }, 60000);
+
   // Live wallet balance poll — every 60s for armed live accounts, surfaced to the
   // dashboard via the heartbeat (Wallet / Allocated / per-position figures).
   let allocCheckTick = 0;
@@ -8390,6 +8461,7 @@ async function startSingleAccountEngine(account) {
       clearInterval(spotTimer);
       clearInterval(productTimer);
       clearInterval(positionsTimer);
+      clearInterval(windowsGuardTimer);
       clearInterval(balanceTimer);
       clearInterval(liveSnapshotTimer);
       clearInterval(reconcileTimer);

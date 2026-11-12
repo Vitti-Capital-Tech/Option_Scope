@@ -390,6 +390,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   const [accounts, setAccounts] = useState([]);
   const [activeAccountId, setActiveAccountId] = useState(null);
   const [configDbId, setConfigDbId] = useState(null);
+  const [configAccountId, setConfigAccountId] = useState(null); // account the loaded `config` belongs to
 
   // Authentication & RBAC States
   const [session, setSession] = useState(null);
@@ -862,6 +863,14 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   const latestSpotPriceRef = useRef(null);
   const lastDaysToExpiryRef = useRef(null);
   const lastSavedSchedulesRef = useRef(null);
+  // Window row ids last loaded from the DB, per account. A save only reuses an id loaded for
+  // THAT account, so windows still on screen from the previous account can never be moved
+  // onto the one now open (2026-11-09: Dalgo's windows were saved onto Main mid-switch).
+  const loadedScheduleIdsRef = useRef({ accountId: null, ids: new Set() });
+  // The account open RIGHT NOW (updated during render). Fetchers compare against it after their
+  // await, so a slow response for the previous account is dropped instead of shown on this one.
+  const openAccountIdRef = useRef(activeAccountId);
+  openAccountIdRef.current = activeAccountId;
   // True while our own schedule save round-trip is in flight, and true when the
   // local schedule state has unsaved edits. Both gate the cross-tab Realtime resync
   // (below) so it never (a) reacts to our own writes or (b) stomps in-progress edits.
@@ -1793,6 +1802,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       console.warn('[saveSupabaseConfig] missing activeAccountId or configDbId', { activeAccountId, configDbId });
       return;
     }
+    // Right after an account switch `configDbId` / the filters are still the previous account's
+    // until this account's config loads — saving then would write them onto this account.
+    if (configAccountId !== activeAccountId) {
+      showAlert("This account's filters are still loading — nothing was saved. Check the filters and click Apply again.");
+      return;
+    }
     isSavingConfigRef.current = true;
     try {
       const { data, error } = await supabase.from('paper_trading_config').upsert({
@@ -1861,7 +1876,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     } finally {
       isSavingConfigRef.current = false;
     }
-  }, [activeAccountId, configDbId, syncActiveGroup]);
+  }, [activeAccountId, configDbId, configAccountId, syncActiveGroup]);
 
   // The 8 sizing/scaling fields (calls/puts, spread width, spot distance, ATM
   // scaling + call/put %, re-entry step) are not shown in the Control Panel.
@@ -1943,6 +1958,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   const activeAccount = React.useMemo(() => {
     return accounts.find(a => a.id === activeAccountId) || null;
   }, [accounts, activeAccountId]);
+  // True while the open account's filters / windows are still the previous account's (right
+  // after a switch — can take a few seconds on mobile). The dashboard is dimmed and locked.
+  const accountDataLoading = !!activeAccountId
+    && (configAccountId !== activeAccountId || schedulesAccountId !== activeAccountId);
 
   const useLive = activeAccount?.mode === 'live' && engineDryRun === false && !!liveExchangeState;
 
@@ -2079,6 +2098,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         }
       }
 
+      if (openAccountIdRef.current !== activeAccountId) return null; // switched away meanwhile
       if (data && !error) {
         const loadedConfig = {
           underlying: data.underlying || 'BTC',
@@ -2138,6 +2158,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         setConfig(loadedConfig);
         setDraftConfig(loadedConfig);
         setConfigDbId(data.id);
+        setConfigAccountId(activeAccountId);
         setIsConfigLoaded(true);
         // Return the freshly-loaded config so the schedule fetch can seed Window 1 from
         // it directly, instead of racing the async setConfig → configRef update (which
@@ -2181,6 +2202,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         .eq('account_id', activeAccountId)
         .order('sort_order', { ascending: true });
       if (error) console.error('Fetch schedules error:', error);
+      if (openAccountIdRef.current !== activeAccountId) return; // switched away meanwhile
       if (data) {
         const mapped = sortSchedulesByStart(data.map(mapScheduleRow));
         // Guarantee a permanent Window 1. Accounts with no windows get one
@@ -2191,6 +2213,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           : [makeFirstWindow(cfgForSeed ?? configRef.current)];
         setSchedules(finalList);
         setSchedulesAccountId(activeAccountId);
+        loadedScheduleIdsRef.current = { accountId: activeAccountId, ids: new Set(data.map(r => r.id)) };
         lastSavedSchedulesRef.current = JSON.stringify(mapped.map(s => ({
           label: s.label,
           startTime: s.startTime,
@@ -2227,6 +2250,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
 
   const saveSupabaseSchedules = useCallback(async () => {
     if (!activeAccountId) return;
+    // The windows on screen must belong to the open account — right after an account switch
+    // they are still the previous account's until this account's windows load.
+    if (schedulesAccountId !== activeAccountId) {
+      showAlert("This account's windows are still loading — nothing was saved. Check the windows and click Apply again.");
+      return;
+    }
     setIsSavingSchedules(true);
     isSavingSchedulesRef.current = true;
     try {
@@ -2235,7 +2264,11 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       // can NEVER leave the account with zero rows (which would reseed Window 1 from
       // base config and silently reset the user's filters).
       const sorted = sortSchedulesByStart(schedules);
-      const rows = sorted.map((s, i) => toScheduleRow(s, activeAccountId, i));
+      const loaded = loadedScheduleIdsRef.current;
+      const ownIds = loaded.accountId === activeAccountId ? loaded.ids : new Set();
+      // An id not loaded for this account gets a fresh one (toScheduleRow mints it), so the
+      // upsert can never re-point another account's window row at this account.
+      const rows = sorted.map((s, i) => toScheduleRow(UUID_RE.test(String(s.id)) && !ownIds.has(s.id) ? { ...s, id: null } : s, activeAccountId, i));
 
       // 1) Upsert every current window. If this fails we RETURN without deleting
       //    anything — the existing rows stay intact (no wipe → no reseed).
@@ -2291,7 +2324,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       await fetchSupabaseSchedules();
     } catch (e) { console.error('Schedule save error', e); }
     finally { setIsSavingSchedules(false); isSavingSchedulesRef.current = false; }
-  }, [activeAccountId, schedules, fetchSupabaseSchedules, syncActiveGroup]);
+  }, [activeAccountId, schedulesAccountId, schedules, fetchSupabaseSchedules, syncActiveGroup]);
 
   const isSchedulesDirty = React.useMemo(() => {
     if (!schedules || lastSavedSchedulesRef.current === null) return false;
@@ -2509,10 +2542,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     });
   }, [mapDbPosition, sortActivePositions]);
 
-  const fetchSupabaseActivePositions = useCallback(async () => {
+  const fetchSupabaseActivePositions = useCallback(async ({ force = false } = {}) => {
     if (!activeAccountId) return;
     try {
-      if (Date.now() - lastDbWriteRef.current < 3000) return;
+      if (!force && Date.now() - lastDbWriteRef.current < 3000) return;
       const { data, error } = await supabase
         .from('active_positions')
         .select('*')
@@ -2520,6 +2553,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         .order('entry_time', { ascending: true });
 
       if (error) { console.error('Error fetching active positions:', error); return; }
+      if (openAccountIdRef.current !== activeAccountId) return; // switched away meanwhile
 
       if (data && data.length > 0) {
         setPositions(prev => {
@@ -2543,7 +2577,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       const { data, error } = await supabase
         .rpc('get_trade_stats', { p_account_id: activeAccountId, p_underlying: underlying })
         .single();
-      if (error || !data) return;
+      if (error || !data || openAccountIdRef.current !== activeAccountId) return;
       setHistoryStats({
         totalGross: data.total_gross || 0,
         totalNet: data.total_net || 0,
@@ -2583,7 +2617,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           all.push(...(page || []));
           if (!page || page.length < 1000) break;
         }
-        if (historyFilterDateRef.current === day) setTradeHistory(all.map(mapTradeRow));
+        if (historyFilterDateRef.current === day && openAccountIdRef.current === activeAccountId) setTradeHistory(all.map(mapTradeRow));
         return;
       } else {
         query = query.limit(300);
@@ -2591,7 +2625,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
 
       const { data, error } = await query;
 
-      if (error) return;
+      if (error || openAccountIdRef.current !== activeAccountId) return;
       if (data) setTradeHistory(data.map(mapTradeRow));
     } catch (e) { }
   }, [activeAccountId, underlying]);
@@ -2738,7 +2772,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   useEffect(() => {
     if (!activeAccountId) return;
 
-    fetchSupabaseActivePositions();
+    // Clear the previous account's data at once, so it never shows under this account while
+    // this one loads (slow on mobile). Filters + windows show a loading state instead.
+    setPositions([]);
+    setTradeHistory([]);
+    setHistoryStats({ totalGross: 0, totalNet: 0, totalCount: 0, winGross: 0, winNet: 0, todayGross: 0, todayNet: 0 });
+    fetchSupabaseActivePositions({ force: true });
     fetchHistoryStats();
     fetchBlockNotifications();
     setNotifUnread(0); // switching accounts starts with a clean unread count
@@ -3797,6 +3836,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
               );
             })()}
 
+            {accountDataLoading && (
+              <div className="pt-account-loading" role="status">Loading {activeAccount?.name ?? 'account'}…</div>
+            )}
+            <div className={accountDataLoading ? 'pt-account-switching' : undefined}>
             <ControlPanel
               underlying={underlying}
               updateConfig={updateConfig}
@@ -3820,7 +3863,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
               schedules={schedules}
               setSchedules={setSchedules}
               isSavingSchedules={isSavingSchedules}
-              isSchedulesDirty={isSchedulesDirty || copiedFiltersPending}
+              isSchedulesDirty={(isSchedulesDirty || copiedFiltersPending) && schedulesAccountId === activeAccountId}
               onApplySchedules={async () => {
                 // Windows first, then the global filters copied with them (if any) — both
                 // sync to the group's other members on save.
@@ -3946,6 +3989,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
                 };
               })()}
             />
+            </div>
           </>
         )}
       </div>
