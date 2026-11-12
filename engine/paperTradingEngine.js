@@ -6067,7 +6067,8 @@ async function startSingleAccountEngine(account) {
         // blocks) whose long strike is FARTHER from spot, if that pair's cashflow
         // (short premium in − long − hedge premium out, on current quantities) is > 0 AND the
         // account's total unrealized P&L (all open positions: long @ bid, short @ ask, hedge
-        // @ bid — the exit loop's prices) is > that cashflow. The victim is only TENTATIVELY
+        // @ bid — the exit loop's prices) is > that cashflow, AND the pair's own net P&L after fees
+        // is ≥ 0 (a losing pair is never replaced). The victim is only TENTATIVELY
         // set aside (pendingRotate) while the candidate runs the remaining checks; it is
         // committed when the candidate is staged in newEntries and reverted otherwise, so a
         // pair is never exited for a spread that then fails to enter. Committed victims are
@@ -6098,6 +6099,20 @@ async function startSingleAccountEngine(account) {
           }
           return g;
         };
+        // Net P&L the pair would book if replaced now: unrealized gross (exit-loop prices) minus its
+        // entry fees and the exit fees of every leg (hedge included). null when a leg is unquoted.
+        const rotateNetOf = (p) => {
+          const g = rotateUnrealizedOf(p);
+          if (g == null) return null;
+          let fees = (p.entryFee || 0);
+          if ((p.buyLeg?.lotSize || 0) > 0) fees += calculateFee(rotateBid(p.buyLeg.symbol), spotPrice, p.buyLeg.lotSize, p.buyLeg.originalLotSize || 1);
+          if ((p.sellQty || 0) > 0) fees += calculateFee(rotateAsk(p.sellLeg?.symbol), spotPrice, p.sellQty, p.sellLeg.lotSize || 1);
+          if (p.hedgeLeg && (p.hedgeLeg.lotSize || 0) > 0) {
+            fees += (p.hedgeLeg.entryFee || 0)
+              + calculateFee(rotateBid(p.hedgeLeg.symbol), spotPrice, p.hedgeLeg.lotSize, p.hedgeLeg.originalLotSize || 1);
+          }
+          return g - fees;
+        };
         // Cashflow of a pair: premium received on the short minus premium paid on the long and hedge.
         const rotateCashflowOf = (p) => (p.entrySellPrice || 0) * (p.sellQty || 0) * (p.sellLeg?.lotSize || 1)
           - (p.entryBuyPrice || 0) * (p.buyLeg?.lotSize || 0)
@@ -6123,9 +6138,12 @@ async function startSingleAccountEngine(account) {
             if (!((p.sellQty || 0) > 0) || p.buyLeg?.isHedge || p.exitRequested) continue;
             const c = rotateCashflowOf(p);
             if (!(c > 0) || !(rotateU > c)) continue;
+            // Never replace a pair that would book a LOSS (net after fees < 0) — 2026-11-12.
+            const net = rotateNetOf(p);
+            if (net == null || net < 0) continue;
             const d = Math.abs(Number(p.buyLeg?.strike) - spotPrice);
             if (!(d > candDist)) continue;
-            if (!best || d > best.d) best = { p, d, c };
+            if (!best || d > best.d) best = { p, d, c, net };
           }
           return best;
         };
@@ -6151,7 +6169,7 @@ async function startSingleAccountEngine(account) {
             pendingRotate = v;
             rotatingIds.add(v.p.id);
             if (paperRemainingBudget != null) paperRemainingBudget += (v.p.margin || 0);
-            log(`[${accountState.name}] ⇆ Closer-ATM replace candidate (${why}): ${spreadType.toUpperCase()} ${bStrike}/${sStrike} could replace ${v.p.type.toUpperCase()} ${v.p.id} (${v.p.buyLeg.strike}/${v.p.sellLeg.strike}, ${Math.round(v.d)} from spot) — cashflow ${v.c.toFixed(2)} < account unrealized ${rotateU.toFixed(2)}.`);
+            log(`[${accountState.name}] ⇆ Closer-ATM replace candidate (${why}): ${spreadType.toUpperCase()} ${bStrike}/${sStrike} could replace ${v.p.type.toUpperCase()} ${v.p.id} (${v.p.buyLeg.strike}/${v.p.sellLeg.strike}, ${Math.round(v.d)} from spot) — cashflow ${v.c.toFixed(2)} < account unrealized ${rotateU.toFixed(2)}, pair net ${v.net.toFixed(2)} ≥ 0.`);
             return true;
           };
           // Live accounts need a valid per-position margin part to size safely.
