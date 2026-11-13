@@ -535,11 +535,22 @@ Two mechanisms run together — **resting profit exits** (engine-detected) and
     fill (order id in fills) means the reduce-only buy-back genuinely traded, so size 0 is a
     real close — a never-opened phantom short can't fill, so no separate open-latch is
     needed.
-- **Fixed ladder** = 5 levels — `[10,20,30,40,50]` if the long bid < 25, else
-  `[25,50,75,100,125]` — with the `S` long contracts split **evenly** across the levels
-  (`≈ S/5` each; any remainder placed on the **highest** levels for a better price). Small
-  longs degrade gracefully: `S ≤ 5` → one contract per level, fewer levels; `S = 1` → a
-  single order (no ladder). Each slice books `${id}-LE-${stage}` @ its level as it fills.
+- **Variable Exit Slices toggle (active window; promoted from paper 2026-11-13):**
+  - **OFF** — no ladder: right after the short exit is booked the long is **market-sold**
+    (reduce-only, `${id}-SXB`), the hedge closes with it, and the long books as the pair's
+    final row (`trade_id = ${id}`, "Long sold with short"). If that sell is rejected the engine
+    falls back to the ladder below so the long is never left without an exit. Also applies
+    when reconcile finds the short closed on Delta; a short closed with the dashboard's
+    per-leg ✕ keeps its long and ladders it.
+  - **ON** — **fixed ladder** of *Long Exit Slices* levels (default 5) stepping 10 if the long
+    bid < 25 (`10, 20, 30 …`), else 25 (`25, 50, 75 …`); e.g. 2 slices → `10/20` or `25/50`.
+- **Ladder sizing:** the `S` long contracts are split **evenly** across the levels
+  (`≈ S/n` each; any remainder placed on the **highest** levels for a better price). Small
+  longs degrade gracefully: `S ≤ n` → one contract per level, fewer levels; `S = 1` → a
+  single order (no ladder). Each slice books `${id}-LE-${stage}` at its average fill price
+  (its level when the fill price is unknown) as it fills. A slice that fills seconds before a
+  spot-cross / expiry Full Exit is booked first (fills re-read), so only the true remainder
+  is market-sold.
 - **ATM-ratio scale-down (long leg):** while the spread is still full, each cycle runs
   the **shared** `applyAtmRatioScaling` helper — the *same* code the active model uses.
   When the live ATM ratio has risen and gross PnL clears the checkpoint threshold, it

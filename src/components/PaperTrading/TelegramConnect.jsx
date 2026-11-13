@@ -49,11 +49,26 @@ async function copyText(text) {
   }
 }
 
-export default function TelegramConnect({ account, botUsername: rawBotUsername = '', onConnect, onDisconnect, busy = false }) {
+// Two links per account (migration 070): 'trades' → entries / exits (telegram_chat_id),
+// 'alerts' → error alerts in plain English (telegram_alert_chat_id; unset → they go to the
+// trades chat).
+const KINDS = {
+  trades: {
+    title: 'Telegram — Trade updates', chatCol: 'telegram_chat_id', codeCol: 'telegram_link_code',
+    connected: 'entries and exits', blurb: <>Get this account's live <em>entries and exits</em> in a Telegram chat — your own, or a group.</>,
+  },
+  alerts: {
+    title: 'Telegram — Error alerts', chatCol: 'telegram_alert_chat_id', codeCol: 'telegram_alert_link_code',
+    connected: 'error alerts', blurb: <>Get this account's <em>error alerts</em> in a separate chat. Not connected → alerts arrive in the trade-updates chat.</>,
+  },
+};
+
+export default function TelegramConnect({ account, kind = 'trades', botUsername: rawBotUsername = '', onConnect, onDisconnect, busy = false }) {
+  const k = KINDS[kind] || KINDS.trades;
   // Tolerate "@name", "https://t.me/name" or stray whitespace in VITE_TELEGRAM_BOT_USERNAME.
   const botUsername = String(rawBotUsername || '').trim().replace(/^https?:\/\/t\.me\//i, '').replace(/^@/, '');
-  const chatId = account?.telegram_chat_id || null;
-  const code = account?.telegram_link_code || null;
+  const chatId = account?.[k.chatCol] || null;
+  const code = account?.[k.codeCol] || null;
   const link = code && botUsername ? `https://t.me/${botUsername}?start=${encodeURIComponent(code)}` : null;
   const groupLink = code && botUsername ? `https://t.me/${botUsername}?startgroup=${encodeURIComponent(code)}` : null;
   const groupCommand = code && botUsername ? `/start@${botUsername} ${code}` : '';
@@ -81,14 +96,14 @@ export default function TelegramConnect({ account, botUsername: rawBotUsername =
     <div style={boxStyle}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>
         <Send size={13} strokeWidth={2.5} style={{ color: '#3b82f6' }} />
-        Telegram Alerts
+        {k.title}
       </div>
 
       {chatId ? (
         <>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#3fb950', fontWeight: 600 }}>
             <CheckCircle2 size={14} strokeWidth={2.5} />
-            Connected — this account's live logs go to {isGroup ? 'group' : 'chat'} <code style={{ color: 'var(--text)' }}>{chatId}</code>.
+            Connected — this account's {k.connected} go to {isGroup ? 'group' : 'chat'} <code style={{ color: 'var(--text)' }}>{chatId}</code>.
           </div>
           <button type="button" onClick={onDisconnect} disabled={busy} style={btn('transparent', '#f85149')}>
             {busy ? <Loader2 size={13} className="animate-spin" /> : null} Disconnect
@@ -97,7 +112,7 @@ export default function TelegramConnect({ account, botUsername: rawBotUsername =
       ) : (
         <>
           <div style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--text-dim)' }}>
-            Connect this account to a Telegram chat — your own, or a group — to receive its <em>own</em> live trade &amp; failure alerts.
+            {k.blurb}
             {!botUsername && (
               <span style={{ color: '#f0883e' }}> (Set <code>VITE_TELEGRAM_BOT_USERNAME</code> to enable the link.)</span>
             )}

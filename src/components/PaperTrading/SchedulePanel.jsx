@@ -914,7 +914,7 @@ export default function SchedulePanel({
                 </div>
 
                 <div className="schedule-item-block schedule-item-toggle-block">
-                  <span className="schedule-item-label" htmlFor={`variableExitSlices_${s.id}`} style={{ cursor: 'pointer' }} title="Variable Exit Slices. Paper: OFF = when the short exit price is hit, the long (and hedge) is sold at market together with the short; ON = the long is held and sold in N slices at 10, 20, 30… (bid below 25) or 25, 50, 75… (N = Slices). Live: ON = N equidistant bid levels up to the recent high; armed live always uses the fixed 5-step ladder.">Var.</span>
+                  <span className="schedule-item-label" htmlFor={`variableExitSlices_${s.id}`} style={{ cursor: 'pointer' }} title="Variable Exit Slices (paper and live). OFF = when the short exits, the long (and hedge) is sold at market together with the short; ON = the long is held and sold in N slices at 10, 20, 30… (bid below 25) or 25, 50, 75… (N = Slices, default 5).">Var.</span>
                   <div style={{ height: 34, display: 'flex', alignItems: 'center' }}>
                     <label className="pt-switch">
                       <input type="checkbox" id={`variableExitSlices_${s.id}`} checked={s.variableExitSlices ?? false} onChange={e => handleChange(s.id, 'variableExitSlices', e.target.checked)} />

@@ -510,6 +510,7 @@ function LiveOrderHistoryTab({ orderHistory }) {
     if (/-X[BS]-ATM\b/.test(coid)) return 'Exit @ ATM';
     if (/-X[BS]\b/.test(coid)) return 'Strategy Exit';        // legacy tag (no reason code)
     if (/-SEX(\b|-)/.test(coid)) return 'Short Leg Exit';
+    if (/-SX(B|SWEEP)\b/.test(coid)) return 'Long Exit with Short'; // Variable Exit Slices OFF
     if (/-PEX(\b|-)/.test(coid)) return 'Partial Exit';
     if (/PEXCLEAN/.test(coid)) return 'Partial Exit (reconcile)';  // stale resting scale-down cleaned up
     if (/-LEX?(\b|-)/.test(coid)) return 'Long Leg Exit';

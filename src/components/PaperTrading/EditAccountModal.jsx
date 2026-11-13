@@ -20,6 +20,7 @@ export default function EditAccountModal({
   onTelegramConnect,
   onTelegramDisconnect
 }) {
+  // onTelegramConnect / onTelegramDisconnect take the link kind: 'trades' | 'alerts'.
   if (!isOpen) return null;
 
   // Per-account Telegram linking is a live-account feature (alerts fire on armed-real
@@ -68,13 +69,19 @@ export default function EditAccountModal({
         )}
 
         {showTelegram && (
-          <TelegramConnect
-            account={account}
-            botUsername={telegramBotUsername}
-            busy={telegramBusy}
-            onConnect={onTelegramConnect}
-            onDisconnect={onTelegramDisconnect}
-          />
+          <>
+            {['trades', 'alerts'].map(kind => (
+              <TelegramConnect
+                key={kind}
+                kind={kind}
+                account={account}
+                botUsername={telegramBotUsername}
+                busy={telegramBusy}
+                onConnect={() => onTelegramConnect(kind)}
+                onDisconnect={() => onTelegramDisconnect(kind)}
+              />
+            ))}
+          </>
         )}
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '8px' }}>

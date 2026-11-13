@@ -1549,16 +1549,21 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     try { if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID().replace(/-/g, ''); } catch { /* fall through */ }
     return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
   };
-  const handleTelegramConnect = async (accountId) => {
+  // kind 'trades' → telegram_chat_id / telegram_link_code; 'alerts' → the alerts-chat pair (migration 070).
+  const telegramCols = (kind) => kind === 'alerts'
+    ? { chat: 'telegram_alert_chat_id', code: 'telegram_alert_link_code' }
+    : { chat: 'telegram_chat_id', code: 'telegram_link_code' };
+  const handleTelegramConnect = async (accountId, kind = 'trades') => {
     if (!accountId) return;
     setTelegramBusy(true);
-    try { await updateAccountFlags(accountId, { telegram_link_code: genTelegramCode() }); }
+    try { await updateAccountFlags(accountId, { [telegramCols(kind).code]: genTelegramCode() }); }
     finally { setTelegramBusy(false); }
   };
-  const handleTelegramDisconnect = async (accountId) => {
+  const handleTelegramDisconnect = async (accountId, kind = 'trades') => {
     if (!accountId) return;
     setTelegramBusy(true);
-    try { await updateAccountFlags(accountId, { telegram_chat_id: null, telegram_link_code: null }); }
+    const c = telegramCols(kind);
+    try { await updateAccountFlags(accountId, { [c.chat]: null, [c.code]: null }); }
     finally { setTelegramBusy(false); }
   };
 
@@ -4041,8 +4046,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         account={accounts.find(a => a.id === activeAccountId) || null}
         telegramBotUsername={import.meta.env.VITE_TELEGRAM_BOT_USERNAME || ''}
         telegramBusy={telegramBusy}
-        onTelegramConnect={() => handleTelegramConnect(activeAccountId)}
-        onTelegramDisconnect={() => handleTelegramDisconnect(activeAccountId)}
+        onTelegramConnect={(kind) => handleTelegramConnect(activeAccountId, kind)}
+        onTelegramDisconnect={(kind) => handleTelegramDisconnect(activeAccountId, kind)}
       />
 
       <AccountGroupsModal

@@ -10,11 +10,10 @@
  *   TELEGRAM_BOT_TOKEN  — from @BotFather (one bot serves every chat)
  *   TELEGRAM_CHAT_ID    — the DEFAULT chat/channel/group id (fallback when an account
  *                         has no per-account chat id of its own)
- *   TELEGRAM_ERROR_CHAT_ID — (optional) a dedicated channel for ERRORS: when set, every
- *                         notifyLiveFailure alert (incl. the engine's admin alerts) goes
- *                         ONLY there, so the account / default chats carry trades only.
- *                         The bot must be an admin of that channel. Unset = errors go to
- *                         the account / default chat as before.
+ *   TELEGRAM_ERROR_CHAT_ID — (optional) the admin / common channel for ERRORS (technical
+ *                         format). Unset = TELEGRAM_CHAT_ID is the admin chat. The bot must
+ *                         be an admin of that channel. Each account's own alerts chat (else
+ *                         its trades chat) additionally gets the error in plain English.
  *   TELEGRAM_DEDUPE_MS  — (optional) suppress identical alerts within this window (default 60000)
  *   TELEGRAM_MIN_GAP_MS — (optional) minimum gap between two sends to the SAME chat (default 1200)
  *   TELEGRAM_GLOBAL_GAP_MS — (optional) minimum gap between ANY two sends, bot-wide (default 150)
@@ -352,10 +351,115 @@ export function classifyAlert({ context = '', errMsg = '', extra = '', severity 
   return 'high';
 }
 
+// ── User-facing format ───────────────────────────────────────────────────────────
+// Two audiences (2026-11-13): the admin / common group (TELEGRAM_ERROR_CHAT_ID, else
+// TELEGRAM_CHAT_ID) gets every error in the technical format above; the account's own
+// chat — its alerts chat (telegram_alert_chat_id), else its trades chat — gets the same
+// error in plain English with IST time. Trade messages (entries / exits) use the plain
+// format everywhere.
+
+/** "12 Nov, 5:00 PM IST" */
+export function istTime(ms = Date.now()) {
+  try {
+    const s = new Intl.DateTimeFormat('en-IN', {
+      timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short',
+      hour: 'numeric', minute: '2-digit', hour12: true,
+    }).format(new Date(ms));
+    return `${s.replace(/\s?(am|pm)$/i, (m) => ` ${m.trim().toUpperCase()}`)} IST`;
+  } catch {
+    return `${new Date(ms).toISOString().replace('T', ' ').slice(0, 16)} UTC`;
+  }
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+/** Delta option symbol → "BTC PUT 73200 (12 Nov)"; anything else is returned as is. */
+export function prettySymbol(sym) {
+  const m = String(sym || '').match(/^([CP])-([A-Z]+)-(\d+(?:\.\d+)?)-(\d{2})(\d{2})(\d{2})$/);
+  if (!m) return String(sym || '');
+  const [, cp, und, strike, dd, mm] = m;
+  return `${und} ${cp === 'C' ? 'CALL' : 'PUT'} ${strike} (${Number(dd)} ${MONTHS[Number(mm) - 1] || mm})`;
+}
+
+const SYMBOL_RE = /\b[CP]-[A-Z]+-\d+(?:\.\d+)?-\d{6}\b/;
+
+// What happened, in plain words — matched on the alert's technical "What" text.
+// `body` may use {sym} (pretty symbol from the alert, or "a position").
+const FRIENDLY_RULES = [
+  { re: /Entry ABORTED|Entry not persisted/i, title: 'New trade cancelled', body: 'A new trade could not be fully placed on Delta, so the algo closed whatever had opened. Nothing is left open from it.' },
+  { re: /NO Delta credentials/i, title: 'Delta API not connected', body: 'The algo cannot reach your Delta account, so no orders can be placed.', action: 'Please re-check the Delta API key in the account settings.' },
+  { re: /UNPROTECTED/, title: 'Position without protection', body: '{sym} is open on Delta without a stop-loss order.', action: 'Please check this position in the Delta app now.' },
+  { re: /Hedge close FAILED/i, title: 'Hedge not closed yet', body: 'A hedge leg could not be closed on Delta. The algo keeps it tracked and retries every 5 minutes.' },
+  { re: /Protective market close FAILED|CLOSE FAILED|cleanup market-close FAILED/i, title: 'Exit order failed', body: 'The algo tried to close {sym}, but Delta rejected the order. The position may still be open.', action: 'Please check this position in the Delta app.' },
+  { re: /STOP placement FAILED|Exit bracket .*FAILED/i, title: 'Stop-loss order not placed', body: 'The protective stop on {sym} could not be placed on Delta. The algo still watches the price and will exit on its own.', action: 'Please keep an eye on this position.' },
+  { re: /Order send FAILED/i, title: 'Order rejected by Delta', body: 'Delta rejected an order for {sym}.' },
+  { re: /has NO resting|buy-back/i, title: 'Exit order not on Delta', body: 'The exit order for the short leg {sym} is not resting on Delta yet. The algo retries every 2 minutes.' },
+  { re: /Untracked|untracked|Orphan|orphan/, title: 'Unknown position on Delta', body: '{sym} is open on Delta but is not managed by the algo (for example a manual trade).', action: 'Please check it in the Delta app.' },
+  { re: /missing from Delta|shows NONE|is missing/i, title: 'Position not found on Delta', body: 'A position the algo tracks ({sym}) is not showing on Delta. The algo is re-checking.' },
+  { re: /is open on/i, title: 'Position mismatch', body: '{sym} on Delta does not match what the algo expects.', action: 'Please check this position in the Delta app.' },
+  { re: /PAUSED — no schedule windows/i, title: 'Account paused', body: 'No trading time windows were found, so new trades are paused. Open positions are still managed.', action: 'Please add your schedule windows again and resume the account.' },
+  { re: /Schedule windows RESTORED/i, title: 'Trading schedule restored', body: 'Your trading time windows went missing and were restored automatically from the last saved copy.' },
+  { re: /Evaluation cycle hung/i, title: 'Short delay', body: 'The algo had a short delay and recovered on its own.' },
+  { re: /Leg swap/i, title: 'Trade replacement issue', body: 'A position was replaced, but one leg ({sym}) may not have closed fully.', action: 'Please check it in the Delta app.' },
+  { re: /Shared hedge/i, title: 'Hedge update issue', body: 'The stop on the shared hedge {sym} could not be updated on Delta.' },
+];
+
+const USER_SEVERITY = {
+  critical: { icon: '🔴', note: '👉 Action needed now.' },
+  high: { icon: '🟠', note: '👉 Please check soon.' },
+  low: { icon: '🟢', note: 'No money at risk — no action needed.' },
+};
+
+export function friendlyAlert({ context = '', extra = '' } = {}) {
+  const text = `${context} ${extra}`;
+  const rule = FRIENDLY_RULES.find(r => r.re.test(context)) || null;
+  const symM = text.match(SYMBOL_RE);
+  const sym = symM ? prettySymbol(symM[0]) : 'a position';
+  if (!rule) return { title: 'Something needs attention', body: 'The algo ran into an issue on your account. Our team has been notified.', action: '' };
+  return { title: rule.title, body: rule.body.replace(/\{sym\}/g, sym), action: rule.action || '' };
+}
+
+function userAlertText({ account, context, extra, sevKey, ms }) {
+  const f = friendlyAlert({ context, extra });
+  const sev = USER_SEVERITY[sevKey] || USER_SEVERITY.high;
+  return [
+    `${sev.icon} <b>${escapeHtml(f.title)}</b>`,
+    `Account: <b>${escapeHtml(account)}</b>`,
+    '',
+    escapeHtml(f.body),
+    f.action ? `\n👉 ${escapeHtml(f.action)}` : `\n${sev.note}`,
+    `\n🕐 ${istTime(ms)}`,
+  ].join('\n');
+}
+
+/** True (and records it) unless the same key was sent within DEDUPE_MS. */
+function firstInWindow(key, now) {
+  const prev = lastSent.get(key);
+  if (prev != null && now - prev < DEDUPE_MS) return false;
+  lastSent.set(key, now);
+  if (lastSent.size > MAX_KEYS) {
+    // Drop the oldest ~10% to keep the map bounded.
+    const drop = Math.ceil(MAX_KEYS * 0.1);
+    let i = 0;
+    for (const k of lastSent.keys()) { lastSent.delete(k); if (++i >= drop) break; }
+  }
+  return true;
+}
+
+/** Where an account's user-facing alert goes, or '' when that would only repeat the admin chat. */
+function userAlertDest({ chatId, alertChatId }) {
+  const dest = alertChatId || chatId || '';
+  const admin = ERROR_CHAT_ID || CHAT_ID;
+  return dest && String(dest) !== String(admin) ? String(dest) : '';
+}
+
 /**
- * Alert the user to a LIVE trading failure. Fire-and-forget: callers do NOT await it, and
- * identical alerts within TELEGRAM_DEDUPE_MS are coalesced so a failure that repeats every
- * engine cycle doesn't spam the chat. Each alert carries its severity (classifyAlert).
+ * Alert a LIVE trading failure. Fire-and-forget: callers do NOT await it, and identical
+ * alerts within TELEGRAM_DEDUPE_MS are coalesced so a failure that repeats every engine
+ * cycle doesn't spam the chat. Each alert carries its severity (classifyAlert).
+ *
+ * Two destinations: the admin / common group (TELEGRAM_ERROR_CHAT_ID, else TELEGRAM_CHAT_ID)
+ * gets the technical format; the account's alerts chat (else its trades chat) gets the same
+ * alert in plain English (userAlertText).
  *
  * @param {Object} p
  * @param {string} p.account  account name (for the message + dedupe key)
@@ -363,106 +467,115 @@ export function classifyAlert({ context = '', errMsg = '', extra = '', severity 
  * @param {any}    [p.error]  Error object or message string
  * @param {string} [p.extra]  optional extra line (e.g. strikes / order id)
  * @param {string} [p.severity] force 'critical' | 'high' | 'low' (else classified)
- * @param {string} [p.chatId] per-account Telegram chat id (falls back to env default);
- *                            ignored when TELEGRAM_ERROR_CHAT_ID is set — errors then go
- *                            only to that channel
+ * @param {string} [p.chatId] the account's trades chat (telegram_chat_id)
+ * @param {string} [p.alertChatId] the account's alerts chat (telegram_alert_chat_id)
  */
-export function notifyLiveFailure({ account = '—', context = 'Live failure', error = '', extra = '', chatId = '', severity = null } = {}) {
+export function notifyLiveFailure({ account = '—', context = 'Live failure', error = '', extra = '', chatId = '', alertChatId = '', severity = null } = {}) {
   if (!ENABLED) return;
   const errMsg = error?.message ?? (error ? String(error) : '');
   const now = Date.now();
-  // Dedicated error channel wins; the key uses the final destination, so an alert sent
-  // "to the account and to the default chat" (notifyAdmin) reaches the channel once.
-  const dest = ERROR_CHAT_ID || chatId || CHAT_ID;
-  const dedupeKey = `${dest}|${account}|${context}|${errMsg}`;
-  const prev = lastSent.get(dedupeKey);
-  if (prev != null && now - prev < DEDUPE_MS) return; // duplicate burst — skip
-  lastSent.set(dedupeKey, now);
-  if (lastSent.size > MAX_KEYS) {
-    // Drop the oldest ~10% to keep the map bounded.
-    const drop = Math.ceil(MAX_KEYS * 0.1);
-    let i = 0;
-    for (const k of lastSent.keys()) { lastSent.delete(k); if (++i >= drop) break; }
+  const sevKey = classifyAlert({ context, errMsg, extra, severity });
+
+  // Fire-and-forget — never block the engine on the network round-trip.
+  const adminDest = ERROR_CHAT_ID || CHAT_ID;
+  if (adminDest && firstInWindow(`${adminDest}|${account}|${context}|${errMsg}`, now)) {
+    const ts = new Date(now).toISOString().replace('T', ' ').slice(0, 19);
+    const sev = SEVERITY[sevKey];
+    const lines = [
+      sev.head,
+      `<b>Account:</b> ${escapeHtml(account)}`,
+      `<b>What:</b> ${escapeHtml(context)}`,
+      errMsg ? `<b>Error:</b> ${escapeHtml(errMsg)}` : '',
+      extra ? escapeHtml(extra) : '',
+      sev.risk,
+      `<i>${ts} UTC</i>`,
+    ].filter(Boolean);
+    sendTelegram(lines.join('\n'), adminDest).catch(() => {});
   }
-
-  const ts = new Date(now).toISOString().replace('T', ' ').slice(0, 19);
-  const sev = SEVERITY[classifyAlert({ context, errMsg, extra, severity })];
-  const lines = [
-    sev.head,
-    `<b>Account:</b> ${escapeHtml(account)}`,
-    `<b>What:</b> ${escapeHtml(context)}`,
-    errMsg ? `<b>Error:</b> ${escapeHtml(errMsg)}` : '',
-    extra ? escapeHtml(extra) : '',
-    sev.risk,
-    `<i>${ts} UTC</i>`,
-  ].filter(Boolean);
-
-  // Fire-and-forget — never block the engine on the network round-trip. Routes to the
-  // error channel when configured, else the account's own chat, else the global default.
-  sendTelegram(lines.join('\n'), dest).catch(() => {});
+  const userDest = userAlertDest({ chatId, alertChatId });
+  if (userDest && firstInWindow(`${userDest}|${account}|${context}|${errMsg}`, now)) {
+    sendTelegram(userAlertText({ account, context, extra, sevKey, ms: now }), userDest).catch(() => {});
+  }
 }
 
 /**
- * Tell the group that an earlier live alert has cleared (✅ RESOLVED). Sent once per
+ * Tell the chats that an earlier live alert has cleared (✅ RESOLVED). Sent once per
  * resolved issue — the engine tracks which condition-based alerts are still open and calls
- * this when the condition goes away. Same routing as notifyLiveFailure; `alsoDefault` (an
- * alert that also went to the global chat, notifyAdmin) sends it there too.
+ * this when the condition goes away. Same routing as notifyLiveFailure: technical to the
+ * admin group, plain English to the account's alerts (else trades) chat.
  *
  * @param {Object} p
  * @param {string} p.account  account name
  * @param {string} p.context  the original alert's "What" text
  * @param {string} p.how      how it resolved (one line)
  * @param {number} [p.openMs] how long the issue was open
- * @param {string} [p.chatId] per-account Telegram chat id
- * @param {boolean} [p.alsoDefault] also send to the global default chat
+ * @param {string} [p.chatId] the account's trades chat
+ * @param {string} [p.alertChatId] the account's alerts chat
  */
-export function notifyLiveResolved({ account = '—', context = '', how = '', openMs = null, chatId = '', alsoDefault = false } = {}) {
+export function notifyLiveResolved({ account = '—', context = '', how = '', openMs = null, chatId = '', alertChatId = '' } = {}) {
   if (!ENABLED) return;
-  const dest = ERROR_CHAT_ID || chatId || CHAT_ID;
-  const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
-  const dur = openMs == null ? '' : (openMs < 60000 ? `${Math.max(1, Math.round(openMs / 1000))}s`
-    : openMs < 3600000 ? `${Math.round(openMs / 60000)}m` : `${(openMs / 3600000).toFixed(1)}h`);
-  const text = [
-    '✅ <b>RESOLVED — LIVE ALERT</b>',
-    `<b>Account:</b> ${escapeHtml(account)}`,
-    context ? `<b>Was:</b> ${escapeHtml(context)}` : '',
-    how ? `<b>Now:</b> ${escapeHtml(how)}` : '',
-    dur ? `<b>Open for:</b> ${dur}` : '',
-    `<i>${ts} UTC</i>`,
-  ].filter(Boolean).join('\n');
-  sendTelegram(text, dest).catch(() => {});
-  if (alsoDefault && !ERROR_CHAT_ID && chatId && CHAT_ID && String(chatId) !== String(CHAT_ID)) {
-    sendTelegram(text, CHAT_ID).catch(() => {});
+  const now = Date.now();
+  const adminDest = ERROR_CHAT_ID || CHAT_ID;
+  if (adminDest) {
+    const ts = new Date(now).toISOString().replace('T', ' ').slice(0, 19);
+    const dur = openMs == null ? '' : (openMs < 60000 ? `${Math.max(1, Math.round(openMs / 1000))}s`
+      : openMs < 3600000 ? `${Math.round(openMs / 60000)}m` : `${(openMs / 3600000).toFixed(1)}h`);
+    const text = [
+      '✅ <b>RESOLVED — LIVE ALERT</b>',
+      `<b>Account:</b> ${escapeHtml(account)}`,
+      context ? `<b>Was:</b> ${escapeHtml(context)}` : '',
+      how ? `<b>Now:</b> ${escapeHtml(how)}` : '',
+      dur ? `<b>Open for:</b> ${dur}` : '',
+      `<i>${ts} UTC</i>`,
+    ].filter(Boolean).join('\n');
+    sendTelegram(text, adminDest).catch(() => {});
+  }
+  const userDest = userAlertDest({ chatId, alertChatId });
+  if (userDest) {
+    const f = friendlyAlert({ context });
+    const text = [
+      `✅ <b>Resolved: ${escapeHtml(f.title)}</b>`,
+      `Account: <b>${escapeHtml(account)}</b>`,
+      '',
+      'The earlier issue has been fixed. No action needed.',
+      `\n🕐 ${istTime(now)}`,
+    ].join('\n');
+    sendTelegram(text, userDest).catch(() => {});
   }
 }
 
+const fmtUsd = (v) => `${Number(v) < 0 ? '−' : ''}$${Math.abs(Number(v)).toFixed(2)}`;
+
 /**
- * Notify the user of a LIVE trade event — an entry or an exit. Fire-and-forget and
- * NOT de-duplicated (every trade is a distinct event). Callers gate this on armed-real
+ * Notify a LIVE trade event — an entry or an exit — in the plain format. Fire-and-forget
+ * and NOT de-duplicated (every trade is a distinct event). Callers gate this on armed-real
  * live accounts, so paper and dry-run runs never notify.
  *
  * @param {Object} p
  * @param {string} p.account   account name
- * @param {string} p.title     short event title incl. emoji (e.g. "📥 LIVE ENTRY")
- * @param {string} [p.detail]  one-line detail (strikes / qty / reason)
+ * @param {string} p.title     short event title incl. emoji (e.g. "📥 New trade")
+ * @param {string} [p.detail]  one-line detail, used when `lines` is not given
+ * @param {string[]} [p.lines] plain lines shown under the title (preferred over `detail`)
  * @param {number} [p.pnl]     realized net PnL for exits (omit for entries)
+ * @param {string} [p.pnlLabel] label for the PnL line (default Profit / Loss by sign)
  * @param {string} [p.chatId]  per-account Telegram chat id (falls back to env default)
  */
-export function notifyLiveTrade({ account = '—', title = 'Trade', detail = '', pnl = null, chatId = '' } = {}) {
+export function notifyLiveTrade({ account = '—', title = 'Trade', detail = '', lines = null, pnl = null, pnlLabel = '', chatId = '' } = {}) {
   if (!ENABLED) return;
-  const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
   const hasPnl = pnl != null && Number.isFinite(Number(pnl));
   const pnlLine = hasPnl
-    ? `<b>PnL:</b> ${Number(pnl) >= 0 ? '🟢 +' : '🔴 −'}$${Math.abs(Number(pnl)).toFixed(2)}`
+    ? `${Number(pnl) >= 0 ? '🟢' : '🔴'} ${escapeHtml(pnlLabel || (Number(pnl) >= 0 ? 'Profit' : 'Loss'))}: <b>${Number(pnl) >= 0 ? '+' : ''}${fmtUsd(pnl)}</b>`
     : '';
-  const lines = [
+  const body = Array.isArray(lines) && lines.length ? lines.filter(Boolean).map(escapeHtml) : (detail ? [escapeHtml(detail)] : []);
+  const text = [
     `<b>${escapeHtml(title) || 'Trade'}</b>`,
-    `<b>Account:</b> ${escapeHtml(account)}`,
-    detail ? escapeHtml(detail) : '',
-    pnlLine,
-    `<i>${ts} UTC</i>`,
-  ].filter(Boolean);
-  sendTelegram(lines.join('\n'), chatId).catch(() => {});
+    `Account: <b>${escapeHtml(account)}</b>`,
+    '',
+    ...body,
+    pnlLine ? `\n${pnlLine}` : '',
+    `\n🕐 ${istTime()}`,
+  ].filter((l, i) => l !== '' || i === 2).join('\n');
+  sendTelegram(text, chatId).catch(() => {});
 }
 
 /**

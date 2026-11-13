@@ -60,6 +60,9 @@ export function cleanLimitPrice(price) {
  * uniqueness. Normal tags (~20 chars) pass through untouched.
  */
 const MAX_COID = 36;
+// Delta's OI-limit lock reject (strike reduce-only for that minute).
+const OI_LOCK_RE = /only_reduce_only_orders_allowed/i;
+
 export function clampClientOrderId(tag) {
   const s = String(tag ?? '');
   return s.length <= MAX_COID ? s : s.slice(s.length - MAX_COID);
@@ -168,7 +171,7 @@ export function createLiveExecutor(getCtx) {
   }
 
   async function submit({ symbol, side, contracts, price, reduceOnly = false, tag, bracket = null }) {
-    const { accountName, creds, telegramChatId } = getCtx();
+    const { accountName, creds, telegramChatId, telegramAlertChatId } = getCtx();
     const size = Math.max(1, Math.round(contracts || 0));
     const priceStr = cleanLimitPrice(price);
     const brkStr = bracket
@@ -184,7 +187,7 @@ export function createLiveExecutor(getCtx) {
     if (!creds?.apiKey || !creds?.apiSecret) {
       if (!warnedNoCreds) {
         logError(`[${accountName}] LIVE armed but no decrypted credentials available — cannot place orders. (Is the engine using the service_role key?)`);
-        notifyLiveFailure({ account: accountName, context: 'Armed live but NO Delta credentials — orders cannot be placed', extra: 'Check the engine service_role key / stored credentials.', chatId: telegramChatId });
+        notifyLiveFailure({ account: accountName, context: 'Armed live but NO Delta credentials — orders cannot be placed', extra: 'Check the engine service_role key / stored credentials.', chatId: telegramChatId, alertChatId: telegramAlertChatId });
         warnedNoCreds = true;
       }
       return { ok: false, error: 'no-credentials' };
@@ -218,6 +221,10 @@ export function createLiveExecutor(getCtx) {
         log(`[${accountName}] ℹ️ Reduce-only order no-op (${side} ${symbol}) — already closed on Delta [${tag}].`);
         return { ok: true, alreadyClosed: true };
       }
+      if (reduceOnly && OI_LOCK_RE.test(msg) && await isFlatOnDelta(creds, symbol)) {
+        log(`[${accountName}] ℹ️ Reduce-only order no-op (${side} ${symbol}) — strike OI-locked and the leg is already flat on Delta [${tag}].`);
+        return { ok: true, alreadyClosed: true };
+      }
       // A `duplicate_client_order_id` rejection means an order with this exact
       // deterministic tag was ALREADY placed on Delta — so the intended order is in
       // fact resting. This is the idempotency guard working as designed: two reconcilers
@@ -230,16 +237,27 @@ export function createLiveExecutor(getCtx) {
         return { ok: true, duplicate: true };
       }
       logError(`[${accountName}] ✖ LIVE order FAILED: ${summary}:`, e.message);
-      notifyLiveFailure({ account: accountName, context: `Order send FAILED (${side} ${symbol})`, error: e, extra: `[${tag}]`, chatId: telegramChatId });
+      notifyLiveFailure({ account: accountName, context: `Order send FAILED (${side} ${symbol})`, error: e, extra: `[${tag}]`, chatId: telegramChatId, alertChatId: telegramAlertChatId });
       return { ok: false, error: e.message };
     }
+  }
+
+  // True only when Delta's positions list confirms `symbol` has no open size (a failed
+  // fetch → false, so a real failure still alerts).
+  async function isFlatOnDelta(creds, symbol) {
+    try {
+      const res = await getLivePositions(creds);
+      if (!Array.isArray(res)) return false;
+      const p = res.find(x => (x.product_symbol || x.product?.symbol) === symbol);
+      return !p || !(Math.abs(Number(p.size) || 0) > 0);
+    } catch { return false; }
   }
 
   // Reduce-only MARKET close of a single leg by symbol. Shared by the public
   // closeSymbol() action and openSpread's abort/unwind paths.
   async function marketClose({ symbol, side, contracts, tag }) {
     if (!armed()) return { ok: true, skipped: true };
-    const { accountName, creds, telegramChatId } = getCtx();
+    const { accountName, creds, telegramChatId, telegramAlertChatId } = getCtx();
     const size = Math.max(1, Math.round(Math.abs(contracts || 0)));
     const summary = `CLOSE ${side.toUpperCase()} ${size}x ${symbol} reduceOnly [${tag}]`;
     if (DRY_RUN) { log(`[${accountName}] ⚗ DRY-RUN close-symbol (not sent): ${summary}`); return { ok: true, dryRun: true }; }
@@ -261,8 +279,16 @@ export function createLiveExecutor(getCtx) {
         log(`[${accountName}] ℹ️ Reduce-only close no-op (${side} ${symbol}) — already closed on Delta [${tag}].`);
         return { ok: true, alreadyClosed: true };
       }
+      // On an OI-locked strike Delta answers a reduce-only order on a FLAT leg with
+      // `only_reduce_only_orders_allowed` instead of `no_position_for_reduce_only` (Dalgo / Main
+      // P-BTC-73200, 2026-11-12 11:30 UTC: the last ladder slice had filled 4s earlier). Same
+      // benign case — confirm the leg is flat on Delta before calling it one.
+      if (OI_LOCK_RE.test(msg) && await isFlatOnDelta(creds, symbol)) {
+        log(`[${accountName}] ℹ️ Reduce-only close no-op (${side} ${symbol}) — strike OI-locked and the leg is already flat on Delta [${tag}].`);
+        return { ok: true, alreadyClosed: true };
+      }
       logError(`[${accountName}] ✖ LIVE close-symbol FAILED: ${summary}:`, e.message);
-      notifyLiveFailure({ account: accountName, context: `Reduce-only CLOSE FAILED (${side} ${symbol}) — leg may still be OPEN on Delta`, error: e, extra: `[${tag}]`, chatId: telegramChatId });
+      notifyLiveFailure({ account: accountName, context: `Reduce-only CLOSE FAILED (${side} ${symbol}) — leg may still be OPEN on Delta`, error: e, extra: `[${tag}]`, chatId: telegramChatId, alertChatId: telegramAlertChatId });
       return { ok: false, error: e.message };
     }
   }
@@ -849,7 +875,7 @@ export function createLiveExecutor(getCtx) {
      */
     async changePositionBracket({ productId = null, symbol, side, stopPrice, triggerMethod = 'spot_price', tag }) {
       if (!armed()) return { ok: true, skipped: true };
-      const { accountName, creds, telegramChatId } = getCtx();
+      const { accountName, creds, telegramChatId, telegramAlertChatId } = getCtx();
       const stopStr = cleanLimitPrice(stopPrice);
       const legObj = { order_type: 'market_order', stop_price: stopStr };
       const summary = `BRACKET ${String(side).toUpperCase()} ${symbol}${productId != null ? ` (pid ${productId})` : ''} @stop ${stopStr ?? '—'} via ${triggerMethod} [${tag}]`;
@@ -891,7 +917,7 @@ export function createLiveExecutor(getCtx) {
           : 'other';
         if (code === 'other') {
           logError(`[${accountName}] ✖ LIVE bracket set FAILED: ${summary}: ${e.message}`);
-          notifyLiveFailure({ account: accountName, context: `Exit bracket (${String(side).toUpperCase()}) set FAILED on ${symbol} — risk exit may be unprotected`, error: e, extra: `[${tag}]`, chatId: telegramChatId });
+          notifyLiveFailure({ account: accountName, context: `Exit bracket (${String(side).toUpperCase()}) set FAILED on ${symbol} — risk exit may be unprotected`, error: e, extra: `[${tag}]`, chatId: telegramChatId, alertChatId: telegramAlertChatId });
         } else {
           // Expected/benign (leg already protected, already closed, or level breached) —
           // log calmly, no "FAILED" and no alarm.
@@ -908,7 +934,7 @@ export function createLiveExecutor(getCtx) {
      */
     async placeStop({ symbol, side, contracts, stopPrice, tag, triggerMethod = 'spot_price' }) {
       if (!armed()) return { ok: true, skipped: true };
-      const { accountName, creds, telegramChatId } = getCtx();
+      const { accountName, creds, telegramChatId, telegramAlertChatId } = getCtx();
       const size = Math.max(1, Math.round(contracts || 0));
       const stopStr = cleanLimitPrice(stopPrice);
       const summary = `STOP ${side.toUpperCase()} ${size}x ${symbol} trigger@${triggerMethod} ${stopStr ?? '—'} reduceOnly [${tag}]`;
@@ -941,7 +967,7 @@ export function createLiveExecutor(getCtx) {
         return { ok: true, order };
       } catch (e) {
         logError(`[${accountName}] ✖ LIVE stop FAILED: ${summary}:`, e.message);
-        notifyLiveFailure({ account: accountName, context: `Reduce-only STOP placement FAILED (${side} ${symbol}) — exit stop not resting`, error: e, extra: `[${tag}]`, chatId: telegramChatId });
+        notifyLiveFailure({ account: accountName, context: `Reduce-only STOP placement FAILED (${side} ${symbol}) — exit stop not resting`, error: e, extra: `[${tag}]`, chatId: telegramChatId, alertChatId: telegramAlertChatId });
         return { ok: false, error: e.message };
       }
     },
@@ -1157,7 +1183,8 @@ export function createLiveExecutor(getCtx) {
     },
 
     /**
-     * Set of Delta `order_id`s that have at least one recent fill — used by the
+     * Map (Set-compatible `.has`) of Delta `order_id`s that have at least one recent fill →
+     * their average fill price — used by the
      * resting-exit model to detect when a resting order has executed (its order id
      * appears here). Order ids are matched (not client tags) because Delta fills
      * carry `order_id`; we persist each resting order's id, so detection survives a
@@ -1170,9 +1197,19 @@ export function createLiveExecutor(getCtx) {
       if (!creds?.apiKey) return new Set();
       try {
         const res = await getFills(creds, { pageSize: 100 });
-        const set = new Set();
-        if (Array.isArray(res)) for (const f of res) { if (f.order_id != null) set.add(String(f.order_id)); }
-        return set;
+        // order id → size-weighted average fill price over its recent fills (null if unknown).
+        const acc = new Map();
+        if (Array.isArray(res)) for (const f of res) {
+          if (f.order_id == null) continue;
+          const k = String(f.order_id);
+          const a = acc.get(k) || { qty: 0, notional: 0 };
+          const q = Math.abs(Number(f.size) || 0), px = Number(f.price);
+          if (q > 0 && Number.isFinite(px)) { a.qty += q; a.notional += q * px; }
+          acc.set(k, a);
+        }
+        const map = new Map();
+        for (const [k, a] of acc) map.set(k, a.qty > 0 ? a.notional / a.qty : null);
+        return map;
       } catch (e) {
         logWarn(`[${accountName}] recentFillOrderIds() fetch failed: ${e.message}`);
         return null;
