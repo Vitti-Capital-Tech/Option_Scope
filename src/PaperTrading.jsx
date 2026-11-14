@@ -1647,7 +1647,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     pushToast(isLiveAcc ? 'Closing all positions on Delta…' : `Closing all ${count} position(s)…`, 'success');
     // Mark the flatten pending so refetches don't resurrect the positions until
     // the engine publishes a snapshot showing the account flat.
-    pendingCloseRef.current.closeAll = { since: Date.now() };
+    pendingCloseRef.current.closeAll = { since: Date.now(), accountId: activeAccountId };
     setLiveExchangeState(prev => prev ? { ...prev, positions: [], orders: [], stop_orders: [] } : prev);
     // Confirm from the server once the engine has flattened + booked.
     setTimeout(() => syncAll(), 2500);
@@ -1697,7 +1697,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     // Hide their legs from the live snapshot until the engine's snapshot drops them.
     const now = Date.now();
     const syms = new Set(targets.flatMap(p => [p.buyLeg?.symbol, p.sellLeg?.symbol, p.hedgeLeg?.symbol]).filter(Boolean));
-    syms.forEach(sym => pendingCloseRef.current.symbols.set(sym, { since: now }));
+    syms.forEach(sym => pendingCloseRef.current.symbols.set(sym, { since: now, accountId: activeAccountId }));
     setLiveExchangeState(prev => prev ? {
       ...prev,
       positions: (prev.positions || []).filter(lp => !syms.has(lp.product_symbol)),
@@ -1728,7 +1728,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       .insert([{ account_id: activeAccountId, product_symbol: symbol }]);
     if (error) { console.error('close-symbol failed', error); showAlert(`Failed to close ${symbol}: ${error.message}`); return; }
     // Keep this leg hidden across refetches until the engine snapshot drops it.
-    pendingCloseRef.current.symbols.set(symbol, { since: Date.now() });
+    pendingCloseRef.current.symbols.set(symbol, { since: Date.now(), accountId: activeAccountId });
     setLiveExchangeState(prev => prev ? { ...prev, positions: (prev.positions || []).filter(p => p.product_symbol !== symbol) } : prev);
     setTimeout(() => syncAll(), 2500);
     setTimeout(() => syncAll(), 6000);
@@ -2664,8 +2664,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         // updates instantly, and keep them hidden across refetches until the engine
         // snapshot drops them (else a stale refetch flashes them back).
         const now = Date.now();
-        if (pos.buyLeg?.symbol) pendingCloseRef.current.symbols.set(pos.buyLeg.symbol, { since: now });
-        if (pos.sellLeg?.symbol) pendingCloseRef.current.symbols.set(pos.sellLeg.symbol, { since: now });
+        if (pos.buyLeg?.symbol) pendingCloseRef.current.symbols.set(pos.buyLeg.symbol, { since: now, accountId: activeAccountId });
+        if (pos.sellLeg?.symbol) pendingCloseRef.current.symbols.set(pos.sellLeg.symbol, { since: now, accountId: activeAccountId });
         setLiveExchangeState(prev => prev ? {
           ...prev,
           positions: (prev.positions || []).filter(lp =>
@@ -2899,6 +2899,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         .from('engine_heartbeat')
         .select('id, last_heartbeat, status, ws_status, underlying, expiry, active_positions, spot_price, wallet_balance, dry_run, max_positions, allocation_pct')
         .eq('id', `paper_trading_${activeAccountId}`);
+      if (openAccountIdRef.current !== activeAccountId) return; // switched away meanwhile
 
       if (error || !data || data.length === 0) {
         setEngineStatus({ status: 'offline', lastHeartbeat: null, data: null });
@@ -2974,9 +2975,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     if (!snap) return snap;
     const pc = pendingCloseRef.current;
     let out = snap;
+    // Guards belong to the account they were set on — another account's snapshot is
+    // shown as-is (and doesn't clear them, so switching back keeps them hidden).
+    const acct = snap.account_id;
     // Account-level flatten: hide ALL positions/orders/stops until the exchange
     // snapshot reports the account flat (or the guard times out).
-    if (pc.closeAll) {
+    if (pc.closeAll && pc.closeAll.accountId === acct) {
       const openLegs = (out.positions || []).filter(p => Number(p.size) !== 0);
       const timedOut = Date.now() - pc.closeAll.since > CLOSE_GUARD_MS;
       if (openLegs.length > 0 && !timedOut) {
@@ -2989,11 +2993,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     if (pc.symbols.size) {
       const keep = new Map();
       for (const [sym, info] of pc.symbols) {
+        if (info.accountId !== acct) { if (Date.now() - info.since <= CLOSE_GUARD_MS) keep.set(sym, info); continue; }
         const present = (out.positions || []).some(p => p.product_symbol === sym && Number(p.size) !== 0);
         if (present && Date.now() - info.since <= CLOSE_GUARD_MS) keep.set(sym, info);
       }
       pendingCloseRef.current.symbols = keep;
-      if (keep.size) out = { ...out, positions: (out.positions || []).filter(p => !keep.has(p.product_symbol)) };
+      const hide = new Set([...keep].filter(([, info]) => info.accountId === acct).map(([sym]) => sym));
+      if (hide.size) out = { ...out, positions: (out.positions || []).filter(p => !hide.has(p.product_symbol)) };
     }
     return out;
   }, []);
@@ -3014,6 +3020,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         .select('*')
         .eq('account_id', activeAccountId)
         .maybeSingle();
+      // Switched accounts while this read was in flight (e.g. Close All's delayed re-syncs):
+      // never paint the previous account's snapshot over the one now open.
+      if (openAccountIdRef.current !== activeAccountId) return;
       if (error || !data) { liveSnapVersionRef.current = null; setLiveExchangeState(null); return; }
       liveHistRef.current = Array.isArray(data.order_history) ? data.order_history : [];
       // Treat a stale snapshot (engine offline) as absent so tabs don't show ghosts.
@@ -3021,8 +3030,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       const fresh = age < HEARTBEAT_STALE_THRESHOLD;
       liveSnapVersionRef.current = fresh && Number(data.snapshot_version) > 0 ? Number(data.snapshot_version) : null;
       setLiveExchangeState(fresh ? applyCloseGuard(data) : null);
-    } catch (e) { setLiveExchangeState(null); }
-    finally { markLiveProbe('snap'); }
+    } catch (e) { if (openAccountIdRef.current === activeAccountId) setLiveExchangeState(null); }
+    finally { if (openAccountIdRef.current === activeAccountId) markLiveProbe('snap'); }
   }, [activeAccountId, isActiveLive, applyCloseGuard, markLiveProbe]);
 
   // Reset the resolved gate whenever the selected account changes so we re-probe
