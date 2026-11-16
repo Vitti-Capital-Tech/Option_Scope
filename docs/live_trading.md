@@ -18,6 +18,53 @@ whole path has been validated.
 
 ---
 
+## Contents
+
+- [Account model](#account-model)
+- [Strategy version (live = stable)](#strategy-version-live--stable)
+- [Daily report (live_daily_stats, migration 045)](#daily-report-live_daily_stats-migration-045)
+  - [Daily Report tab (src/DailyReport.jsx)](#daily-report-tab-srcdailyreportjsx)
+- [Credential storage & security model](#credential-storage--security-model)
+  - [One-time setup (run once in the Supabase SQL editor)](#one-time-setup-run-once-in-the-supabase-sql-editor)
+- [Verify flow (Stage 1)](#verify-flow-stage-1)
+- [Delta Exchange auth reference](#delta-exchange-auth-reference)
+- [Stage 2 — order execution (implemented)](#stage-2--order-execution-implemented)
+  - [Telegram failure alerts](#telegram-failure-alerts)
+  - [⚠ Open item — contract size mapping (validate in dry-run)](#-open-item--contract-size-mapping-validate-in-dry-run)
+  - [Live exit model — two paths](#live-exit-model--two-paths)
+  - [Live position sizing — balance allocation (Sub-stage A)](#live-position-sizing--balance-allocation-sub-stage-a)
+  - [Account controls — Start / Pause (live only)](#account-controls--start--pause-live-only)
+  - [Manual actions — Close All, per-leg close, order cancel](#manual-actions--close-all-per-leg-close-order-cancel)
+  - [Changes made directly on Delta (external reconciliation)](#changes-made-directly-on-delta-external-reconciliation)
+  - [Live entry price offsets](#live-entry-price-offsets)
+  - [Manual orders — Trade tab (migrations 055/056)](#manual-orders--trade-tab-migrations-055056)
+  - [Order edit — Open Orders ✎ (migration 057)](#order-edit--open-orders--migration-057)
+  - [Account groups on live (migrations 052–054, 058, 064)](#account-groups-on-live-migrations-052054-058-064)
+  - [Excluded strikes on live (2026-10-07)](#excluded-strikes-on-live-2026-10-07)
+  - [No simulation on live accounts (2026-10-06)](#no-simulation-on-live-accounts-2026-10-06)
+  - [Entry fill: modify the limit, no cancel (2026-10-06 — replaces the chase for live entries)](#entry-fill-modify-the-limit-no-cancel-2026-10-06--replaces-the-chase-for-live-entries)
+  - [Entry chase-fill](#entry-chase-fill)
+  - [Entry retry after an unfilled abort](#entry-retry-after-an-unfilled-abort)
+  - [Entry-phase budget](#entry-phase-budget)
+  - [Recent-fills cache (off the evaluation lock)](#recent-fills-cache-off-the-evaluation-lock)
+  - [Delta HTTP request deadlines](#delta-http-request-deadlines)
+  - [Top-of-book depth guard (uneven-fill prevention)](#top-of-book-depth-guard-uneven-fill-prevention)
+  - [Entry quote gate (all accounts, 2026-10-21)](#entry-quote-gate-all-accounts-2026-10-21)
+  - [Entry no-fill symbol block (armed live, 2026-10-24)](#entry-no-fill-symbol-block-armed-live-2026-10-24)
+  - [Leg swap (replacing a long-only, 2026-10-21)](#leg-swap-replacing-a-long-only-2026-10-21)
+  - [Hedge exit with the short & failed hedge closes (2026-10-19 – 23)](#hedge-exit-with-the-short--failed-hedge-closes-2026-10-19--23)
+  - [OI-limit lock rejections (only_reduce_only_orders_allowed)](#oi-limit-lock-rejections-only_reduce_only_orders_allowed)
+  - [Cross-account entry governor (shared depth budget)](#cross-account-entry-governor-shared-depth-budget)
+  - [Same-product collision guard & stuck-leg recovery](#same-product-collision-guard--stuck-leg-recovery)
+  - [Entry persistence & orphan prevention (atomic entry)](#entry-persistence--orphan-prevention-atomic-entry)
+  - [Exit residual sweep (orphan prevention on close)](#exit-residual-sweep-orphan-prevention-on-close)
+  - [Reverse-reconcile of orphan exchange positions](#reverse-reconcile-of-orphan-exchange-positions)
+  - [Live exchange data pipeline (dashboard tabs)](#live-exchange-data-pipeline-dashboard-tabs)
+  - [IP whitelisting & the Verify proxy](#ip-whitelisting--the-verify-proxy)
+  - [Rollout checklist](#rollout-checklist)
+
+---
+
 ## Account model
 
 A `paper_trading_accounts` row now carries two extra columns:
@@ -259,13 +306,27 @@ moment something goes wrong, without watching the logs. Handled entirely server-
 in `engine/lib/telegram.js` (`notifyLiveFailure`) — fire-and-forget, so a bad token or
 Telegram outage can never crash or block the engine.
 
+**Alert routing (2026-11-13, migration `070`).** Each alert goes to two places:
+
+| Destination | Format | Chosen by |
+|---|---|---|
+| Admin / common chat | Technical (account, what, raw error, money-at-risk line, UTC time) | `TELEGRAM_ERROR_CHAT_ID`, else `TELEGRAM_CHAT_ID` |
+| The account's own chat | Plain English with IST time (`userAlertText` / `friendlyAlert`) | The account's **alerts** chat `telegram_alert_chat_id`, else its **trades** chat `telegram_chat_id` |
+
+The account copy is skipped when that chat is the admin chat (no duplicates). Both chats
+are linked from the account form with *Connect Telegram* (`TelegramConnect.jsx`,
+`kind = 'trades' | 'alerts'`): the button opens `t.me/<bot>?start=<code>` and the
+engine's `getUpdates` listener matches the code (`telegram_link_code` /
+`telegram_alert_link_code`) and stores the chat id. Trade entry / exit messages use the
+plain format and go to the trades chat.
+
 **Setup** (env, same mechanism as `DELTA_LIVE_DRYRUN`):
 
 | Var | Required | Meaning |
 | --- | --- | --- |
 | `TELEGRAM_BOT_TOKEN` | yes | Bot token from **@BotFather** (one bot serves every chat) |
 | `TELEGRAM_CHAT_ID` | no | **Default/fallback** chat id — used for accounts without their own (per-account) chat id |
-| `TELEGRAM_ERROR_CHAT_ID` | no | **Dedicated error channel.** When set, every live failure alert (🔴 / 🟠 / 🟡, incl. admin alerts) and every ✅ RESOLVED message goes **only** here, so account / default chats get trade entries and exits only. Add the bot as an admin of the channel. Unset = errors go to the account / default chat |
+| `TELEGRAM_ERROR_CHAT_ID` | no | **Admin error channel.** Every live failure alert (🔴 / 🟠 / 🟡) and ✅ RESOLVED message goes here in the technical format. Unset = the admin copy goes to `TELEGRAM_CHAT_ID`. Add the bot as an admin of the channel. (Since 2026-11-13 the account's own chat *also* gets each alert — see *Alert routing* below.) |
 | `TELEGRAM_DEDUPE_MS` | no (default `60000`) | Suppress identical **failure** alerts within this window (trade events are never deduped) |
 | `TELEGRAM_MIN_GAP_MS` | no (default `1200`) | Minimum gap between two sends to the **same** chat |
 | `TELEGRAM_GLOBAL_GAP_MS` | no (default `150`) | Minimum gap between **any** two sends, bot-wide across every chat |

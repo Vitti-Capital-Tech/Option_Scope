@@ -10,9 +10,9 @@ This document explains **every** logic and condition in the Paper Trading engine
 2. [Strategy Versioning (Paper vs Live)](#strategy-versioning-paper-vs-live)
 3. [Multi-Account Supervisor](#multi-account-supervisor)
 4. [Engine Startup (Boot Sequence)](#engine-startup)
-5. [The Heartbeat (1-Second Loop)](#the-heartbeat)
-6. [How Spreads Are Found (Scanning)](#how-spreads-are-found)
-7. [Entry Filters (What Makes a Good Spread)](#entry-filters)
+5. [The Heartbeat (1-Second Loop)](#the-heartbeat-1-second-loop)
+6. [How Spreads Are Found (Scanning)](#how-spreads-are-found-scanning)
+7. [Entry Filters (What Makes a Good Spread)](#entry-filters-what-makes-a-good-spread)
 8. [How Entries Are Placed](#how-entries-are-placed)
 9. [Paper Balance & Combined-Position Sizing (Paper Only)](#paper-balance--combined-position-sizing-paper-only)
 10. [Cross-Account Entry Governor (Paper + Live)](#cross-account-entry-governor-paper--live)
@@ -67,7 +67,7 @@ else { /* stable logic — live accounts run this */ }
 > **Current fleet policy (migration `020`)**: **all paper accounts are v2, all live accounts are v1**, and new accounts inherit this from their `mode` at creation (paper → 2, live → 1). This makes paper the experimental testbed rather than an exact mirror of live. The `strategy_version` column is kept (not replaced by a raw `mode` check) so a single live account can still be promoted to v2 independently for a staged real-money rollout.
 
 **v2-gated features so far:**
-- **Per-window Days to Expiry** (migration `019`): see filter [#9](#entry-filters) and [Time-Based Filter Schedules](#time-based-filter-schedules).
+- **Per-window Days to Expiry** (migration `019`): see filter [#9](#entry-filters-what-makes-a-good-spread) and [Time-Based Filter Schedules](#time-based-filter-schedules).
 - **Trading Days (day-of-week entry filter)** (migration `021`): see [Trading Days](#trading-days-day-of-week-entry-filter).
 - **Hedge Leg (per-spread 3rd long / triplet)** (migrations `022` config, `023` leg column): see [Hedge Leg](#hedge-leg--per-spread-3rd-long-long--short--long-triplet).
 
@@ -75,7 +75,7 @@ else { /* stable logic — live accounts run this */ }
 
 ## Multi-Account Supervisor
 
-**File**: [paperTradingEngine.js:L1414-L1500](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L1414-L1500)
+**File**: [paperTradingEngine.js:L1414-L1500](../engine/paperTradingEngine.js#L1414-L1500)
 
 The entry point is `startPaperTradingEngine()`. It acts like a **manager** that:
 
@@ -133,7 +133,7 @@ Until `061` is run it falls back to one batched read per table (up to 6).
 
 ## Engine Startup
 
-**File**: [paperTradingEngine.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js)
+**File**: [paperTradingEngine.js](../engine/paperTradingEngine.js)
 
 When an engine starts for an account, it runs these steps in order:
 
@@ -156,7 +156,7 @@ When an engine starts for an account, it runs these steps in order:
 
 ## The Heartbeat (1-Second Loop)
 
-**File**: [paperTradingEngine.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js)
+**File**: [paperTradingEngine.js](../engine/paperTradingEngine.js)
 
 After startup, four timers run continuously, all wrapped inside **try-catch** blocks to prevent a failure in one timer from blocking subsequent ticks or other accounts:
 
@@ -336,7 +336,7 @@ Before any evaluation runs, these guards must pass:
 
 ## How Spreads Are Found (Scanning)
 
-**File**: [utils.js:L73-L182](file:///c:/Users/ASUS/Documents/Option_Scope/engine/lib/utils.js#L73-L182)
+**File**: [utils.js:L73-L182](../engine/lib/utils.js#L73-L182)
 
 The `scanTickers()` function is the **spread finder**. It works like this:
 
@@ -403,7 +403,7 @@ This gives a **delta-neutral** ratio. If the buy leg has 3× the delta notional 
 
 #### ATM Ratio Scaling Happens Inside the Scan (Before the Max Net Premium Check)
 
-**File**: [utils.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/lib/utils.js) (`scanTickers`)
+**File**: [utils.js](../engine/lib/utils.js) (`scanTickers`)
 
 When `atmRatioScaling` is enabled, `scanTickers` derives the ATM ratio from the intrinsic prices at the ATM strike and scales the sell quantity up toward it — **before** applying the Max Net Premium (max debit) filter:
 
@@ -423,7 +423,7 @@ The Max Net Premium check then uses `scaledSellQty × sellPrice - buyPrice`. Bec
 
 ### After Scanning: ATM PnL Filter
 
-**File**: [paperTradingEngine.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js)
+**File**: [paperTradingEngine.js](../engine/paperTradingEngine.js)
 
 After `scanTickers` produces candidates, each one gets an **ATM PnL check**:
 
@@ -485,7 +485,7 @@ live behaviour is unchanged. The Control Panel hides the two fields on a live ac
 
 ## How Entries Are Placed
 
-**File**: [paperTradingEngine.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js)
+**File**: [paperTradingEngine.js](../engine/paperTradingEngine.js)
 
 Once we have the filtered, ranked list of candidate spreads (`uniqueTopSpreads`), the engine tries to open new positions. Each candidate must pass these checks **in order**:
 
@@ -612,7 +612,7 @@ This is **execution-realistic** — no cheating with mid-prices.
 
 ## Paper Balance & Combined-Position Sizing (Paper Only)
 
-**File**: [paperTradingEngine.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js) · **Migration**: `027_paper_balance_combined.sql` (combined-cap model) + `034_drop_number_of_calls_puts.sql`. **Scope**: the **combined-cap model (entry caps) now applies to ALL accounts — paper AND live**. *Balance-based sizing* still differs: paper sizes on its funded equity (this section); live sizes on the real Delta wallet balance ÷ `maxCombinedPositions` (see live sizing). The old `numberOfCalls`/`numberOfPuts` caps are gone.
+**File**: [paperTradingEngine.js](../engine/paperTradingEngine.js) · **Migration**: `027_paper_balance_combined.sql` (combined-cap model) + `034_drop_number_of_calls_puts.sql`. **Scope**: the **combined-cap model (entry caps) now applies to ALL accounts — paper AND live**. *Balance-based sizing* still differs: paper sizes on its funded equity (this section); live sizes on the real Delta wallet balance ÷ `maxCombinedPositions` (see live sizing). The old `numberOfCalls`/`numberOfPuts` caps are gone.
 
 Before this, paper positions were sized to a fixed "1 unit" (the base ratio) capped only by the [$195K short-notional ceiling](#guard-7-195k-short-value-cap). Paper now behaves like a **real funded account**: it has a balance, allocates a fraction of it as the tradeable margin pool, and divides that pool equally across a per-window cap on concurrent positions.
 
@@ -747,7 +747,7 @@ Control Panel → **Account Stop Loss → Max SL** (`max_sl_pct`, default **20**
 
 ## Cross-Account Entry Governor (Paper + Live)
 
-**Files**: [entryGovernor.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/lib/entryGovernor.js) · [paperTradingEngine.js:L4306](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L4306)
+**Files**: [entryGovernor.js](../engine/lib/entryGovernor.js) · [paperTradingEngine.js:L4306](../engine/paperTradingEngine.js#L4306)
 
 Every account's engine runs inside **one Node process** (see [Multi-Account Supervisor](#multi-account-supervisor)). When several accounts pick the **same spread** in the same ~1s entry wave, their **combined** contract size can exceed the **real top-of-book depth** resting on Delta. Without coordination each account would independently "fill" the spread in paper — a fill the live market could never have handed all of them at once. The governor gates entries against a **shared, first-come-first-serve depth budget** so the book is never over-consumed. It's the **last gate before an entry is committed** (runs right before `newEntries.push`).
 
@@ -817,7 +817,7 @@ Live additionally keeps its **per-account thin-book guard** at execute time (`lo
 
 ## Exit Priority Tree
 
-**File**: [paperTradingEngine.js:L420-L1022](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L420-L1022)
+**File**: [paperTradingEngine.js:L420-L1022](../engine/paperTradingEngine.js#L420-L1022)
 
 When evaluating exits, positions are processed in a specific order: **worst-first** (farthest from ATM). This ensures we exit the least valuable positions before the best ones.
 
@@ -1110,7 +1110,7 @@ sequenceDiagram
 
 ## Duplicate Exit Prevention (Idempotent Writes)
 
-**File**: [paperTradingEngine.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js)
+**File**: [paperTradingEngine.js](../engine/paperTradingEngine.js)
 
 Every write to `trade_history` is **idempotent**, so the same logical exit can never appear twice — even if two evaluators briefly race the same position (e.g. a restart overlap, or a stray second process).
 
@@ -1188,7 +1188,7 @@ Here's every safety guard in one table:
 
 ## Diagnostic Logging (Scan Rejections)
 
-**Files**: [`paperTradingEngine.js`](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js), [`utils.js`](file:///c:/Users/ASUS/Documents/Option_Scope/engine/lib/utils.js)
+**Files**: [`paperTradingEngine.js`](../engine/paperTradingEngine.js), [`utils.js`](../engine/lib/utils.js)
 
 Every entry cycle logs **why** the scan dropped what it dropped — making it easy to distinguish a market-condition issue from a technical one.
 
@@ -1252,7 +1252,7 @@ This eliminates the largest source of Supabase egress. A full re-fetch still hap
 
 ## Config Synchronization
 
-**File**: [paperTradingEngine.js:L1279-L1312](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L1279-L1312)
+**File**: [paperTradingEngine.js:L1279-L1312](../engine/paperTradingEngine.js#L1279-L1312)
 
 > [!NOTE]
 > The Control Panel filter bar (`ControlPanel.jsx`) shows **only the global filters** — Min IV Edge, Max Delta Deviation, Min Short Premium, Max Net Debit, Max Short Ratio, Min DTE, Exit Type/Points, Short Exit Price, Variable/Long Exit Slices, and — on **paper accounts only** — Min ATM P&L and Min ATM ROI (migration 039). The 8 sizing/scaling fields (open calls/puts, spread width, spot distance, ATM scaling + call/put %, re-entry step) were removed from it — they are set at account creation and configured per window in the Schedule Panel. Apply/Reset/dirty-tracking therefore operate only on the global filters.
@@ -1285,7 +1285,7 @@ When you click **Reset**:
 
 ## Time-Based Filter Schedules
 
-**File**: [paperTradingEngine.js:L325-L344](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js#L325-L344), [SchedulePanel.jsx](file:///c:/Users/ASUS/Documents/Option_Scope/src/components/PaperTrading/SchedulePanel.jsx)
+**File**: [paperTradingEngine.js:L325-L344](../engine/paperTradingEngine.js#L325-L344), [SchedulePanel.jsx](../src/components/PaperTrading/SchedulePanel.jsx)
 
 Time-Based Filter Schedules allow users to define multiple named time windows per account within a 24-hour cycle. Each window overrides specific entry and portfolio filters during that period.
 
@@ -1303,7 +1303,7 @@ The following parameters are scheduled per window:
 10. **Spot Diff (%)** (`spotDiff`)
 11. **Max Net Debit** — *Max Debit* (`maxNetPremium`) — entry debit cap (migration `012`)
 12. **Exit Type** (`exitType`) — `ATM`/`ITM`/`OTM`; **active-window-governs** open positions (migration `012`)
-13. **Exit Points** — *Exit Pts* (`exitPoints`) — offset for ITM/OTM exit (migration `012`). In an [account group](#account-groups-migration-050) each member other than the one saved from gets a random ±10–50 on top (migrations `053`/`054`).
+13. **Exit Points** — *Exit Pts* (`exitPoints`) — offset for ITM/OTM exit (migration `012`). In an [account group](#account-groups-migrations-050-064) each member other than the one saved from gets a random ±10–50 on top (migrations `053`/`054`).
 14. **SL/TP Diff (pts)** — label *SL/TP Pts* (`slTpDecoyDiff`) — per-window SL/TP decoy trigger offset (migration `031`)
 15. **Short Exit Price / Variable Ladder** — *Short Exit*, *Var.*, *Slices* (`shortExitPrice`, `variableExitSlices`, `longExitSlices`) — per-window exit ladder controls (migration `033`)
 16. **Days to Expiry** — *Min DTE* (`daysToExpiry`; paper: **7** = weekly Friday expiry, **30** = monthly last-Friday expiry, see Product Refresh & Expiry Rollover) — **all accounts, paper and live** (migration `019`). The window's value guards its own entries; the account-global traded expiry **follows the active window** as **(current date + that window's DTE)**, re-selected in ~realtime as windows change (smallest DTE wins on overlap). See [Strategy Versioning](#strategy-versioning-paper-vs-live).
@@ -1315,7 +1315,7 @@ All other filter settings (like `minSellPremium`, `maxRatioDeviation`, etc.) def
 
 ### Shared Long Strikes (paper v2)
 
-**File**: [paperTradingEngine.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js) (`sharedLongCount`, `pickSharedLongSpreads`) · **Columns**: `paper_trading_schedules.shared_long_strikes`, `active_positions.long_share_slot` · **Migration**: `044`
+**File**: [paperTradingEngine.js](../engine/paperTradingEngine.js) (`sharedLongCount`, `pickSharedLongSpreads`) · **Columns**: `paper_trading_schedules.shared_long_strikes`, `active_positions.long_share_slot` · **Migration**: `044`
 
 Normally a strike hosts one leg per account. With **Shared Long Strikes = N**, each cycle the engine takes this cycle's candidate long strikes, ranks them by distance to spot (calls and puts together) and marks the **N nearest ATM** as shared. A shared long may carry **two spreads**: the same long with the **two valid shorts nearest ATM** (not ranked by ROI). If one spread is already open on that long, only one more (the nearest free short) is added.
 
@@ -1350,7 +1350,7 @@ Normally a strike hosts one leg per account. With **Shared Long Strikes = N**, e
 
 ### Trading Days (Day-of-Week Entry Filter)
 
-**File**: [paperTradingEngine.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js) (`isTradingDayEnabled`), [ControlPanel.jsx](file:///c:/Users/ASUS/Documents/Option_Scope/src/components/PaperTrading/ControlPanel.jsx) · **Column**: `paper_trading_config.trade_days` · **Migration**: `021`
+**File**: [paperTradingEngine.js](../engine/paperTradingEngine.js) (`isTradingDayEnabled`), [ControlPanel.jsx](../src/components/PaperTrading/ControlPanel.jsx) · **Column**: `paper_trading_config.trade_days` · **Migration**: `021`
 
 An **account-level** day-of-week filter that chooses which weekdays the account may **open new positions** on. It sits **on top of** the time-of-day schedule windows: entries need both an active window (time) **and** an enabled trading day. **Promoted to the shared path — applies to paper AND live, all strategy versions** (it lives in `isTradingDayEnabled` with no version branch). Safe by default: `trade_days` defaults to all seven days, so any account that never restricted days is unaffected. See [Strategy Versioning](#strategy-versioning-paper-vs-live).
 
@@ -1365,7 +1365,7 @@ An **account-level** day-of-week filter that chooses which weekdays the account 
 
 ### Hedge Leg — Per-Spread 3rd Long (Long / Short / Long Triplet)
 
-**File**: [paperTradingEngine.js](file:///c:/Users/ASUS/Documents/Option_Scope/engine/paperTradingEngine.js) (hedge attach at entry + `-HX` exit), [SchedulePanel.jsx](file:///c:/Users/ASUS/Documents/Option_Scope/src/components/PaperTrading/SchedulePanel.jsx) · **Config columns**: `paper_trading_schedules.hedge_enabled`, `hedge_lot_pct` (migration `041`; the migration-`022` columns are dropped by `042`) · **Leg column**: `active_positions.hedge_leg` / `trade_history.hedge_leg` (migration `023`)
+**File**: [paperTradingEngine.js](../engine/paperTradingEngine.js) (hedge attach at entry + `-HX` exit), [SchedulePanel.jsx](../src/components/PaperTrading/SchedulePanel.jsx) · **Config columns**: `paper_trading_schedules.hedge_enabled`, `hedge_lot_pct` (migration `041`; the migration-`022` columns are dropped by `042`) · **Leg column**: `active_positions.hedge_leg` / `trade_history.hedge_leg` (migration `023`)
 
 Replaces the old standalone "hedge overlay" with a **3rd long-only leg baked into each ratio spread**, so an entered call/put spread becomes a **long / short / long triplet**. Available on **paper accounts with `strategy_version >= 2`** (v1 ignores it and the UI is hidden) and on **live accounts** (any version, since 2026-10-13). On live the toggle is, **off by default**: with it on, an armed entry sends three orders — long, short, then the hedge long (`${id}-HB`, chased like the entry legs with `ENTRY_CHASE`) — and the hedge carries a spot-triggered **TP bracket at the same level as the first long's TP** (moved with it by `syncExitBrackets` when exit points change). The hedge is a whole number of contracts (short contracts × Hedge Lot %, rounded; < 1 contract skips the spread) on the long's contract-value basis. If the hedge still has not filled after the chase, the spread is kept as a plain 2-leg, the hedge dropped, and a Telegram failure alert is sent ("Hedge leg (3rd long) did not fill after the entry chase"). See [Strategy Versioning](#strategy-versioning-paper-vs-live).
 
@@ -1394,7 +1394,7 @@ Replaces the old standalone "hedge overlay" with a **3rd long-only leg baked int
 
 ## Frontend Dashboard Architecture
 
-**File**: [PaperTrading.jsx](file:///c:/Users/ASUS/Documents/Option_Scope/src/PaperTrading.jsx)
+**File**: [PaperTrading.jsx](../src/PaperTrading.jsx)
 
 `PaperTrading.jsx` is the root component of the dashboard. It manages all frontend state and is the single source of truth for config, positions, trade history, and accounts in the browser. The server-side engine (`paperTradingEngine.js`) runs independently and communicates via Supabase DB only — there is no direct API call between the UI and the engine.
 

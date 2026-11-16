@@ -2,7 +2,7 @@
 
 ## What The System Does
 
-OptionScope is a client-side trading workstation for Delta Exchange options. It has two top-level UI modules — plus a live-execution mode on Paper Trading accounts:
+OptionScope is a trading workstation for Delta Exchange options: a React dashboard plus a headless Node.js engine that trades every account 24/7. The dashboard has six pages (`/scanner`, `/calendar`, `/trading`, `/live`, `/report`, `/slippage` — routed in `src/main.jsx`): the Ratio Spread and Calendar Spread scanners, the Paper and Live trading workspaces (one `PaperTrading.jsx` component in `paper` / `live` mode), the live Daily Report and the live entry Slippage report. The core modules:
 - **Ratio Spread Scanner**: Live discovery of ratio spreads based on premium-to-delta-notional alignment.
 - **Paper Trading**: Fully automated simulation of spread entry, live PnL, configurable exit types (ATM, ITM, OTM with points-based offsets), a **two-phase exit** (short-leg buy-back → long-only laddered scale-out), IV tracking, and expiry settlement.
 - **Live Trading**: An account created in `live` mode is linked to a real Delta Exchange account (mode is read-only after creation — Edit keeps the stored mode). The same engine then places **real orders** — marketable-limit entries, a resting-order exit model, and exchange-native SL/TP brackets — gated by a global dry-run flag and a per-account arm switch. See [Live Trading](live_trading.md).
@@ -16,17 +16,29 @@ The user selects underlying and expiry, then the system streams option telemetry
 ## System Components
 
 ```text
-Headless Backend Engine (Node.js VPS)
+Headless Backend Engine (Node.js on a VPS, PM2, single instance)
   |
-  |-- paperTradingEngine.js (Continuous execution, IV tracking, Supabase syncing)
-  |-- WebSocket adapter ---> Delta WS (Auto-reconnect + heartbeats)
+  |-- index.js ── IPv4-first DNS, graceful shutdown
+  |-- proxyServer.js (optional) ──► Delta REST       (credential Verify from the whitelisted IP)
+  |-- paperTradingEngine.js ── manager + one evaluation loop per account (paper AND live)
+  |     |-- lib/tickerHub.js ──► Delta WS            (ONE shared socket per underlying, backoff + jitter)
+  |     |-- lib/productHub.js ──► Delta REST         (shared product / expiry list)
+  |     |-- lib/entryGovernor.js                     (cross-account top-of-book depth budget)
+  |     |-- lib/liveExecution.js ─ lib/deltaTradeApi.js ──► Delta signed REST   (live orders, dry-run gated)
+  |     |-- lib/dailyStats.js                        (live_daily_stats)
+  |     |-- lib/heartbeat.js, lib/dbHealth.js        (liveness + DB watchdog)
+  |     |-- lib/telegram.js ──► Telegram Bot API      (trade messages, graded failure alerts, /start linking)
+  |     '-- lib/supabase.js ──► Supabase (service_role)
 
-Browser (React + Vite Dashboard)
+Browser (React + Vite Dashboard, hosted on Vercel)
   |
-  |-- Navigation Shell (Scanner / Paper Trading)
-  |-- WebSocket adapter (UI local tickers) ---> Delta WS
+  |-- Navigation Shell (Ratio Scanner / Calendar Scanner / Paper / Live / Daily Report / Slippage)
+  |-- WebSocket adapter (UI local tickers) ──► Delta WS
   |-- Persistence & Sync Hub (Supabase Realtime + BroadcastChannel)
+  '-- Manual actions & orders ──► Supabase request tables ──► engine (never Delta directly)
 ```
+
+Deployment and operations: [OPERATIONS.md](OPERATIONS.md).
 
 ### 1) UI Layer (Dashboard)
 
@@ -99,7 +111,7 @@ Browser (React + Vite Dashboard)
 2. Evaluate active positions for rotation or dynamic exit targets (ATM, ITM, OTM with points-based thresholds)/expiry exit triggers every second to prevent slippage, while scanning and entering new positions on the 1-minute boundary.
    - **Liquidation-Based PnL**: Unrealized PnL is calculated based on immediate exit prices: long positions are valued at the current Bid (selling back) and short positions at the current Ask (buying back).
    - **Zombie Exit Guard**: If a position is more than **10 minutes past expiry**, its `exit_time` is back-dated to the exact expiry timestamp to ensure trade history reflects the true settlement moment.
-   - **2-Minute Fallback Position Sync**: The engine re-fetches active positions from the database every 2 minutes as a safety net against missed Realtime events.
+   - **Fallback Sync**: Realtime is primary. The manager re-checks the account list every 30 seconds, and each account engine re-fetches its config, schedules and active positions every 15 minutes as a safety net against missed Realtime events (live accounts also reconcile against Delta every 30 seconds).
 3. **Scaling & Uniqueness Guards**: 
    - **Directional Spot Scaling**: Enforces a 0.5% price gap (rounded to 100) between entries for mean-reversion scaling.
    - **Buy Strike Uniqueness**: Ensures new buy strikes are unique in the database for the same underlying and type via a DB-level check (`buyConflict`), preventing duplicate entries under race conditions.
@@ -138,7 +150,7 @@ Browser (React + Vite Dashboard)
 
 For an account with `mode = 'live'`, `live_enabled = true`, and `DELTA_LIVE_DRYRUN = false`, the same lifecycle drives real Delta orders:
 
-1. **Entry**: marketable-limit orders (buy @ ask + `entry_buy_offset`, sell @ bid − `entry_sell_offset`) are **chased to a full fill** (re-priced up to `ENTRY_CHASE_ATTEMPTS` times) or fully **unwound and aborted** if unfillable, so no half-open spread is left; a leg that was accepted but did not fill keeps its symbol out of new entries for `ENTRY_NOFILL_BLOCK_MS` (3 min). Sizing is driven by the **live wallet balance** (`balance × balance_allocation_pct`, default 90%) split across peak concurrent positions, using each leg's real per-contract `contractValue` and clamped by a $195k short-notional cap; an entry is skipped (never guessed) if `contractValue` is missing. The order set is placed first and the `active_positions` row written last (recording order ids); a failed insert unwinds the orders (`-ORPHX`).
+1. **Entry**: marketable-limit orders (buy @ ask + `entry_buy_offset`, sell @ bid − `entry_sell_offset`) are **modified in place** while unfilled (every `ENTRY_FILL_WAIT_MS`, up to `ENTRY_MODIFY_TRIES` times — short to `ENTRY_SELL_MODIFY_PX`, long to mark + `ENTRY_BUY_MARK_PLUS`; only the hedge leg is still chased with `ENTRY_CHASE_*`, capped at `entry_hedge_offset`, migration `068`), and a leg still empty after the last modify is cancelled and the spread unwound, so no half-open spread is left; a leg that was accepted but did not fill keeps its symbol out of new entries for `ENTRY_NOFILL_BLOCK_MS` (3 min). Sizing is driven by the **live wallet balance** (`balance × balance_allocation_pct`, default 90%) split across peak concurrent positions, using each leg's real per-contract `contractValue` and clamped by the short-notional cap (`shortNotionalCap()`: $195k at 200×, $95k at 100× — ETH or expiries more than 48 h out); an entry is skipped (never guessed) if `contractValue` is missing. The order set is placed first and the `active_positions` row written last (recording order ids); a failed insert unwinds the orders (`-ORPHX`).
 2. **Exit (resting-order model, `handleLiveRestingExit`)**: at entry a reduce-only resting BUY rests on the short at `shortExitPrice` (`-SEX`; if that send failed it is adopted from Delta's open orders or re-placed every 2 min); when it fully fills (confirmed via `/v2/fills` + size 0) the short is booked and a **fixed long ladder** of reduce-only SELLs is placed (`-LE-<stage>`). These profit scale-outs are **limit** orders (they wait for a favourable price). The **risk / immediate exits use reduce-only MARKET orders** for an instant fill instead — the spot-cross **Full Exit** catch-all (`-CAXS`/`-CAXB`/`-HX`), a **manual exit** (`-MXS`/`-MXB`/`-MXH`), and the dynamic **partial ratio scale-down** (`-PEX`) — because a resting limit can slip ~$10–15/sec on a moving option. Exchange-native **SL/TP brackets** at the exit-type spot level are attached at entry as an engine-down risk backstop and kept in sync (cancel-then-recreate) when exit params change.
 3. **Reconciliation (exchange is source of truth)**: a periodic sweep (`reconcileOrphans`) books positions closed on Delta (only after the leg is missing across several snapshots, never on one), **adopts** orphan long legs the engine doesn't track, **alerts the admin (never closes)** on untracked or dangling shorts, converts a manually-closed short into a laddered long-only (`externalShortExitToLongLadder`), adopts manual TP/SL changes, re-arms missing brackets, and reconciles external partial reductions — all idempotently. A per-cycle **margin self-heal** recomputes each live position's margin on the real contract-value basis.
 4. **Observability**: a read-only 20s `live.snapshot()` upserts `live_exchange_state` (positions/orders/stop orders/fills/balances) for the dashboard, and armed-real failures (order/close/bracket/entry/reconcile) are pushed to **Telegram** (`notifyLiveFailure`, deduped), graded by `classifyAlert` as 🔴 CRITICAL / 🟠 CHECK SOON / 🟡 NO MONEY RISK; condition-based alerts are tracked in memory (`raiseIssue` / `resolveIssue`) and send one ✅ RESOLVED message (`notifyLiveResolved`) when they clear.
@@ -163,4 +175,11 @@ For an account with `mode = 'live'`, `live_enabled = true`, and `DELTA_LIVE_DRYR
 | Streaming | Native WebSocket | Low-latency market updates with auto-reconnect |
 | Data buffering | `useRef` + batched flush | Controls re-render frequency under bursty data |
 | Persistence | Supabase (PostgreSQL) | Serverless, real-time DB with cross-device sync |
-| Styling | Vanilla CSS | Fine-grained control of trading terminal aesthetics |
+| Secrets | pgcrypto + Supabase Vault | Delta API secrets encrypted at rest; only the engine (`service_role`) can decrypt |
+| Styling | Vanilla CSS (+ Tailwind 4 via `@tailwindcss/vite`) | Fine-grained control of trading terminal aesthetics |
+| Forms | `react-hook-form` | Account create / edit validation |
+| Engine runtime | Node.js (ES modules) + `ws` + `dotenv` | One long-running process for every account |
+| Process manager | PM2 (`engine/ecosystem.config.cjs`) | Auto-restart, memory limit, single-instance guarantee |
+| Frontend hosting | Vercel (`vercel.json` rewrites) | Static hosting + CORS-safe `/api` proxy to Delta |
+| Alerts | Telegram Bot API | Trade messages and graded failure alerts |
+| Code quality | ESLint + husky pre-commit | Blocks engine commits with lint errors (e.g. undefined variables) |

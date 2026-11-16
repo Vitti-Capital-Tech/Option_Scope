@@ -1,6 +1,6 @@
 import React from 'react';
 import { fmtExpiry } from '../../api';
-import { formatDateTime } from '../../scannerUtils';
+import { formatDateTime, spotDistance, fmtSpotDistPts, fmtSpotDistPct } from '../../scannerUtils';
 import CustomInput from '../common/CustomInput';
 import { Clock, ChevronLeft, ChevronRight, List, Download } from 'lucide-react';
 
@@ -260,6 +260,7 @@ export default function TradeHistoryTable({
               <th>Position</th>
               <th>Qty<span className="pt-th-sub">orig · ours · exit</span></th>
               <th>Strikes<span className="pt-th-sub">spot in/out</span></th>
+              <th title="Distance of each strike from the spot at entry, in the OTM direction (call: strike − spot, put: spot − strike). Positive = OTM, negative = ITM.">Spot Dist.<span className="pt-th-sub">at entry · OTM pts</span></th>
               <th>Entry<span className="pt-th-sub">prem · iv · atm</span></th>
               <th>Exit<span className="pt-th-sub">prem · iv · atm</span></th>
               <th>Fees<span className="pt-th-sub">entry/exit</span></th>
@@ -378,6 +379,29 @@ export default function TradeHistoryTable({
                       )}
                       <span className="pt-cell-sub">spot {t.entrySpotPrice ? t.entrySpotPrice.toLocaleString() : '—'} → {t.exitSpotPrice ? t.exitSpotPrice.toLocaleString() : '—'}</span>
                     </td>
+                    {/* Entry distance of each strike from the entry spot (OTM points) + long's % */}
+                    {(() => {
+                      const dL = spotDistance(t.type, t.buyLeg?.strike, t.entrySpotPrice);
+                      const dS = !isHedgeRow && hasShort ? spotDistance(t.type, t.sellLeg?.strike, t.entrySpotPrice) : null;
+                      const dH = !isHedgeRow && t.hedgeLeg?.strike != null ? spotDistance(t.type, t.hedgeLeg.strike, t.entrySpotPrice) : null;
+                      return (
+                        <td title={`From entry spot ${t.entrySpotPrice ? t.entrySpotPrice.toLocaleString() : '—'} — ${isHedgeRow ? 'hedge' : 'long'} ${fmtSpotDistPts(dL) ?? '—'} (${fmtSpotDistPct(dL) ?? '—'})${dS ? `, short ${fmtSpotDistPts(dS)} (${fmtSpotDistPct(dS)})` : ''}${dH ? `, hedge ${fmtSpotDistPts(dH)} (${fmtSpotDistPct(dH)})` : ''}. Positive = OTM.`}>
+                          {isHedgeRow ? (
+                            <div className="pt-legstack">
+                              <span className="pt-ls-h">H {fmtSpotDistPts(dL) ?? '—'}</span>
+                            </div>
+                          ) : (
+                            <>
+                              {legStack(fmtSpotDistPts(dL), fmtSpotDistPts(dS))}
+                              {dH && (
+                                <div className="pt-legstack"><span className="pt-ls-h">H {fmtSpotDistPts(dH)}</span></div>
+                              )}
+                            </>
+                          )}
+                          <span className="pt-cell-sub">{isHedgeRow ? 'hedge' : 'long'} {fmtSpotDistPct(dL) ?? '—'}</span>
+                        </td>
+                      );
+                    })()}
                     {/* Entry: prem stacked + IV + ATM ratio */}
                     <td title={`Entry ATM scaling: ${atmFull(t.buyLeg?.entryAtmRatio, t.buyLeg?.entryBuyAtmPrice, t.buyLeg?.entrySellAtmPrice)}`}>
                       {legStack(t.entryBuyPrice != null ? t.entryBuyPrice.toFixed(2) : null, t.entrySellPrice != null ? t.entrySellPrice.toFixed(2) : null)}

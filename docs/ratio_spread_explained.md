@@ -12,7 +12,7 @@ This document explains **every** logic, condition, and mathematical formula in t
 4. [Spread Pair Validation (Entry Filters)](#spread-pair-validation)
 5. [Key Calculations & Formulas](#key-calculations--formulas)
    - [Delta-Neutral Ratio Calculation](#delta-neutral-ratio-calculation)
-   - [ATM Ratio Scaling](#atm-ratio-scaling)
+   - [ATM Ratio Scaling](#atm-ratio-scaling-applied-during-the-scan)
    - [$195K Short Value Portfolio Cap](#195k-short-value-portfolio-cap)
    - [At ATM P&L & Margin (ROI %)](#at-atm-pl--margin-roi-)
    - [ATM Edge Floors (Min ATM P&L / Min ATM ROI)](#atm-edge-floors-min-atm-pl--min-atm-roi)
@@ -120,7 +120,7 @@ $$\text{sellQty} = \max\left(1.0, \text{round}\left(\frac{\text{Raw Ratio}}{0.25
 
 ### ATM Ratio Scaling (Applied During the Scan)
 
-When the **ATM Ratio Entry** checkbox (`atmRatioScaling`) is enabled in the configuration bar, the scaling is computed **inside the scanner** (`scanTickers` in [RatioSpreadScanner.jsx](file:///c:/Users/ASUS/Documents/Option_Scope/src/RatioSpreadScanner.jsx)) as each candidate pair is evaluated — **before** the Max Debit filter runs. The `ResultTable` no longer recomputes the scaling; it simply consumes the `scaledSellQty` produced by the scan.
+When the **ATM Ratio Entry** checkbox (`atmRatioScaling`) is enabled in the configuration bar, the scaling is computed **inside the scanner** (`scanTickers` in [RatioSpreadScanner.jsx](../src/RatioSpreadScanner.jsx)) as each candidate pair is evaluated — **before** the Max Debit filter runs. The `ResultTable` no longer recomputes the scaling; it simply consumes the `scaledSellQty` produced by the scan.
 
 * **Dynamic Scaling**: The sell quantity (ratio) is scaled up proportionally if the current spread ratio is lower than what is available at ATM strikes:
 
@@ -175,7 +175,7 @@ $$\text{ROI} = \left(\frac{\text{ATM PnL}}{\text{Margin Requirement}}\right) \ti
 
 #### Bracket-and-Average ATM Fallback Logic
 
-To prevent empty cells (`—` or `$0.00`) when option chains are sparse (often the case on high-volatility or newly created expiries), the scanner estimates the price at a **missing** target strike during ATM intrinsic price checks (`getTickerPrice` in [RatioSpreadScanner.jsx](file:///c:/Users/ASUS/Documents/Option_Scope/src/RatioSpreadScanner.jsx)):
+To prevent empty cells (`—` or `$0.00`) when option chains are sparse (often the case on high-volatility or newly created expiries), the scanner estimates the price at a **missing** target strike during ATM intrinsic price checks (`getTickerPrice` in [RatioSpreadScanner.jsx](../src/RatioSpreadScanner.jsx)):
 * **Lookup Sequence**: The scanner first searches for an **exact** match of the target strike. If it exists, that price is used directly.
 * **Bracket-and-average when the exact strike is missing**: The `sellIntrinsic` is priced at `ATM ± strikeDiff`, and a "weird" strike difference can land **between** two listed grid strikes — e.g. an `ATM ± 1100` target when only the `1000`- and `1200`-diff strikes are listed. Rather than **snapping to a single neighbour** (the old behaviour, which biased toward whichever side — usually the `1200` strike — and skewed the ATM ratio), the scanner now takes the **nearest listed strike below** and the **nearest listed strike above** the target and returns the **average of their prices** as a midpoint estimate. For the common symmetric case (`1100` exactly between `1000`/`1200`) this equals a linear interpolation.
   * If only **one** side exists within tolerance, it falls back to that single strike (the old nearest behaviour).

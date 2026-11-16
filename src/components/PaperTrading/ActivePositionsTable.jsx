@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Activity, RefreshCw, Loader2 } from 'lucide-react';
 import { fmtExpiry } from '../../api';
-import { formatDateTime } from '../../scannerUtils';
+import { formatDateTime, spotDistance, fmtSpotDistPts, fmtSpotDistPct } from '../../scannerUtils';
 import CustomSelect from '../common/CustomSelect';
 
 export default function ActivePositionsTable({
@@ -222,6 +222,7 @@ export default function ActivePositionsTable({
             <thead><tr>
               <th>Position</th>
               <th>Strikes<span className="pt-th-sub">spot</span></th>
+              <th title="Distance of each strike from the spot at entry, in the OTM direction (call: strike − spot, put: spot − strike). Positive = OTM, negative = ITM.">Spot Dist.<span className="pt-th-sub">at entry · OTM pts</span></th>
               {showQtyColumn && <th>Qty<span className="pt-th-sub">long : short · net prem</span></th>}
               <th>Entry<span className="pt-th-sub">prem · iv</span></th>
               <th>Mark<span className="pt-th-sub">prem · iv</span></th>
@@ -328,6 +329,18 @@ export default function ActivePositionsTable({
                       {legStack(p.buyLeg.strike.toLocaleString(), isLongOnly ? null : p.sellLeg.strike.toLocaleString(), { longOnly: isLongOnly, h: hasHedge ? p.hedgeLeg.strike.toLocaleString() : null })}
                       <span className="pt-cell-sub">spot {p.entrySpotPrice ? p.entrySpotPrice.toLocaleString() : '—'}</span>
                     </td>
+                    {/* Entry distance of each strike from the entry spot (OTM points) + long's % */}
+                    {(() => {
+                      const dL = spotDistance(p.type, p.buyLeg?.strike, p.entrySpotPrice);
+                      const dS = isLongOnly ? null : spotDistance(p.type, p.sellLeg?.strike, p.entrySpotPrice);
+                      const dH = hasHedge ? spotDistance(p.type, p.hedgeLeg?.strike, p.entrySpotPrice) : null;
+                      return (
+                        <td title={`From entry spot ${p.entrySpotPrice ? p.entrySpotPrice.toLocaleString() : '—'} — long ${fmtSpotDistPts(dL) ?? '—'} (${fmtSpotDistPct(dL) ?? '—'})${dS ? `, short ${fmtSpotDistPts(dS)} (${fmtSpotDistPct(dS)})` : ''}${dH ? `, hedge ${fmtSpotDistPts(dH)} (${fmtSpotDistPct(dH)})` : ''}. Positive = OTM.`}>
+                          {legStack(fmtSpotDistPts(dL), fmtSpotDistPts(dS), { longOnly: isLongOnly, h: dH ? fmtSpotDistPts(dH) : null })}
+                          <span className="pt-cell-sub">long {fmtSpotDistPct(dL) ?? '—'}</span>
+                        </td>
+                      );
+                    })()}
                     {/* Qty per leg (same order as Strikes) + premium at entry, and the net credit/debit */}
                     {showQtyColumn && (
                     <td title={`Qty traded (long : short${hasHedge ? ' + hedge' : ''}) and the net premium at entry (short received − long${hasHedge ? ' − hedge' : ''} paid). Contracts: ${buyContracts}${isLongOnly ? '' : `/${sellContracts}`}${hasHedge ? ` + ${hedgeContracts}H` : ''}`}>

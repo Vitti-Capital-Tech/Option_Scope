@@ -4,6 +4,26 @@ This document is the authoritative implementation reference for every module, en
 
 ---
 
+## Contents
+
+- [1) Project Structure & Codebase Map](#1-project-structure--codebase-map)
+- [2) Real-Time Data & Connectivity Layer (src/api.js)](#2-real-time-data--connectivity-layer-srcapijs)
+- [3) Directional Implied Volatility (IV) & ATM Ratio/Price Tracking](#3-directional-implied-volatility-iv--atm-ratioprice-tracking)
+- [4) Cross-Tab Synchronization (src/useTabSync.js)](#4-cross-tab-synchronization-srcusetabsyncjs)
+- [5) Ratio Spread Scanner (RatioSpreadScanner.jsx)](#5-ratio-spread-scanner-ratiospreadscannerjsx)
+- [6) Supabase Schema & Persistence](#6-supabase-schema--persistence)
+- [7) Paper Trading Engine (engine/paperTradingEngine.js)](#7-paper-trading-engine-enginepapertradingenginejs)
+- [8) Robustness & Error-Handling Systems](#8-robustness--error-handling-systems)
+- [9) ATM Projections in ResultTable (ResultTable.jsx)](#9-atm-projections-in-resulttable-resulttablejsx)
+- [10) Multi-Account Management & UI Modals](#10-multi-account-management--ui-modals)
+- [11) Paper Trading Filter State Buffering (Apply & Reset)](#11-paper-trading-filter-state-buffering-apply--reset)
+- [12) Time-Based Filter Schedules](#12-time-based-filter-schedules)
+- [13) Live Trading Execution](#13-live-trading-execution)
+- [14) Manual Actions & Diagnostics](#14-manual-actions--diagnostics)
+- [15) Auth & RBAC](#15-auth--rbac)
+
+---
+
 ## 1) Project Structure & Codebase Map
 
 | File | Responsibility |
@@ -12,7 +32,7 @@ This document is the authoritative implementation reference for every module, en
 | `RatioSpreadScanner.jsx` | Standalone option-chain scanner. Computes premium-to-delta-notional ratio deviation pairs, publishes top-3 results via `BroadcastChannel` and `localStorage`. Configuration is managed locally in `localStorage` independent of Paper Trading accounts. |
 | `PaperTrading.jsx` | React UI Dashboard for Paper Trading. Reads `active_positions`, `trade_history`, and heartbeat from Supabase. Connects to multi-account creation/management modals and controls configuration updates via a local draft buffer (Apply/Reset buttons). |
 | `ConfirmExitModal.jsx` | Front-end confirmation modal for manual position liquidation. Displays live exit pricing, estimated exit fees, and net realized P&L. |
-| `engine/paperTradingEngine.js` | Headless Node.js engine. Handles entries, dynamic exits (ATM, ITM, OTM with points-based thresholds), rotation, IV tracking, fee calculations, and Supabase persistence. |
+| `engine/paperTradingEngine.js` | Headless Node.js engine (paper AND live). Handles entries, the two-phase exit (short buy-back → long ladder), partial scale-down, dynamic exits (ATM, ITM, OTM with points-based thresholds), IV tracking, fee calculations, live order execution and reconciliation, and Supabase persistence. (Rotation / Leg Swap were removed — see §7.E.) |
 | `ResultTable.jsx` | Reusable grouped table renderer for ratio spread candidates. |
 | `api.js` | Network abstraction: Delta REST calls, `createTickerStream` (WS with auto-reconnect), `createWS` (raw WS), `getTickers` (REST backfill), `getOrderBook` (REST `/v2/l2orderbook/<symbol>` snapshot) and `createOrderBookStream` (snapshot, then the public `l2_orderbook` WS channel; auto-reconnects) for the Trade tab. |
 | `scannerUtils.js` | Shared helpers: `normalizeIv`, `toFiniteNumber`, `matchesOptionType`, `formatTime`, `formatDateTime`. |
@@ -20,7 +40,7 @@ This document is the authoritative implementation reference for every module, en
 | `useTabSync.js` | `BroadcastChannel` sync hook (`useTabSync` for root, `useTabListener` for children). |
 | `engine/lib/deltaApi.js` | Backend API adapter for Delta Exchange. Implements WebSockets with auto-reconnect (**exponential backoff + jitter + staggered initial connect**) **plus a stale-feed keepalive watchdog** (terminates a silent/zombie socket after 30s), ticker stream parsing, REST endpoints, and unconfirmed (timestamp = 0) REST ticker backfills. |
 | `engine/lib/tickerHub.js` | Shared market-data hub: keeps **one upstream `createTickerStream` per underlying** subscribed to the union of all account engines' symbols, and fans each tick out only to the accounts that want that symbol — so N accounts share 1 Delta WS instead of opening N (avoids the per-IP `429` connection-cap storm). |
-| `engine/lib/utils.js` | Shared backend algorithmic logic including candidate spread scanning (`scanTickers` with quote freshness validation), rotation target selection, and margin calculations. |
+| `engine/lib/utils.js` | Shared backend algorithmic logic: candidate spread scanning (`scanTickers` with quote freshness validation), margin / leverage / short-notional cap (`calcMargin`, `leverageFor`, `shortNotionalCap`), ATM-ratio scaling, hedge strike selection (`listHedgeStrikes`, `pickHedgeStrike`), OI-limit checks, expiry selection (`pickExpiry`, `expiryModeForDte`), excluded strikes, fees and logging. |
 | `startPaperTradingEngine` (manager, `engine/paperTradingEngine.js`) | Starts the account engines **staggered**: batches of `ENGINE_START_BATCH` (default 4) every `ENGINE_START_GAP_MS` (default 3s), ordered armed live with open positions, then other armed live, disarmed live, paper. Runs in the background so the manager timers (request poll, account sync) start at once; `startupQueue` stops the 30s sync and Realtime events from starting a queued account early, and deactivated or deleted accounts drop out of the queue; `stop()` halts the stagger. Replaces the all-at-once start whose memory peak (~680 MB at 22 accounts) tripped the pm2 restart limit and flooded Supabase (9 Oct 2026). |
 | `engine/lib/productHub.js` | Shared Delta product list per underlying for all account engines (`getSharedProducts(underlying, { force })`). One fetch per underlying per ~4 min (`MAX_AGE_MS`), concurrent callers share the in-flight fetch, the list and each product are frozen (read-only), and a failed fetch / empty list / list that shrank by more than half keeps the last good list (retry after 30s). `force` (used by `refreshProducts` when the window's DTE target isn't in the list — just listed — or the current expiry is gone — just expired) fetches fresh, at most once a minute per underlying. Each engine still derives its own `expiries` (only expiries still live) and `symbolMeta`. Replaces each account fetching and holding its own copy (22 fetches at once on a window boundary). New strikes reach the engine only through this refresh: a 2026-10-23 test subscribed to Delta's public `product_updates` + `announcements` WebSocket channels for ~1 h across the 12:00 and 12:15 UTC new-strike launches and received no events. |
 | `engine/lib/heartbeat.js` | Helper module executing the continuous status update ticks for the backend engines to Supabase (every 30s). **Batched (2026-10-14):** each account engine registers in a module-level registry and ONE shared 30s timer upserts every engine's row in a single request (grouped by column set, since rows omit not-yet-known fields); a data/constraint error (22/23/42xxx) is retried row by row so one bad row can't mark every engine offline. `start` / `stop` / `flush` still write their own row at once. `wallet_balance` / `max_positions` / `allocation_pct` are only written once known, so a restart no longer blanks the last published values; the engine also runs its balance tick once right at start (then every 60s) and flushes, so the dashboard wallet balance is back within seconds of a restart. |
@@ -46,6 +66,18 @@ This document is the authoritative implementation reference for every module, en
 | `src/components/common/dialogService.js` + `AppDialog.jsx` | In-app replacement for `window.alert` / `window.confirm`: `showAlert(msg, opts)` and `await showConfirm(msg, { title, tone, confirmLabel })` (resolves `true`/`false`) queue a dialog in a tiny module store; `<AppDialogHost />` (mounted once in `main.jsx`, above other modals) renders it — Enter confirms, Esc/backdrop cancels. Alert tone is guessed from the text ("Failed…" red, partial failures amber) unless given. No browser alert/confirm/prompt remains in `src/`. |
 | `src/components/PaperTrading/ActivePositionsTable.jsx` | Active Positions table. The paper-only **Qty** column (header sub `long : short · net prem`) shows `long : short` (`+ <hedge>H` for a triplet) on one line and the net entry premium below; the per-leg contract counts are in the cell tooltip. |
 | `src/components/PaperTrading/TradeHistoryTable.jsx` | Trade history table + Window Capacity row. |
+| `src/main.jsx` routes | Pages `/scanner`, `/calendar`, `/trading` (`PaperTrading mode="paper"`), `/live` (`PaperTrading mode="live"`), `/report`, `/slippage` — all mounted at once, hidden with `display: none`. |
+| `src/CalendarSpreadScanner.jsx` | Calendar Spread scanner (short leg on *Short Expiry*, long leg on a later *Long Expiry*); own localStorage config. See [calendar_spread_explained.md](calendar_spread_explained.md). |
+| `src/SlippageReport.jsx` | **Slippage** tab: quoted entry price vs Delta's average fill per live entry leg (`live_entry_fills` RPC, migration `069`); reuses the Daily Report account picker and groups; CSV / Excel export. |
+| `src/components/DailyReport/accountGroups.js` | Automatic name groups (Shubham / Shubham2, JD Algo / JD algo2) shared by the Daily Report and Slippage pickers. |
+| `src/exportTable.js` | Dependency-free CSV and real `.xlsx` export of `{ columns, rows }`. |
+| `src/components/PaperTrading/TelegramConnect.jsx` | Per-account *Connect Telegram* control (live accounts): shows the `t.me/<bot>?start=<code>` link for the **trades** chat (`telegram_chat_id`) or the **alerts** chat (`telegram_alert_chat_id`, migration `070`), and disconnect. |
+| `src/components/PaperTrading/KpiDashboard.jsx` | Header KPI cards (Today's P&L, All-time P&L, balance). |
+| `src/components/scanner/ScannerFilters.jsx` · `SendToWindow.jsx` · `scannerDefaults.js` | Scanner filter bar with saved settings; *Send to window* (scanner filters → an account's schedule window); `SCANNER_DEFAULTS` and the `vitti_algo_config` key. |
+| `engine/lib/entryGovernor.js` | Cross-account entry governor singleton (§7.G2). |
+| `engine/lib/dbHealth.js` | Database watchdog: Telegram alert when no Supabase write has succeeded for `DB_ALERT_AFTER_MS`; "recovered" message after. |
+| `engine/backfillDailyStats.js` · `diagnoseDailyStats.js` · `checkDeltaUsers.js` | Operator scripts — see [OPERATIONS.md → Diagnostic scripts](OPERATIONS.md#diagnostic-scripts). |
+| `src/aiService.js` | Claude / Groq trade-analysis helper. **Not imported anywhere (dead code)**; the `/claude` and `/groq` proxies in `vite.config.js` / `vercel.json` exist only for it. |
 | `ecosystem.config.cjs` | PM2 config pinning the engine to a single process (`exec_mode: 'fork'`, `instances: 1`, long `kill_timeout`, `max_memory_restart: '900M'`). Lives at `engine/ecosystem.config.cjs`. |
 
 ---
@@ -375,7 +407,7 @@ Called every second by `setInterval`. Uses the `isEvaluating` mutex to prevent r
 | **Product refresh** | 5 minutes | Refreshes available option contracts from Delta Exchange |
 | **Positions fallback sync** | 5 minutes | Reloads config + schedules + active positions and runs `reconcileOrphans`, as a safety net against missed Realtime events |
 
-* **Exit Evaluation (every 1 second)**: The engine runs `evaluateStrategy(true)` (Exit-Only) on intermediate seconds. It iterates over active positions, calculates real-time liquidation value P&L and fees, and checks exit triggers (ATM, expiry, rotations) against streaming WebSocket ticker quotes and polled spot prices. If no exits occur, it does not query or write to Supabase.
+* **Exit Evaluation (every 1 second)**: The engine runs `evaluateStrategy(true)` (Exit-Only) on intermediate seconds. It iterates over active positions, calculates real-time liquidation value P&L and fees, and checks exit triggers (short buy-back, long ladder, partial scale-down, ATM/ITM/OTM spot-cross, expiry) against streaming WebSocket ticker quotes and polled spot prices. If no exits occur, it does not query or write to Supabase.
 * **Full Evaluation (every minute boundary)**: The engine runs `evaluateStrategy(false)` (Full Run) when a new clock-minute crosses (`currentMinute > lastEntryMinute`). In addition to checking exits, it scans for new spread candidates, filters them by ATM P&L >= $50, sorts them to pick the best ROI candidate per buy strike, checks DB-level count/strike restrictions, and inserts new positions into Supabase.
 
 #### Entry Cadence — the minute is claimed on START, not on completion

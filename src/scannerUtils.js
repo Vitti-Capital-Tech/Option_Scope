@@ -12,6 +12,33 @@ export function formatDateTime(d) {
 }
 
 /**
+ * How far a strike was from spot, measured in the OTM direction for the option type:
+ * call → strike − spot, put → spot − strike. Positive = OTM, negative = ITM.
+ * Returns null when either number is missing.
+ */
+export function spotDistance(type, strike, spot) {
+  const k = Number(strike);
+  const s = Number(spot);
+  if (!(k > 0) || !(s > 0)) return null;
+  const pts = type === 'put' ? s - k : k - s;
+  return { pts, pct: (pts / s) * 100 };
+}
+
+/** "+1,250" / "−300" (points) for a spotDistance() result; null → null. */
+export function fmtSpotDistPts(d) {
+  if (!d) return null;
+  const sign = d.pts > 0 ? '+' : d.pts < 0 ? '−' : '';
+  return `${sign}${Math.round(Math.abs(d.pts)).toLocaleString()}`;
+}
+
+/** "+1.27%" / "−0.30%" for a spotDistance() result; null → null. */
+export function fmtSpotDistPct(d) {
+  if (!d) return null;
+  const sign = d.pct > 0 ? '+' : d.pct < 0 ? '−' : '';
+  return `${sign}${Math.abs(d.pct).toFixed(2)}%`;
+}
+
+/**
  * Short-leg leverage, per underlying AND expiry. Browser-side twin of engine/lib/utils.js — both copies must move together: the scanner's displayed margin/ROI is the number a user checks the engine's decision against.
  *   - Near expiries — DTE 0 (settles today) and DTE 1 (settles tomorrow): the full leverage,
  *     BTC 200x / ETH 100x.

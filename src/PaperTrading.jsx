@@ -4,7 +4,7 @@ import {
   loadProducts, getExpiries, getStrikes, getSpotPrice,
   fmtExpiry, createTickerStream, apiGet, getTickers
 } from './api';
-import { normalizeIv, toFiniteNumber, matchesOptionType, formatTime, formatDateTime, leverageFor, shortNotionalCap, pickExpiry, expiryModeForDte, normalizeExcludedStrikes } from './scannerUtils';
+import { normalizeIv, toFiniteNumber, matchesOptionType, formatTime, formatDateTime, leverageFor, shortNotionalCap, pickExpiry, expiryModeForDte, normalizeExcludedStrikes, spotDistance } from './scannerUtils';
 import { useTabListener } from './useTabSync';
 import { supabase } from './supabase';
 import { sortSchedulesByStart, scannerToWindowFields } from './components/PaperTrading/scheduleShared';
@@ -3448,6 +3448,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       'Initial Buy Qty', 'Initial Sell Qty',
       'Buy Strike', 'Sell Strike', 'Entry Buy Price', 'Entry Sell Price',
       'Exit Buy Price', 'Exit Sell Price', 'Entry Spot', 'Exit Spot',
+      'Buy Strike Spot Dist (OTM pts)', 'Buy Strike Spot Dist %', 'Sell Strike Spot Dist (OTM pts)',
       'Entry ATM Ratio', 'Entry ATM Buy Price', 'Entry ATM Sell Price',
       'Exit ATM Ratio', 'Exit ATM Buy Price', 'Exit ATM Sell Price',
       'Gross PnL', 'Total Fees', 'Net PnL', 'Margin', 'Exit Reason'
@@ -3463,6 +3464,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       const initSellQty = t.buyLeg?.initialScaledLotSize !== undefined && t.buyLeg?.originalSellQty !== undefined
         ? (t.buyLeg.initialScaledLotSize * t.buyLeg.originalSellQty)
         : t.sellQty;
+      const buyDist = spotDistance(t.type, t.buyLeg?.strike, t.entrySpotPrice);
+      const sellDist = t.sellLeg?.strike ? spotDistance(t.type, t.sellLeg.strike, t.entrySpotPrice) : null;
 
       return [
         formatDateTime(t.entryTime), formatDateTime(t.exitTime), fmtExpiry(t.expiry),
@@ -3473,6 +3476,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         t.entryBuyPrice || '', t.entrySellPrice || '',
         t.exitBuyPrice || '', t.exitSellPrice || '',
         t.entrySpotPrice || '', t.exitSpotPrice || '',
+        buyDist ? Math.round(buyDist.pts) : '', buyDist ? buyDist.pct.toFixed(2) : '',
+        sellDist ? Math.round(sellDist.pts) : '',
         t.buyLeg?.entryAtmRatio != null ? t.buyLeg.entryAtmRatio.toFixed(2) : '',
         t.buyLeg?.entryBuyAtmPrice != null ? t.buyLeg.entryBuyAtmPrice.toFixed(2) : '',
         t.buyLeg?.entrySellAtmPrice != null ? t.buyLeg.entrySellAtmPrice.toFixed(2) : '',
