@@ -61,6 +61,8 @@ When you select an underlying (BTC/ETH) and expiry date, and click **▶ START S
 [Scan Loop Active] ──► Run computeSpreads() immediately, then enter 2-second throttled loop
 ```
 
+**Switching market while scanning**: changing the underlying, the expiry or applying a saved setting (which carries its own market) while a scan is running stops it and **restarts it automatically** on the new market as soon as its products and expiry have loaded. You do not need to press Start again. The old underlying's spot is cleared first, and a start still waiting on its REST backfill from the previous market is discarded.
+
 ### Configuration Storage & Independence
 
 Unlike Paper Trading parameters which are synchronized with Supabase databases, the Ratio Spread Scanner configuration operates as a **completely standalone client-side component**:

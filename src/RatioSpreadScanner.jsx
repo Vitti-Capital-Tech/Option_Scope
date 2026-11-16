@@ -52,6 +52,10 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
 
 
   const wsRef = useRef(null);
+  // Bumped by every start / stop; an in-flight startScan from an older one bails out.
+  const scanIdRef = useRef(0);
+  // Underlying the loaded `products` belong to (they lag an underlying switch until reloaded).
+  const productsForRef = useRef(null);
   const scanIntervalRef = useRef(null);
   const spotIntervalRef = useRef(null);
   const tickerBufferRef = useRef({});
@@ -158,6 +162,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
     try {
       const prods = await loadProducts(forUnderlying);
       if (underlyingRef.current !== forUnderlying) return;
+      productsForRef.current = forUnderlying;
       setProducts(prods);
       const exps = getExpiries(prods);
       setExpiries(exps);
@@ -176,6 +181,8 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
   // ── Load products on underlying change ──────────────────────────────────
   useEffect(() => {
     setExpiries([]); setSelExpiry(''); setResultsCall([]); setResultsPut([]);
+    // Drop the old underlying's spot, so a resumed scan never prices the new chain against it.
+    setSpotPrice(null);
     setTickerData({});
     setExpectedTickerCount(0);
     refreshProducts();
@@ -193,7 +200,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
   useEffect(() => {
     const fetchSpot = () => {
       getSpotPrice(underlying)
-        .then(sp => { if (sp) setSpotPrice(sp); })
+        .then(sp => { if (sp && underlyingRef.current === underlying) setSpotPrice(sp); })
         .catch(() => { });
     };
     fetchSpot();
@@ -206,6 +213,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
     if (!selExpiry || !products.length) {
       return;
     }
+    const scanId = ++scanIdRef.current;
 
     // Close any existing WS
     if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
@@ -270,6 +278,8 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
     // REST Backfill
     try {
       const restTickers = await getTickers(underlying, allSymbols);
+      // Market switched / scan stopped meanwhile: leave the newer scan's cache and stream alone.
+      if (scanIdRef.current !== scanId) return;
       if (restTickers && Array.isArray(restTickers)) {
         for (const t of restTickers) {
           const sym = t.symbol;
@@ -320,6 +330,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
     } catch (e) {
       console.error('REST backfill error in scanner:', e);
     }
+    if (scanIdRef.current !== scanId) return;
 
     const stream = createTickerStream(
       allSymbols,
@@ -652,6 +663,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
 
   // ── Stop scanning ──────────────────────────────────────────────────────
   const stopScan = useCallback(() => {
+    scanIdRef.current++;
     if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
     if (scanIntervalRef.current) clearInterval(scanIntervalRef.current);
     if (flushTimerRef.current) {
@@ -666,17 +678,33 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
     broadcastScannerTopSpreads(payload);
   }, [underlying, selExpiry, broadcastScannerTopSpreads]);
 
+  // Switching underlying / expiry while scanning restarts the scan on the new market by
+  // itself, once its products and expiry are loaded — no need to press Start again.
+  const resumeScanRef = useRef(false);
+  const switchMarket = (apply) => {
+    resumeScanRef.current = scanning;
+    apply();
+    stopScan();
+  };
+  useEffect(() => {
+    // Right after an underlying switch, products / expiries are still the old underlying's.
+    if (!resumeScanRef.current || scanning || !selExpiry || !products.length) return;
+    if (productsForRef.current !== underlying || !expiries.includes(selExpiry)) return;
+    resumeScanRef.current = false;
+    startScan();
+  }, [scanning, selExpiry, products, expiries, underlying, startScan]);
+
   // A saved setting carries the underlying + expiry it was saved on: open that market.
   // A different underlying reloads its expiries and picks `exp` once they arrive (else
   // the nearest); the same underlying switches the expiry now if it is still listed.
   const applyMarket = (u, exp) => {
     if (u && UNDERLYINGS.includes(u) && u !== underlying) {
-      pendingExpiryRef.current = exp || null;
-      setUnderlying(u);
-      stopScan();
+      switchMarket(() => {
+        pendingExpiryRef.current = exp || null;
+        setUnderlying(u);
+      });
     } else if (exp && exp !== selExpiry && expiries.includes(exp)) {
-      setSelExpiry(exp);
-      stopScan();
+      switchMarket(() => setSelExpiry(exp));
     }
   };
 
@@ -737,7 +765,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
               <label>Underlying:</label>
               <CustomSelect
                 value={underlying}
-                onChange={val => { setUnderlying(val); stopScan(); }}
+                onChange={val => { if (val !== underlying) switchMarket(() => setUnderlying(val)); }}
                 options={UNDERLYINGS.map(u => ({ label: u, value: u }))}
                 style={{ width: '100px' }}
               />
@@ -746,7 +774,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
               <label>Expiry:</label>
               <CustomSelect
                 value={selExpiry}
-                onChange={val => { setSelExpiry(val); stopScan(); }}
+                onChange={val => { if (val !== selExpiry) switchMarket(() => setSelExpiry(val)); }}
                 disabled={!expiries.length}
                 options={!expiries.length ? [{ label: 'Loading...', value: selExpiry }] : expiries.map(e => ({ label: fmtExpiry(e), value: e }))}
                 style={{ width: '160px' }}
