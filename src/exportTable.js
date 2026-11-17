@@ -64,7 +64,7 @@ export function zip(files, type = 'application/vnd.openxmlformats-officedocument
   let offset = 0;
   for (const { name, data } of files) {
     const nameBytes = enc.encode(name);
-    const bytes = enc.encode(data);
+    const bytes = data instanceof Uint8Array ? data : enc.encode(data); // binary parts (images) as-is
     const crc = crc32(bytes);
     const local = new DataView(new ArrayBuffer(30));
     local.setUint32(0, 0x04034b50, true); local.setUint16(4, 20, true);

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { BookOpen, FileText, Printer } from 'lucide-react';
 import Navbar from './components/PaperTrading/Navbar';
-import { GUIDES, MANUAL_UPDATED } from './manualContent';
+import { GUIDES, MANUAL_UPDATED, MANUAL_IMAGE_BASE } from './manualContent';
 import { parseInline, exportGuidesDocx, printGuidesPdf } from './manualExport';
 
 // Manual tab — step-by-step guides (Delta API key, Cosmic Trade, Telegram), covering what to
@@ -12,6 +12,22 @@ function Inline({ text }) {
   return parseInline(text).map((r, i) => (r.code
     ? <code key={i} className="mn-code">{r.text}</code>
     : r.bold ? <strong key={i}>{r.text}</strong> : <React.Fragment key={i}>{r.text}</React.Fragment>));
+}
+
+// A screenshot from public/manual/. Missing file → renders nothing (guides ship before every
+// picture exists). Click opens the full-size image.
+function Shot({ src, caption }) {
+  const [missing, setMissing] = useState(false);
+  if (missing) return null;
+  const url = MANUAL_IMAGE_BASE + src;
+  return (
+    <figure className="mn-shot">
+      <a href={url} target="_blank" rel="noopener noreferrer" title="Open full size">
+        <img src={url} alt={caption} loading="lazy" onError={() => setMissing(true)} />
+      </a>
+      <figcaption>{caption}</figcaption>
+    </figure>
+  );
 }
 
 export default function Manual({ onNavigate, theme, toggleTheme }) {
@@ -76,6 +92,9 @@ export default function Manual({ onNavigate, theme, toggleTheme }) {
                 {s.where && <p className="mn-where"><span>Where</span> <Inline text={s.where} /></p>}
                 {s.steps && <ol>{s.steps.map((t, i) => <li key={i}><Inline text={t} /></li>)}</ol>}
                 {s.bullets && <ul>{s.bullets.map((t, i) => <li key={i}><Inline text={t} /></li>)}</ul>}
+                {s.images?.length > 0 && (
+                  <div className="mn-shots">{s.images.map(im => <Shot key={im.src} {...im} />)}</div>
+                )}
                 {s.note && <p className="mn-note"><Inline text={s.note} /></p>}
               </section>
             ))}

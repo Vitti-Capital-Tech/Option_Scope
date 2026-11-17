@@ -3,7 +3,7 @@
 // Both render from manualContent.js, the same source as the on-screen tab.
 
 import { zip, download, xmlEsc } from './exportTable';
-import { MANUAL_UPDATED } from './manualContent';
+import { MANUAL_UPDATED, MANUAL_IMAGE_BASE } from './manualContent';
 
 // "**bold** and `code`" → [{ text, bold, code }]
 export function parseInline(text) {
@@ -42,7 +42,10 @@ const para = (text, { before = 0, after = 120, indent = 0, hanging = 0, ...base 
   return `<w:p>${ppr}${parseInline(text).map(r => run(r, base)).join('')}</w:p>`;
 };
 
-function guideXml(g) {
+// Inline picture (DrawingML). `img` = { rid, id, name, cx, cy } in EMU.
+const picture = (img) => `<w:p><w:pPr><w:spacing w:before="80" w:after="40"/></w:pPr><w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${img.cx}" cy="${img.cy}"/><wp:docPr id="${img.id}" name="Picture ${img.id}"/><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="${img.id}" name="${xmlEsc(img.name)}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${img.rid}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${img.cx}" cy="${img.cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
+
+function guideXml(g, images) {
   const parts = [
     para(g.title, { bold: true, size: 36, after: 120, color: '1F4E79' }),
     para(g.summary, { italic: true, color: '555555', after: 240 }),
@@ -52,35 +55,80 @@ function guideXml(g) {
     if (s.where) parts.push(para(`Where: ${s.where}`, { color: '444444', after: 120 }));
     (s.steps || []).forEach((t, i) => parts.push(para(`${i + 1}.  ${t}`, { indent: 540, hanging: 360, after: 80 })));
     (s.bullets || []).forEach(t => parts.push(para(`•  ${t}`, { indent: 540, hanging: 360, after: 80 })));
+    for (const im of s.images || []) {
+      const img = images.get(im.src);
+      if (!img) continue; // screenshot not added yet
+      parts.push(picture(img));
+      parts.push(para(im.caption, { italic: true, color: '666666', size: 18, after: 160 }));
+    }
     if (s.note) parts.push(para(`Note: ${s.note}`, { italic: true, color: '666666', before: 60, after: 160 }));
   }
   return parts.join('');
 }
 
-/** The .docx file as a Blob (exportGuidesDocx downloads it). */
-export function buildGuidesDocx(guides) {
+const MAX_IMG_EMU = 5760720; // 6.3 in — the A4 text width at these margins
+const EMU_PER_PX = 9525;     // at 96 dpi
+
+/**
+ * Fetch the guides' screenshots → Map(src → { bytes, ext, w, h }). Missing files are skipped;
+ * the content-type check matters because the hosting answers a missing path with index.html.
+ */
+export async function loadGuideImages(guides) {
+  const srcs = [...new Set(guides.flatMap(g => g.sections.flatMap(s => (s.images || []).map(i => i.src))))];
+  const out = new Map();
+  await Promise.all(srcs.map(async (src) => {
+    try {
+      const res = await fetch(MANUAL_IMAGE_BASE + src);
+      const type = res.headers.get('content-type') || '';
+      if (!res.ok || !/^image\/(png|jpe?g)/i.test(type)) return;
+      const blob = await res.blob();
+      const bmp = await createImageBitmap(blob);
+      out.set(src, { bytes: new Uint8Array(await blob.arrayBuffer()), ext: /png/i.test(type) ? 'png' : 'jpeg', w: bmp.width, h: bmp.height });
+      bmp.close?.();
+    } catch { /* skip unreadable image */ }
+  }));
+  return out;
+}
+
+/** The .docx file as a Blob (exportGuidesDocx downloads it). `loaded` = loadGuideImages(). */
+export function buildGuidesDocx(guides, loaded = new Map()) {
   const pageBreak = '<w:p><w:r><w:br w:type="page"/></w:r></w:p>';
-  const body = guides.map(guideXml).join(pageBreak)
+  // Number the pictures, size them to the text width, and give each a relationship id.
+  const images = new Map();
+  let n = 0;
+  for (const [src, im] of loaded) {
+    n++;
+    const scale = Math.min(1, MAX_IMG_EMU / (im.w * EMU_PER_PX));
+    images.set(src, {
+      ...im, id: n, rid: `rIdImg${n}`, name: `image${n}.${im.ext === 'png' ? 'png' : 'jpg'}`,
+      cx: Math.round(im.w * EMU_PER_PX * scale), cy: Math.round(im.h * EMU_PER_PX * scale),
+    });
+  }
+  const body = guides.map(g => guideXml(g, images)).join(pageBreak)
     + para(`Updated ${MANUAL_UPDATED}`, { italic: true, color: '888888', before: 240, size: 18 });
-  const doc = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${body}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr></w:body></w:document>`;
+  const doc = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"><w:body>${body}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr></w:body></w:document>`;
   const files = [
-    { name: '[Content_Types].xml', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>' },
+    { name: '[Content_Types].xml', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Default Extension="jpg" ContentType="image/jpeg"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>' },
     { name: '_rels/.rels', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>' },
-    { name: 'word/_rels/document.xml.rels', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>' },
+    { name: 'word/_rels/document.xml.rels', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>${[...images.values()].map(i => `<Relationship Id="${i.rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${i.name}"/>`).join('')}</Relationships>` },
     { name: 'word/styles.xml', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:line="276" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style></w:styles>' },
     { name: 'word/document.xml', data: doc },
+    ...[...images.values()].map(i => ({ name: `word/media/${i.name}`, data: i.bytes })),
   ];
   return zip(files, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
 }
 
-export function exportGuidesDocx(guides, filename) {
-  download(buildGuidesDocx(guides), filename);
+export async function exportGuidesDocx(guides, filename) {
+  download(buildGuidesDocx(guides, await loadGuideImages(guides)), filename);
 }
 
 // ── PDF (print window) ───────────────────────────────────────────────────────
 const htmlEsc = (s) => String(s).replace(/[<>&"]/g, ch => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[ch]));
 const inlineHtml = (text) => parseInline(text).map(r => (r.code
   ? `<code>${htmlEsc(r.text)}</code>` : r.bold ? `<strong>${htmlEsc(r.text)}</strong>` : htmlEsc(r.text))).join('');
+
+// Absolute URL: the print window is about:blank, so a relative path would not resolve.
+const imageUrl = (src) => new URL(MANUAL_IMAGE_BASE + src, typeof window !== 'undefined' ? window.location.origin : 'http://localhost').href;
 
 export function guidesHtml(guides) {
   return guides.map(g => `
@@ -92,6 +140,7 @@ export function guidesHtml(guides) {
         ${s.where ? `<p class="where"><span>Where</span> ${inlineHtml(s.where)}</p>` : ''}
         ${s.steps ? `<ol>${s.steps.map(t => `<li>${inlineHtml(t)}</li>`).join('')}</ol>` : ''}
         ${s.bullets ? `<ul>${s.bullets.map(t => `<li>${inlineHtml(t)}</li>`).join('')}</ul>` : ''}
+        ${(s.images || []).map(im => `<figure><img src="${htmlEsc(imageUrl(im.src))}" alt="${htmlEsc(im.caption)}" onerror="this.parentNode.remove()"><figcaption>${htmlEsc(im.caption)}</figcaption></figure>`).join('')}
         ${s.note ? `<p class="note">${inlineHtml(s.note)}</p>` : ''}`).join('')}
     </section>`).join('');
 }
@@ -112,6 +161,9 @@ export function printGuidesPdf(guides, title) {
   ol, ul { margin: 6px 0 8px; padding-left: 22px; } li { margin: 3px 0; break-inside: avoid; }
   .note { color: #555; font-style: italic; border-left: 3px solid #bbb; padding-left: 10px; }
   code { font-family: Consolas, monospace; background: #eee; padding: 0 4px; border-radius: 3px; font-size: 9.5pt; word-break: break-all; }
+  figure { margin: 8px 0 12px; break-inside: avoid; }
+  figure img { display: block; max-width: 100%; max-height: 120mm; border: 1px solid #ccc; border-radius: 4px; }
+  figcaption { color: #666; font-size: 9pt; font-style: italic; margin-top: 3px; }
   .guide + .guide { break-before: page; }
   .foot { color: #888; font-size: 9pt; margin-top: 24px; }
 </style></head><body>${guidesHtml(guides)}<p class="foot">Updated ${htmlEsc(MANUAL_UPDATED)}</p>
