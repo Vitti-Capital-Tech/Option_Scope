@@ -1,7 +1,7 @@
 // Export a table (columns + rows) as a CSV or a real .xlsx file, with no dependencies.
 // `columns`: [{ key, label }]; `rows`: plain objects. Numbers stay numbers in Excel.
 
-function download(blob, filename) {
+export function download(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -25,7 +25,7 @@ export function exportCsv(columns, rows, filename) {
 }
 
 // ── Minimal XLSX (one sheet, inline strings, bold header) ────────────────────
-const xmlEsc = (s) => String(s).replace(/[<>&"']/g, ch => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[ch]))
+export const xmlEsc = (s) => String(s).replace(/[<>&"']/g, ch => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[ch]))
   // eslint-disable-next-line no-control-regex
   .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
 
@@ -56,8 +56,8 @@ const CRC_TABLE = (() => {
 })();
 const crc32 = (bytes) => { let c = 0xFFFFFFFF; for (const b of bytes) c = CRC_TABLE[(c ^ b) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
 
-// ZIP with "stored" (uncompressed) entries — valid for .xlsx and needs no deflate.
-function zip(files) {
+// ZIP with "stored" (uncompressed) entries — valid for .xlsx / .docx and needs no deflate.
+export function zip(files, type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') {
   const enc = new TextEncoder();
   const parts = [];
   const central = [];
@@ -83,7 +83,7 @@ function zip(files) {
   end.setUint32(0, 0x06054b50, true);
   end.setUint16(8, files.length, true); end.setUint16(10, files.length, true);
   end.setUint32(12, centralSize, true); end.setUint32(16, offset, true);
-  return new Blob([...parts, ...central, new Uint8Array(end.buffer)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  return new Blob([...parts, ...central, new Uint8Array(end.buffer)], { type });
 }
 
 export function buildXlsx(columns, rows, sheetName = 'Sheet1') {

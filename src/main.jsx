@@ -7,13 +7,14 @@ import PaperTrading from './PaperTrading.jsx'
 import DailyReport from './DailyReport.jsx'
 import SlippageReport from './SlippageReport.jsx'
 import IvAnalysis from './IvAnalysis.jsx'
+import Manual from './Manual.jsx'
 import { useTabSync } from './useTabSync.js'
 import { AppDialogHost } from './components/common/AppDialog.jsx'
 
 function Root() {
   const [page, setPage] = useState(() => {
     const path = window.location.pathname.replace(/^\//, '') || 'scanner';
-    return ['scanner', 'calendar', 'trading', 'live', 'report', 'slippage', 'iv', 'cosmic'].includes(path) ? path : 'scanner';
+    return ['scanner', 'calendar', 'trading', 'live', 'report', 'slippage', 'iv', 'cosmic', 'manual'].includes(path) ? path : 'scanner';
   });
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
 
@@ -32,7 +33,7 @@ function Root() {
   useEffect(() => {
     const handlePopState = () => {
       const path = window.location.pathname.replace(/^\//, '') || 'scanner';
-      const validPages = ['scanner', 'calendar', 'trading', 'live', 'report', 'slippage', 'iv', 'cosmic'];
+      const validPages = ['scanner', 'calendar', 'trading', 'live', 'report', 'slippage', 'iv', 'cosmic', 'manual'];
       if (validPages.includes(path)) {
         setPage(path);
       } else {
@@ -88,6 +89,9 @@ function Root() {
       </div>
       <div style={{ display: page === 'iv' ? 'block' : 'none', height: '100%', width: '100%' }}>
         <IvAnalysis onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} active={page === 'iv'} />
+      </div>
+      <div style={{ display: page === 'manual' ? 'block' : 'none', height: '100%', width: '100%' }}>
+        <Manual onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} />
       </div>
       {/* In-app alert / confirm dialogs (replace window.alert / window.confirm) */}
       <AppDialogHost />
