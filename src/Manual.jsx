@@ -25,7 +25,8 @@ function Shot({ src, caption }) {
       <a href={url} target="_blank" rel="noopener noreferrer" title="Open full size">
         <img src={url} alt={caption} loading="lazy" onError={() => setMissing(true)} />
       </a>
-      <figcaption>{caption}</figcaption>
+      {/* "1 · …   2 · …" captions: one numbered point per line. */}
+      <figcaption>{caption.split(/\s{3,}/).map((part, i) => <span key={i}>{part}</span>)}</figcaption>
     </figure>
   );
 }
