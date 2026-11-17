@@ -52,114 +52,206 @@ const EXPORT_COLUMNS = [
   { key: 'strikeMove', label: 'ATM Strike Change' },
 ];
 
-// ── Chart ────────────────────────────────────────────────────────────────────
-function IvChart({ points, seriesKey }) {
-  const wrapRef = useRef(null);
+// ── Charts ───────────────────────────────────────────────────────────────────
+// Width of a chart container, tracked with ResizeObserver.
+function useWidth() {
+  const ref = useRef(null);
   const [width, setWidth] = useState(800);
-  const [hover, setHover] = useState(null);
   useEffect(() => {
-    const el = wrapRef.current;
-    if (!el || typeof ResizeObserver === 'undefined') return;
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === 'undefined') return undefined;
     const ro = new ResizeObserver(([e]) => setWidth(Math.max(280, Math.floor(e.contentRect.width))));
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+  return [ref, width];
+}
 
-  const H = 380;
-  const M = { l: 56, r: 16, t: 16, b: 40 };
+const fmtTick = (t, multiDay) => new Date(t).toLocaleString('en-GB', {
+  ...(multiDay ? { day: '2-digit', month: 'short' } : {}),
+  hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Kolkata',
+});
+const linTicks = (lo, hi, n) => Array.from({ length: n + 1 }, (_, i) => lo + ((hi - lo) * i) / n);
+
+// 1) IV over time (left axis) with the ATM strike as a step line (right axis).
+function IvTimeChart({ points, seriesKey }) {
+  const [wrapRef, width] = useWidth();
+  const [hover, setHover] = useState(null);
+  const H = 340;
+  const M = { l: 56, r: 64, t: 14, b: 34 };
   const pts = useMemo(() => points.filter(p => p[seriesKey] != null), [points, seriesKey]);
 
   const geo = useMemo(() => {
-    if (pts.length === 0) return null;
-    const strikes = [...new Set(pts.map(p => p.atmStrike))].sort((a, b) => a - b);
-    let step = Infinity;
-    for (let i = 1; i < strikes.length; i++) step = Math.min(step, strikes[i] - strikes[i - 1]);
-    if (!Number.isFinite(step)) step = Math.max(1, strikes[0] * 0.005);
-    const x0 = strikes[0] - step / 2;
-    const x1 = strikes[strikes.length - 1] + step / 2;
+    if (pts.length < 2) return null;
+    const t0 = pts[0].t, t1 = pts[pts.length - 1].t;
     const ivs = pts.map(p => p[seriesKey]);
     let y0 = Math.min(...ivs), y1 = Math.max(...ivs);
-    const pad = Math.max(0.25, (y1 - y0) * 0.1);
+    const pad = Math.max(0.2, (y1 - y0) * 0.08);
     y0 -= pad; y1 += pad;
-    const iw = width - M.l - M.r;
-    const ih = H - M.t - M.b;
-    const sx = (v) => M.l + ((v - x0) / (x1 - x0)) * iw;
+    const ks = pts.map(p => p.atmStrike);
+    let k0 = Math.min(...ks), k1 = Math.max(...ks);
+    const kpad = Math.max(1, (k1 - k0) * 0.15 || k0 * 0.002);
+    k0 -= kpad; k1 += kpad;
+    const iw = width - M.l - M.r, ih = H - M.t - M.b;
+    const sx = (t) => M.l + ((t - t0) / Math.max(1, t1 - t0)) * iw;
     const sy = (v) => M.t + (1 - (v - y0) / (y1 - y0)) * ih;
-    // X ticks: every strike when they fit, else every n-th.
-    const maxTicks = Math.max(2, Math.floor(iw / 70));
-    const every = Math.max(1, Math.ceil(strikes.length / maxTicks));
-    const xTicks = strikes.filter((_, i) => i % every === 0);
-    const yTicks = Array.from({ length: 6 }, (_, i) => y0 + ((y1 - y0) * i) / 5);
-    // Line segments in time order, broken at data gaps.
-    const segs = [];
-    let cur = [];
+    const sk = (k) => M.t + (1 - (k - k0) / (k1 - k0)) * ih;
+    const ivPaths = [], kPaths = [];
+    let iv = '', kp = '';
     pts.forEach((p, i) => {
-      if (i > 0 && p.t - pts[i - 1].t > GAP_MS) { if (cur.length > 1) segs.push(cur); cur = []; }
-      cur.push(`${sx(p.atmStrike).toFixed(1)},${sy(p[seriesKey]).toFixed(1)}`);
+      const gap = i > 0 && p.t - pts[i - 1].t > GAP_MS;
+      if (gap) { ivPaths.push(iv); kPaths.push(kp); iv = ''; kp = ''; }
+      const x = sx(p.t).toFixed(1);
+      iv += `${iv ? 'L' : 'M'}${x},${sy(p[seriesKey]).toFixed(1)}`;
+      // Step: hold the previous strike until this minute, then jump.
+      kp += kp ? `H${x}V${sk(p.atmStrike).toFixed(1)}` : `M${x},${sk(p.atmStrike).toFixed(1)}`;
     });
-    if (cur.length > 1) segs.push(cur);
-    return { sx, sy, xTicks, yTicks, segs, t0: pts[0].t, t1: pts[pts.length - 1].t, iw, ih };
+    ivPaths.push(iv); kPaths.push(kp);
+    const strikes = [...new Set(ks)].sort((a, b) => a - b);
+    const kEvery = Math.max(1, Math.ceil(strikes.length / 6));
+    return {
+      sx, sy, sk, ivPaths, kPaths, t0, t1,
+      yTicks: linTicks(y0, y1, 5),
+      xTicks: linTicks(t0, t1, Math.max(2, Math.min(8, Math.floor(iw / 110)))),
+      kTicks: strikes.filter((_, i) => i % kEvery === 0),
+      multiDay: t1 - t0 > 20 * HOUR,
+      iw, ih,
+    };
   }, [pts, seriesKey, width, M.l, M.r, M.t, M.b]);
 
-  if (!geo) return <div ref={wrapRef} className="pt-empty"><span className="pt-empty-title">No data for this selection yet</span></div>;
-
-  const { sx, sy, xTicks, yTicks, segs, t0, t1 } = geo;
-  const age = (t) => (t1 > t0 ? (t - t0) / (t1 - t0) : 1); // 0 = oldest, 1 = latest
+  if (!geo) return <div ref={wrapRef} className="pt-empty"><span className="pt-empty-title">Not enough data yet</span></div>;
+  const { sx, sy, sk } = geo;
   const last = pts[pts.length - 1];
 
   const onMove = (e) => {
     const r = e.currentTarget.getBoundingClientRect();
     const mx = ((e.clientX - r.left) / r.width) * width;
-    const my = ((e.clientY - r.top) / r.height) * H;
-    let best = null, bd = Infinity;
-    for (const p of pts) {
-      const d = (sx(p.atmStrike) - mx) ** 2 + (sy(p[seriesKey]) - my) ** 2;
-      if (d < bd) { bd = d; best = p; }
-    }
-    setHover(bd < 30 ** 2 ? best : null);
+    if (mx < M.l || mx > width - M.r) { setHover(null); return; }
+    const t = geo.t0 + ((mx - M.l) / geo.iw) * (geo.t1 - geo.t0);
+    let lo = 0, hi = pts.length - 1;
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (pts[mid].t < t) lo = mid; else hi = mid; }
+    setHover(Math.abs(pts[lo].t - t) < Math.abs(pts[hi].t - t) ? pts[lo] : pts[hi]);
   };
 
   return (
     <div ref={wrapRef} className="iv-chart-wrap">
       <svg width={width} height={H} viewBox={`0 0 ${width} ${H}`} onMouseMove={onMove} onMouseLeave={() => setHover(null)}
-        role="img" aria-label="ATM strike versus ATM implied volatility, one point per minute">
-        {yTicks.map((v, i) => (
+        role="img" aria-label="ATM implied volatility over time, with the ATM strike">
+        {geo.yTicks.map((v, i) => (
           <g key={`y${i}`}>
             <line x1={M.l} x2={width - M.r} y1={sy(v)} y2={sy(v)} className="iv-grid" />
             <text x={M.l - 8} y={sy(v)} className="iv-tick" textAnchor="end" dominantBaseline="middle">{v.toFixed(1)}%</text>
           </g>
         ))}
-        {xTicks.map(k => (
-          <g key={`x${k}`}>
-            <line x1={sx(k)} x2={sx(k)} y1={M.t} y2={H - M.b} className="iv-grid" />
-            <text x={sx(k)} y={H - M.b + 16} className="iv-tick" textAnchor="middle">{k.toLocaleString()}</text>
+        {geo.kTicks.map(k => (
+          <text key={`k${k}`} x={width - M.r + 8} y={sk(k)} className="iv-tick iv-tick-strike" dominantBaseline="middle">{k.toLocaleString()}</text>
+        ))}
+        {geo.xTicks.map((t, i) => (
+          <text key={`x${i}`} x={sx(t)} y={H - M.b + 18} className="iv-tick"
+            textAnchor={i === 0 ? 'start' : i === geo.xTicks.length - 1 ? 'end' : 'middle'}>{fmtTick(t, geo.multiDay)}</text>
+        ))}
+        {geo.kPaths.map((d, i) => d && <path key={`kp${i}`} d={d} className="iv-strike-line" />)}
+        {geo.ivPaths.map((d, i) => d && <path key={`ip${i}`} d={d} className="iv-iv-line" />)}
+        <circle cx={sx(last.t)} cy={sy(last[seriesKey])} r={4.5} className="iv-latest-dot" />
+        {hover && (
+          <g>
+            <line x1={sx(hover.t)} x2={sx(hover.t)} y1={M.t} y2={H - M.b} className="iv-crosshair" />
+            <circle cx={sx(hover.t)} cy={sy(hover[seriesKey])} r={4} className="iv-hover-dot" />
+            <circle cx={sx(hover.t)} cy={sk(hover.atmStrike)} r={3} className="iv-hover-strike" />
           </g>
-        ))}
-        <text x={M.l + geo.iw / 2} y={H - 4} className="iv-axis-label" textAnchor="middle">ATM strike</text>
-        <text x={12} y={M.t + geo.ih / 2} className="iv-axis-label" textAnchor="middle" transform={`rotate(-90 12 ${M.t + geo.ih / 2})`}>IV %</text>
-        {segs.map((s, i) => <polyline key={i} points={s.join(' ')} className="iv-line" />)}
-        {pts.map(p => (
-          <circle key={p.t} cx={sx(p.atmStrike)} cy={sy(p[seriesKey])} r={3}
-            className="iv-dot" style={{ opacity: 0.2 + 0.8 * age(p.t) }} />
-        ))}
-        <circle cx={sx(last.atmStrike)} cy={sy(last[seriesKey])} r={7} className="iv-latest" />
-        {hover && <circle cx={sx(hover.atmStrike)} cy={sy(hover[seriesKey])} r={6} className="iv-hover" />}
+        )}
       </svg>
       {hover && (
-        <div className="iv-tip" style={{
-          left: Math.min(sx(hover.atmStrike) + 12, width - 210),
-          top: Math.max(4, sy(hover[seriesKey]) - 80),
-        }}>
+        <div className="iv-tip" style={{ left: Math.min(sx(hover.t) + 12, width - 214), top: 10 }}>
           <strong>{fmtIst(hover.t)} IST</strong>
-          <span>ATM {hover.atmStrike.toLocaleString()} · spot {fmtNum(hover.spot)}</span>
           <span>IV {fmtIv(hover[seriesKey])} <em className={tone(hover.dIv)}>({fmtD(hover.dIv)} vs prev min)</em></span>
-          <span>Call {fmtIv(hover.callIv)} · Put {fmtIv(hover.putIv)}</span>
+          <span>ATM {hover.atmStrike.toLocaleString()}{hover.strikeMove ? <em className={tone(hover.strikeMove)}> (moved {fmtD(hover.strikeMove, 0)})</em> : null}</span>
+          <span>Spot {fmtNum(hover.spot)} · Call {fmtIv(hover.callIv)} · Put {fmtIv(hover.putIv)}</span>
         </div>
       )}
       <div className="iv-legend">
-        <span><i className="iv-dot-key" /> one minute (faded = older)</span>
-        <span><i className="iv-latest-key" /> latest</span>
-        <span>Line joins the minutes in time order</span>
+        <span><i className="iv-key-iv" /> IV (left axis)</span>
+        <span><i className="iv-key-strike" /> ATM strike (right axis)</span>
+      </div>
+    </div>
+  );
+}
+
+// 2) ATM strike (X) vs IV (Y): for each strike, the IV range while it was ATM (bar),
+//    the average (dot) and how many minutes it was ATM.
+function IvStrikeChart({ points, seriesKey }) {
+  const [wrapRef, width] = useWidth();
+  const [hover, setHover] = useState(null);
+  const H = 300;
+  const M = { l: 56, r: 16, t: 14, b: 50 };
+
+  const stats = useMemo(() => {
+    const m = new Map();
+    for (const p of points) {
+      const v = p[seriesKey];
+      if (v == null) continue;
+      const s = m.get(p.atmStrike) ?? { strike: p.atmStrike, n: 0, sum: 0, min: Infinity, max: -Infinity, lastT: 0 };
+      s.n++; s.sum += v; s.min = Math.min(s.min, v); s.max = Math.max(s.max, v); s.lastT = Math.max(s.lastT, p.t);
+      m.set(p.atmStrike, s);
+    }
+    return [...m.values()].map(s => ({ ...s, avg: s.sum / s.n })).sort((a, b) => a.strike - b.strike);
+  }, [points, seriesKey]);
+
+  if (!stats.length) return <div ref={wrapRef} className="pt-empty"><span className="pt-empty-title">Not enough data yet</span></div>;
+
+  const iw = width - M.l - M.r, ih = H - M.t - M.b;
+  let y0 = Math.min(...stats.map(s => s.min)), y1 = Math.max(...stats.map(s => s.max));
+  const pad = Math.max(0.2, (y1 - y0) * 0.08);
+  y0 -= pad; y1 += pad;
+  const band = iw / stats.length;
+  const cx = (i) => M.l + band * (i + 0.5);
+  const sy = (v) => M.t + (1 - (v - y0) / (y1 - y0)) * ih;
+  const barW = Math.max(6, Math.min(28, band * 0.45));
+  const latestT = Math.max(...stats.map(s => s.lastT));
+  const every = Math.max(1, Math.ceil(stats.length / Math.max(2, Math.floor(iw / 64))));
+
+  return (
+    <div ref={wrapRef} className="iv-chart-wrap">
+      <svg width={width} height={H} viewBox={`0 0 ${width} ${H}`} onMouseLeave={() => setHover(null)}
+        role="img" aria-label="IV range and average for each ATM strike">
+        {linTicks(y0, y1, 5).map((v, i) => (
+          <g key={`y${i}`}>
+            <line x1={M.l} x2={width - M.r} y1={sy(v)} y2={sy(v)} className="iv-grid" />
+            <text x={M.l - 8} y={sy(v)} className="iv-tick" textAnchor="end" dominantBaseline="middle">{v.toFixed(1)}%</text>
+          </g>
+        ))}
+        {stats.map((s, i) => {
+          const isLatest = s.lastT === latestT;
+          return (
+            <g key={s.strike} onMouseEnter={() => setHover({ ...s, i })}>
+              <rect x={cx(i) - band / 2} y={M.t} width={band} height={ih} fill="transparent" />
+              <rect x={cx(i) - barW / 2} y={sy(s.max)} width={barW} height={Math.max(2, sy(s.min) - sy(s.max))} rx={3}
+                className={`iv-range-bar${isLatest ? ' latest' : ''}`} />
+              <circle cx={cx(i)} cy={sy(s.avg)} r={4} className={`iv-avg-dot${isLatest ? ' latest' : ''}`} />
+              {i % every === 0 && (
+                <>
+                  <text x={cx(i)} y={H - M.b + 16} className="iv-tick" textAnchor="middle">{s.strike.toLocaleString()}</text>
+                  <text x={cx(i)} y={H - M.b + 30} className="iv-tick iv-tick-sub" textAnchor="middle">{s.n}m</text>
+                </>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+      {hover && (
+        <div className="iv-tip" style={{ left: Math.min(cx(hover.i) + 14, width - 214), top: 10 }}>
+          <strong>ATM {hover.strike.toLocaleString()}</strong>
+          <span>ATM for {hover.n} minute{hover.n === 1 ? '' : 's'}</span>
+          <span>Avg IV {fmtIv(hover.avg)}</span>
+          <span>Range {fmtIv(hover.min)} – {fmtIv(hover.max)}</span>
+          <span>Last ATM {fmtIst(hover.lastT)} IST</span>
+        </div>
+      )}
+      <div className="iv-legend">
+        <span><i className="iv-key-bar" /> IV range while ATM</span>
+        <span><i className="iv-dot-key" /> average IV</span>
+        <span><i className="iv-key-latest" /> current ATM strike</span>
+        <span>Under each strike: minutes it was ATM</span>
       </div>
     </div>
   );
@@ -466,10 +558,18 @@ export default function IvAnalysis({ onNavigate, theme, toggleTheme, active }) {
 
             <div className="dr-card">
               <div className="dr-card-head">
-                <span className="dr-card-title">ATM strike vs {seriesLabel} IV</span>
-                <span className="dr-card-sub">One point per minute · hover a point for details</span>
+                <span className="dr-card-title">{seriesLabel} IV over time</span>
+                <span className="dr-card-sub">Solid = IV (left axis) · dashed = ATM strike (right axis) · hover for any minute</span>
               </div>
-              <IvChart points={points} seriesKey={seriesKey} />
+              <IvTimeChart points={points} seriesKey={seriesKey} />
+            </div>
+
+            <div className="dr-card">
+              <div className="dr-card-head">
+                <span className="dr-card-title">ATM strike vs {seriesLabel} IV</span>
+                <span className="dr-card-sub">For each strike: IV range while it was ATM, average dot, minutes as ATM</span>
+              </div>
+              <IvStrikeChart points={points} seriesKey={seriesKey} />
             </div>
 
             <div className="dr-card">

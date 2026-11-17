@@ -7793,10 +7793,18 @@ details.dr-note p {
 .iv-grid { stroke: var(--border); stroke-width: 1; }
 .iv-tick { fill: var(--text-dim); font-size: 11px; font-family: inherit; }
 .iv-axis-label { fill: var(--text-dim); font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
-.iv-line { fill: none; stroke: var(--accent); stroke-width: 1.25; stroke-opacity: 0.35; stroke-linejoin: round; }
-.iv-dot { fill: var(--accent); }
-.iv-latest { fill: none; stroke: var(--call); stroke-width: 2.5; }
-.iv-hover { fill: none; stroke: var(--text); stroke-width: 2; }
+.iv-iv-line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; }
+.iv-strike-line { fill: none; stroke: var(--text-dim); stroke-width: 1.5; stroke-dasharray: 5 4; opacity: 0.8; }
+.iv-crosshair { stroke: var(--text); stroke-width: 1; opacity: 0.35; }
+.iv-latest-dot { fill: var(--call); }
+.iv-hover-dot { fill: var(--accent); stroke: var(--bg3); stroke-width: 2; }
+.iv-hover-strike { fill: var(--text-dim); }
+.iv-tick-strike { fill: var(--text-dim); opacity: 0.85; }
+.iv-tick-sub { font-size: 10px; opacity: 0.75; }
+.iv-range-bar { fill: var(--accent); opacity: 0.22; }
+.iv-range-bar.latest { fill: var(--call); opacity: 0.3; }
+.iv-avg-dot { fill: var(--accent); }
+.iv-avg-dot.latest { fill: var(--call); }
 .iv-tip {
   position: absolute;
   display: flex;
@@ -7825,6 +7833,9 @@ details.dr-note p {
 }
 .iv-legend span { display: inline-flex; align-items: center; gap: 6px; }
 .iv-dot-key { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); display: inline-block; }
-.iv-latest-key { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--call); display: inline-block; box-sizing: border-box; }
+.iv-key-iv { width: 16px; height: 2px; background: var(--accent); display: inline-block; }
+.iv-key-strike { width: 16px; height: 0; border-top: 2px dashed var(--text-dim); display: inline-block; }
+.iv-key-bar { width: 8px; height: 14px; border-radius: 2px; background: var(--accent); opacity: 0.35; display: inline-block; }
+.iv-key-latest { width: 8px; height: 8px; border-radius: 50%; background: var(--call); display: inline-block; }
 .dr-table tr.iv-strike-moved td { background: rgba(59, 130, 246, 0.06); }
 .iv-progress { font-size: 12px; color: var(--text-dim); }
