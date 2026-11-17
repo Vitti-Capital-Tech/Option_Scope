@@ -144,7 +144,7 @@ Core:
 | `SUPABASE_ANON_KEY` | — | Fallback key when no service-role key is set |
 | `DELTA_LIVE_DRYRUN` | `true` | Anything but `false` keeps every live order a dry-run log line |
 | `DELTA_PROXY_PORT` | unset | Enables `proxyServer.js` on that port |
-| `DELTA_PROXY_ALLOW_ORIGIN` | `*` | CORS origin allowed to call the proxy |
+| `DELTA_PROXY_ALLOW_ORIGIN` | `*` | CORS origin(s) allowed to call the proxy, comma-separated |
 
 Telegram:
 

@@ -38,18 +38,23 @@ export function startDeltaProxy() {
   const port = parseInt(process.env.DELTA_PROXY_PORT || '', 10);
   if (!Number.isInteger(port) || port <= 0) return null; // opt-in
 
-  // CORS origin allowed to call this proxy directly from the browser.
-  // Default '*' works but pin it to your site for tighter security.
+  // CORS origin(s) allowed to call this proxy from the browser — comma-separated, e.g.
+  // "https://ratiospread.vitticapital.ai,https://vitticapital.ai". Default '*' works but pin
+  // it to your site(s) for tighter security. The matching request Origin is echoed back.
   const allowOrigin = process.env.DELTA_PROXY_ALLOW_ORIGIN || '*';
-
-  const corsHeaders = {
-    'Access-Control-Allow-Origin': allowOrigin,
+  const allowList = allowOrigin.split(',').map(o => o.trim().replace(/\/+$/, '')).filter(Boolean);
+  const originAllowed = (o) => allowList.includes('*') || (!!o && allowList.includes(o));
+  const corsFor = (req) => ({
+    'Access-Control-Allow-Origin': allowList.includes('*') ? '*'
+      : (originAllowed(req.headers.origin) ? req.headers.origin : allowList[0]),
+    Vary: 'Origin',
     'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
     'Access-Control-Allow-Headers': 'api-key,signature,timestamp,content-type,user-agent',
     'Access-Control-Max-Age': '86400',
-  };
+  });
 
   const server = http.createServer(async (req, res) => {
+    const corsHeaders = corsFor(req);
     // Preflight
     if (req.method === 'OPTIONS') {
       res.writeHead(204, corsHeaders);
@@ -119,7 +124,7 @@ export function startDeltaProxy() {
   // ── Cosmic WebSocket relay: one upstream socket per browser client ──
   const wss = new WebSocketServer({ noServer: true });
   server.on('upgrade', (req, socket, head) => {
-    const okOrigin = allowOrigin === '*' || req.headers.origin === allowOrigin;
+    const okOrigin = originAllowed(req.headers.origin);
     if (!req.url.startsWith('/cosmic/feeds') || !okOrigin || wss.clients.size >= MAX_COSMIC_CLIENTS) {
       socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
       socket.destroy();
