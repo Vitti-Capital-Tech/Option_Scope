@@ -66,7 +66,10 @@ function guideXml(g, images) {
   return parts.join('');
 }
 
-const MAX_IMG_EMU = 5760720; // 6.3 in — the A4 text width at these margins
+// Screenshot box — the SAME on screen (index.css .mn-shot img), in the DOCX and in the PDF:
+// at most 420 × 260 CSS px, aspect kept, never cropped.
+export const SHOT_MAX_W = 420;
+export const SHOT_MAX_H = 260;
 const EMU_PER_PX = 9525;     // at 96 dpi
 
 /**
@@ -98,7 +101,7 @@ export function buildGuidesDocx(guides, loaded = new Map()) {
   let n = 0;
   for (const [src, im] of loaded) {
     n++;
-    const scale = Math.min(1, MAX_IMG_EMU / (im.w * EMU_PER_PX));
+    const scale = Math.min(1, SHOT_MAX_W / im.w, SHOT_MAX_H / im.h);
     images.set(src, {
       ...im, id: n, rid: `rIdImg${n}`, name: `image${n}.${im.ext === 'png' ? 'png' : 'jpg'}`,
       cx: Math.round(im.w * EMU_PER_PX * scale), cy: Math.round(im.h * EMU_PER_PX * scale),
@@ -162,7 +165,7 @@ export function printGuidesPdf(guides, title) {
   .note { color: #555; font-style: italic; border-left: 3px solid #bbb; padding-left: 10px; }
   code { font-family: Consolas, monospace; background: #eee; padding: 0 4px; border-radius: 3px; font-size: 9.5pt; word-break: break-all; }
   figure { margin: 8px 0 12px; break-inside: avoid; }
-  figure img { display: block; max-width: 100%; max-height: 120mm; border: 1px solid #ccc; border-radius: 4px; }
+  figure img { display: block; width: auto; height: auto; max-width: min(100%, ${SHOT_MAX_W}px); max-height: ${SHOT_MAX_H}px; border: 1px solid #ccc; border-radius: 4px; }
   figcaption { color: #666; font-size: 9pt; font-style: italic; margin-top: 3px; }
   .guide + .guide { break-before: page; }
   .foot { color: #888; font-size: 9pt; margin-top: 24px; }

@@ -7900,14 +7900,15 @@ details.dr-note p {
 @media (max-width: 1100px) {
   .nav-group-current { display: none; }
 }
-.mn-shots { display: flex; flex-direction: column; gap: 16px; margin: 10px 0 12px; }
+.mn-shots { display: flex; flex-direction: column; gap: 12px; margin: 8px 0 10px; }
 /* One screenshot per row at its own aspect ratio, caption beside it (below on narrow screens). */
 .mn-shot { margin: 0; display: flex; align-items: flex-start; gap: 16px; }
 .mn-shot a {
-  flex: 0 1 auto; display: block; max-width: min(100%, 760px);
+  flex: 0 1 auto; display: block; max-width: min(100%, 420px); cursor: zoom-in;
   border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--bg3);
 }
-.mn-shot img { display: block; width: auto; height: auto; max-width: 100%; max-height: 440px; }
+/* Whole image always visible (no cropping) — scaled down by width AND height, aspect kept. */
+.mn-shot img { display: block; width: auto; height: auto; max-width: 100%; max-height: 260px; }
 .mn-shot figcaption {
   flex: 1 1 220px; min-width: 200px; max-width: 340px; padding-top: 2px;
   font-size: 12.5px; line-height: 1.6; color: var(--text-dim);
