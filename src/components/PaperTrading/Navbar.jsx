@@ -1,5 +1,5 @@
 import React from 'react';
-import { TrendingUp, Target, Columns, Radio, FileSpreadsheet, Gauge, CalendarRange, Sun, Moon } from 'lucide-react';
+import { TrendingUp, Target, Columns, Radio, FileSpreadsheet, Gauge, CalendarRange, Activity, Sun, Moon } from 'lucide-react';
 
 export default function Navbar({
   activeTab,
@@ -67,6 +67,14 @@ export default function Navbar({
             <span className="nav-tab-icon" aria-hidden="true">
               <Gauge size={14} />
             </span> <span className="nav-tab-text">Slippage</span>
+          </button>
+          <button
+            className={`nav-tab ${activeTab === 'iv' ? 'active' : ''}`}
+            onClick={() => onNavigate('iv')}
+          >
+            <span className="nav-tab-icon" aria-hidden="true">
+              <Activity size={14} />
+            </span> <span className="nav-tab-text">IV Analysis</span>
           </button>
         </div>
 
@@ -140,6 +148,15 @@ export default function Navbar({
             <Gauge size={18} />
           </span>
           <span className="mobile-bottom-text">Slippage</span>
+        </button>
+        <button
+          className={`mobile-bottom-tab ${activeTab === 'iv' ? 'active' : ''}`}
+          onClick={() => onNavigate('iv')}
+        >
+          <span className="mobile-bottom-icon">
+            <Activity size={18} />
+          </span>
+          <span className="mobile-bottom-text">IV</span>
         </button>
       </div>
     </>

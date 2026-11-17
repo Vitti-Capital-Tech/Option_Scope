@@ -2,7 +2,7 @@
 
 ## What The System Does
 
-OptionScope is a trading workstation for Delta Exchange options: a React dashboard plus a headless Node.js engine that trades every account 24/7. The dashboard has six pages (`/scanner`, `/calendar`, `/trading`, `/live`, `/report`, `/slippage` — routed in `src/main.jsx`): the Ratio Spread and Calendar Spread scanners, the Paper and Live trading workspaces (one `PaperTrading.jsx` component in `paper` / `live` mode), the live Daily Report and the live entry Slippage report. The core modules:
+OptionScope is a trading workstation for Delta Exchange options: a React dashboard plus a headless Node.js engine that trades every account 24/7. The dashboard has seven pages (`/scanner`, `/calendar`, `/trading`, `/live`, `/report`, `/slippage`, `/iv` — routed in `src/main.jsx`): the Ratio Spread and Calendar Spread scanners, the Paper and Live trading workspaces (one `PaperTrading.jsx` component in `paper` / `live` mode), the live Daily Report, the live entry Slippage report and the ATM IV Analysis chart (computed in the browser from Delta's public candles). The core modules:
 - **Ratio Spread Scanner**: Live discovery of ratio spreads based on premium-to-delta-notional alignment.
 - **Paper Trading**: Fully automated simulation of spread entry, live PnL, configurable exit types (ATM, ITM, OTM with points-based offsets), a **two-phase exit** (short-leg buy-back → long-only laddered scale-out), IV tracking, and expiry settlement.
 - **Live Trading**: An account created in `live` mode is linked to a real Delta Exchange account (mode is read-only after creation — Edit keeps the stored mode). The same engine then places **real orders** — marketable-limit entries, a resting-order exit model, and exchange-native SL/TP brackets — gated by a global dry-run flag and a per-account arm switch. See [Live Trading](live_trading.md).
@@ -32,7 +32,7 @@ Headless Backend Engine (Node.js on a VPS, PM2, single instance)
 
 Browser (React + Vite Dashboard, hosted on Vercel)
   |
-  |-- Navigation Shell (Ratio Scanner / Calendar Scanner / Paper / Live / Daily Report / Slippage)
+  |-- Navigation Shell (Ratio Scanner / Calendar Scanner / Paper / Live / Daily Report / Slippage / IV Analysis)
   |-- WebSocket adapter (UI local tickers) ──► Delta WS
   |-- Persistence & Sync Hub (Supabase Realtime + BroadcastChannel)
   '-- Manual actions & orders ──► Supabase request tables ──► engine (never Delta directly)
