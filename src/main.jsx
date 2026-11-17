@@ -13,7 +13,7 @@ import { AppDialogHost } from './components/common/AppDialog.jsx'
 function Root() {
   const [page, setPage] = useState(() => {
     const path = window.location.pathname.replace(/^\//, '') || 'scanner';
-    return ['scanner', 'calendar', 'trading', 'live', 'report', 'slippage', 'iv'].includes(path) ? path : 'scanner';
+    return ['scanner', 'calendar', 'trading', 'live', 'report', 'slippage', 'iv', 'cosmic'].includes(path) ? path : 'scanner';
   });
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
 
@@ -32,7 +32,7 @@ function Root() {
   useEffect(() => {
     const handlePopState = () => {
       const path = window.location.pathname.replace(/^\//, '') || 'scanner';
-      const validPages = ['scanner', 'calendar', 'trading', 'live', 'report', 'slippage', 'iv'];
+      const validPages = ['scanner', 'calendar', 'trading', 'live', 'report', 'slippage', 'iv', 'cosmic'];
       if (validPages.includes(path)) {
         setPage(path);
       } else {
@@ -73,6 +73,9 @@ function Root() {
       </div>
       <div style={{ display: page === 'trading' ? 'block' : 'none', height: '100%', width: '100%' }}>
         <PaperTrading mode="paper" onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} broadcast={broadcast} scannerFill={scannerFill?.mode === 'paper' ? scannerFill : null} />
+      </div>
+      <div style={{ display: page === 'cosmic' ? 'block' : 'none', height: '100%', width: '100%' }}>
+        <PaperTrading mode="paper" exchange="cosmic" onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} broadcast={broadcast} />
       </div>
       <div style={{ display: page === 'live' ? 'block' : 'none', height: '100%', width: '100%' }}>
         <PaperTrading mode="live" onNavigate={setPage} theme={theme} toggleTheme={toggleTheme} broadcast={broadcast} scannerFill={scannerFill?.mode === 'live' ? scannerFill : null} />

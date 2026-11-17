@@ -21,9 +21,9 @@ schema changes and what each migration did.
 
 | File | What it is |
 |---|---|
-| `supabase_schema.sql` | Base schema: profiles + auth trigger, accounts, config, schedules, positions, trade history, heartbeat, RLS, and many later migrations folded in. **Not** a complete current schema — it lacks e.g. the engine-verify RPCs (`004`) and `068`–`071` |
+| `supabase_schema.sql` | Base schema: profiles + auth trigger, accounts, config, schedules, positions, trade history, heartbeat, RLS, and many later migrations folded in. **Not** a complete current schema — it lacks e.g. the engine-verify RPCs (`004`) and `068`–`072` |
 | `supabase_migrations/NNN_*.sql` | One change each, numbered in the order they were applied to production |
-| `supabase_migrations/ALL_MIGRATIONS.sql` | Every **schema** migration concatenated in order (001 → 071). **Idempotent** — safe to re-run on an existing DB |
+| `supabase_migrations/ALL_MIGRATIONS.sql` | Every **schema** migration concatenated in order (001 → 072). **Idempotent** — safe to re-run on an existing DB |
 
 Not in `ALL_MIGRATIONS.sql` (run them separately):
 
@@ -175,6 +175,7 @@ apply on databases with existing duplicates.
 | 069 | `live_entry_fills()` for the Slippage tab | Reporting |
 | 070 | Per-account Telegram **alerts** chat (`telegram_alert_chat_id`, `telegram_alert_link_code`) | Telegram |
 | 071 | Paper **Max Net Credit** entry selection (`paper_trading_config.entry_by_max_credit`) | Paper entry |
+| 072 | `paper_trading_accounts.exchange` (`delta` / `cosmic`) — Cosmic Paper accounts; a CHECK keeps Cosmic accounts paper-only | Accounts |
 
 ## RPC reference
 

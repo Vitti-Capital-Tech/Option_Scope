@@ -18,7 +18,8 @@ export default function CreateAccountModal({
   setValue,
   watch,
   mode = 'paper',
-  copySources = []
+  copySources = [],
+  underlyings = ['BTC', 'ETH'] // Cosmic tab: ['BTC']
 }) {
   if (!isOpen) return null;
 
@@ -68,10 +69,7 @@ export default function CreateAccountModal({
                 <CustomSelect
                   value={watch('underlying') || 'BTC'}
                   onChange={val => setValue('underlying', val)}
-                  options={[
-                    { label: 'BTC', value: 'BTC' },
-                    { label: 'ETH', value: 'ETH' }
-                  ]}
+                  options={underlyings.map(u => ({ label: u, value: u }))}
                 />
               </div>
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>

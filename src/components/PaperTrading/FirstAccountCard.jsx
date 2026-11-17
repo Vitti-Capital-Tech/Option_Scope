@@ -14,7 +14,8 @@ export default function FirstAccountCard({
   onCancel,
   setValue,
   watch,
-  mode = 'paper'
+  mode = 'paper',
+  underlyings = ['BTC', 'ETH'] // Cosmic tab: ['BTC']
 }) {
   const watchVariableExitSlices = watch('variableExitSlices');
   const isLive = mode === 'live';
@@ -76,10 +77,7 @@ export default function FirstAccountCard({
                   <CustomSelect
                     value={watch('underlying') || 'BTC'}
                     onChange={val => setValue('underlying', val)}
-                    options={[
-                      { label: 'BTC', value: 'BTC' },
-                      { label: 'ETH', value: 'ETH' }
-                    ]}
+                    options={underlyings.map(u => ({ label: u, value: u }))}
                   />
                 </div>
                 <div className="first-account-form-group">

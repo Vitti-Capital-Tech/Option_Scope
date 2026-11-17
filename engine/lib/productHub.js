@@ -18,6 +18,7 @@
  * Each engine still derives its own expiries / symbol map from the list (per its window/DTE).
  */
 import { loadProducts } from './deltaApi.js';
+import { loadCosmicProducts } from './cosmicApi.js';
 import { logWarn } from './utils.js';
 
 const MAX_AGE_MS = 4 * 60 * 1000;      // the engines' 5-min product timer → one Delta fetch per cycle
@@ -32,8 +33,9 @@ function freezeList(list) {
   return Object.freeze(list);
 }
 
-export async function getSharedProducts(underlying, { force = false } = {}) {
-  const key = String(underlying || '').toUpperCase();
+export async function getSharedProducts(underlying, { force = false, exchange = 'delta' } = {}) {
+  // Cached per exchange + underlying (Cosmic's BTC chain is a different product list).
+  const key = (exchange === 'cosmic' ? 'cosmic:' : '') + String(underlying || '').toUpperCase();
   let e = cache.get(key);
   if (!e) {
     e = { list: null, fetchedAt: 0, retryAt: 0, forcedAt: 0, inflight: null };
@@ -49,7 +51,7 @@ export async function getSharedProducts(underlying, { force = false } = {}) {
 
   e.inflight = (async () => {
     try {
-      const got = await loadProducts(underlying);
+      const got = exchange === 'cosmic' ? await loadCosmicProducts(underlying) : await loadProducts(underlying);
       const list = Array.isArray(got) ? got : [];
       const prevLen = e.list?.length || 0;
       if (prevLen > 0 && list.length < prevLen * MIN_KEEP_RATIO) {

@@ -33,6 +33,7 @@ import { subscribeTickers } from './lib/tickerHub.js';
 // Shared per-underlying product list (see productHub.js): one Delta fetch + one read-only
 // copy for all account engines, last good list kept on a failed / empty fetch.
 import { getSharedProducts } from './lib/productHub.js';
+import { getCosmicSpot } from './lib/cosmicApi.js';
 import {
   safeParseLeg, calculateFee, calcMargin, leverageFor, shortNotionalCap, scanTickers,
   computeEntryAtmRatio, computeScaledSellQty,
@@ -381,7 +382,14 @@ function gcdInt(a, b) {
 }
 
 async function startSingleAccountEngine(account) {
+  // Cosmic accounts (exchange = 'cosmic', migration 072) are PAPER only for now: their market
+  // data comes from Cosmic (lib/cosmicApi.js) and nothing may ever reach the Delta executor.
+  if (account.exchange === 'cosmic' && account.mode === 'live') {
+    throw new Error(`${account.name}: Cosmic accounts are paper-only — live trading on Cosmic is not supported yet.`);
+  }
   let accountState = account;
+  // Market-data source of this account. Read once: switching an account's exchange needs a restart.
+  const exchange = account.exchange === 'cosmic' ? 'cosmic' : 'delta';
   const ENGINE_ID = 'paper_trading_' + accountState.id;
   const heartbeat = createHeartbeat(ENGINE_ID);
   let configDbId = null;
@@ -1075,12 +1083,12 @@ async function startSingleAccountEngine(account) {
       // Expiries still live (a cached list can hold one that settled minutes ago).
       const liveExpiriesOf = (list) => getExpiries(list).filter(e => new Date(e).getTime() > Date.now());
       const hasDteTarget = (exps) => exps.some(e => (new Date(e).getTime() - Date.now()) / (24 * 60 * 60 * 1000) >= minDte);
-      let prods = await getSharedProducts(config.underlying);
+      let prods = await getSharedProducts(config.underlying, { exchange });
       let exps = liveExpiriesOf(prods);
       // The window's DTE target isn't in the shared list (just listed on Delta) or the current
       // expiry is gone (just expired) → fetch fresh now (de-duplicated, ≤ 1/min per underlying).
       if (exps.length === 0 || (expiryMode === 'daily' && !hasDteTarget(exps)) || (config.expiry && !exps.includes(config.expiry))) {
-        prods = await getSharedProducts(config.underlying, { force: true });
+        prods = await getSharedProducts(config.underlying, { force: true, exchange });
         exps = liveExpiriesOf(prods);
       }
       products = prods;
@@ -1145,7 +1153,7 @@ async function startSingleAccountEngine(account) {
   async function fetchSpot() {
     if (lastWsSpotAt > 0 && Date.now() - lastWsSpotAt < WS_SPOT_FRESH_MS) return; // WS has it
     try {
-      const sp = await getSpotPrice(config.underlying);
+      const sp = exchange === 'cosmic' ? await getCosmicSpot(config.underlying) : await getSpotPrice(config.underlying);
       if (sp) {
         spotPrice = sp;
         lastSpotUpdate = Date.now();
@@ -1219,6 +1227,7 @@ async function startSingleAccountEngine(account) {
       // This account's symbol metadata, merged into the hub's union so it can normalise
       // every tick once on behalf of all accounts (see subscribeTickers).
       symbolMeta,
+      exchange, // Cosmic accounts share a separate Cosmic hub (translated to the same shape)
     );
 
     heartbeat.update({ ws_status: 'live' });
@@ -8267,7 +8276,7 @@ async function startSingleAccountEngine(account) {
         await fetchActivePositions();
         tickerData = {};
         startWebSocket();
-        tickerData = await backfillTickers(config.underlying, symbolMeta, tickerData);
+        if (exchange === 'delta') tickerData = await backfillTickers(config.underlying, symbolMeta, tickerData);
       }
 
       // Report the (possibly new) allocation % now rather than on the next 60s heartbeat.
@@ -8400,7 +8409,7 @@ async function startSingleAccountEngine(account) {
 
   // 5. Build symbol map and backfill tickers via REST
   symbolMeta = buildSymbolMeta(products, config.expiry, config.underlying, positions);
-  tickerData = await backfillTickers(config.underlying, symbolMeta, tickerData);
+  if (exchange === 'delta') tickerData = await backfillTickers(config.underlying, symbolMeta, tickerData);
   log(`[${accountState.name}] Ticker backfill complete: ${Object.keys(tickerData).length} symbols`);
 
   // 6. Start WebSocket
@@ -8935,9 +8944,17 @@ export async function startPaperTradingEngine() {
       // full row — including large encrypted-credential blobs — every 30s. Credentials
       // are loaded separately via RPC (loadCredentials), never from this row.
       const SYNC_COLS = 'id, name, mode, live_enabled, paused, is_active, telegram_chat_id, telegram_link_code';
+      // `exchange` (migration 072) decides the market-data source of an engine started from
+      // this sync — without it a new Cosmic account would start on Delta's feed.
       let { data: currentAccounts, error: syncError } = await supabase
         .from('paper_trading_accounts')
-        .select(`${SYNC_COLS}, telegram_alert_chat_id, telegram_alert_link_code`);
+        .select(`${SYNC_COLS}, exchange, telegram_alert_chat_id, telegram_alert_link_code`);
+      // Migration 072 not applied yet → no exchange column (every account is Delta then).
+      if (syncError && /exchange/.test(syncError.message || '')) {
+        ({ data: currentAccounts, error: syncError } = await supabase
+          .from('paper_trading_accounts')
+          .select(`${SYNC_COLS}, telegram_alert_chat_id, telegram_alert_link_code`));
+      }
       // Migration 070 not applied yet → sync without the alerts-chat columns.
       if (syncError && /telegram_alert/.test(syncError.message || '')) {
         ({ data: currentAccounts, error: syncError } = await supabase.from('paper_trading_accounts').select(SYNC_COLS));

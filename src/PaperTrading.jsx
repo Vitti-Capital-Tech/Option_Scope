@@ -4,6 +4,7 @@ import {
   loadProducts, getExpiries, getStrikes, getSpotPrice,
   fmtExpiry, createTickerStream, apiGet, getTickers
 } from './api';
+import { loadCosmicProducts, getCosmicSpot, createCosmicTickerStream } from './cosmicApi';
 import { normalizeIv, toFiniteNumber, matchesOptionType, formatTime, formatDateTime, leverageFor, shortNotionalCap, pickExpiry, expiryModeForDte, normalizeExcludedStrikes, spotDistance } from './scannerUtils';
 import { useTabListener } from './useTabSync';
 import { supabase } from './supabase';
@@ -382,12 +383,18 @@ const findActiveSchedule = (schedules, nowMs) => {
 };
 
 
-export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'paper', scannerFill = null }) {
+export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'paper', exchange = 'delta', scannerFill = null }) {
   // Which dashboard this instance is: 'paper' (Paper Trading) or 'live' (Live
   // Trading). The two tabs mount separate instances of this same component; they
   // share all logic but each only ever sees, manages and syncs accounts whose
   // account.mode matches this dashboard's mode.
   const dashboardMode = mode === 'live' ? 'live' : 'paper';
+  // Market the accounts trade on (migration 072): the Paper Trading tab shows Delta accounts,
+  // the Cosmic Paper tab ('cosmic', paper only) shows Cosmic accounts. Cosmic market data comes
+  // through the engine proxy (cosmicApi.js) in the same shapes as Delta's.
+  const isCosmic = exchange === 'cosmic';
+  const exLoadProducts = isCosmic ? loadCosmicProducts : loadProducts;
+  const exGetSpot = isCosmic ? getCosmicSpot : getSpotPrice;
   const [accounts, setAccounts] = useState([]);
   const [activeAccountId, setActiveAccountId] = useState(null);
   const [configDbId, setConfigDbId] = useState(null);
@@ -899,12 +906,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   // ── Product + expiry (UI display only, server manages its own copy) ───
   const refreshProducts = useCallback(async () => {
     try {
-      const prods = await loadProducts(underlying);
+      const prods = await exLoadProducts(underlying);
       setProducts(prods);
       const exps = getExpiries(prods);
       setExpiries(exps);
     } catch (e) { console.error('Failed to load products:', e); }
-  }, [underlying]);
+  }, [underlying, exLoadProducts]);
 
   // Validate expiry when config and products are loaded
   useEffect(() => {
@@ -987,6 +994,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         // Trading tab shows mode !== 'live', the Live Trading tab shows mode === 'live'.
         const normalizedAccounts = mappedAccounts.filter(
           acc => (acc.mode === 'live' ? 'live' : 'paper') === dashboardMode
+            && (acc.exchange === 'cosmic' ? 'cosmic' : 'delta') === exchange
         );
 
         setAccounts(normalizedAccounts);
@@ -1237,7 +1245,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           user_id: ownerUserId,
           mode: accountMode,
           live_enabled: false, // kill-switch stays off; arm explicitly later
-          default_config: defaultConfigVal
+          default_config: defaultConfigVal,
+          ...(isCosmic ? { exchange: 'cosmic' } : {}) // migration 072
         }])
         .select('*');
 
@@ -3174,7 +3183,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   useEffect(() => {
     let interval = null;
     const fetchSpot = () => {
-      getSpotPrice(underlying)
+      exGetSpot(underlying)
         .then(sp => {
           if (sp) {
             latestSpotPriceRef.current = sp;
@@ -3209,7 +3218,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       stop();
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [underlying]);
+  }, [underlying, exGetSpot]);
 
   // Throttle spot price state updates to UI to exactly once per second
   useEffect(() => {
@@ -3293,7 +3302,12 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     latestTickerDataRef.current = {};
     setTickerData({});
 
-    wsRef.current = createTickerStream(
+    // Cosmic: settlement time per symbol for the bid / ask IV it derives from prices.
+    const expiryBySymbol = isCosmic ? new Map(products.map(p => [p.symbol, p.settlement_time])) : null;
+    const openStream = isCosmic
+      ? (syms, onT, onS) => createCosmicTickerStream(syms, onT, onS, { expiryOf: (s) => expiryBySymbol.get(s) })
+      : createTickerStream;
+    wsRef.current = openStream(
       allSymbols,
       (msg) => {
         const sym = msg.symbol;
@@ -3341,7 +3355,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
       if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
     };
-  }, [selExpiry, products, underlying, getSymbolMeta, flushTickerBuffer]);
+  }, [selExpiry, products, underlying, getSymbolMeta, flushTickerBuffer, isCosmic]);
 
   // ── Phase 1: Real-time PnL display (read-only, no writes) ────────────
   useEffect(() => {
@@ -3781,7 +3795,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   return (
     <div className="app">
       <Navbar
-        activeTab={dashboardMode === 'live' ? 'live' : 'trading'}
+        activeTab={dashboardMode === 'live' ? 'live' : isCosmic ? 'cosmic' : 'trading'}
         onNavigate={onNavigate}
         theme={theme}
         toggleTheme={toggleTheme}
@@ -3811,6 +3825,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           />
         ) : (isAccountsLoaded && accounts.length === 0) ? (
           <FirstAccountCard
+            underlyings={isCosmic ? ['BTC'] : undefined}
             onSubmit={handleSubmitCreate(handleModalSubmit)}
             register={registerCreate}
             errors={errorsCreate}
@@ -3873,6 +3888,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
             )}
             <div className={accountDataLoading ? 'pt-account-switching' : undefined}>
             <ControlPanel
+            underlyings={isCosmic ? ['BTC'] : undefined}
               underlying={underlying}
               updateConfig={updateConfig}
               selExpiry={selExpiry}
@@ -4027,6 +4043,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       </div>
 
       <CreateAccountModal
+            underlyings={isCosmic ? ['BTC'] : undefined}
         isOpen={isCreateModalOpen}
         onClose={() => setIsCreateModalOpen(false)}
         onSubmit={handleSubmitCreate(handleModalSubmit)}

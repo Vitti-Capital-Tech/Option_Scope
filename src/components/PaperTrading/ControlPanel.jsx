@@ -46,8 +46,9 @@ export default function ControlPanel({
   walletBalance,
   totalRealizedPnl,
   paperEquity,
+  underlyings = ['BTC', 'ETH'], // Cosmic tab: ['BTC'] (Cosmic lists BTC options only)
 }) {
-  const UNDERLYINGS = ['BTC', 'ETH'];
+  const UNDERLYINGS = underlyings;
 
   // Session % change: capture the first spot seen for each underlying (this page
   // session) and compare the live spot against it. Uses React's supported

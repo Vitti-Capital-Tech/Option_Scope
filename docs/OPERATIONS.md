@@ -93,6 +93,11 @@ Other operational facts:
 - Optional credential-verify proxy: set `DELTA_PROXY_PORT`, put nginx/Caddy with TLS in
   front, and point the dashboard's `VITE_DELTA_PROXY_URL` at it. Details:
   [live_trading.md → IP whitelisting & the Verify proxy](live_trading.md#ip-whitelisting--the-verify-proxy).
+- The same proxy serves the **Cosmic Paper** tab: Cosmic (cosmic.trade) answers 403 to any browser
+  Origin, so the dashboard reads Cosmic through it — `GET /cosmic/api/v1/{contracts,orderbook/…,charts/…}`
+  and the WebSocket `/cosmic/feeds` (msgpack decoded to JSON). nginx/Caddy must pass WebSocket
+  upgrades for `/cosmic/feeds` (nginx: `proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade;
+  proxy_set_header Connection "upgrade";`). The engine itself reads Cosmic directly (`engine/lib/cosmicApi.js`).
 
 ## Single-instance rule
 

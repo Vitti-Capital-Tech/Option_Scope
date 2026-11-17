@@ -1,5 +1,5 @@
 import React from 'react';
-import { TrendingUp, Target, Columns, Radio, FileSpreadsheet, Gauge, CalendarRange, Activity, Sun, Moon } from 'lucide-react';
+import { TrendingUp, Target, Columns, Radio, FileSpreadsheet, Gauge, CalendarRange, Activity, Orbit, Sun, Moon } from 'lucide-react';
 
 export default function Navbar({
   activeTab,
@@ -43,6 +43,14 @@ export default function Navbar({
             <span className="nav-tab-icon" aria-hidden="true">
               <Columns size={14} />
             </span> <span className="nav-tab-text">Paper Trading</span>
+          </button>
+          <button
+            className={`nav-tab ${activeTab === 'cosmic' ? 'active' : ''}`}
+            onClick={() => onNavigate('cosmic')}
+          >
+            <span className="nav-tab-icon" aria-hidden="true">
+              <Orbit size={14} />
+            </span> <span className="nav-tab-text">Cosmic Paper</span>
           </button>
           <button
             className={`nav-tab ${activeTab === 'live' ? 'active' : ''}`}
@@ -121,6 +129,15 @@ export default function Navbar({
             <Columns size={18} />
           </span>
           <span className="mobile-bottom-text">Paper Trading</span>
+        </button>
+        <button
+          className={`mobile-bottom-tab ${activeTab === 'cosmic' ? 'active' : ''}`}
+          onClick={() => onNavigate('cosmic')}
+        >
+          <span className="mobile-bottom-icon">
+            <Orbit size={18} />
+          </span>
+          <span className="mobile-bottom-text">Cosmic</span>
         </button>
         <button
           className={`mobile-bottom-tab ${activeTab === 'live' ? 'active' : ''}`}

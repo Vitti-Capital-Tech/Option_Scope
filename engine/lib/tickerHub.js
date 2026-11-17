@@ -19,6 +19,7 @@
  * and logs stay accurate.
  */
 import { createTickerStream, processTickerMessage } from './deltaApi.js';
+import { createCosmicTickerStream } from './cosmicApi.js';
 import { log, logWarn } from './utils.js';
 
 // underlying → hub. A hub owns one upstream stream and the set of account listeners.
@@ -107,7 +108,12 @@ function rebuild(underlying) {
 
   hub.symbols = union;
   const prev = hub.stream;
-  hub.stream = createTickerStream(
+  // Cosmic hubs (paper accounts with exchange = 'cosmic') read Cosmic's feed, translated to
+  // the same Delta v2/ticker shape; everything below is exchange-agnostic.
+  const makeStream = hub.exchange === 'cosmic'
+    ? (syms, onT, onS) => createCosmicTickerStream(syms, onT, onS, { expiryOf: (s) => hub.meta?.[s]?.expiry })
+    : createTickerStream;
+  hub.stream = makeStream(
     [...union],
     (msg) => {
       const sym = msg?.symbol;
@@ -175,32 +181,34 @@ function scheduleRebuild(underlying) {
  * for processTickerMessage (a tick that omits a field inherits the previous value), so that
  * chain is now single and consistent instead of one per account.
  */
-export function subscribeTickers(underlying, symbols, onTicker, onStatus, symbolMeta = null) {
-  let hub = hubs.get(underlying);
+export function subscribeTickers(underlying, symbols, onTicker, onStatus, symbolMeta = null, exchange = 'delta') {
+  // Hubs are per exchange + underlying: a Cosmic BTC feed must never share Delta's BTC hub.
+  const key = exchange === 'cosmic' ? `cosmic:${underlying}` : underlying;
+  let hub = hubs.get(key);
   if (!hub) {
-    hub = { stream: null, symbols: new Set(), listeners: new Set(), rebuildTimer: null, lastStatus: 'reconnecting', meta: {}, store: {} };
-    hubs.set(underlying, hub);
+    hub = { stream: null, symbols: new Set(), listeners: new Set(), rebuildTimer: null, lastStatus: 'reconnecting', meta: {}, store: {}, exchange };
+    hubs.set(key, hub);
   }
   const listener = { symbols: new Set(symbols || []), meta: symbolMeta || {}, onTicker, onStatus };
   hub.listeners.add(listener);
   // Report the current upstream status right away so a late joiner's heartbeat isn't stale.
   if (hub.stream) onStatus?.(hub.lastStatus);
-  scheduleRebuild(underlying);
+  scheduleRebuild(key);
 
   return {
     update(newSymbols, newMeta = null) {
       listener.symbols = new Set(newSymbols || []);
       if (newMeta) listener.meta = newMeta;
-      scheduleRebuild(underlying);
+      scheduleRebuild(key);
     },
     close() {
       hub.listeners.delete(listener);
       if (hub.listeners.size === 0) {
         clearTimeout(hub.rebuildTimer);
         try { hub.stream?.close(); } catch { /* noop */ }
-        hubs.delete(underlying);
+        hubs.delete(key);
       } else {
-        scheduleRebuild(underlying); // shrink the union so we stop paying for symbols no one wants
+        scheduleRebuild(key); // shrink the union so we stop paying for symbols no one wants
       }
     },
   };

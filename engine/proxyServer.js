@@ -14,7 +14,19 @@
  * (nginx/Caddy on the Elastic IP) so the browser can reach it over https.
  */
 import http from 'node:http';
+import WebSocket, { WebSocketServer } from 'ws';
+import { unpack } from 'msgpackr';
 import { log, logWarn, logError } from './lib/utils.js';
+import { COSMIC_BASE } from './lib/cosmicApi.js';
+
+// Cosmic Trade relay (Cosmic Paper tab). Cosmic answers 403 to any request carrying a browser
+// Origin, so the dashboard reaches it through here. Read-only public market data only:
+//   GET /cosmic/api/v1/{contracts | orderbook/:sym | charts/:sym/(klines|mark-klines|index-klines)}
+//   WS  /cosmic/feeds — relayed from wss://cosmic.trade/feeds with the Origin stripped; the
+//       upstream msgpack frames are decoded and sent on as JSON text (no msgpack in the browser).
+const COSMIC_REST_RE = /^\/cosmic\/api\/v1\/(contracts|orderbook\/[A-Za-z0-9-]+|charts\/[A-Za-z0-9-]+\/(klines|mark-klines|index-klines))(\?|$)/;
+const COSMIC_WS_URL = 'wss://cosmic.trade/feeds';
+const MAX_COSMIC_CLIENTS = 50;
 
 const DELTA_BASE = 'https://api.india.delta.exchange';
 
@@ -42,6 +54,26 @@ export function startDeltaProxy() {
     if (req.method === 'OPTIONS') {
       res.writeHead(204, corsHeaders);
       res.end();
+      return;
+    }
+
+    // Cosmic public market data (GET only, fixed host, allow-listed paths).
+    if (req.url.startsWith('/cosmic/')) {
+      if (req.method !== 'GET' || !COSMIC_REST_RE.test(req.url)) {
+        res.writeHead(404, { 'Content-Type': 'application/json', ...corsHeaders });
+        res.end(JSON.stringify({ error: 'proxy_bad_path' }));
+        return;
+      }
+      try {
+        const upstream = await fetch(COSMIC_BASE + req.url.slice('/cosmic'.length), { headers: { 'User-Agent': 'optionscope-proxy' } });
+        const text = await upstream.text();
+        res.writeHead(upstream.status, { 'Content-Type': upstream.headers.get('content-type') || 'application/json', ...corsHeaders });
+        res.end(text);
+      } catch (e) {
+        logError('Cosmic proxy forward error:', e);
+        res.writeHead(502, { 'Content-Type': 'application/json', ...corsHeaders });
+        res.end(JSON.stringify({ error: 'proxy_upstream_error', message: e.message }));
+      }
       return;
     }
 
@@ -82,6 +114,42 @@ export function startDeltaProxy() {
       res.writeHead(502, { 'Content-Type': 'application/json', ...corsHeaders });
       res.end(JSON.stringify({ success: false, error: { code: 'proxy_upstream_error', message: e.message } }));
     }
+  });
+
+  // ── Cosmic WebSocket relay: one upstream socket per browser client ──
+  const wss = new WebSocketServer({ noServer: true });
+  server.on('upgrade', (req, socket, head) => {
+    const okOrigin = allowOrigin === '*' || req.headers.origin === allowOrigin;
+    if (!req.url.startsWith('/cosmic/feeds') || !okOrigin || wss.clients.size >= MAX_COSMIC_CLIENTS) {
+      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    wss.handleUpgrade(req, socket, head, (client) => {
+      const upstream = new WebSocket(COSMIC_WS_URL); // no Origin header
+      const pending = [];
+      upstream.on('open', () => { for (const m of pending.splice(0)) upstream.send(m); });
+      upstream.on('message', (data, isBinary) => {
+        if (client.readyState !== WebSocket.OPEN) return;
+        try {
+          const msg = isBinary ? unpack(data) : JSON.parse(data.toString());
+          client.send(JSON.stringify(msg, (k, v) => (typeof v === 'bigint' ? Number(v) : v)));
+        } catch { /* drop undecodable frame */ }
+      });
+      // Client → upstream: only subscribe / unsubscribe frames, JSON text.
+      client.on('message', (data) => {
+        let f;
+        try { f = JSON.parse(data.toString()); } catch { return; }
+        if (!f || (f.action !== 'subscribe' && f.action !== 'unsubscribe') || !Array.isArray(f.symbols)) return;
+        const frame = JSON.stringify({ action: f.action, symbols: f.symbols.slice(0, 400).map(String) });
+        if (upstream.readyState === WebSocket.OPEN) upstream.send(frame); else pending.push(frame);
+      });
+      const closeBoth = () => { try { upstream.close(); } catch { /* noop */ } try { client.close(); } catch { /* noop */ } };
+      upstream.on('close', closeBoth);
+      upstream.on('error', (e) => { logWarn(`Cosmic WS relay upstream error: ${e.message}`); closeBoth(); });
+      client.on('close', closeBoth);
+      client.on('error', closeBoth);
+    });
   });
 
   server.on('error', (e) => logError('Delta proxy server error:', e));
