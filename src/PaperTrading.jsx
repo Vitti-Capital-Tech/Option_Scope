@@ -1037,7 +1037,10 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     fetchAccounts();
 
     const accountsChannel = supabase
-      .channel(`accounts_changes_ui_${dashboardMode}`)
+      // Exchange in the name: the Delta and Cosmic paper tabs are both mounted with mode
+      // 'paper', and Supabase hands back the SAME channel for a repeated name — adding
+      // callbacks to an already-subscribed channel throws and crashes the second instance.
+      .channel(`accounts_changes_ui_${dashboardMode}_${exchange}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'paper_trading_accounts' },
