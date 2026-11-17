@@ -1023,7 +1023,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
 
         try {
           const ch = new BroadcastChannel('option-scope-sync');
-          ch.postMessage({ type: `ACCOUNTS_SYNC_${dashboardMode}`, payload: { accounts: normalizedAccounts }, senderId: 'paper-trading-dashboard', timestamp: Date.now() });
+          ch.postMessage({ type: `ACCOUNTS_SYNC_${dashboardMode}_${exchange}`, payload: { accounts: normalizedAccounts }, senderId: 'paper-trading-dashboard', timestamp: Date.now() });
           ch.close();
         } catch (e) { }
       }
@@ -1964,7 +1964,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     setConfig(c => {
       const newConfig = { ...c, ...parsedUpdates };
       setTimeout(() => {
-        tabBroadcast(`CONFIG_SYNC_${dashboardMode}`, { config: newConfig });
+        tabBroadcast(`CONFIG_SYNC_${dashboardMode}_${exchange}`, { config: newConfig });
         saveSupabaseConfig(newConfig);
       }, 0);
       return newConfig;
@@ -2070,7 +2070,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       const resetConfig = { ...c, ...DEFAULT_FILTERS };
       setTimeout(() => {
         saveSupabaseConfig(resetConfig);
-        tabBroadcast(`CONFIG_SYNC_${dashboardMode}`, { config: resetConfig });
+        tabBroadcast(`CONFIG_SYNC_${dashboardMode}_${exchange}`, { config: resetConfig });
       }, 0);
       return resetConfig;
     });
@@ -2464,7 +2464,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     if (!activeAccountId) return;
     let debounce = null;
     const channel = supabase
-      .channel(`paper_trading_schedules_${activeAccountId}`)
+      .channel(`paper_trading_schedules_${activeAccountId}_${dashboardMode}_${exchange}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'paper_trading_schedules', filter: `account_id=eq.${activeAccountId}` },
@@ -2493,7 +2493,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     if (!activeAccountId) return;
     let debounce = null;
     const channel = supabase
-      .channel(`paper_trading_config_${activeAccountId}`)
+      .channel(`paper_trading_config_${activeAccountId}_${dashboardMode}_${exchange}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'paper_trading_config', filter: `account_id=eq.${activeAccountId}` },
@@ -2819,7 +2819,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     })();
 
     const realtimeChannel = supabase
-      .channel(`active_positions_changes_${activeAccountId}`)
+      .channel(`active_positions_changes_${activeAccountId}_${dashboardMode}_${exchange}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'active_positions', filter: `account_id=eq.${activeAccountId}` },
@@ -2828,7 +2828,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       .subscribe();
 
     const historyChannel = supabase
-      .channel(`trade_history_changes_${activeAccountId}`)
+      .channel(`trade_history_changes_${activeAccountId}_${dashboardMode}_${exchange}`)
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'trade_history', filter: `account_id=eq.${activeAccountId}` },
@@ -2874,7 +2874,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     // row when this account misses an entry because the shared top-of-book depth was
     // taken by another account first. Toast on arrival + prepend to the bell panel list.
     const blockNotifChannel = supabase
-      .channel(`entry_block_notifications_${activeAccountId}`)
+      .channel(`entry_block_notifications_${activeAccountId}_${dashboardMode}_${exchange}`)
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'entry_block_notifications', filter: `account_id=eq.${activeAccountId}` },
@@ -3170,7 +3170,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     document.addEventListener('visibilitychange', handleVisibility);
 
     const channel = supabase
-      .channel(`live_exchange_state_${activeAccountId}`)
+      .channel(`live_exchange_state_${activeAccountId}_${dashboardMode}_${exchange}`)
       .on('postgres_changes',
         { event: '*', schema: 'public', table: 'live_exchange_state', filter: `account_id=eq.${activeAccountId}` },
         onChange)
@@ -3433,13 +3433,13 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
 
   // ── Cross-tab sync (config only) ──────────────────────────────────────
   const { broadcast: tabBroadcast } = useTabListener({
-    [`CONFIG_SYNC_${dashboardMode}`]: (payload) => {
+    [`CONFIG_SYNC_${dashboardMode}_${exchange}`]: (payload) => {
       if (payload.config) {
         setConfig(payload.config);
         setDraftConfig(payload.config);
       }
     },
-    [`ACCOUNTS_SYNC_${dashboardMode}`]: (payload) => {
+    [`ACCOUNTS_SYNC_${dashboardMode}_${exchange}`]: (payload) => {
       if (payload.accounts) {
         setAccounts(payload.accounts);
         if (payload.accounts.length > 0) {
