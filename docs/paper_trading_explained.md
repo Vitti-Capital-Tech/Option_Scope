@@ -470,7 +470,32 @@ live behaviour is unchanged. The Control Panel hides the two fields on a live ac
 > tuned around it. An ETH account typically wants `minAtmPnl` near `0` and the decision left
 > to `minAtmRoi`.
 
+#### Max Net Credit entry selection — `entryByMaxCredit` (paper only, migration 071)
+
+A global Control Panel toggle (**Entry Selection → Max Net Credit**, column
+`paper_trading_config.entry_by_max_credit`, default **off**).
+
+| | OFF (default) | ON |
+|---|---|---|
+| Gate | ATM P&L ≥ `minAtmPnl` **and** ROI ≥ `minAtmRoi` | ATM floors **skipped** (the two fields are hidden) |
+| Pick per long strike | Highest ATM ROI | Highest **net credit** (ties → higher ROI) |
+| Entry order | Nearest ATM first | Highest net credit first (ties → nearest ATM) |
+
+Net credit is per 1 long, the same formula the Max Net Debit gate uses:
+
+```
+netCredit = shortQty × shortBid − longAsk − shortQty × hedgeLot% × hedgeAsk
+```
+
+`shortQty` is the ATM-scaled sell qty, so the candidate must still have fresh ATM quotes.
+Every other entry filter (Max Net Debit, hedge rules, OI, excluded strikes, slots, margin)
+still applies. Live accounts ignore the flag. The candidate log line shows
+`Net credit = $… (max-credit mode, ATM floors off)` when it is on.
+
 ### Deduplication & Ranking
+
+> With **Max Net Credit** on, "highest ROI" below reads "highest net credit" and step 2 sorts
+> by net credit — see [Max Net Credit entry selection](#max-net-credit-entry-selection--entrybymaxcredit-paper-only-migration-071).
 
 1. Group by buy strike — if multiple spreads share the same buy strike:
    - Keep the one with the **highest ROI** (primary candidate).

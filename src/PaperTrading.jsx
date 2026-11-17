@@ -264,6 +264,7 @@ const COPY_FILTER_COLUMNS = {
   full_deploy_enabled: 'fullDeployEnabled',
   full_deploy_time: 'fullDeployTime',
   replace_closer_atm: 'replaceCloserAtm',
+  entry_by_max_credit: 'entryByMaxCredit',
   oi_filter_enabled: 'oiFilterEnabled',
   oi_max_cap_m: 'oiMaxCapM',
   oi_filter_mode: 'oiFilterMode',
@@ -507,6 +508,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     fullDeployTime: '04:30',
     // Paper-only closer-to-ATM replacement (migration 059).
     replaceCloserAtm: false,
+    // Paper-only entry selection by max net credit instead of ATM P&L / ROI (migration 071).
+    entryByMaxCredit: false,
     // Delta OI-limit filter (migration 062; paper AND live); cap in $M, null = underlying default.
     oiFilterEnabled: false,
     oiMaxCapM: null,
@@ -625,6 +628,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   const [confirmDialog, setConfirmDialog] = useState(null);
   // Whether paper_trading_config has migration 059's replace_closer_atm column (see the save).
   const hasReplaceCloserAtmColRef = useRef(false);
+  // Whether paper_trading_config has migration 071's entry_by_max_credit column (same guard).
+  const hasEntryByMaxCreditColRef = useRef(false);
   // Whether paper_trading_config has migration 062's OI-filter columns (same guard).
   const hasOiFilterColRef = useRef(false);
   // Whether paper_trading_config has migration 065's oi_filter_mode column (same guard).
@@ -1846,6 +1851,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         // still works on a database where 059 hasn't run yet.
         ...((hasReplaceCloserAtmColRef.current || newCfg.replaceCloserAtm)
           ? { replace_closer_atm: !!newCfg.replaceCloserAtm } : {}),
+        // Migration 071 — same guard.
+        ...((hasEntryByMaxCreditColRef.current || newCfg.entryByMaxCredit)
+          ? { entry_by_max_credit: !!newCfg.entryByMaxCredit } : {}),
         // Migration 062 — same guard (sent once the columns exist, or when switched on).
         ...((hasOiFilterColRef.current || newCfg.oiFilterEnabled)
           ? {
@@ -1908,6 +1916,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     'fullDeployEnabled',
     'fullDeployTime',
     'replaceCloserAtm',
+    'entryByMaxCredit',
     'oiFilterEnabled',
     'oiMaxCapM',
     'oiFilterMode',
@@ -1924,7 +1933,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     for (const k of Object.keys(updates)) {
       const val = updates[k];
       if (k === 'exitType' || k === 'variableExitSlices' || k === 'atmRatioScaling' || k === 'underlying' || k === 'expiry' || k === 'tradeDays'
-        || k === 'excludedStrikes' || k === 'oiFilterEnabled' || k === 'oiFilterMode' || k === 'partialScaleEnabled') {
+        || k === 'excludedStrikes' || k === 'oiFilterEnabled' || k === 'oiFilterMode' || k === 'partialScaleEnabled'
+        || k === 'entryByMaxCredit') {
         parsedUpdates[k] = val;
       } else if (k === 'oiMaxCapM') {
         // Empty / non-positive → null (the underlying's default cap), never 0.
@@ -2018,7 +2028,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         || k === 'fullDeployEnabled' || k === 'fullDeployTime' || k === 'replaceCloserAtm' || k === 'oiFilterMode') {
         return val1 !== val2;
       }
-      if (k === 'oiFilterEnabled') return !!val1 !== !!val2;
+      if (k === 'oiFilterEnabled' || k === 'entryByMaxCredit') return !!val1 !== !!val2;
       if (k === 'partialScaleEnabled') return (val1 !== false) !== (val2 !== false);
       const num1 = (val1 === '' || val1 === '-' || val1 == null) ? null : Number(val1);
       const num2 = (val2 === '' || val2 === '-' || val2 == null) ? null : Number(val2);
@@ -2143,6 +2153,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           fullDeployEnabled: data.full_deploy_enabled ?? false,
           fullDeployTime: data.full_deploy_time ?? '04:30',
           replaceCloserAtm: data.replace_closer_atm ?? false,
+          // Paper-only entry selection by max net credit (migration 071).
+          entryByMaxCredit: data.entry_by_max_credit ?? false,
           // Delta OI-limit filter (migration 062; paper AND live).
           oiFilterEnabled: data.oi_filter_enabled ?? false,
           oiMaxCapM: data.oi_max_cap_m != null ? Number(data.oi_max_cap_m) : null,
@@ -2156,6 +2168,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           maxSlPct: data.max_sl_pct != null ? Number(data.max_sl_pct) : 20
         };
         hasReplaceCloserAtmColRef.current = Object.prototype.hasOwnProperty.call(data, 'replace_closer_atm');
+        hasEntryByMaxCreditColRef.current = Object.prototype.hasOwnProperty.call(data, 'entry_by_max_credit');
         hasOiFilterColRef.current = Object.prototype.hasOwnProperty.call(data, 'oi_filter_enabled');
         hasOiFilterModeColRef.current = Object.prototype.hasOwnProperty.call(data, 'oi_filter_mode');
         hasPartialScaleColRef.current = Object.prototype.hasOwnProperty.call(data, 'partial_scale_enabled');

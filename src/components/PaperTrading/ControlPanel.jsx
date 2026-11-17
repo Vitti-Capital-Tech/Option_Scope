@@ -166,7 +166,8 @@ export default function ControlPanel({
                 // candidate down to a ~$1,000-margin unit can never bind at ETH's notional,
                 // so ETH candidates stay on their raw 1-unit basis and a 35%-ROI spread can
                 // read as $9.50. The ROI floor is the one that travels across underlyings.
-                ...(accountIsLive ? [] : [
+                // Hidden while Max Net Credit (migration 071) is on — the engine skips them then.
+                ...((accountIsLive || draftConfig?.entryByMaxCredit) ? [] : [
                   { label: 'Min ATM P&L', key: 'minAtmPnl', width: 110, step: '10', prefix: '$' },
                   { label: 'Min ATM ROI', key: 'minAtmRoi', width: 110, step: '1', suffix: '%' },
                 ]),
@@ -180,6 +181,31 @@ export default function ControlPanel({
               ))}
             </div>
           </div>
+
+          {/* Entry selection (migration 071) — PAPER ONLY, global (not per window).
+              OFF: Min ATM P&L / ROI floors gate entries, best ATM ROI per long strike, tried
+              nearest-ATM first. ON: floors skipped, the largest net credit per long strike is
+              kept and candidates are tried highest-net-credit first. */}
+          {!accountIsLive && (
+            <div className="pt-filter-cluster">
+              <span className="pt-cluster-head">Entry Selection</span>
+              <div className="pt-cluster-fields">
+                <div key="entryByMaxCredit" className="form-group">
+                  <label htmlFor="entryByMaxCredit" className="pt-field-label" style={{ marginBottom: 0, cursor: 'pointer' }}
+                    title="ON: enter the spreads with the largest net credit (short qty × short bid − long ask − hedge cost, per 1 long), ignoring Min ATM P&L / ROI. OFF: entries must clear Min ATM P&L / ROI and the best ATM ROI is picked. All other entry filters still apply. Paper accounts only.">
+                    Max Net Credit
+                  </label>
+                  <div style={{ height: 34, display: 'flex', alignItems: 'center' }}>
+                    <label className="pt-switch">
+                      <input type="checkbox" id="entryByMaxCredit" checked={draftConfig?.entryByMaxCredit ?? false}
+                        onChange={e => updateDraftConfig('entryByMaxCredit', e.target.checked)} />
+                      <span className="pt-slider"></span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Excluded Strikes (migration 040) — paper AND live, global (not per window).
               Strikes picked from any listed expiry's chain, each tied to that expiry: the

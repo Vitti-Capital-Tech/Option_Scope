@@ -429,6 +429,8 @@ async function startSingleAccountEngine(account) {
     fullDeployTime: '04:30',
     // Paper-only closer-to-ATM replacement (migration 059). Off by default.
     replaceCloserAtm: false,
+    // Paper-only entry selection by max net credit instead of ATM P&L / ROI (migration 071).
+    entryByMaxCredit: false,
     // Delta OI-limit filter (migration 062; paper AND live). Off by default; cap in millions of
     // USD, null = the underlying's default (BTC 15, ETH 10, XAUT 5).
     oiFilterEnabled: false,
@@ -787,6 +789,8 @@ async function startSingleAccountEngine(account) {
           fullDeployTime: data.full_deploy_time ?? '04:30',
           // Paper-only closer-to-ATM replacement (migration 059).
           replaceCloserAtm: data.replace_closer_atm ?? false,
+          // Paper-only entry selection by max net credit (migration 071).
+          entryByMaxCredit: data.entry_by_max_credit ?? false,
           // Delta OI-limit filter (migration 062; paper AND live).
           oiFilterEnabled: data.oi_filter_enabled ?? false,
           oiMaxCapM: data.oi_max_cap_m != null ? Number(data.oi_max_cap_m) : null,
@@ -4904,9 +4908,20 @@ async function startSingleAccountEngine(account) {
         }
         const minAtmRoi = isPaperAccount ? (effectiveConfig.minAtmRoi ?? 2) : 0;
 
+        // Max-net-credit selection (migration 071, PAPER only): the ATM P&L / ROI floors are
+        // skipped and candidates are ranked by net credit instead (see the grouping below).
+        // The candidate must still be priceable at ATM, because the short qty (ratioToUse)
+        // comes from the ATM ratio. Net credit is per 1 long, same formula as the Max Net
+        // Debit gate: short qty × short bid − long ask − hedge qty × hedge ask.
+        const byCredit = isPaperAccount && !!config.entryByMaxCredit;
+        const netCredit = ratioToUse != null
+          ? ratioToUse * spread.sellPrice - spread.buyPrice - (atmHedge ? ratioToUse * (hedgeLotPct / 100) * atmHedge.ask : 0)
+          : null;
+
         // Hedge on → a candidate without a qualifying hedge strike is not eligible.
         const hedgeMissing = hedgeRequired && !atmHedge;
-        const passed = !hedgeMissing && (atmPnl != null && atmPnl >= minAtmPnl && (roi ?? 0) >= minAtmRoi);
+        const passed = !hedgeMissing && atmPnl != null
+          && (byCredit ? netCredit != null : (atmPnl >= minAtmPnl && (roi ?? 0) >= minAtmRoi));
         // Loop only runs when wantEntries, so this always logs during an entry-eligible cycle.
         // The intrinsics are logged alongside the verdict because the ATM P&L is only ever
         // as good as the two prices it came from. Without them a wrong number is unfalsifiable:
@@ -4935,9 +4950,12 @@ async function startSingleAccountEngine(account) {
               : ` | ${opts.length} hedge strike(s) pass price/IV but the spread can't be priced at ATM → rejected`;
           }
         }
-        log(`[${accountState.name}] Candidate ${spread.buyLeg.type.toUpperCase()} ${spread.buyLeg.strike}/${spread.sellLeg.strike}: ATM P&L = $${atmPnl != null ? atmPnl.toFixed(2) : 'null'} (Min required: $${minAtmPnl.toFixed(2)}), ROI = ${roi != null ? roi.toFixed(2) : 0}% (Min required: ${minAtmRoi.toFixed(2)}%), Passed = ${passed} | ATM ${atmStrike} ${usd(buyIntrinsic)} / ${targetSellStrike} ${usd(sellIntrinsic)} → ratio ${atmRatio ?? '—'} → qty ${spread.sellQty}→${ratioToUse ?? '—'} | legs ${usd(spread.buyPrice)}/${usd(spread.sellPrice)}${atmHedge ? ` | hedge ${atmHedge.ticker.strike} ${usd(atmHedge.ask)} → ATM ${usd(hedgeAtAtm)} × ${hedgeLotPct}%` : ''}${hedgeWhy}`);
+        const gateDesc = byCredit
+          ? `Net credit = ${usd(netCredit)} (max-credit mode, ATM floors off), ATM P&L = $${atmPnl != null ? atmPnl.toFixed(2) : 'null'}, ROI = ${roi != null ? roi.toFixed(2) : 0}%`
+          : `ATM P&L = $${atmPnl != null ? atmPnl.toFixed(2) : 'null'} (Min required: $${minAtmPnl.toFixed(2)}), ROI = ${roi != null ? roi.toFixed(2) : 0}% (Min required: ${minAtmRoi.toFixed(2)}%)`;
+        log(`[${accountState.name}] Candidate ${spread.buyLeg.type.toUpperCase()} ${spread.buyLeg.strike}/${spread.sellLeg.strike}: ${gateDesc}, Passed = ${passed} | ATM ${atmStrike} ${usd(buyIntrinsic)} / ${targetSellStrike} ${usd(sellIntrinsic)} → ratio ${atmRatio ?? '—'} → qty ${spread.sellQty}→${ratioToUse ?? '—'} | legs ${usd(spread.buyPrice)}/${usd(spread.sellPrice)}${atmHedge ? ` | hedge ${atmHedge.ticker.strike} ${usd(atmHedge.ask)} → ATM ${usd(hedgeAtAtm)} × ${hedgeLotPct}%` : ''}${hedgeWhy}`);
         if (passed) {
-          processedSpreads.push({ ...spread, atmPnl, roi, atmMinPnl: minAtmPnl, atmMinRoi: minAtmRoi, atmHedgeSymbol: atmHedge?.ticker?.symbol ?? null });
+          processedSpreads.push({ ...spread, atmPnl, roi, netCredit, atmMinPnl: minAtmPnl, atmMinRoi: minAtmRoi, atmHedgeSymbol: atmHedge?.ticker?.symbol ?? null });
         }
       }
 
@@ -5024,10 +5042,18 @@ async function startSingleAccountEngine(account) {
           .slice(0, slots);
       };
 
+      // Ranking (migration 071): paper accounts with Max Net Credit on keep, per long strike,
+      // the spread with the largest net credit and try candidates highest-credit first.
+      // Otherwise best ATM ROI per long strike, tried nearest-ATM first (unchanged).
+      const entryByCredit = accountState.mode !== 'live' && !!config.entryByMaxCredit;
+      const rankWithinLong = entryByCredit
+        ? (a, b) => (b.netCredit - a.netCredit) || (b.roi - a.roi)
+        : (a, b) => b.roi - a.roi;
+
       const uniqueCalls = [];
       for (const group of Object.values(callGroups)) {
         if (isSharedLong('call', group[0].buyLeg.strike)) { uniqueCalls.push(...pickSharedLongSpreads(group)); continue; }
-        group.sort((a, b) => b.roi - a.roi);
+        group.sort(rankWithinLong);
         const primary = group[0];
         uniqueCalls.push(primary);
         if (hasConflictWithOtherActivePositions(primary, positions)) {
@@ -5039,7 +5065,7 @@ async function startSingleAccountEngine(account) {
       const uniquePuts = [];
       for (const group of Object.values(putGroups)) {
         if (isSharedLong('put', group[0].buyLeg.strike)) { uniquePuts.push(...pickSharedLongSpreads(group)); continue; }
-        group.sort((a, b) => b.roi - a.roi);
+        group.sort(rankWithinLong);
         const primary = group[0];
         uniquePuts.push(primary);
         if (hasConflictWithOtherActivePositions(primary, positions)) {
@@ -5048,9 +5074,12 @@ async function startSingleAccountEngine(account) {
         }
       }
 
-      // Sort candidate lists by distance to ATM (closest to ATM first)
-      uniqueCalls.sort((a, b) => Math.abs(a.buyLeg.strike - spotPrice) - Math.abs(b.buyLeg.strike - spotPrice));
-      uniquePuts.sort((a, b) => Math.abs(a.buyLeg.strike - spotPrice) - Math.abs(b.buyLeg.strike - spotPrice));
+      // Sort candidate lists: by distance to ATM (closest first), or — Max Net Credit on —
+      // by net credit (largest first), ties broken by distance to ATM.
+      const atmDist = (a, b) => Math.abs(a.buyLeg.strike - spotPrice) - Math.abs(b.buyLeg.strike - spotPrice);
+      const entryOrder = entryByCredit ? (a, b) => (b.netCredit - a.netCredit) || atmDist(a, b) : atmDist;
+      uniqueCalls.sort(entryOrder);
+      uniquePuts.sort(entryOrder);
 
       // Candidate pool size (not a cap — just how many to rank). Floored at 10, and at
       // least the derived per-type cap so the combined model always has enough to fill.
@@ -5068,8 +5097,8 @@ async function startSingleAccountEngine(account) {
       ];
 
       if (!onlyExits && uniqueTopSpreads.length > 0) {
-        const topDesc = uniqueTopSpreads.map(s => `${s.buyLeg.type.toUpperCase()} ${s.buyLeg.strike}/${s.sellLeg.strike} (ROI: ${s.roi.toFixed(1)}%, ATM P&L: $${s.atmPnl.toFixed(1)})`).join(', ');
-        log(`Selected top unique spreads: ${topDesc}`);
+        const topDesc = uniqueTopSpreads.map(s => `${s.buyLeg.type.toUpperCase()} ${s.buyLeg.strike}/${s.sellLeg.strike} (${entryByCredit ? `Net: $${s.netCredit.toFixed(1)}, ` : ''}ROI: ${s.roi.toFixed(1)}%, ATM P&L: $${s.atmPnl.toFixed(1)})`).join(', ');
+        log(`Selected top unique spreads${entryByCredit ? ' (by max net credit)' : ''}: ${topDesc}`);
       }
 
       // Count active positions
