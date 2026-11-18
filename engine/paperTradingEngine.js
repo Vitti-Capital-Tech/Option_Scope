@@ -17,6 +17,7 @@ import { supabase, hasServiceRole } from './lib/supabase.js';
 import { createHeartbeat } from './lib/heartbeat.js';
 import { createLiveExecutor, isLiveDryRun, longContracts, shortContracts, extractBalance } from './lib/liveExecution.js';
 import { reserveSpread as governorReserveSpread, releaseSpread as governorReleaseSpread } from './lib/entryGovernor.js';
+import { acquireEntryTurn, entryPriority, checkRealBook, isGroupMaster } from './lib/liveEntryQueue.js';
 import { createDailyStatsTracker } from './lib/dailyStats.js';
 import { notifyLiveFailure, notifyLiveResolved, notifyLiveTrade, sendTelegramMessage, setChatMigrationHandler, noteChatMigration, prettySymbol } from './lib/telegram.js';
 import { getBalance } from './lib/deltaTradeApi.js';
@@ -166,7 +167,12 @@ const ENTRY_CHASE = {
 // so the same accounts drew first every minute. Each armed live account now waits a
 // per-minute pseudo-random delay in [0, ENTRY_STAGGER_MS) before that minute's entry scan
 // (hash of account id + minute), so the draw order changes every minute. 0 = off.
-const ENTRY_STAGGER_MS = Math.max(0, Number(process.env.ENTRY_STAGGER_MS ?? 2000));
+// Default 0 since 2026-11-18: lib/liveEntryQueue.js now orders live entries (masters first,
+// then oldest account). Set ENTRY_STAGGER_MS to bring the random delay back.
+// Live entry queue switch. LIVE_ENTRY_QUEUE=off restores the previous model (feed-snapshot
+// governor + top-of-book guard + random stagger) without a code change.
+const LIVE_ENTRY_QUEUE_ON = String(process.env.LIVE_ENTRY_QUEUE ?? 'on').toLowerCase() !== 'off';
+const ENTRY_STAGGER_MS = Math.max(0, Number(process.env.ENTRY_STAGGER_MS ?? (LIVE_ENTRY_QUEUE_ON ? 0 : 2000)));
 function entryStaggerMs(accountId, minute) {
   if (!(ENTRY_STAGGER_MS > 0)) return 0;
   let h = 2166136261; // FNV-1a over "<account id>:<minute>"
@@ -4754,9 +4760,10 @@ async function startSingleAccountEngine(account) {
           .map(ticker => ({ ticker, ask: quote(ticker) }));
       }
       // The hedge a spread uses this cycle: of its qualifying options that keep the 3-leg net
-      // premium within Max Net Debit — PAPER: the one NEAREST the short, regardless of ATM ROI /
-      // P&L (2026-11-05); LIVE: the one with the best ATM ROI (then ATM P&L). Cached per spread
-      // for the cycle so the ATM P&L gate and the entry use the SAME strike.
+      // premium within Max Net Debit, the one NEAREST the short, regardless of ATM ROI / P&L —
+      // paper since 2026-11-05, LIVE too since 2026-11-18 (it used to pick the best ATM ROI).
+      // Same rule as the scanner. Cached per spread for the cycle so the ATM P&L gate and the
+      // entry use the SAME strike.
       const hedgeChoiceCache = new Map();
       function hedgeCandidateFor(spread) {
         if (!hedgeOn) return null;
@@ -4764,14 +4771,13 @@ async function startSingleAccountEngine(account) {
         if (hedgeChoiceCache.has(key)) return hedgeChoiceCache.get(key);
         const options = hedgeOptionsFor(spread);
         let best = null;
-        const nearestHedge = accountState.mode !== 'live';
         for (const h of options) { // nearest first (listHedgeStrikes)
           const r = calculateAtmPnlAndRoi(spread, h);
-          if (r.atmPnl == null || r.ratioToUse == null) continue; // unpriceable at ATM → can't rank
+          if (r.atmPnl == null || r.ratioToUse == null) continue; // unpriceable at ATM → can't price
           const net = r.ratioToUse * spread.sellPrice - spread.buyPrice - r.ratioToUse * (hedgeLotPct / 100) * h.ask;
           if (net < -effectiveConfig.maxNetPremium) continue;
-          if (nearestHedge) { best = { ...h, roi: r.roi, atmPnl: r.atmPnl }; break; }
-          if (!best || r.roi > best.roi || (r.roi === best.roi && r.atmPnl > best.atmPnl)) best = { ...h, roi: r.roi, atmPnl: r.atmPnl };
+          best = { ...h, roi: r.roi, atmPnl: r.atmPnl }; // first qualifying = nearest the short
+          break;
         }
         const choice = best ? { ...best, optionCount: options.length, optionStrikes: options.map(o => Number(o.ticker.strike)) } : null;
         hedgeChoiceCache.set(key, choice);
@@ -6899,9 +6905,10 @@ async function startSingleAccountEngine(account) {
             }
             // Live: the chosen hedge's ask depth can't take the hedge size → the execute-time
             // depth guard would skip the WHOLE entry (Dg PUT 83600/82200, 2026-10-21, while
-            // 81400 / 81000 also qualified). Switch to the best other qualifying hedge strike
-            // whose ask depth fits and that still clears the ATM P&L / ROI and Max Net Debit
-            // floors. Unknown depth = can't prove a shortfall (same as the guard) → kept.
+            // 81400 / 81000 also qualified). Switch to the NEAREST other qualifying hedge strike
+            // (same nearest-the-short rule as hedgeCandidateFor) whose ask depth fits and that
+            // still clears the ATM P&L / ROI and Max Net Debit floors. Unknown depth = can't
+            // prove a shortfall (same as the guard) → kept.
             if (liveArmed) {
               const needC = Math.round(hedgeQty);
               const askDepth = (sym) => { const n = Number(tickerData[sym]?.askSize); return Number.isFinite(n) ? n : null; };
@@ -6913,7 +6920,7 @@ async function startSingleAccountEngine(account) {
                   .filter(x => x.d != null && needC <= x.d && x.r.atmPnl != null && x.r.ratioToUse != null
                     && x.r.atmPnl >= (spread.atmMinPnl ?? 0) && (x.r.roi ?? 0) >= (spread.atmMinRoi ?? 0)
                     && (x.r.ratioToUse * spread.sellPrice - spread.buyPrice - x.r.ratioToUse * (hedgeLotPct / 100) * x.h.ask) >= -effectiveConfig.maxNetPremium)
-                  .sort((a, b) => ((b.r.roi ?? 0) - (a.r.roi ?? 0)) || (b.r.atmPnl - a.r.atmPnl));
+                  .sort((a, b) => Math.abs(Number(a.h.ticker.strike) - sStrike) - Math.abs(Number(b.h.ticker.strike) - sStrike));
                 if (alts.length === 0) {
                   logWarn(`[${accountState.name}] ⛔ ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: hedge ${best.strike} needs ${needC} contracts but its ask depth is ${bestDepth}, and no other qualifying hedge strike (${cand.optionStrikes.join(', ')}) has enough depth.`);
                   continue;
@@ -6959,7 +6966,7 @@ async function startSingleAccountEngine(account) {
               contractValue: hedgeCV,
             };
             hedgeMargin = calcMargin(bestAsk, hedgeQty, spotPrice, 0, 1, config.underlying, config.expiry);
-            log(`[${accountState.name}] ✚ Hedge for ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: ${best.strike} @ ${bestAsk} (${accountState.mode === 'live' ? 'best ATM ROI' : 'nearest, ATM ROI'} ${cand.roi != null ? cand.roi.toFixed(2) + '%' : '—'} of ${cand.optionCount} qualifying: ${cand.optionStrikes.join(', ')}).`);
+            log(`[${accountState.name}] ✚ Hedge for ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: ${best.strike} @ ${bestAsk} (nearest, ATM ROI ${cand.roi != null ? cand.roi.toFixed(2) + '%' : '—'} of ${cand.optionCount} qualifying: ${cand.optionStrikes.join(', ')}).`);
           }
 
           const id = `T${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -7114,7 +7121,10 @@ async function startSingleAccountEngine(account) {
               }
               oiToken = oiRes.token;
             }
-            const gRes = governorReserveSpread(gLegs, Date.now(), { isLive: gIsLive });
+            // Real live orders: gated by the live entry queue + a fresh real-book check right
+            // before sending (see liveEntryQueue.js) — not by this 8s feed snapshot, which let a
+            // 4th account through on 2026-11-18 and could block a group master ahead of its turn.
+            const gRes = (gIsLive && LIVE_ENTRY_QUEUE_ON) ? { ok: true } : governorReserveSpread(gLegs, Date.now(), { isLive: gIsLive });
             if (!gRes.ok) {
               const bl = gRes.blockedLeg;
               const hadTxt = Number.isFinite(bl.available) ? bl.available : '∞';
@@ -7489,7 +7499,9 @@ async function startSingleAccountEngine(account) {
             // quotes (bid_size/ask_size, in contracts). When a size is unknown (leg not on the
             // feed yet) we can't prove a shortfall, so we DON'T block — openSpread's
             // all-or-nothing chase-fill remains the backstop there.
-            if (liveArmed) {
+            // Real live (not dry-run) skips this feed-based guard: the live entry queue re-reads
+            // Delta's real order book right before sending (liveEntryQueue.checkRealBook).
+            if (liveArmed && (live.dryRun || !LIVE_ENTRY_QUEUE_ON)) {
               const finite = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
               const longC = longContracts(t.buyLeg);
               const shortC = t.sellQty > 0 ? shortContracts(t.sellQty) : 0;
@@ -7694,6 +7706,41 @@ async function startSingleAccountEngine(account) {
               }
             }
 
+            // ── Live entry queue (real orders only) ─────────────────────────────────────────
+            // One account at a time, group masters first then oldest account; the previous
+            // account's orders are done before this one reads the book. Then every leg must be
+            // available in Delta's REAL book at a price no worse than the one this entry was
+            // evaluated on — otherwise skip this minute (no sweeping deeper levels).
+            let releaseTurn = null;
+            if (liveArmed && !live.dryRun && LIVE_ENTRY_QUEUE_ON) {
+              const turnWaitMs = Math.max(0, ENTRY_PHASE_BUDGET_MS - (Date.now() - entryPhaseStart) - 3000);
+              try {
+                releaseTurn = await acquireEntryTurn(await entryPriority(accountState), accountState.name, turnWaitMs);
+              } catch {
+                logWarn(`[${accountState.name}] ⏳ LIVE entry ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} skipped: its turn in the live entry queue did not come within ${Math.round(turnWaitMs / 1000)}s — retrying next minute.`);
+                continue;
+              }
+              if (stale()) { releaseTurn(); break; }
+              const bookLegs = [
+                { symbol: t.buyLeg.symbol, side: 'buy', qty: longContracts(t.buyLeg), price: t.entryBuyPrice },
+                ...(t.sellQty > 0 ? [{ symbol: t.sellLeg.symbol, side: 'sell', qty: shortContracts(t.sellQty), price: t.entrySellPrice }] : []),
+                ...((t.hedgeLeg && (t.hedgeLeg.lotSize || 0) > 0)
+                  ? [{ symbol: t.hedgeLeg.symbol, side: 'buy', qty: longContracts(t.hedgeLeg), price: t.hedgeLeg.entryPrice }] : []),
+              ];
+              const book = await checkRealBook(bookLegs);
+              if (!book.ok) {
+                releaseTurn();
+                const msg = `Entry blocked: ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} — real order book: ${book.short}. Not entering at a worse price.`;
+                logWarn(`[${accountState.name}] ⚑ ${msg}`);
+                supabase.from('entry_block_notifications').insert([{
+                  account_id: accountState.id, type: 'entry_blocked', message: msg,
+                  details: { underlying, type: t.type, buy_strike: t.buyLeg.strike, sell_strike: t.sellLeg.strike, reason: 'real_book', check: book.lines },
+                }]).then(({ error }) => { if (error) logWarn(`[${accountState.name}] entry-block notification insert failed: ${error.message}`); });
+                continue;
+              }
+              log(`[${accountState.name}] ✔ Real book OK (${isGroupMaster(accountState.id) ? 'group master' : 'account'} turn): ${book.lines.join(' | ')}`);
+            }
+
             liveEntryInFlight = true;
 
             // ── Hedged entry (triplet): all three orders at the same time ─────────────────
@@ -7729,7 +7776,9 @@ async function startSingleAccountEngine(account) {
               sellPx: ENTRY_SELL_MODIFY_PX, buyMarkPlus: ENTRY_BUY_MARK_PLUS,
               quote: (sym) => tickerData[sym],
             };
-            const liveEntry = isTriplet
+            let liveEntry;
+            try {
+            liveEntry = isTriplet
               ? await live.openTriplet(t, {
                 long: longContracts(t.buyLeg),
                 short: shortContracts(t.sellQty),
@@ -7773,6 +7822,9 @@ async function startSingleAccountEngine(account) {
                   quote: (sym) => tickerData[sym],
                 },
               });
+            } finally {
+              releaseTurn?.(); // next account in the live entry queue may read the book now
+            }
             liveEntryInFlight = false;
             if (!liveEntry.ok) {
               // openSpread / openTriplet are all-or-nothing: whatever filled is already closed.
@@ -8943,7 +8995,8 @@ export async function startPaperTradingEngine() {
       // paused) plus is_active for the running/stopping decision. Avoids pulling the
       // full row — including large encrypted-credential blobs — every 30s. Credentials
       // are loaded separately via RPC (loadCredentials), never from this row.
-      const SYNC_COLS = 'id, name, mode, live_enabled, paused, is_active, telegram_chat_id, telegram_link_code';
+      // created_at: the live entry queue orders accounts by it (oldest first).
+      const SYNC_COLS = 'id, name, mode, live_enabled, paused, is_active, created_at, telegram_chat_id, telegram_link_code';
       // `exchange` (migration 072) decides the market-data source of an engine started from
       // this sync — without it a new Cosmic account would start on Delta's feed.
       let { data: currentAccounts, error: syncError } = await supabase

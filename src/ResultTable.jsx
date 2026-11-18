@@ -272,8 +272,8 @@ export default function ResultTable({
       // × Hedge Lot %. At ATM it is worth the bid at the ATM-shifted hedge strike (same
       // shift as the long/short); unquoted there = worthless (whole premium lost). Its
       // premium adds to margin. Mirrors the engine's ATM P&L gate.
-      // Every qualifying hedge option is priced the same way and the row uses the one with the
-      // best ATM ROI (then ATM P&L); unpriceable at ATM → the nearest (first) option.
+      // The row prices the nearest qualifying hedge option (chosen in RatioSpreadScanner.jsx)
+      // — the same nearest-the-short rule as the paper and live engines.
       const hedgePct = (Number(config?.hedgeLotPct) || 0) / 100;
       const legsPnl = hasAtmData
         ? (buyIntrinsic - r.buyPrice) + (r.sellPrice - sellIntrinsic) * totalSellQty
