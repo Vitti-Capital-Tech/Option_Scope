@@ -7833,7 +7833,13 @@ async function startSingleAccountEngine(account) {
                 logWarn(`[${accountState.name}] ⚑ ${msg}`);
                 supabase.from('entry_block_notifications').insert([{
                   account_id: accountState.id, type: 'entry_blocked', message: msg,
-                  details: { underlying, type: t.type, buy_strike: t.buyLeg.strike, sell_strike: t.sellLeg.strike, reason: 'real_book', check: book.lines },
+                  details: {
+                    underlying, type: t.type, buy_strike: t.buyLeg.strike, sell_strike: t.sellLeg.strike, reason: 'real_book', check: book.lines,
+                    blocked_side: book.blocked?.side ?? null, blocked_symbol: book.blocked?.symbol ?? null,
+                    needed: book.blocked?.qty ?? null, available: book.blocked?.avail ?? null,
+                    limit_price: book.blocked?.limit ?? null, best_price: book.blocked?.best ?? null,
+                    contended: false, mode: 'live',
+                  },
                 }]).then(({ error }) => { if (error) logWarn(`[${accountState.name}] entry-block notification insert failed: ${error.message}`); });
                 continue;
               }

@@ -66,6 +66,12 @@ const strikeOfSymbol = (sym) => String(sym || '').split('-')[2] ?? '';
 // Which leg ran out of depth: a SELL is the short; a BUY on the long strike is the long, else the hedge.
 const blockedLegLabel = (d) => (d?.blocked_side === 'sell' ? 'Short'
   : String(strikeOfSymbol(d?.blocked_symbol)) === String(d?.buy_strike) ? 'Long' : 'Hedge');
+// Live real-book check rows saved before they carried the blocked leg: show their plain message.
+const blockLacksLeg = (d) => !d || (d.reason === 'real_book' && !d.blocked_symbol);
+// Why it was blocked: the live real-book check (price moved past the scan quote) vs depth.
+const blockCause = (d) => (d?.reason === 'real_book'
+  ? `price moved (best $${d.best_price ?? '—'} vs $${d.limit_price ?? '—'})`
+  : d?.contended ? 'other accounts first' : 'thin book');
 const fmtBlockTime = (ts) => {
   const t = new Date(ts);
   const sameDay = t.toDateString() === new Date().toDateString();
@@ -91,9 +97,9 @@ const groupEntryBlocks = (list) => {
 };
 const blockToastText = (n) => {
   const d = n?.details;
-  if (!d) return n?.message || 'Entry blocked';
+  if (blockLacksLeg(d)) return n?.message || 'Entry blocked';
   const avail = Number.isFinite(Number(d.available)) ? Number(d.available).toLocaleString() : '—';
-  return `🚦 ${String(d.type || '').toUpperCase()} ${d.buy_strike}/${d.sell_strike} blocked — ${blockedLegLabel(d).toLowerCase()} ${strikeOfSymbol(d.blocked_symbol)}: need ${Number(d.needed || 0).toLocaleString()}, got ${avail}${d.contended ? ' (other accounts first)' : ' (thin book)'}`;
+  return `🚦 ${String(d.type || '').toUpperCase()} ${d.buy_strike}/${d.sell_strike} blocked — ${blockedLegLabel(d).toLowerCase()} ${strikeOfSymbol(d.blocked_symbol)}: need ${Number(d.needed || 0).toLocaleString()}, got ${avail} (${blockCause(d)})`;
 };
 
 const normalizeAccountDefaultConfig = (config = {}) => {
@@ -3764,7 +3770,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       ) : (
         blockGroups.map(g => {
           const d = g.first.details;
-          if (!d) {
+          if (blockLacksLeg(d)) {
             // Older rows without structured details: the plain message.
             return (
               <div key={g.key} className="eb-item">
@@ -3786,7 +3792,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
               </div>
               <div className="eb-line">
                 {blockedLegLabel(d)} {strikeOfSymbol(d.blocked_symbol)}: need <b>{Number(d.needed || 0).toLocaleString()}</b>, got <b>{Number.isFinite(available) ? available.toLocaleString() : '—'}</b>
-                <span className="eb-cause">{d.contended ? 'other accounts first' : 'thin book'}</span>
+                <span className="eb-cause">{blockCause(d)}</span>
               </div>
             </div>
           );

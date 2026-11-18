@@ -137,7 +137,11 @@ export async function checkRealBook(legs) {
     const at = `${l.side === 'buy' ? '≤' : '≥'} $${+limit.toFixed(4)}`;
     lines.push(`${l.side} ${l.qty} ${l.symbol}: ${avail} available at ${at} (best $${best ?? '—'})`);
     if (avail < l.qty) {
-      return { ok: false, lines, short: `${l.symbol}: need ${l.qty}, book has ${avail} at ${at} (best $${best ?? '—'})` };
+      return {
+        ok: false, lines, short: `${l.symbol}: need ${l.qty}, book has ${avail} at ${at} (best $${best ?? '—'})`,
+        // Structured, for the Entry Blocks panel (which leg, how much, at what price).
+        blocked: { side: l.side, symbol: l.symbol, qty: l.qty, avail, limit: +limit.toFixed(4), best },
+      };
     }
   }
   return { ok: true, lines };
