@@ -1,103 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
-import {
-  TrendingUp, Target, Columns, Radio, FileSpreadsheet, Gauge, CalendarRange, Activity, Orbit,
-  BookOpen, Sun, Moon, ChevronDown, ScanSearch, LineChart, Check,
-} from 'lucide-react';
-
-// Pages grouped into four menus so the bar stays short as pages are added. A group button
-// shows the page you are on ("Trading · Cosmic Paper"); a single-page group is a plain link.
-const NAV_GROUPS = [
-  {
-    key: 'scanners', label: 'Scanners', icon: ScanSearch, items: [
-      { page: 'scanner', label: 'Ratio Spread', icon: Target },
-      { page: 'calendar', label: 'Calendar Spread', icon: CalendarRange },
-    ],
-  },
-  {
-    key: 'trading', label: 'Trading', icon: Columns, items: [
-      { page: 'trading', label: 'Paper Trading', hint: 'Delta', icon: Columns },
-      { page: 'cosmic', label: 'Cosmic Paper', hint: 'Cosmic Trade', icon: Orbit },
-      { page: 'live', label: 'Live Trading', hint: 'Delta', icon: Radio },
-    ],
-  },
-  {
-    key: 'reports', label: 'Reports', icon: LineChart, items: [
-      { page: 'report', label: 'Daily Report', icon: FileSpreadsheet },
-      { page: 'slippage', label: 'Slippage', icon: Gauge },
-      { page: 'iv', label: 'IV Analysis', icon: Activity },
-    ],
-  },
-  { key: 'manual', label: 'Manual', icon: BookOpen, items: [{ page: 'manual', label: 'Manual', icon: BookOpen }] },
-];
-
-// One group: a plain button when it holds one page, otherwise a button + menu.
-function NavGroup({ group, activeTab, onNavigate, mobile }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef(null);
-  const active = group.items.find(i => i.page === activeTab);
-  const single = group.items.length === 1;
-
-  useEffect(() => {
-    if (!open) return undefined;
-    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
-    document.addEventListener('mousedown', onDown);
-    document.addEventListener('touchstart', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDown);
-      document.removeEventListener('touchstart', onDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
-
-  const go = (page) => { setOpen(false); onNavigate(page); };
-  const Icon = (active && !mobile ? active.icon : group.icon);
-
-  const button = mobile ? (
-    <button type="button" className={`mobile-bottom-tab ${active ? 'active' : ''}`}
-      onClick={() => (single ? go(group.items[0].page) : setOpen(o => !o))}
-      aria-haspopup={single ? undefined : 'menu'} aria-expanded={single ? undefined : open}>
-      <span className="mobile-bottom-icon"><Icon size={18} /></span>
-      <span className="mobile-bottom-text">{group.label}</span>
-    </button>
-  ) : (
-    <button type="button" className={`nav-tab ${active ? 'active' : ''}`}
-      onClick={() => (single ? go(group.items[0].page) : setOpen(o => !o))}
-      aria-haspopup={single ? undefined : 'menu'} aria-expanded={single ? undefined : open}
-      title={active && !single ? `${group.label}: ${active.label}` : group.label}>
-      <span className="nav-tab-icon" aria-hidden="true"><Icon size={14} /></span>
-      <span className="nav-tab-text">
-        {group.label}
-        {active && !single && <span className="nav-group-current"> · {active.label}</span>}
-      </span>
-      {!single && <ChevronDown size={13} className={`nav-group-chevron${open ? ' open' : ''}`} aria-hidden="true" />}
-    </button>
-  );
-
-  return (
-    <div className={`nav-group${mobile ? ' mobile' : ''}`} ref={ref}>
-      {button}
-      {open && !single && (
-        <div className={`nav-menu${mobile ? ' up' : ''}`} role="menu" aria-label={group.label}>
-          {group.items.map(item => {
-            const ItemIcon = item.icon;
-            const on = item.page === activeTab;
-            return (
-              <button key={item.page} type="button" role="menuitem" className={`nav-menu-item${on ? ' on' : ''}`}
-                aria-current={on ? 'page' : undefined} onClick={() => go(item.page)}>
-                <ItemIcon size={15} aria-hidden="true" />
-                <span className="nav-menu-label">{item.label}</span>
-                {item.hint && <span className="nav-menu-hint">{item.hint}</span>}
-                {on && <Check size={14} className="nav-menu-check" aria-hidden="true" />}
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
+import React from 'react';
+import { TrendingUp, Target, Columns, Radio, FileSpreadsheet, Gauge, CalendarRange, Activity, Orbit, BookOpen, Sun, Moon } from 'lucide-react';
 
 export default function Navbar({
   activeTab,
@@ -118,7 +20,78 @@ export default function Navbar({
         </div>
 
         <div className="nav-tabs-container">
-          {NAV_GROUPS.map(g => <NavGroup key={g.key} group={g} activeTab={activeTab} onNavigate={onNavigate} />)}
+          <button
+            className={`nav-tab ${activeTab === 'scanner' ? 'active' : ''}`}
+            onClick={() => onNavigate('scanner')}
+          >
+            <span className="nav-tab-icon" aria-hidden="true">
+              <Target size={14} />
+            </span> <span className="nav-tab-text">Ratio Spread</span>
+          </button>
+          <button
+            className={`nav-tab ${activeTab === 'calendar' ? 'active' : ''}`}
+            onClick={() => onNavigate('calendar')}
+          >
+            <span className="nav-tab-icon" aria-hidden="true">
+              <CalendarRange size={14} />
+            </span> <span className="nav-tab-text">Calendar Spread</span>
+          </button>
+          <button
+            className={`nav-tab ${activeTab === 'trading' ? 'active' : ''}`}
+            onClick={() => onNavigate('trading')}
+          >
+            <span className="nav-tab-icon" aria-hidden="true">
+              <Columns size={14} />
+            </span> <span className="nav-tab-text">Paper Trading</span>
+          </button>
+          <button
+            className={`nav-tab ${activeTab === 'cosmic' ? 'active' : ''}`}
+            onClick={() => onNavigate('cosmic')}
+          >
+            <span className="nav-tab-icon" aria-hidden="true">
+              <Orbit size={14} />
+            </span> <span className="nav-tab-text">Cosmic Paper</span>
+          </button>
+          <button
+            className={`nav-tab ${activeTab === 'live' ? 'active' : ''}`}
+            onClick={() => onNavigate('live')}
+          >
+            <span className="nav-tab-icon" aria-hidden="true">
+              <Radio size={14} />
+            </span> <span className="nav-tab-text">Live Trading</span>
+          </button>
+          <button
+            className={`nav-tab ${activeTab === 'report' ? 'active' : ''}`}
+            onClick={() => onNavigate('report')}
+          >
+            <span className="nav-tab-icon" aria-hidden="true">
+              <FileSpreadsheet size={14} />
+            </span> <span className="nav-tab-text">Daily Report</span>
+          </button>
+          <button
+            className={`nav-tab ${activeTab === 'slippage' ? 'active' : ''}`}
+            onClick={() => onNavigate('slippage')}
+          >
+            <span className="nav-tab-icon" aria-hidden="true">
+              <Gauge size={14} />
+            </span> <span className="nav-tab-text">Slippage</span>
+          </button>
+          <button
+            className={`nav-tab ${activeTab === 'iv' ? 'active' : ''}`}
+            onClick={() => onNavigate('iv')}
+          >
+            <span className="nav-tab-icon" aria-hidden="true">
+              <Activity size={14} />
+            </span> <span className="nav-tab-text">IV Analysis</span>
+          </button>
+          <button
+            className={`nav-tab ${activeTab === 'manual' ? 'active' : ''}`}
+            onClick={() => onNavigate('manual')}
+          >
+            <span className="nav-tab-icon" aria-hidden="true">
+              <BookOpen size={14} />
+            </span> <span className="nav-tab-text">Manual</span>
+          </button>
         </div>
 
         <div className="nav-actions-container">
@@ -138,7 +111,87 @@ export default function Navbar({
       </nav>
 
       <div className="mobile-bottom-nav">
-        {NAV_GROUPS.map(g => <NavGroup key={g.key} group={g} activeTab={activeTab} onNavigate={onNavigate} mobile />)}
+        <button
+          className={`mobile-bottom-tab ${activeTab === 'scanner' ? 'active' : ''}`}
+          onClick={() => onNavigate('scanner')}
+        >
+          <span className="mobile-bottom-icon">
+            <Target size={18} />
+          </span>
+          <span className="mobile-bottom-text">Ratio Spread</span>
+        </button>
+        <button
+          className={`mobile-bottom-tab ${activeTab === 'calendar' ? 'active' : ''}`}
+          onClick={() => onNavigate('calendar')}
+        >
+          <span className="mobile-bottom-icon">
+            <CalendarRange size={18} />
+          </span>
+          <span className="mobile-bottom-text">Calendar</span>
+        </button>
+        <button
+          className={`mobile-bottom-tab ${activeTab === 'trading' ? 'active' : ''}`}
+          onClick={() => onNavigate('trading')}
+        >
+          <span className="mobile-bottom-icon">
+            <Columns size={18} />
+          </span>
+          <span className="mobile-bottom-text">Paper Trading</span>
+        </button>
+        <button
+          className={`mobile-bottom-tab ${activeTab === 'cosmic' ? 'active' : ''}`}
+          onClick={() => onNavigate('cosmic')}
+        >
+          <span className="mobile-bottom-icon">
+            <Orbit size={18} />
+          </span>
+          <span className="mobile-bottom-text">Cosmic</span>
+        </button>
+        <button
+          className={`mobile-bottom-tab ${activeTab === 'live' ? 'active' : ''}`}
+          onClick={() => onNavigate('live')}
+        >
+          <span className="mobile-bottom-icon">
+            <Radio size={18} />
+          </span>
+          <span className="mobile-bottom-text">Live Trading</span>
+        </button>
+        <button
+          className={`mobile-bottom-tab ${activeTab === 'report' ? 'active' : ''}`}
+          onClick={() => onNavigate('report')}
+        >
+          <span className="mobile-bottom-icon">
+            <FileSpreadsheet size={18} />
+          </span>
+          <span className="mobile-bottom-text">Daily Report</span>
+        </button>
+        <button
+          className={`mobile-bottom-tab ${activeTab === 'slippage' ? 'active' : ''}`}
+          onClick={() => onNavigate('slippage')}
+        >
+          <span className="mobile-bottom-icon">
+            <Gauge size={18} />
+          </span>
+          <span className="mobile-bottom-text">Slippage</span>
+        </button>
+        <button
+          className={`mobile-bottom-tab ${activeTab === 'iv' ? 'active' : ''}`}
+          onClick={() => onNavigate('iv')}
+        >
+          <span className="mobile-bottom-icon">
+            <Activity size={18} />
+          </span>
+          <span className="mobile-bottom-text">IV</span>
+        </button>
+        <button
+          className={`mobile-bottom-tab ${activeTab === 'manual' ? 'active' : ''}`}
+          onClick={() => onNavigate('manual')}
+        >
+          <span className="mobile-bottom-icon">
+            <BookOpen size={18} />
+          </span>
+          <span className="mobile-bottom-text">Manual</span>
+        </button>
       </div>
     </>
   );
