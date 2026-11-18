@@ -735,9 +735,9 @@ export function createLiveExecutor(getCtx) {
         const keep = legs.map(l => Math.min(l.filled, Math.max(1, Math.round(l.want * frac))));
         await Promise.all(legs.map((l, i) => closeLeg(l, l.filled - keep[i], l.adj)));
         logWarn(`[${accountName}] ◐ Triplet entry ${pos.id}: filled ${legs.map(l => `${l.name} ${l.filled}/${l.want}`).join(', ')} — all cut to ${(frac * 100).toFixed(0)}%: long ${keep[0]}, short ${keep[1]}, hedge ${keep[2]}.`);
-        return { ok: true, buyOrder: b.order, sellOrder: s.order, longContracts: keep[0], shortContracts: keep[1], hedgeContracts: keep[2] };
+        return { ok: true, buyOrder: b.order, sellOrder: s.order, hedgeOrderId: h.id ?? h.order?.id ?? null, longContracts: keep[0], shortContracts: keep[1], hedgeContracts: keep[2] };
       }
-      return { ok: true, buyOrder: b.order, sellOrder: s.order, longContracts: L, shortContracts: S, hedgeContracts: H };
+      return { ok: true, buyOrder: b.order, sellOrder: s.order, hedgeOrderId: h.id ?? h.order?.id ?? null, longContracts: L, shortContracts: S, hedgeContracts: H };
     },
 
     /**
@@ -1119,6 +1119,44 @@ export function createLiveExecutor(getCtx) {
     },
 
     /** Recent fills from the exchange (armed accounts only), else []. */
+    /**
+     * ACTUAL fills of our own orders, for booking (2026-11-18 review: booked prices were
+     * quotes / the wrong recent fills, and fees a formula — Telegram & dashboard P&L read ~39%
+     * above Delta). Matches Delta's /v2/fills by order_id. A fill can show up a moment after
+     * the order closes, so it re-reads up to `tries` times, `waitMs` apart, until every id has
+     * at least `minContracts[id]` (default 1) contracts.
+     * Returns Map(orderId → { contracts, avgPx, commission }) — ids not found are absent.
+     * Not armed / dry-run / no ids → empty Map.
+     */
+    async orderFills(orderIds, { tries = 4, waitMs = 700, minContracts = {} } = {}) {
+      const out = new Map();
+      const ids = [...new Set((orderIds || []).filter(x => x != null).map(String))];
+      if (!armed() || DRY_RUN || ids.length === 0) return out;
+      const { accountName, creds } = getCtx();
+      if (!creds?.apiKey) return out;
+      for (let i = 0; i < tries; i++) {
+        try {
+          const res = await getFills(creds, { pageSize: 100 });
+          out.clear();
+          for (const f of Array.isArray(res) ? res : []) {
+            const id = String(f.order_id ?? '');
+            if (!ids.includes(id)) continue;
+            const n = Number(f.size), px = Number(f.price), fee = Number(f.commission);
+            if (!(n > 0) || !(px > 0)) continue;
+            const e = out.get(id) || { contracts: 0, notional: 0, commission: 0 };
+            e.contracts += n; e.notional += n * px; e.commission += Number.isFinite(fee) ? fee : 0;
+            out.set(id, e);
+          }
+          for (const e of out.values()) e.avgPx = e.notional / e.contracts;
+          if (ids.every(id => (out.get(id)?.contracts ?? 0) >= (Number(minContracts[id]) || 1))) break;
+        } catch (e) {
+          logWarn(`[${accountName}] orderFills() read failed: ${e.message}`);
+        }
+        if (i < tries - 1) await new Promise(r => setTimeout(r, waitMs));
+      }
+      return out;
+    },
+
     async fills() {
       if (!armed()) return [];
       const { accountName, creds } = getCtx();

@@ -2010,8 +2010,9 @@ async function startSingleAccountEngine(account) {
   async function sellLongWithShort(pos, { shortExitPx = null } = {}) {
     const contracts = longContracts(pos.buyLeg);
     const longLot = pos.buyLeg.lotSize || 0;
+    let c = null;
     if (contracts > 0) {
-      const c = await live.closeSymbol({ symbol: pos.buyLeg.symbol, side: 'sell', contracts, tag: `${pos.id}-SXB` });
+      c = await live.closeSymbol({ symbol: pos.buyLeg.symbol, side: 'sell', contracts, tag: `${pos.id}-SXB` });
       if (c && !c.ok) {
         logWarn(`[${accountState.name}] ⚠ Long sell with short FAILED for ${pos.id} (${pos.buyLeg.symbol}) — falling back to the slice ladder.`);
         return 'failed';
@@ -2019,14 +2020,16 @@ async function startSingleAccountEngine(account) {
     }
     lastDbWrite = Date.now();
     const tBuy = tickerData[pos.buyLeg.symbol];
-    const fills = contracts > 0 ? await live.fills().catch(() => []) : [];
-    const fillPx = contracts > 0 ? closingFillPriceFrom(fills, pos.buyLeg.symbol, 'sell', contracts) : null;
-    const exitLong = fillPx ?? tBuy?.bid ?? tBuy?.markPrice ?? tBuy?.lastPrice ?? pos.entryBuyPrice;
+    // This order's OWN fill (by order id) — not the symbol's newest fills, which can be an
+    // earlier partial sell of the same long. Not readable → the bid quote (logged).
+    const fl = contracts > 0 ? await ourFill(c, contracts) : null;
+    if (contracts > 0 && !fl && !live.dryRun && !c?.alreadyClosed) noFillNote('Long sold with short', `${pos.id}-SXB`);
+    const exitLong = fl?.avgPx ?? tBuy?.bid ?? tBuy?.markPrice ?? tBuy?.lastPrice ?? pos.entryBuyPrice;
     await closeHedgeWithPair(pos, 'long sold with short').catch(e => logError(`[${accountState.name}] hedge close (long with short) failed for ${pos.id}:`, e));
     await sweepResidualLegs(pos, [pos.buyLeg.symbol], 'SXSWEEP');
     const gross = (exitLong - pos.entryBuyPrice) * longLot;
     const entryFee = pos.entryFee || 0;
-    const exitFee = longLot > 0 ? calculateFee(exitLong, spotPrice, longLot, pos.buyLeg.originalLotSize || 1) : 0;
+    const exitFee = longLot > 0 ? (fl ? fl.commission : calculateFee(exitLong, spotPrice, longLot, pos.buyLeg.originalLotSize || 1)) : 0;
     const net = gross - (entryFee + exitFee);
     try {
       await supabase.from('trade_history').upsert([{
@@ -2551,6 +2554,44 @@ async function startSingleAccountEngine(account) {
   // real price a leg closed at (a bracket / manual-on-Delta fill) — vs the up-to-90s-stale
   // mark. A long closes by SELLING, a short by BUYING. Returns null when no matching fill is
   // found, so the caller falls back to the mark. Pure — the caller supplies the fills array.
+  // ACTUAL fill of one of OUR orders — matched by the order id Delta returned for it — as
+  // { contracts, avgPx, commission }, or null (dry-run / not armed / not readable yet). Use this
+  // for booking whenever the engine itself sent the order: closingFillPriceFrom below takes the
+  // newest fills of the symbol, which picked up EARLIER sells of the same long (e.g. -PEX at
+  // $165 booked for a -SXB that filled at $99) — the biggest booked-vs-Delta P&L gap (2026-11-18).
+  // Several legs in ONE fills read: legs = { key: [closeResult, contracts] } → { key: fill|null }.
+  // Waits only for what Delta says actually filled (order response size − unfilled_size), so a
+  // thin-book partial IOC doesn't burn retries waiting for contracts that will never fill; an
+  // order Delta reports as finished with 0 filled is not read at all.
+  async function ourFills(legs) {
+    const out = {}, want = {}, idOf = {};
+    for (const [k, [res, contracts]] of Object.entries(legs || {})) {
+      out[k] = null;
+      const id = res?.order?.id ?? res?.id;
+      if (id == null || live.dryRun || res?.dryRun || res?.skipped) continue;
+      const o = res?.order;
+      const sz = Math.abs(Number(o?.size)), uf = Math.abs(Number(o?.unfilled_size));
+      const done = ['closed', 'cancelled'].includes(String(o?.state || ''));
+      let need = Math.max(1, Math.round(Number(contracts) || 1));
+      if (Number.isFinite(sz) && Number.isFinite(uf) && sz > 0) {
+        const filled = Math.round(sz - uf);
+        if (filled <= 0 && done) continue; // IOC finished with nothing filled — no fill to read
+        if (filled > 0) need = filled;
+      }
+      idOf[k] = String(id);
+      want[String(id)] = Math.max(want[String(id)] || 0, need);
+    }
+    const ids = Object.keys(want);
+    if (!ids.length) return out;
+    const m = await live.orderFills(ids, { minContracts: want });
+    for (const [k, id] of Object.entries(idOf)) out[k] = m.get(id) ?? null;
+    return out;
+  }
+  async function ourFill(res, contracts) {
+    return (await ourFills({ x: [res, contracts] })).x;
+  }
+  const noFillNote = (what, tag) => logWarn(`[${accountState.name}] ⚠ ${what} [${tag}]: actual fill not readable from Delta — booked at the quote / fee formula.`);
+
   function closingFillPriceFrom(fills, symbol, side, wantContracts) {
     if (!Array.isArray(fills) || !(wantContracts > 0)) return null;
     const matches = fills
@@ -3074,8 +3115,9 @@ async function startSingleAccountEngine(account) {
     }
     const tBuy = tickerData[pos.buyLeg.symbol];
     const tSell = tickerData[pos.sellLeg.symbol];
-    const exitLong = tBuy?.bid ?? tBuy?.markPrice ?? tBuy?.lastPrice ?? pos.entryBuyPrice;
-    const exitShort = tSell?.ask ?? tSell?.markPrice ?? tSell?.lastPrice ?? pos.entrySellPrice;
+    let exitLong = tBuy?.bid ?? tBuy?.markPrice ?? tBuy?.lastPrice ?? pos.entryBuyPrice;
+    let exitShort = tSell?.ask ?? tSell?.markPrice ?? tSell?.lastPrice ?? pos.entrySellPrice;
+    const mxRes = {}; // closeSymbol results per leg → their actual fills are booked below
     // Attached hedge leg (3rd long) — closed together with a manual triplet exit.
     let hedge = hasOpenHedge(pos) ? pos.hedgeLeg : null;
     let heldHedge = null;
@@ -3089,7 +3131,7 @@ async function startSingleAccountEngine(account) {
       hedge = null;
     }
     const tHedge = hedge ? tickerData[hedge.symbol] : null;
-    const exitHedge = hedge ? (tHedge?.bid ?? tHedge?.markPrice ?? tHedge?.lastPrice ?? hedge.entryPrice ?? 0) : 0;
+    let exitHedge = hedge ? (tHedge?.bid ?? tHedge?.markPrice ?? tHedge?.lastPrice ?? hedge.entryPrice ?? 0) : 0;
     try { await cancelRestingOrders(pos); } catch (e) { /* best-effort */ }
     if (!skipExchangeClose) {
       // Manual exit is a full-position flatten — fill IMMEDIATELY with reduce-only MARKET
@@ -3098,14 +3140,15 @@ async function startSingleAccountEngine(account) {
       // rests would orphan the leg. The exitLong/exitShort/exitHedge touch prices above are
       // kept only to BOOK the P&L estimate, not sent as order prices.
       if (pos.sellQty > 0) {
-        await live.closeSymbol({ symbol: pos.sellLeg.symbol, side: 'buy', contracts: shortContracts(pos.sellQty), tag: `${pos.id}-MXS` });
+        mxRes.short = await live.closeSymbol({ symbol: pos.sellLeg.symbol, side: 'buy', contracts: shortContracts(pos.sellQty), tag: `${pos.id}-MXS` });
       }
       if ((pos.buyLeg.lotSize || 0) > 0) {
-        await live.closeSymbol({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: longContracts(pos.buyLeg), tag: `${pos.id}-MXB` });
+        mxRes.long = await live.closeSymbol({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: longContracts(pos.buyLeg), tag: `${pos.id}-MXB` });
       }
       if (hedge) {
         const hc = await live.closeSymbol({ symbol: hedge.symbol, side: 'sell', contracts: longContracts(hedge), tag: `${pos.id}-MXH` })
           .catch(e => ({ ok: false, error: e.message }));
+        mxRes.hedge = hc;
         if (hc && !hc.ok && !hc.alreadyClosed && !hc.skipped && !hc.dryRun) {
           // Hedge still OPEN on Delta: leave it out of this exit's booking and keep the row as
           // hedge-only (below) so it is retried, instead of deleting the row and orphaning it.
@@ -3124,6 +3167,16 @@ async function startSingleAccountEngine(account) {
       // else reconcileOrphans can't see it and the remainder orphans.
       await sweepResidualLegs(pos, [pos.sellLeg.symbol, pos.buyLeg.symbol, hedge?.symbol], 'MXSWEEP');
     }
+    // Book each leg's ACTUAL market-close fill (by order id) instead of the touch quote.
+    const mxF = await ourFills({
+      ...(mxRes.long ? { long: [mxRes.long, longContracts(pos.buyLeg)] } : {}),
+      ...(mxRes.short ? { short: [mxRes.short, shortContracts(pos.sellQty)] } : {}),
+      ...((mxRes.hedge && hedge) ? { hedge: [mxRes.hedge, longContracts(hedge)] } : {}),
+    });
+    for (const [k, r] of Object.entries(mxRes)) if (r && !mxF[k] && !live.dryRun && !r.alreadyClosed && !r.skipped && r.ok !== false) noFillNote(`Manual exit ${k}`, `${pos.id}-MX${k === 'long' ? 'B' : k === 'short' ? 'S' : 'H'}`);
+    if (mxF.long) exitLong = mxF.long.avgPx;
+    if (mxF.short) exitShort = mxF.short.avgPx;
+    if (mxF.hedge) exitHedge = mxF.hedge.avgPx;
     const longLot = pos.buyLeg.lotSize || 0;
     const shortLot = pos.sellLeg.lotSize || 1;
     const hedgeGross = hedge ? (exitHedge - (hedge.entryPrice || 0)) * hedge.lotSize : 0;
@@ -3131,9 +3184,9 @@ async function startSingleAccountEngine(account) {
       + (pos.sellQty > 0 ? (pos.entrySellPrice - exitShort) * pos.sellQty * shortLot : 0)
       + hedgeGross;
     const entryFee = (pos.entryFee || 0) + (hedge ? (hedge.entryFee || 0) : 0);
-    const exitFee = calculateFee(exitLong, spotPrice, longLot, pos.buyLeg.originalLotSize || 1)
-      + (pos.sellQty > 0 ? calculateFee(exitShort, spotPrice, pos.sellQty, shortLot) : 0)
-      + (hedge ? calculateFee(exitHedge, spotPrice, hedge.lotSize, hedge.originalLotSize || 1) : 0);
+    const exitFee = (mxF.long ? mxF.long.commission : calculateFee(exitLong, spotPrice, longLot, pos.buyLeg.originalLotSize || 1))
+      + (pos.sellQty > 0 ? (mxF.short ? mxF.short.commission : calculateFee(exitShort, spotPrice, pos.sellQty, shortLot)) : 0)
+      + (hedge ? (mxF.hedge ? mxF.hedge.commission : calculateFee(exitHedge, spotPrice, hedge.lotSize, hedge.originalLotSize || 1)) : 0);
     const net = gross - (entryFee + exitFee);
     try {
       await supabase.from('trade_history').upsert([{
@@ -3557,6 +3610,7 @@ async function startSingleAccountEngine(account) {
     closedHedgeIds.add(pos.id);
     let contracts = longContracts(hedge);
     let fillPx = settledPx;
+    let hxFill = null; // Delta's actual fill for this hedge sale (price + commission), when readable
     // Fresh client_order_id per attempt: Delta rejects a reused one (duplicate_client_order_id),
     // which would turn every retry after the first into a silent no-op. First attempt keeps the
     // plain -HX / -HXL tags; later ones get -HX2 / -HXL2, -HX3 / -HXL3, …
@@ -3583,7 +3637,8 @@ async function startSingleAccountEngine(account) {
         const clearOrder = (h) => ({ ...h, exitOrderId: null, exitProductId: null, exitOrderPx: null, exitOrderGoneAt: null });
         if (cr.ok && cr.filled != null && cr.filled >= contracts) {
           restingFilled = true;
-          fillPx = restPx;
+          hxFill = await ourFill({ id: hedge.exitOrderId }, contracts);
+          fillPx = hxFill?.avgPx ?? restPx;
         } else if (cr.ok && cr.filled != null && cr.filled > 0) {
           // Partial fill: book the sold contracts as their own -HX row, keep the rest.
           const perC = hedge.lotSize / contracts;
@@ -3615,7 +3670,8 @@ async function startSingleAccountEngine(account) {
         } else if (!cr.ok && fillSeen) {
           // No longer on the book and its fill is in the feed → it sold in full.
           restingFilled = true;
-          fillPx = restPx;
+          hxFill = await ourFill({ id: hedge.exitOrderId }, contracts);
+          fillPx = hxFill?.avgPx ?? restPx;
         } else if (!cr.ok && !hedge.exitOrderGoneAt) {
           // Gone from the book, no fill seen yet: re-check on the next retry before selling.
           pos.hedgeLeg = { ...hedge, exitOrderGoneAt: Date.now() };
@@ -3664,13 +3720,18 @@ async function startSingleAccountEngine(account) {
           }
           return false;
         }
-        const fills = await live.fills().catch(() => []);
-        fillPx = closingFillPriceFrom(fills, hedge.symbol, 'sell', contracts);
+        hxFill = await ourFill(c, contracts);
+        if (hxFill) fillPx = hxFill.avgPx;
+        else {
+          if (!live.dryRun && !c?.dryRun && !c?.skipped && !c?.alreadyClosed) noFillNote('Hedge close', `${pos.id}-HX`);
+          const fills = await live.fills().catch(() => []);
+          fillPx = closingFillPriceFrom(fills, hedge.symbol, 'sell', contracts);
+        }
       }
     }
     const tk = tickerData[hedge.symbol];
     const px = fillPx ?? tk?.bid ?? tk?.markPrice ?? tk?.lastPrice ?? hedge.entryPrice ?? 0;
-    const exitFee = calculateFee(px, spotPrice, hedge.lotSize, hedge.originalLotSize || 1);
+    const exitFee = hxFill ? hxFill.commission : calculateFee(px, spotPrice, hedge.lotSize, hedge.originalLotSize || 1);
     const entryFee = hedge.entryFee || 0;
     const gross = (px - (hedge.entryPrice || 0)) * hedge.lotSize;
     const net = gross - entryFee - exitFee;
@@ -3851,14 +3912,15 @@ async function startSingleAccountEngine(account) {
       const intrinsicAt = (strike) => pos.type === 'call'
         ? Math.max(0, spotPrice - strike)
         : Math.max(0, strike - spotPrice);
-      const exitLong = atExpiry ? intrinsicAt(pos.buyLeg.strike) : (longBid ?? pos.entryBuyPrice);
-      const exitShort = atExpiry ? intrinsicAt(pos.sellLeg.strike) : (shortAsk ?? pos.entrySellPrice);
+      let exitLong = atExpiry ? intrinsicAt(pos.buyLeg.strike) : (longBid ?? pos.entryBuyPrice);
+      let exitShort = atExpiry ? intrinsicAt(pos.sellLeg.strike) : (shortAsk ?? pos.entrySellPrice);
+      const caRes = {}; // market-close results per leg → their actual fills are booked below
       // Attached hedge leg (3rd long) rides the triplet and closes here with it. `let`: a hedge
       // whose market close FAILS is taken out of this exit (heldHedge) and retried on its own.
       let hedge = hasOpenHedge(pos) ? pos.hedgeLeg : null;
       let heldHedge = null;
       const tHedge = hedge ? tickerData[hedge.symbol] : null;
-      const exitHedge = hedge
+      let exitHedge = hedge
         ? (atExpiry ? intrinsicAt(hedge.strike) : ((tHedge?.bid ?? tHedge?.markPrice ?? tHedge?.lastPrice) ?? hedge.entryPrice ?? 0))
         : 0;
       // Market-close remaining legs unless expiry (Delta cash-settles expired options).
@@ -3870,10 +3932,10 @@ async function startSingleAccountEngine(account) {
         // BOOK the P&L estimate below — they are no longer sent as order prices.
         // CAXS/CAXB tags (vs the strategy exit's XS/XB) so the Order History UI shows "Close All".
         if (pos.sellQty > 0) {
-          await live.closeSymbol({ symbol: pos.sellLeg.symbol, side: 'buy', contracts: shortContracts(pos.sellQty), tag: `${pos.id}-CAXS` });
+          caRes.short = await live.closeSymbol({ symbol: pos.sellLeg.symbol, side: 'buy', contracts: shortContracts(pos.sellQty), tag: `${pos.id}-CAXS` });
         }
         if (longLot > 0) {
-          await live.closeSymbol({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: longContracts(pos.buyLeg), tag: `${pos.id}-CAXB` });
+          caRes.long = await live.closeSymbol({ symbol: pos.buyLeg.symbol, side: 'sell', contracts: longContracts(pos.buyLeg), tag: `${pos.id}-CAXB` });
         }
         if (hedge && hedge.exitOrderId != null) {
           // A resting -HXL sell from an earlier failed close: closeHedgeWithPair cancels it, books
@@ -3886,6 +3948,7 @@ async function startSingleAccountEngine(account) {
         } else if (hedge) {
           const hc = await live.closeSymbol({ symbol: hedge.symbol, side: 'sell', contracts: longContracts(hedge), tag: `${pos.id}-HX` })
             .catch(e => ({ ok: false, error: e.message }));
+          caRes.hedge = hc;
           if (hc && !hc.ok && !hc.alreadyClosed && !hc.skipped && !hc.dryRun) {
             // Hedge still OPEN on Delta (e.g. no_liquidity_for_market_order): leave it out of
             // this exit — not booked, not swept — and keep the row as hedge-only below so the
@@ -3907,6 +3970,20 @@ async function startSingleAccountEngine(account) {
         // reconcileOrphans can't see the remainder and it orphans. Mirrors the ladder-exit sweep.
         await sweepResidualLegs(pos, [pos.sellLeg.symbol, pos.buyLeg.symbol, hedge?.symbol], 'CASWEEP');
       }
+      // Book each leg's ACTUAL market-close fill (by order id), not the pre-close touch quote
+      // (2026-11-18 review: a short booked at $54 had bought back at $75–77).
+      let caF = { long: null, short: null, hedge: null };
+      if (!atExpiry) {
+        caF = { ...caF, ...(await ourFills({
+          ...(caRes.long ? { long: [caRes.long, longContracts(pos.buyLeg)] } : {}),
+          ...(caRes.short ? { short: [caRes.short, shortContracts(pos.sellQty)] } : {}),
+          ...((caRes.hedge && hedge) ? { hedge: [caRes.hedge, longContracts(hedge)] } : {}),
+        })) };
+        for (const [k, r] of Object.entries(caRes)) if (r && !caF[k] && !live.dryRun && !r.alreadyClosed && !r.skipped && r.ok !== false) noFillNote(`Full exit ${k}`, `${pos.id}-${k === 'long' ? 'CAXB' : k === 'short' ? 'CAXS' : 'HX'}`);
+        if (caF.long) exitLong = caF.long.avgPx;
+        if (caF.short) exitShort = caF.short.avgPx;
+        if (caF.hedge && hedge) exitHedge = caF.hedge.avgPx;
+      }
       const grossLong = (exitLong - pos.entryBuyPrice) * longLot;
       const grossShort = pos.sellQty > 0 ? (pos.entrySellPrice - exitShort) * pos.sellQty * shortLot : 0;
       const grossHedge = hedge ? (exitHedge - (hedge.entryPrice || 0)) * hedge.lotSize : 0;
@@ -3914,11 +3991,12 @@ async function startSingleAccountEngine(account) {
       const entryFee = (pos.entryFee || 0) + (hedge ? (hedge.entryFee || 0) : 0);
       // At expiry Delta cash-settles automatically — no close ORDER is sent (see the
       // `if (!atExpiry)` guard above), so there is no taker exit fee. Charging one would
-      // overstate the loss vs Delta. Non-expiry exits keep the real close fee.
+      // overstate the loss vs Delta. Non-expiry exits book Delta's actual commission
+      // (fee formula only for a leg whose fill could not be read).
       const exitFee = atExpiry ? 0 : (
-        calculateFee(exitLong, spotPrice, longLot, pos.buyLeg.originalLotSize || 1)
-        + (pos.sellQty > 0 ? calculateFee(exitShort, spotPrice, pos.sellQty, shortLot) : 0)
-        + (hedge ? calculateFee(exitHedge, spotPrice, hedge.lotSize, hedge.originalLotSize || 1) : 0)
+        (caF.long ? caF.long.commission : calculateFee(exitLong, spotPrice, longLot, pos.buyLeg.originalLotSize || 1))
+        + (pos.sellQty > 0 ? (caF.short ? caF.short.commission : calculateFee(exitShort, spotPrice, pos.sellQty, shortLot)) : 0)
+        + (hedge ? (caF.hedge ? caF.hedge.commission : calculateFee(exitHedge, spotPrice, hedge.lotSize, hedge.originalLotSize || 1)) : 0)
       );
       const net = gross - (entryFee + exitFee);
       const reason = atExpiry ? 'Expiry Reached (2min Early)' : `Full Exit (${eff.exitType || 'ATM'} spot ${Math.round(spotPrice)})`;
@@ -4039,11 +4117,15 @@ async function startSingleAccountEngine(account) {
       if (shortSize > 0) { remaining.push(pos); return; } // partial fill — wait for the rest
 
       lastDbWrite = Date.now();
-      const exitPx = pos.sellLeg.exitOrderPx ?? (config.shortExitPrice ?? 1.1);
+      // The resting buy-back's ACTUAL fill (by its order id) — its limit (exitOrderPx) can be
+      // stale after a resync edit (2026-11-18 review: booked $0.6, filled $1.82).
+      const sf = await ourFill({ id: pos.sellLeg.exitOrderId }, shortContracts(pos.sellQty));
+      if (!sf && !live.dryRun && pos.sellLeg.exitOrderId != null) noFillNote('Short exit', `${pos.id}-SEX`);
+      const exitPx = sf?.avgPx ?? pos.sellLeg.exitOrderPx ?? (config.shortExitPrice ?? 1.1);
       const shortLot = pos.sellLeg.lotSize || 1;
       const gross = (pos.entrySellPrice - exitPx) * pos.sellQty * shortLot;
-      const entryFee = Math.min(pos.entryFee || 0, calculateFee(pos.entrySellPrice, pos.entrySpotPrice, pos.sellQty, shortLot));
-      const exitFee = calculateFee(exitPx, spotPrice, pos.sellQty, shortLot);
+      const entryFee = Math.min(pos.entryFee || 0, pos.sellLeg.entryCommission ?? calculateFee(pos.entrySellPrice, pos.entrySpotPrice, pos.sellQty, shortLot));
+      const exitFee = sf ? sf.commission : calculateFee(exitPx, spotPrice, pos.sellQty, shortLot);
       const net = gross - (entryFee + exitFee);
       try {
         await supabase.from('trade_history').upsert([{
@@ -5444,11 +5526,25 @@ async function startSingleAccountEngine(account) {
               const contractsToSell = Math.max(0,
                 Math.round(lotBefore / exitBase) - Math.round(pos.buyLeg.lotSize / exitBase));
               if (contractsToSell >= 1) {
-                await live.closeSymbol({
+                const pexRes = await live.closeSymbol({
                   symbol: pos.buyLeg.symbol, side: 'sell',
                   contracts: contractsToSell,
                   tag: `${pos.id}-PEX-${pos.buyLeg.lotSize}`,
                 });
+                // Re-book this cycle's partial rows at Delta's ACTUAL sell fill + commission
+                // (rows were priced at the bid with the fee formula).
+                const pf = await ourFill(pexRes, contractsToSell);
+                if (pf && partialExitsToRecord.length) {
+                  const feeEach = pf.commission / partialExitsToRecord.length;
+                  for (const r of partialExitsToRecord) {
+                    const oldPx = Number(r.exit_buy_price) || 0;
+                    r.realized_gross_pnl = (r.realized_gross_pnl || 0) + (pf.avgPx - oldPx) * deltaBuyQty;
+                    r.exit_buy_price = pf.avgPx;
+                    r.total_fees = (r.total_fees || 0) - (r.exit_fee || 0) + feeEach;
+                    r.exit_fee = feeEach;
+                    r.realized_net_pnl = r.realized_gross_pnl - r.total_fees;
+                  }
+                } else if (!pf && !live.dryRun && pexRes?.ok) noFillNote('Partial long sale', `${pos.id}-PEX`);
                 // Engine-initiated reduce — mark the symbol so the partial-reduction
                 // reconcile treats any residual book↔Delta drift (fire-and-forget
                 // market-close fill/rounding) as engine drift, not a manual reduction.
@@ -7595,11 +7691,12 @@ async function startSingleAccountEngine(account) {
               // then sweep any residual. On close FAILURE, ABORT: keep the old long-only intact
               // and skip this entry (retry next cycle) — never open a pair on top of an un-flat
               // leg. Paper / dry-run: no real close, books + deletes as before.
+              let repRes = null; // the REPX close result → its actual fill books the replaced long
               if (liveArmed) {
                 let closeOk = false;
                 try {
                   await cancelRestingOrders(posToExit);
-                  const c = await live.closeSymbol({ symbol: posToExit.buyLeg.symbol, side: 'sell', contracts: longContracts(posToExit.buyLeg), tag: `${posToExit.id}-REPX` });
+                  const c = repRes = await live.closeSymbol({ symbol: posToExit.buyLeg.symbol, side: 'sell', contracts: longContracts(posToExit.buyLeg), tag: `${posToExit.id}-REPX` });
                   closeOk = !!(c.ok || c.alreadyClosed || c.dryRun || c.skipped);
                   if (closeOk) await sweepResidualLegs(posToExit, [posToExit.buyLeg.symbol], 'REPX');
                 } catch (e) {
@@ -7613,11 +7710,13 @@ async function startSingleAccountEngine(account) {
               try {
                 const tickerBuyExit = tickerData[posToExit.buyLeg.symbol];
                 // Book the replaced long at Delta's ACTUAL close-fill (live) / current bid (paper).
-                const repFills = liveArmed ? await live.fills().catch(() => []) : [];
-                const fillPx = closingFillPriceFrom(repFills, posToExit.buyLeg.symbol, 'sell', longContracts(posToExit.buyLeg));
+                const rf = liveArmed ? await ourFill(repRes, longContracts(posToExit.buyLeg)) : null;
+                if (liveArmed && !rf && repRes?.ok) noFillNote('Replaced long close', `${posToExit.id}-REPX`);
+                const repFills = liveArmed && !rf ? await live.fills().catch(() => []) : [];
+                const fillPx = rf?.avgPx ?? closingFillPriceFrom(repFills, posToExit.buyLeg.symbol, 'sell', longContracts(posToExit.buyLeg));
                 const exitPrice = fillPx ?? tickerBuyExit?.bid ?? tickerBuyExit?.lastPrice ?? posToExit.entryBuyPrice ?? 0;
                 const exitLotSize = posToExit.buyLeg.lotSize || 0;
-                const exitFee = calculateFee(exitPrice, spotPrice, exitLotSize, posToExit.buyLeg.originalLotSize || 1);
+                const exitFee = rf ? rf.commission : calculateFee(exitPrice, spotPrice, exitLotSize, posToExit.buyLeg.originalLotSize || 1);
                 const entryFee = posToExit.entryFee || 0;
                 const grossPnl = (exitPrice - (posToExit.entryBuyPrice || 0)) * exitLotSize;
                 const netPnl = grossPnl - entryFee - exitFee;
@@ -7923,6 +8022,31 @@ async function startSingleAccountEngine(account) {
                 };
                 logWarn(`[${accountState.name}] ◐ Hedge ${t.hedgeLeg.symbol} booked at ${liveEntry.hedgeContracts}/${hedgeWantC} contracts (cut with the other legs).`);
               }
+              // Book Delta's ACTUAL entry fills (avg price + commission) instead of the scan quote
+              // and the fee formula (2026-11-18 review). A leg whose fills can't be read keeps the
+              // quote / formula — logged, so a mismatch is never silent.
+              const ids = { long: liveEntry.buyOrder?.id, short: liveEntry.sellOrder?.id, hedge: isTriplet ? liveEntry.hedgeOrderId : null };
+              // Wait for at least the contracts that stayed open, so a fill still landing in
+              // Delta's fills feed isn't booked from half the pieces.
+              const minC = {};
+              if (ids.long != null) minC[ids.long] = Math.max(1, Number(liveEntry.longContracts) || 1);
+              if (ids.short != null) minC[ids.short] = Math.max(1, Number(liveEntry.shortContracts) || 1);
+              if (ids.hedge != null) minC[ids.hedge] = Math.max(1, Number(liveEntry.hedgeContracts) || 1);
+              const af = await live.orderFills(Object.values(ids), { minContracts: minC });
+              const got = (k) => (ids[k] != null ? af.get(String(ids[k])) : null);
+              const fL = got('long'), fS = got('short'), fH = got('hedge');
+              const missing = [];
+              if (fL) t.entryBuyPrice = fL.avgPx; else missing.push('long');
+              if (t.sellQty > 0) { if (fS) t.entrySellPrice = fS.avgPx; else missing.push('short'); }
+              if (fL && (t.sellQty <= 0 || fS)) t.entryFee = fL.commission + (fS?.commission ?? 0);
+              // Per-leg entry commission, so a later short-only exit releases just the short's share.
+              if (fL) t.buyLeg = { ...t.buyLeg, entryCommission: fL.commission };
+              if (fS) t.sellLeg = { ...t.sellLeg, entryCommission: fS.commission };
+              if (isTriplet && t.hedgeLeg) {
+                if (fH) t.hedgeLeg = { ...t.hedgeLeg, entryPrice: fH.avgPx, entryFee: fH.commission };
+                else missing.push('hedge');
+              }
+              if (missing.length && !live.dryRun) logWarn(`[${accountState.name}] ⚠ Entry ${t.id}: actual fills not readable for ${missing.join(', ')} — booked at the quote / fee formula for ${missing.length > 1 ? 'those legs' : 'that leg'}.`);
             }
             // Draw the cycle's free margin down so a second entry this cycle is checked
             // against what this one just consumed.
