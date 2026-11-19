@@ -438,19 +438,28 @@ export default function ResultTable({
 
                 // Sort unique buy strikes by distance to ATM within each option type
                 // Calls should be listed ascending from ATM, puts descending from ATM.
+                // Max Net Credit ON (same as paper trading): inside each long strike the
+                // largest net credit leads, and the long strikes are ordered by that best
+                // credit (largest first; ties → nearer ATM). OFF: ATM order + ROI.
+                const byCredit = !!config?.entryByMaxCredit;
+                const credit = (r) => Number(r.netPremium) || 0;
+                Object.keys(groups).forEach(strike => {
+                  groups[strike].sort(byCredit ? (a, b) => credit(b) - credit(a) || b.roi - a.roi : (a, b) => b.roi - a.roi);
+                });
+
                 const sortedBuyStrikes = Object.keys(groups)
                   .map(Number)
                   .sort((a, b) => {
+                    if (byCredit) {
+                      const d = credit(groups[b][0]) - credit(groups[a][0]);
+                      if (d) return d;
+                      return Math.abs(a - currentSpot) - Math.abs(b - currentSpot);
+                    }
                     if (type === 'CALL') return a - b;
                     if (type === 'PUT') return b - a;
                     return a - b;
                   })
                   .map(String);
-
-                // Sort sub-rows within each group by ROI descending
-                Object.keys(groups).forEach(strike => {
-                  groups[strike].sort((a, b) => b.roi - a.roi);
-                });
 
                 let globalRank = 1;
 
