@@ -867,18 +867,35 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
                 onChange={e => updateConfig('maxSellQty', Number(e.target.value))}
               />
             </div>
-            <div key="minAtmPnl" className="form-group row-inline">
-              <label>Min ATM P&amp;L</label>
-              <CustomInput type="number" prefix="$" step="10" showStepper width={110} value={config.minAtmPnl ?? 0}
-                onChange={e => updateConfig('minAtmPnl', Number(e.target.value))}
-              />
+            {/* Max Net Credit (same as paper trading's toggle): ON ranks spreads by net credit
+                and ignores Min ATM P&L / ROI, so those two inputs are hidden while it is on. */}
+            <div key="entryByMaxCredit" className="form-group row-inline scanner-switch-field">
+              <label htmlFor="entryByMaxCredit" style={{ cursor: 'pointer', userSelect: 'none' }}
+                title="ON: list spreads by the largest net credit (short qty × short bid − long ask − hedge cost, per 1 long), ignoring Min ATM P&L / ROI — the same pick as paper trading's Max Net Credit. OFF: Min ATM P&L / ROI filter the list.">
+                Max Net Credit
+              </label>
+              <label className="pt-switch" title="Rank by net credit instead of the ATM P&L / ROI floors">
+                <input type="checkbox" id="entryByMaxCredit" checked={config.entryByMaxCredit ?? false}
+                  onChange={e => updateConfig('entryByMaxCredit', e.target.checked)} />
+                <span className="pt-slider"></span>
+              </label>
             </div>
-            <div key="minAtmRoi" className="form-group row-inline">
-              <label>Min ATM ROI</label>
-              <CustomInput type="number" suffix="%" step="1" showStepper width={110} value={config.minAtmRoi ?? 0}
-                onChange={e => updateConfig('minAtmRoi', Number(e.target.value))}
-              />
-            </div>
+            {!config.entryByMaxCredit && (
+              <>
+                <div key="minAtmPnl" className="form-group row-inline">
+                  <label>Min ATM P&amp;L</label>
+                  <CustomInput type="number" prefix="$" step="10" showStepper width={110} value={config.minAtmPnl ?? 0}
+                    onChange={e => updateConfig('minAtmPnl', Number(e.target.value))}
+                  />
+                </div>
+                <div key="minAtmRoi" className="form-group row-inline">
+                  <label>Min ATM ROI</label>
+                  <CustomInput type="number" suffix="%" step="1" showStepper width={110} value={config.minAtmRoi ?? 0}
+                    onChange={e => updateConfig('minAtmRoi', Number(e.target.value))}
+                  />
+                </div>
+              </>
+            )}
             {/* Dynamic ATM Scaling + its call / put scaling */}
             <div className="scanner-filter-group">
               <div key="atmRatioScaling" className="form-group row-inline scanner-switch-field">

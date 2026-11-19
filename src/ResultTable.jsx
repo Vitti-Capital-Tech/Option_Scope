@@ -333,6 +333,14 @@ export default function ResultTable({
     // inputs live in that section). Drop spreads whose at-ATM P&L or ROI falls
     // below the configured minimums. Rows without ATM data (P&L/ROI unknowable)
     // are left in and shown as "—" rather than hidden on transient missing quotes.
+    // Max Net Credit (same rule as paper trading's toggle, migration 071): the ATM floors
+    // are off and rows are ranked by net credit (largest first; ties → nearer ATM), so
+    // the top row per long strike is the spread paper trading would enter.
+    if (config?.entryByMaxCredit) {
+      const dist = (r) => Math.abs(Number(r.buyLeg.strike) - (currentSpot ?? 0));
+      return [...processedResults].sort((a, b) =>
+        (Number(b.netPremium) - Number(a.netPremium)) || (dist(a) - dist(b)));
+    }
     const minAtmPnl = Number(config?.minAtmPnl) || 0;
     const minAtmRoi = Number(config?.minAtmRoi) || 0;
     return processedResults.filter(r =>

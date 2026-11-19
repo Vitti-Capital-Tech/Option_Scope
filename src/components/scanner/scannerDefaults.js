@@ -12,6 +12,9 @@ export const SCANNER_DEFAULTS = {
   // these minimums. Applied live in ResultTable against the ATM-priced P&L/ROI.
   minAtmPnl: 0,
   minAtmRoi: 0,
+  // Max Net Credit (same as paper trading's toggle): ON ranks the list by net credit and
+  // ignores the two ATM floors above.
+  entryByMaxCredit: false,
   atmRatioScaling: false,
   atmRatioPctCall: 50,
   atmRatioPctPut: 50,
