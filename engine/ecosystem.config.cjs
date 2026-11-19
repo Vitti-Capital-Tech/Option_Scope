@@ -35,5 +35,21 @@ module.exports = {
     max_memory_restart: '900M',
     // Merge stdout and stderr into one log
     merge_logs: true,
+  }, {
+    // ATM IV recorder (ivRecorder.js): public market data → iv_history (migration 073) once a
+    // minute. No trading, no accounts — its own process so it can never affect the engine.
+    // Start only this one: pm2 start ecosystem.config.cjs --only optionscope-iv-recorder
+    name: 'optionscope-iv-recorder',
+    script: 'ivRecorder.js',
+    cwd: __dirname,
+    exec_mode: 'fork',
+    instances: 1,
+    env: { NODE_ENV: 'production' },
+    restart_delay: 10000,
+    max_restarts: 50,
+    autorestart: true,
+    max_memory_restart: '150M',
+    log_date_format: 'YYYY-MM-DD HH:mm:ss',
+    merge_logs: true,
   }]
 };

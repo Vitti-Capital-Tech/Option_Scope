@@ -4,6 +4,7 @@ import Navbar from './components/PaperTrading/Navbar';
 import { exportCsv, exportXlsx } from './exportTable';
 import { loadProducts, getExpiries, fetchCandles } from './api';
 import { impliedVol, yearsToExpiry } from './ivUtils';
+import { supabase } from './supabase';
 
 // IV Analysis — ATM strike (X) vs ATM IV (Y), one point per minute, computed in the browser
 // from Delta's PUBLIC candles (no database, no engine): the spot index's 1m candles give each
@@ -50,6 +51,22 @@ const EXPORT_COLUMNS = [
   { key: 'dIv', label: 'Δ IV (1m)' },
   { key: 'dSpot', label: 'Δ Spot (1m)' },
   { key: 'strikeMove', label: 'ATM Strike Change' },
+];
+
+const SAVED_DAYS = 21;
+const SAVED_COLUMNS = [
+  { key: 'time', label: 'Time (IST)' },
+  { key: 'ts', label: 'Timestamp (UTC)' },
+  { key: 'expiry', label: 'Expiry (IST)' },
+  { key: 'expiry_rank', label: 'Expiry' },
+  { key: 'hours_to_expiry', label: 'Hours to Expiry' },
+  { key: 'spot', label: 'Spot' },
+  { key: 'atm_strike', label: 'ATM Strike' },
+  { key: 'call_iv', label: 'Call IV %' },
+  { key: 'put_iv', label: 'Put IV %' },
+  { key: 'atm_iv', label: 'ATM IV % (avg)' },
+  { key: 'call_mark', label: 'Call Mark' },
+  { key: 'put_mark', label: 'Put Mark' },
 ];
 
 // ── Charts ───────────────────────────────────────────────────────────────────
@@ -472,6 +489,35 @@ export default function IvAnalysis({ onNavigate, theme, toggleTheme, active }) {
     dIv: p.dIv != null ? Number(p.dIv.toFixed(4)) : null, dSpot: p.dSpot != null ? Number(p.dSpot.toFixed(2)) : null, strikeMove: p.strikeMove || null,
   }));
   const fileBase = `atm-iv_${underlying}_${expiry.slice(0, 10)}_${rangeKey}`;
+
+  // Saved history (iv_history, migration 073; written once a minute by engine/ivRecorder.js):
+  // every row of the last SAVED_DAYS days for this underlying, both expiry ranks, as CSV.
+  const [savedBusy, setSavedBusy] = useState(false);
+  const downloadSaved = async () => {
+    setSavedBusy(true);
+    try {
+      const since = new Date(Date.now() - SAVED_DAYS * 24 * HOUR).toISOString();
+      const all = [];
+      for (let from = 0; ; from += 1000) {
+        const { data, error: e } = await supabase.from('iv_history')
+          .select('ts,expiry,expiry_rank,hours_to_expiry,spot,atm_strike,call_iv,put_iv,atm_iv,call_mark,put_mark')
+          .eq('underlying', underlying).gte('ts', since)
+          .order('ts', { ascending: true }).order('expiry_rank', { ascending: true })
+          .range(from, from + 999);
+        if (e) throw e;
+        all.push(...(data || []));
+        if (!data || data.length < 1000) break;
+      }
+      if (!all.length) { setError(`No saved IV history for ${underlying} yet — the server recorder writes one row a minute once it is running.`); return; }
+      exportCsv(SAVED_COLUMNS, all.map(r => ({ ...r, time: fmtIst(r.ts), expiry: fmtExpiry(r.expiry), expiry_rank: r.expiry_rank === 0 ? 'nearest' : 'next' })),
+        `atm-iv-saved_${underlying}_${SAVED_DAYS}d.csv`);
+      setError('');
+    } catch (e) {
+      setError(`Couldn't load saved IV history: ${e.message}`);
+    } finally {
+      setSavedBusy(false);
+    }
+  };
   const seriesLabel = SERIES.find(s => s.key === seriesKey).label;
 
   return (
@@ -530,6 +576,10 @@ export default function IvAnalysis({ onNavigate, theme, toggleTheme, active }) {
                 <button type="button" className="dr-btn primary" disabled={!points.length}
                   onClick={() => exportXlsx(EXPORT_COLUMNS, exportRows(), `${fileBase}.xlsx`, 'ATM IV')}>
                   <FileSpreadsheet size={13} /> Excel
+                </button>
+                <button type="button" className="dr-btn" disabled={savedBusy} onClick={downloadSaved}
+                  title={`Saved ATM IV history (recorded every minute on the server) — ${underlying}, last ${SAVED_DAYS} days, nearest and next expiry`}>
+                  <Download size={13} /> {savedBusy ? 'Loading…' : `Saved ${SAVED_DAYS}D`}
                 </button>
               </div>
             </div>
