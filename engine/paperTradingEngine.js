@@ -5339,6 +5339,17 @@ async function startSingleAccountEngine(account) {
             let entryFee = pos.entryFee || 0;
             let hasScaled = false;
             let partialExitsToRecord = [];
+            // Pre-scale state: restored if the live sell of this cycle's slices fails, so the
+            // book never shows a sale that did not happen on Delta (see the PEX send below).
+            const preScale = {
+              lotSize: pos.buyLeg.lotSize,
+              lastCheckpointPnl: pos.buyLeg.lastCheckpointPnl,
+              lastCheckpointAtmPnl: pos.buyLeg.lastCheckpointAtmPnl,
+              maxAtmRatio: pos.buyLeg.maxAtmRatio,
+              entryFee: pos.entryFee,
+              accumulatedSellPnl: pos.accumulatedSellPnl,
+              margin: pos.margin,
+            };
 
             const buyPriceDiff = (liveExitBuy != null && pos.entryBuyPrice != null) ? (liveExitBuy - pos.entryBuyPrice) : 0;
             const sellPriceDiff = (liveExitSell != null && pos.entrySellPrice != null) ? (pos.entrySellPrice - liveExitSell) : 0;
@@ -5525,12 +5536,33 @@ async function startSingleAccountEngine(account) {
               const lotBefore = pos.buyLeg.lotSize + totalReducedLot; // pre-reduction lot this cycle
               const contractsToSell = Math.max(0,
                 Math.round(lotBefore / exitBase) - Math.round(pos.buyLeg.lotSize / exitBase));
+              let pexFailed = false;
+              let pexRes = null;
               if (contractsToSell >= 1) {
-                const pexRes = await live.closeSymbol({
+                pexRes = await live.closeSymbol({
                   symbol: pos.buyLeg.symbol, side: 'sell',
                   contracts: contractsToSell,
                   tag: `${pos.id}-PEX-${pos.buyLeg.lotSize}`,
                 });
+                // The sell did not reach Delta (closeSymbol already retried server errors):
+                // undo this cycle's scale-down and book nothing — the next cycle re-evaluates
+                // and tries again. Booking it anyway left Delta holding contracts the engine no
+                // longer tracked (Shubham1 CALL 63600, 2026-11-19 04:07: 502 → 31 extra long).
+                // If the order did land after all, Delta ends up BELOW the book, which
+                // reconcilePartialReductions books at Delta's real fill.
+                if (!pexRes?.ok && !live.dryRun) {
+                  pexFailed = true;
+                  pos.buyLeg.lotSize = preScale.lotSize;
+                  pos.buyLeg.lastCheckpointPnl = preScale.lastCheckpointPnl;
+                  pos.buyLeg.lastCheckpointAtmPnl = preScale.lastCheckpointAtmPnl;
+                  pos.buyLeg.maxAtmRatio = preScale.maxAtmRatio;
+                  pos.entryFee = preScale.entryFee;
+                  pos.accumulatedSellPnl = preScale.accumulatedSellPnl;
+                  pos.margin = preScale.margin;
+                  logWarn(`[${accountState.name}] ⚠ Partial long sale ${pos.id} (${contractsToSell} × ${pos.buyLeg.symbol}) did not reach Delta (${pexRes?.error ?? 'unknown error'}) — scale-down undone, nothing booked; retrying next cycle.`);
+                }
+              }
+              if (contractsToSell >= 1 && !pexFailed) {
                 // Re-book this cycle's partial rows at Delta's ACTUAL sell fill + commission
                 // (rows were priced at the bid with the fee formula).
                 const pf = await ourFill(pexRes, contractsToSell);
@@ -5568,15 +5600,15 @@ async function startSingleAccountEngine(account) {
                 });
               }
 
-              // FIX B6: batched insert
-              try {
+              // FIX B6: batched insert (skipped when the live sale failed — nothing was sold)
+              if (!pexFailed) try {
                 await supabase.from('trade_history').upsert(partialExitsToRecord, { onConflict: 'trade_id', ignoreDuplicates: true });
                 log(`▲ PARTIAL EXITS RECORDED: ${pos.id} | ${partialExitsToRecord.length} exits | Total reduced: ${partialExitsToRecord.length * deltaBuyQty} lots`);
               } catch (e) {
                 logError(`Failed to insert partial exit history for position ${pos.id}:`, e);
               }
 
-              try {
+              if (!pexFailed) try {
                 await supabase.from('active_positions').update({
                   buy_leg: JSON.stringify(pos.buyLeg),
                   entry_fee: pos.entryFee,
@@ -6121,6 +6153,11 @@ async function startSingleAccountEngine(account) {
 
       // ── 2. Open new positions (entries) ─────────────────────────────────
       const newEntries = [];
+      // Types (call/put) whose candidate was blocked this cycle by book depth/price (entry
+      // governor, real-book check, top-of-book guard). Candidates are tried nearest-ATM first,
+      // so once one is blocked, the farther strikes of that type are NOT entered this minute —
+      // the next minute retries from the nearest again (2026-11-19, user request).
+      const depthBlockedTypes = new Set();
       // Only entries CONFIRMED written to active_positions enter the in-memory book.
       // Any entry skipped by a guard or dropped after a failed or unwound insert is left
       // out, so the book never diverges from the DB/exchange (no phantom or orphan
@@ -6519,6 +6556,7 @@ async function startSingleAccountEngine(account) {
           const bStrike = Number(spread.buyLeg.strike);
           const sStrike = Number(spread.sellLeg.strike);
           const spreadType = spread.buyLeg.type;
+          if (depthBlockedTypes.has(spreadType)) continue; // a nearer one of this type was blocked
           // Set a closer-to-ATM victim aside for THIS candidate (tentative; see above).
           // needType: the victim must be this type (per-type cap); null = any type.
           const tryRotate = (why, needType = null) => {
@@ -7131,6 +7169,48 @@ async function startSingleAccountEngine(account) {
             }
           }
 
+          // ── Whole-dollar entry price (real live orders, 2026-11-19) ─────────────────
+          // The real-book check (execute phase) counts the quantity resting from the
+          // evaluated price up to the nearest WHOLE dollar on the worse side: the short sells
+          // the bid → down to floor (bid 17.1 → levels 17.1 and 17), the long and hedge buy
+          // the ask → up to ceil (ask 13.5 → 13.5 and 14). So the entry conditions must also
+          // hold at those whole-dollar prices: min sell premium, ratio deviation, Max Net
+          // Debit (2-leg and 3-leg) and the ATM P&L / ROI floors. The order limits still
+          // carry the Buy / Sell / Hedge offsets (only for a market move while sending).
+          if (liveArmed && !live.dryRun && LIVE_ENTRY_QUEUE_ON) {
+            const intBuy = Math.ceil(entryBuyPrice - 1e-9);
+            const intSell = Math.floor(entrySellPrice + 1e-9);
+            const intHedge = hedgeLeg ? Math.ceil(Number(hedgeLeg.entryPrice) - 1e-9) : null;
+            const fails = [];
+            if (!(intSell > 0) || intSell < (effectiveConfig.minSellPremium ?? 0)) {
+              fails.push(`short $${intSell} < Min Sell Premium $${effectiveConfig.minSellPremium}`);
+            }
+            const bDN = Number(spread.buyLeg.deltaNotional), sDN = Number(spread.sellLeg.deltaNotional);
+            if (intSell > 0 && bDN > 0 && sDN > 0 && effectiveConfig.maxRatioDeviation != null) {
+              const dev = Math.abs(intBuy / intSell - bDN / sDN) / (bDN / sDN);
+              if (dev > effectiveConfig.maxRatioDeviation) fails.push(`ratio deviation ${(dev * 100).toFixed(1)}% > ${(effectiveConfig.maxRatioDeviation * 100).toFixed(1)}%`);
+            }
+            const net2 = ratioToUse * intSell - intBuy;
+            if (net2 < -effectiveConfig.maxNetPremium) fails.push(`net $${net2.toFixed(2)} below Max Net Debit −$${effectiveConfig.maxNetPremium}`);
+            if (hedgeLeg) {
+              const net3 = net2 - ratioToUse * (hedgeLotPct / 100) * intHedge;
+              if (net3 < -effectiveConfig.maxNetPremium) fails.push(`3-leg net $${net3.toFixed(2)} below Max Net Debit −$${effectiveConfig.maxNetPremium}`);
+            }
+            const rInt = calculateAtmPnlAndRoi(
+              { ...spread, buyPrice: intBuy, sellPrice: intSell },
+              hedgeLeg ? { ticker: { strike: hedgeLeg.strike, symbol: hedgeLeg.symbol }, ask: intHedge } : null,
+            );
+            if (rInt.atmPnl == null || rInt.atmPnl < (spread.atmMinPnl ?? 0) || (rInt.roi ?? 0) < (spread.atmMinRoi ?? 0)) {
+              fails.push(`ATM P&L $${rInt.atmPnl != null ? rInt.atmPnl.toFixed(2) : 'null'} / ROI ${(rInt.roi ?? 0).toFixed(2)}% below the floor ($${(spread.atmMinPnl ?? 0).toFixed(2)} / ${(spread.atmMinRoi ?? 0).toFixed(2)}%)`);
+            }
+            const pxDesc = `long $${entryBuyPrice}→$${intBuy}, short $${entrySellPrice}→$${intSell}${hedgeLeg ? `, hedge $${hedgeLeg.entryPrice}→$${intHedge}` : ''}`;
+            if (fails.length > 0) {
+              logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: at whole-dollar prices (${pxDesc}) ${fails.join('; ')}.`);
+              continue;
+            }
+            newPos._bookPx = { buy: intBuy, sell: intSell, hedge: intHedge };
+          }
+
           // ── Cross-account ENTRY GOVERNOR (paper + live) ───────────────────────────
           // Several accounts (all in THIS one process) can pick the SAME spread in the
           // same ~1s entry wave; their COMBINED contract size may exceed the real
@@ -7222,6 +7302,7 @@ async function startSingleAccountEngine(account) {
             // 4th account through on 2026-11-18 and could block a group master ahead of its turn.
             const gRes = (gIsLive && LIVE_ENTRY_QUEUE_ON) ? { ok: true } : governorReserveSpread(gLegs, Date.now(), { isLive: gIsLive });
             if (!gRes.ok) {
+              depthBlockedTypes.add(spreadType);
               const bl = gRes.blockedLeg;
               const hadTxt = Number.isFinite(bl.available) ? bl.available : '∞';
               // The cause decides the response — size down, or stagger/retry — so state the
@@ -7442,6 +7523,10 @@ async function startSingleAccountEngine(account) {
           releaseIfUnplaced(prevEntry);
           prevEntry = t;
           if (stale()) break;   // fenced mid-placement — never open a NEW position
+          if (depthBlockedTypes.has(t.type)) {
+            logWarn(`[${accountState.name}] Entry ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} skipped: a nearer-ATM ${t.type} was blocked by the book this minute — not entering a farther strike; retrying from the nearest next minute.`);
+            continue;
+          }
           // Stop placing once the phase budget is gone — the rest are retried next minute.
           // Checked BEFORE each entry so an in-flight one always completes (never leaves a
           // half-open spread); only not-yet-started entries are deferred.
@@ -7610,6 +7695,7 @@ async function startSingleAccountEngine(account) {
               if (bidSz != null && shortC > bidSz) thin.push(`short ${shortC} ≥ bid depth ${bidSz} @ ${t.sellLeg.symbol}`);
               if (hedgeAskSz != null && hedgeC > hedgeAskSz) thin.push(`hedge ${hedgeC} ≥ ask depth ${hedgeAskSz} @ ${t.hedgeLeg.symbol}`);
               if (thin.length > 0) {
+                depthBlockedTypes.add(t.type);
                 logWarn(`[${accountState.name}] LIVE entry ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} skipped: top-of-book depth too thin — ${thin.join('; ')}. Holding for more size to avoid an uneven fill.`);
                 continue;
               }
@@ -7820,14 +7906,25 @@ async function startSingleAccountEngine(account) {
                 continue;
               }
               if (stale()) { releaseTurn(); break; }
+              // Check the book down/up to the nearest whole dollar on the worse side (short:
+              // floor of the bid, long + hedge: ceil of the ask) — the prices the entry
+              // conditions were re-checked at in the staging pass (newPos._bookPx). Until
+              // 2026-11-19 it checked at the exact evaluated ask/bid, so any tick move in the
+              // ~2-5 s since the scan blocked the entry. The order offsets are NOT tolerance.
+              const bp = t._bookPx ?? {
+                buy: Math.ceil(t.entryBuyPrice - 1e-9),
+                sell: Math.floor(t.entrySellPrice + 1e-9),
+                hedge: t.hedgeLeg ? Math.ceil(Number(t.hedgeLeg.entryPrice) - 1e-9) : null,
+              };
               const bookLegs = [
-                { symbol: t.buyLeg.symbol, side: 'buy', qty: longContracts(t.buyLeg), price: t.entryBuyPrice },
-                ...(t.sellQty > 0 ? [{ symbol: t.sellLeg.symbol, side: 'sell', qty: shortContracts(t.sellQty), price: t.entrySellPrice }] : []),
+                { symbol: t.buyLeg.symbol, side: 'buy', qty: longContracts(t.buyLeg), price: bp.buy },
+                ...(t.sellQty > 0 ? [{ symbol: t.sellLeg.symbol, side: 'sell', qty: shortContracts(t.sellQty), price: bp.sell }] : []),
                 ...((t.hedgeLeg && (t.hedgeLeg.lotSize || 0) > 0)
-                  ? [{ symbol: t.hedgeLeg.symbol, side: 'buy', qty: longContracts(t.hedgeLeg), price: t.hedgeLeg.entryPrice }] : []),
+                  ? [{ symbol: t.hedgeLeg.symbol, side: 'buy', qty: longContracts(t.hedgeLeg), price: bp.hedge }] : []),
               ];
               const book = await checkRealBook(bookLegs);
               if (!book.ok) {
+                depthBlockedTypes.add(t.type);
                 releaseTurn();
                 const msg = `Entry blocked: ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} — real order book: ${book.short}. Not entering at a worse price.`;
                 logWarn(`[${accountState.name}] ⚑ ${msg}`);

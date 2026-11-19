@@ -70,6 +70,14 @@ export function clampClientOrderId(tag) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Reduce-only closes retry on a SERVER-side failure (5xx, timeout, network drop) after these
+// waits — the first send may or may not have reached Delta, so each retry first looks the
+// order up by its client_order_id and only resends if it is not there. A real rejection
+// (4xx error code) is not retried. 2026-11-19: Shubham1's partial sale got a 502 and was lost.
+const CLOSE_RETRY_DELAYS_MS = String(process.env.LIVE_CLOSE_RETRY_MS ?? '1500,3000')
+  .split(',').map(Number).filter(n => Number.isFinite(n) && n >= 0);
+const TRANSIENT_ERR_RE = /Delta API 5\d\d|timed out|fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|socket hang up|network|bad gateway|service unavailable|gateway timeout|internal_server_error|internal server error/i;
+
 /**
  * Fresh marketable limit for an entry chase re-price: cross the spread by `offset`
  * (premium $) plus an escalating `bump` so a quote that has widened/moved still
@@ -262,16 +270,45 @@ export function createLiveExecutor(getCtx) {
     const summary = `CLOSE ${side.toUpperCase()} ${size}x ${symbol} reduceOnly [${tag}]`;
     if (DRY_RUN) { log(`[${accountName}] ⚗ DRY-RUN close-symbol (not sent): ${summary}`); return { ok: true, dryRun: true }; }
     if (!creds?.apiKey || !creds?.apiSecret) return { ok: false, error: 'no-credentials' };
+    const coid = clampClientOrderId(tag);
+    const startedAt = Date.now();
+    let lastErr = null;
+    for (let attempt = 0; attempt <= CLOSE_RETRY_DELAYS_MS.length; attempt++) {
+      if (attempt > 0) {
+        // Server error / timeout on the previous send: Delta may still have taken the order.
+        // Look for it (same client_order_id, symbol and side, sent during this call) before
+        // sending again, so a retry can never sell twice.
+        await sleep(CLOSE_RETRY_DELAYS_MS[attempt - 1]);
+        const landed = await findSentOrder(creds, { coid, symbol, side, since: startedAt });
+        if (landed) {
+          log(`[${accountName}] ✅ LIVE close-symbol: ${summary} → reached Delta despite the error (id ${landed.id ?? '?'}, ${landed.state ?? '?'})`);
+          return { ok: true, order: landed, recovered: true };
+        }
+        if (landed === undefined) {
+          // Could not read Delta's orders — don't resend blind; check again next attempt.
+          logWarn(`[${accountName}] close retry ${attempt}/${CLOSE_RETRY_DELAYS_MS.length} for ${symbol} [${tag}]: could not read Delta's orders to confirm — not resending.`);
+          continue;
+        }
+        logWarn(`[${accountName}] close retry ${attempt}/${CLOSE_RETRY_DELAYS_MS.length}: ${summary} (previous send: ${lastErr?.message ?? '?'})`);
+      }
     try {
       const order = await placeOrder(creds, {
         product_symbol: symbol, size, side,
         order_type: 'market_order', reduce_only: true, time_in_force: 'ioc',
-        client_order_id: clampClientOrderId(tag),
+        client_order_id: coid,
       });
       log(`[${accountName}] ✅ LIVE close-symbol: ${summary} → id ${order?.id ?? '?'}`);
       return { ok: true, order };
     } catch (e) {
       const msg = String(e.message || '');
+      // An order with this client_order_id is already on Delta → this close already landed:
+      // a resend within this call, or a send from an earlier cycle whose result could not be
+      // confirmed (the caller undid its booking and is now re-sending the same tag).
+      if (/duplicate_client_order_id/i.test(msg)) {
+        const landed = await findSentOrder(creds, { coid, symbol, side, since: attempt > 0 ? startedAt : 0 });
+        log(`[${accountName}] ✅ LIVE close-symbol: ${summary} → already on Delta (duplicate client id${landed?.id ? `, id ${landed.id}` : ''})`);
+        return { ok: true, order: landed || null, duplicate: true };
+      }
       // Same benign case as submit(): a reduce-only close found nothing to close → the leg
       // is already flat on Delta (double-close race, e.g. bracket fired first). Not a
       // failure and nothing left unprotected; don't alarm.
@@ -287,9 +324,33 @@ export function createLiveExecutor(getCtx) {
         log(`[${accountName}] ℹ️ Reduce-only close no-op (${side} ${symbol}) — strike OI-locked and the leg is already flat on Delta [${tag}].`);
         return { ok: true, alreadyClosed: true };
       }
-      logError(`[${accountName}] ✖ LIVE close-symbol FAILED: ${summary}:`, e.message);
-      notifyLiveFailure({ account: accountName, context: `Reduce-only CLOSE FAILED (${side} ${symbol}) — leg may still be OPEN on Delta`, error: e, extra: `[${tag}]`, chatId: telegramChatId, alertChatId: telegramAlertChatId });
-      return { ok: false, error: e.message };
+      lastErr = e;
+      if (!TRANSIENT_ERR_RE.test(msg)) break; // a real rejection — retrying won't help
+    }
+    }
+    const e = lastErr || new Error('order state could not be confirmed on Delta');
+    logError(`[${accountName}] ✖ LIVE close-symbol FAILED: ${summary}:`, e.message);
+    notifyLiveFailure({ account: accountName, context: `Reduce-only CLOSE FAILED (${side} ${symbol}) — leg may still be OPEN on Delta`, error: e, extra: `[${tag}]`, chatId: telegramChatId, alertChatId: telegramAlertChatId });
+    return { ok: false, error: e.message };
+  }
+
+  /**
+   * An order this close sent, if Delta has it: same client_order_id, symbol and side, created
+   * at/after `since` (−10s for clock skew; some tags like -EAB repeat across legs). Looks in
+   * order history (filled/cancelled) and open orders. null = not there; undefined = could not
+   * read Delta (unknown — the caller must not resend).
+   */
+  async function findSentOrder(creds, { coid, symbol, side, since }) {
+    const match = (o) => o && o.client_order_id === coid && o.product_symbol === symbol && o.side === side
+      && !(Date.parse(o.created_at) < since - 10000);
+    try {
+      const hist = await getOrderHistory(creds, { pageSize: 50, maxPages: 1 });
+      const h = (hist || []).find(match);
+      if (h) return h;
+      const open = await getLiveOrders(creds);
+      return (open || []).find(match) ?? null;
+    } catch {
+      return undefined;
     }
   }
 

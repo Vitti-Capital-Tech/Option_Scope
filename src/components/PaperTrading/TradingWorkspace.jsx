@@ -918,6 +918,28 @@ function DeltaPositionsTable({ positions, enginePositions, onExitPosition, onClo
       return ((a.entryMs ?? -Infinity) - (b.entryMs ?? -Infinity)) * dir;
     });
 
+  // Delta's cashflow for a leg (premium in/out). Prefer Delta's own field; fall back to the
+  // entry cashflow: short (sold) = cash in (+), long (bought) = cash out (−).
+  const cashflowOf = (p) => {
+    const size = num(p.size) || 0;
+    const cv = num(p.product?.contract_value) ?? 0.001;
+    return num(p.realized_cashflow ?? p.cashflow ?? p.meta_data?.cashflow)
+      ?? (num(p.entry_price) != null ? -(size * cv * num(p.entry_price)) : null);
+  };
+  // Totals of the rows shown (all positions when no filter is on), under the column headers.
+  let totalUpnl = 0;
+  let totalCashflow = 0;
+  let cashflowRows = 0;
+  for (const g of orderedGroups) {
+    for (const p of g.legs) {
+      const { pnl } = livePnlOf(p, liveMarks);
+      if (Number.isFinite(pnl)) totalUpnl += pnl;
+      const c = cashflowOf(p);
+      if (c != null && Number.isFinite(c)) { totalCashflow += c; cashflowRows++; }
+    }
+  }
+  const signed = (v) => <span className={`pt-pnl ${v > 0 ? 'positive' : v < 0 ? 'negative' : 'zero'}`}>{v > 0 ? '+' : ''}{fmtNum(v)}</span>;
+
   const pill = (active) => ({ cursor: 'pointer', border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 6, padding: '3px 9px', fontSize: 11, fontWeight: 600, background: active ? 'var(--accent)' : 'var(--bg3)', color: active ? '#111' : 'var(--text-dim)' });
   const lbl = { fontSize: 10, color: 'var(--text-dim)', fontWeight: 700, letterSpacing: '0.3px' };
   return (
@@ -951,6 +973,14 @@ function DeltaPositionsTable({ positions, enginePositions, onExitPosition, onClo
           <th>Symbol</th><th className="r">Size</th><th className="r">Notional</th>
           <th className="r">Entry</th><th>TP / SL</th><th className="r">Index</th>
           <th className="r">Mark</th><th className="r">Margin</th><th className="r">UPNL</th><th className="r">Cashflow</th><th className="r">Action</th>
+        </tr>
+        <tr className="pt-total-row">
+          <th colSpan={8} className="r" style={{ fontSize: 10, color: 'var(--text-dim)', fontWeight: 700, letterSpacing: '0.3px' }}>
+            TOTAL{typeFilter !== 'all' || pnlFilter !== 'all' ? ' (filtered)' : ''}
+          </th>
+          <th className="r" title="Sum of the unrealized P&L of the rows shown">{signed(totalUpnl)}</th>
+          <th className="r" title="Sum of the cashflow of the rows shown: + = net credit received, − = net debit paid">{cashflowRows > 0 ? signed(totalCashflow) : '—'}</th>
+          <th />
         </tr></thead>
         <tbody>
           {orderedGroups.map((g, gi) => {
@@ -1000,11 +1030,7 @@ function DeltaPositionsTable({ positions, enginePositions, onExitPosition, onClo
             const entryCost = num(p.entry_price) != null ? Math.abs(size) * cv * num(p.entry_price) : null;
             const pnlPct = (entryCost && entryCost !== 0) ? (pnl / entryCost) * 100 : null;
             const margin = num(p.margin);
-            // Delta's cashflow for the position (premium in/out). Prefer Delta's own
-            // field; fall back to the entry cashflow: short (sold) = cash in (+),
-            // long (bought) = cash out (−).
-            const cashflow = num(p.realized_cashflow ?? p.cashflow ?? p.meta_data?.cashflow)
-              ?? (num(p.entry_price) != null ? -(size * cv * num(p.entry_price)) : null);
+            const cashflow = cashflowOf(p);
             const st = stopBySymbol[p.product_symbol] || { tp: null, sl: null };
             const enginePos = posBySymbol[p.product_symbol];
             return (
