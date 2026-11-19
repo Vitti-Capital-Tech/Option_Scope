@@ -315,6 +315,9 @@ export default function ResultTable({
         naturalSellQty: r.sellQty,
         isRatioChanged,
         netPremium: Number(rawNetPremium).toFixed(2),
+        // Net premium for the position actually shown (both legs × scale, i.e. the size whose
+        // margin is in Req. Margin): per-1-long net × long size. Hedge cost is already in it.
+        actualNetPremium: Number(rawNetPremium) * lotSize * scale,
         buyIntrinsic,
         sellIntrinsic,
         buyIntrinsicDetail: buyInfo.detail,
@@ -525,7 +528,7 @@ export default function ResultTable({
                         </td>
                         <td>
                           <div className={parseFloat(bestRow.netPremium) >= 0 ? 'scanner-buy' : 'scanner-sell'} style={{ fontWeight: 700 }}>
-                            ${Math.abs(parseFloat(bestRow.netPremium))}
+                            <span title={`Per 1 long unit (ratio 1:${bestRow.originalSellQty}) / for the position size shown (long ${bestRow.buyLeg.lotSize}, Req. Margin column)`}>${Math.abs(parseFloat(bestRow.netPremium))} / ${Math.abs(bestRow.actualNetPremium).toFixed(2)}</span>
                           </div>
                           <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
                             {bestRow.ivDiff.toFixed(1)}% IV{bestRow.hedge ? ' · incl. hedge' : ''}
@@ -607,7 +610,7 @@ export default function ResultTable({
                             </td>
                             <td>
                               <div className={parseFloat(r.netPremium) >= 0 ? 'scanner-buy' : 'scanner-sell'} style={{ fontWeight: 700 }}>
-                                ${Math.abs(parseFloat(r.netPremium))}
+                                <span title={`Per 1 long unit (ratio 1:${r.originalSellQty}) / for the position size shown (long ${r.buyLeg.lotSize}, Req. Margin column)`}>${Math.abs(parseFloat(r.netPremium))} / ${Math.abs(r.actualNetPremium).toFixed(2)}</span>
                               </div>
                               <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
                                 {r.ivDiff.toFixed(1)}% IV{r.hedge ? ' · incl. hedge' : ''}
