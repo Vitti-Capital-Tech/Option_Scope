@@ -8,7 +8,7 @@ const UNDERLYINGS = ['BTC', 'ETH'];
 // Call / Put Scaling as applied: up to 100 as entered; above 100 the entered value minus 100
 // (350 → 250%). The input keeps showing what was entered.
 // Hover text for the call/put scaling inputs (rule: scaleSellQtyToAtm in scannerUtils).
-const scalingHint = (p) => { const n = Number(p) || 0; return `ATM ratio above the strike ratio: ${n}% of the gap. Equal: +${n > 100 ? n - 100 : n}% on the ratio.`; };
+const scalingHint = (p) => { const n = Number(p) || 0; return `ATM ratio above the strike ratio: ${n}% of the gap. Equal: ${n >= 100 ? `+${n - 100}% on the ratio` : "ratio unchanged (below 100%)"}.`; };
 const SCANNER_TOP_KEY = 'vitti_scanner_top_spreads_v1';
 // Last underlying + expiry, so a page refresh reopens the market the filters were set for.
 const SCANNER_MARKET_KEY = 'vitti_scanner_market_v1';
