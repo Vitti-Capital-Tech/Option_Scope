@@ -7169,48 +7169,6 @@ async function startSingleAccountEngine(account) {
             }
           }
 
-          // ── Whole-dollar entry price (real live orders, 2026-11-19) ─────────────────
-          // The real-book check (execute phase) counts the quantity resting from the
-          // evaluated price up to the nearest WHOLE dollar on the worse side: the short sells
-          // the bid → down to floor (bid 17.1 → levels 17.1 and 17), the long and hedge buy
-          // the ask → up to ceil (ask 13.5 → 13.5 and 14). So the entry conditions must also
-          // hold at those whole-dollar prices: min sell premium, ratio deviation, Max Net
-          // Debit (2-leg and 3-leg) and the ATM P&L / ROI floors. The order limits still
-          // carry the Buy / Sell / Hedge offsets (only for a market move while sending).
-          if (liveArmed && !live.dryRun && LIVE_ENTRY_QUEUE_ON) {
-            const intBuy = Math.ceil(entryBuyPrice - 1e-9);
-            const intSell = Math.floor(entrySellPrice + 1e-9);
-            const intHedge = hedgeLeg ? Math.ceil(Number(hedgeLeg.entryPrice) - 1e-9) : null;
-            const fails = [];
-            if (!(intSell > 0) || intSell < (effectiveConfig.minSellPremium ?? 0)) {
-              fails.push(`short $${intSell} < Min Sell Premium $${effectiveConfig.minSellPremium}`);
-            }
-            const bDN = Number(spread.buyLeg.deltaNotional), sDN = Number(spread.sellLeg.deltaNotional);
-            if (intSell > 0 && bDN > 0 && sDN > 0 && effectiveConfig.maxRatioDeviation != null) {
-              const dev = Math.abs(intBuy / intSell - bDN / sDN) / (bDN / sDN);
-              if (dev > effectiveConfig.maxRatioDeviation) fails.push(`ratio deviation ${(dev * 100).toFixed(1)}% > ${(effectiveConfig.maxRatioDeviation * 100).toFixed(1)}%`);
-            }
-            const net2 = ratioToUse * intSell - intBuy;
-            if (net2 < -effectiveConfig.maxNetPremium) fails.push(`net $${net2.toFixed(2)} below Max Net Debit −$${effectiveConfig.maxNetPremium}`);
-            if (hedgeLeg) {
-              const net3 = net2 - ratioToUse * (hedgeLotPct / 100) * intHedge;
-              if (net3 < -effectiveConfig.maxNetPremium) fails.push(`3-leg net $${net3.toFixed(2)} below Max Net Debit −$${effectiveConfig.maxNetPremium}`);
-            }
-            const rInt = calculateAtmPnlAndRoi(
-              { ...spread, buyPrice: intBuy, sellPrice: intSell },
-              hedgeLeg ? { ticker: { strike: hedgeLeg.strike, symbol: hedgeLeg.symbol }, ask: intHedge } : null,
-            );
-            if (rInt.atmPnl == null || rInt.atmPnl < (spread.atmMinPnl ?? 0) || (rInt.roi ?? 0) < (spread.atmMinRoi ?? 0)) {
-              fails.push(`ATM P&L $${rInt.atmPnl != null ? rInt.atmPnl.toFixed(2) : 'null'} / ROI ${(rInt.roi ?? 0).toFixed(2)}% below the floor ($${(spread.atmMinPnl ?? 0).toFixed(2)} / ${(spread.atmMinRoi ?? 0).toFixed(2)}%)`);
-            }
-            const pxDesc = `long $${entryBuyPrice}→$${intBuy}, short $${entrySellPrice}→$${intSell}${hedgeLeg ? `, hedge $${hedgeLeg.entryPrice}→$${intHedge}` : ''}`;
-            if (fails.length > 0) {
-              logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: at whole-dollar prices (${pxDesc}) ${fails.join('; ')}.`);
-              continue;
-            }
-            newPos._bookPx = { buy: intBuy, sell: intSell, hedge: intHedge };
-          }
-
           // ── Cross-account ENTRY GOVERNOR (paper + live) ───────────────────────────
           // Several accounts (all in THIS one process) can pick the SAME spread in the
           // same ~1s entry wave; their COMBINED contract size may exceed the real
@@ -7893,9 +7851,9 @@ async function startSingleAccountEngine(account) {
 
             // ── Live entry queue (real orders only) ─────────────────────────────────────────
             // One account at a time, group masters first then oldest account; the previous
-            // account's orders are done before this one reads the book. Then every leg must be
-            // available in Delta's REAL book at a price no worse than the one this entry was
-            // evaluated on — otherwise skip this minute (no sweeping deeper levels).
+            // account's orders are done before this one reads the book. Then every leg's size must
+            // be in Delta's REAL book within its order limit (price + offset) — otherwise skip
+            // this minute.
             let releaseTurn = null;
             if (liveArmed && !live.dryRun && LIVE_ENTRY_QUEUE_ON) {
               const turnWaitMs = Math.max(0, ENTRY_PHASE_BUDGET_MS - (Date.now() - entryPhaseStart) - 3000);
@@ -7906,27 +7864,25 @@ async function startSingleAccountEngine(account) {
                 continue;
               }
               if (stale()) { releaseTurn(); break; }
-              // Check the book down/up to the nearest whole dollar on the worse side (short:
-              // floor of the bid, long + hedge: ceil of the ask) — the prices the entry
-              // conditions were re-checked at in the staging pass (newPos._bookPx). Until
-              // 2026-11-19 it checked at the exact evaluated ask/bid, so any tick move in the
-              // ~2-5 s since the scan blocked the entry. The order offsets are NOT tolerance.
-              const bp = t._bookPx ?? {
-                buy: Math.ceil(t.entryBuyPrice - 1e-9),
-                sell: Math.floor(t.entrySellPrice + 1e-9),
-                hedge: t.hedgeLeg ? Math.ceil(Number(t.hedgeLeg.entryPrice) - 1e-9) : null,
-              };
+              // QUANTITY check, not a price check (2026-11-20, user request): every leg's size must be
+              // resting in Delta's REAL book within the limit its order is sent at below — ask + Buy
+              // Offset, bid − Sell Offset, hedge ask + Hedge Offset — so the order can fill in full.
+              // A $1–2 move since the scan no longer blocks (it did from 2026-11-18: exact scan price,
+              // then nearest whole dollar); the offset caps how far the price may move, as before the
+              // queue. The fill is at the best resting levels, not at the limit.
+              const bookHedgeOff = Number.isFinite(Number(config.entryHedgeOffset))
+                ? Math.max(0, Number(config.entryHedgeOffset)) : ENTRY_HEDGE_OFFSET;
               const bookLegs = [
-                { symbol: t.buyLeg.symbol, side: 'buy', qty: longContracts(t.buyLeg), price: bp.buy },
-                ...(t.sellQty > 0 ? [{ symbol: t.sellLeg.symbol, side: 'sell', qty: shortContracts(t.sellQty), price: bp.sell }] : []),
+                { symbol: t.buyLeg.symbol, side: 'buy', qty: longContracts(t.buyLeg), price: t.entryBuyPrice + buyOff },
+                ...(t.sellQty > 0 ? [{ symbol: t.sellLeg.symbol, side: 'sell', qty: shortContracts(t.sellQty), price: Math.max(0.05, t.entrySellPrice - sellOff) }] : []),
                 ...((t.hedgeLeg && (t.hedgeLeg.lotSize || 0) > 0)
-                  ? [{ symbol: t.hedgeLeg.symbol, side: 'buy', qty: longContracts(t.hedgeLeg), price: bp.hedge }] : []),
+                  ? [{ symbol: t.hedgeLeg.symbol, side: 'buy', qty: longContracts(t.hedgeLeg), price: Number(t.hedgeLeg.entryPrice) + bookHedgeOff }] : []),
               ];
               const book = await checkRealBook(bookLegs);
               if (!book.ok) {
                 depthBlockedTypes.add(t.type);
                 releaseTurn();
-                const msg = `Entry blocked: ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} — real order book: ${book.short}. Not entering at a worse price.`;
+                const msg = `Entry blocked: ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} — real order book: ${book.short}. Not enough size within the order limit.`;
                 logWarn(`[${accountState.name}] ⚑ ${msg}`);
                 supabase.from('entry_block_notifications').insert([{
                   account_id: accountState.id, type: 'entry_blocked', message: msg,
