@@ -120,7 +120,8 @@ export function pickHedgeStrike(candidates, type, sellStrike, sellIv, { maxPrice
  * step away up to (strike width − one strike step) away — e.g. BTC (200-pt steps) 80000/81000
  * → 81200, 81400, 81600, 81800. The step is the smallest gap between the candidates' listed
  * strikes. Each must also have price (ask, fallback last / mark) below `maxPrice` and
- * |IV (ask IV, fallback iv) − short IV| inside [ivMin, ivMax]. Returns [] when none qualify.
+ * |IV (ask IV, fallback iv) − short IV| inside [ivMin, ivMax]. Optional distMin (points from the short,
+ * "Min Hedge Strike Diff"): the hedge must be at least that far beyond the short. Returns [] when none qualify.
  * Callers pick among them (best ATM P&L / ROI). Twin of engine/lib/utils.js listHedgeStrikes — keep identical.
  */
 // ── Delta contract-level OI limit (from 14 Oct 2026) ────────────────────────────────
@@ -149,7 +150,7 @@ export function isOiBlocked(t, capM) {
   return t.oiUsd != null && Number.isFinite(oi) && oi >= Number(capM) * 1e6;
 }
 
-export function listHedgeStrikes(candidates, type, sellStrike, sellIv, strikeDiff, { maxPrice = 10, ivMin = 0, ivMax = 2 } = {}) {
+export function listHedgeStrikes(candidates, type, sellStrike, sellIv, strikeDiff, { maxPrice = 10, ivMin = 0, ivMax = 2, distMin = 0 } = {}) {
   const isCall = String(type).toLowerCase() === 'call';
   const short = Number(sellStrike);
   const shortIv = Number(sellIv);
@@ -163,13 +164,15 @@ export function listHedgeStrikes(candidates, type, sellStrike, sellIv, strikeDif
   }
   if (!Number.isFinite(step)) return [];
   const maxDist = width - step;
+  // Min Hedge Strike Diff (2026-11-20): the hedge must be at least distMin points beyond the short.
+  const minDist = Math.max(0, Number(distMin) || 0);
   const out = [];
   for (const t of candidates || []) {
     const k = Number(t?.strike);
     if (!Number.isFinite(k)) continue;
     if (isCall ? !(k > short) : !(k < short)) continue;
     const dist = Math.abs(k - short);
-    if (dist > maxDist + 1e-9) continue;
+    if (dist > maxDist + 1e-9 || dist < minDist - 1e-9) continue;
     const px = Number(t.ask ?? t.lastPrice ?? t.markPrice);
     if (!(px > 0) || !(px < maxPrice)) continue;
     const iv = Number(t.askIv ?? t.iv);

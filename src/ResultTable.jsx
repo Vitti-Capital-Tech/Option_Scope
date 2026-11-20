@@ -34,10 +34,10 @@ function describeIntrinsic(detail, field) {
 // A fallback (not an exact strike) produced the price → flag it with a "≈" marker.
 const isApproxIntrinsic = (detail) => !!detail && (detail.mode === 'bracket' || detail.mode === 'single');
 
-// Hedge leg (3rd long) under the spread strikes — only when the Hedge toggle is on: the strike
-// nearest the short (from one step beyond it up to width − one step, under Max Hedge Price, inside
-// the IV-diff range, 3-leg net within Max Debit) — same as paper trading. The row's Net Premium /
-// ATM P&L / Margin / ROI include it.
+// Hedge leg (3rd long) under the spread strikes — only when the Hedge toggle is on. Every
+// qualifying hedge (beyond the short, up to width − one step and at least Min Hedge Strike Diff away, under
+// Max Hedge Price, inside the IV-diff range, 3-leg net within Max Debit) is its own row (paper
+// trading enters the one nearest the short). The row's Net Premium / ATM P&L / Margin / ROI include it.
 function HedgeLine({ hedge }) {
   if (!hedge) return null;
   const price = Number(hedge.price);
@@ -46,8 +46,7 @@ function HedgeLine({ hedge }) {
       style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}
       title={`Hedge long ${hedge.strike.toLocaleString()} @ $${price.toFixed(2)}${hedge.iv != null ? ` (${Number(hedge.iv).toFixed(1)}% IV)` : ''} × ${hedge.qty} (scaled short qty × hedge lot %)${hedge.atAtm != null ? ` · worth $${Number(hedge.atAtm).toFixed(2)} at ATM` : ''}`}
     >
-      H: <span className="scanner-buy">+{hedge.strike.toLocaleString()}</span> @ ${price.toFixed(2)} × {hedge.qty}
-    </div>
+      H: <span className="scanner-buy">+{hedge.strike.toLocaleString()}</span> @ ${price.toFixed(2)} × {hedge.qty}    </div>
   );
 }
 
@@ -446,8 +445,17 @@ export default function ResultTable({
                 // credit (largest first; ties → nearer ATM). OFF: ATM order + ROI.
                 const byCredit = !!config?.entryByMaxCredit;
                 const credit = (r) => Number(r.netPremium) || 0;
+                // Hedge on: one row per hedge option. The rows of one long/short pair stay together
+                // (the pair placed by its best row) and its hedges run closest → farthest from the
+                // short, so the pair's first row is the nearest hedge — the one paper trading enters.
+                const pairKey = (r) => `${r.buyLeg.strike}|${r.sellLeg.strike}`;
+                const hedgeDist = (r) => (r.hedge ? Math.abs(Number(r.hedge.strike) - Number(r.sellLeg.strike)) : 0);
                 Object.keys(groups).forEach(strike => {
-                  groups[strike].sort(byCredit ? (a, b) => credit(b) - credit(a) || b.roi - a.roi : (a, b) => b.roi - a.roi);
+                  const rows = groups[strike];
+                  rows.sort(byCredit ? (a, b) => credit(b) - credit(a) || b.roi - a.roi : (a, b) => b.roi - a.roi);
+                  const pairOrder = new Map();
+                  rows.forEach((r, i) => { if (!pairOrder.has(pairKey(r))) pairOrder.set(pairKey(r), i); });
+                  rows.sort((a, b) => (pairOrder.get(pairKey(a)) - pairOrder.get(pairKey(b))) || (hedgeDist(a) - hedgeDist(b)));
                 });
 
                 const sortedBuyStrikes = Object.keys(groups)
@@ -571,7 +579,7 @@ export default function ResultTable({
 
                       {isExpanded && others.map((r) => {
                         return (
-                          <tr key={`${r.buyLeg.strike}-${r.sellLeg.strike}`} className="scanner-row-sub">
+                          <tr key={`${r.buyLeg.strike}-${r.sellLeg.strike}-${r.hedge?.strike ?? ''}`} className="scanner-row-sub">
                             <td>
                               <div>
                                 <div>

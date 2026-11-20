@@ -896,6 +896,8 @@ async function startSingleAccountEngine(account) {
           hedgeMaxPrice: s.hedge_max_price ?? 10,
           hedgeIvDiffMin: s.hedge_iv_diff_min ?? 0,
           hedgeIvDiffMax: s.hedge_iv_diff_max ?? 2,
+          // Min Hedge Strike Diff (migration 074, PAPER only): hedge at least this far beyond the short.
+          hedgeStrikeDiffMin: s.hedge_strike_diff_min ?? 0,
           // Shared Long Strikes (migration 044, paper v2): how many near-ATM long strikes may
           // carry two spreads. 0 = off.
           sharedLongStrikes: s.shared_long_strikes ?? 0,
@@ -927,6 +929,7 @@ async function startSingleAccountEngine(account) {
                 'atmRatioPctCall', 'atmRatioPctPut', 'maxNetPremium', 'exitType', 'exitPoints',
                 'slTpDecoyDiff', 'shortExitPrice', 'variableExitSlices', 'longExitSlices', 'daysToExpiry',
                 'hedgeEnabled', 'hedgeLotPct', 'hedgeMaxPrice', 'hedgeIvDiffMin', 'hedgeIvDiffMax',
+                'hedgeStrikeDiffMin',
                 'sharedLongStrikes'
               ];
               fieldsToCompare.forEach(f => {
@@ -4494,6 +4497,12 @@ async function startSingleAccountEngine(account) {
               hedgeIvDiffMax: activeSchedule.hedgeIvDiffMax ?? 2,
             }
             : {}),
+          // Min Hedge Strike Diff (migration 074) — PAPER accounts only; live keeps the default range.
+          ...(accountState.mode !== 'live'
+            ? {
+              hedgeStrikeDiffMin: activeSchedule.hedgeStrikeDiffMin ?? 0,
+            }
+            : {}),
           // Shared Long Strikes stay paper v2 only (sharedLongCount is gated the same way).
           ...(config.strategyVersion >= 2
             ? { sharedLongStrikes: activeSchedule.sharedLongStrikes ?? 0 }
@@ -4823,7 +4832,15 @@ async function startSingleAccountEngine(account) {
         maxPrice: Number(effectiveConfig.hedgeMaxPrice ?? 10),
         ivMin: Number(effectiveConfig.hedgeIvDiffMin ?? 0),
         ivMax: Number(effectiveConfig.hedgeIvDiffMax ?? 2),
+        // Min Hedge Strike Diff (migration 074): paper only — never applied to a live account.
+        ...(accountState.mode !== 'live'
+          ? { distMin: Number(effectiveConfig.hedgeStrikeDiffMin ?? 0) }
+          : {}),
       };
+      // Log text for the hedge distance range in effect.
+      const hedgeDistTxt = hedgeFilters.distMin > 0
+        ? `from ${hedgeFilters.distMin} pts beyond the short (Min Hedge Strike Diff) up to (width − one step)`
+        : 'from one step beyond the short up to (width − one step)';
       // Every qualifying hedge for a spread: strikes beyond the short from one strike step up
       // to (width − one step) away, under Max Hedge Price and inside the IV-diff range
       // (listHedgeStrikes — same rule as the scanner). [{ ticker, ask }], nearest first.
@@ -7034,7 +7051,7 @@ async function startSingleAccountEngine(account) {
             let best = cand ? cand.ticker : null;
             let bestAsk = cand ? cand.ask : null;
             if (!best) {
-              logWarn(`[${accountState.name}] ⛔ ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Hedge Leg is on but no strike from one step beyond the short up to (width − one step) has price < ${hedgeFilters.maxPrice}, |IV − short IV| in [${hedgeFilters.ivMin}, ${hedgeFilters.ivMax}] and a 3-leg net within Max Net Debit — not entering unhedged.`);
+              logWarn(`[${accountState.name}] ⛔ ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: Hedge Leg is on but no strike ${hedgeDistTxt} has price < ${hedgeFilters.maxPrice}, |IV − short IV| in [${hedgeFilters.ivMin}, ${hedgeFilters.ivMax}] and a 3-leg net within Max Net Debit — not entering unhedged.`);
               continue;
             }
             // Live: the chosen hedge's ask depth can't take the hedge size → the execute-time

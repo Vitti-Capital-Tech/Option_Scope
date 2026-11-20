@@ -195,6 +195,7 @@ const mapScheduleRow = (s) => ({
   hedgeMaxPrice: s.hedge_max_price ?? 10,
   hedgeIvDiffMin: s.hedge_iv_diff_min ?? 0,
   hedgeIvDiffMax: s.hedge_iv_diff_max ?? 2,
+  hedgeStrikeDiffMin: s.hedge_strike_diff_min ?? 0,
   sharedLongStrikes: s.shared_long_strikes ?? 0,
   isActive: s.is_active ?? true,
   sort_order: s.sort_order ?? 0,
@@ -230,6 +231,7 @@ const toScheduleRow = (s, accountId, i) => ({
   hedge_max_price: s.hedgeMaxPrice ?? 10,
   hedge_iv_diff_min: s.hedgeIvDiffMin ?? 0,
   hedge_iv_diff_max: s.hedgeIvDiffMax ?? 2,
+  hedge_strike_diff_min: Math.max(0, Number(s.hedgeStrikeDiffMin) || 0),
   shared_long_strikes: Math.max(0, Math.floor(Number(s.sharedLongStrikes) || 0)),
   is_active: s.isActive ?? true,
   sort_order: i,
@@ -361,6 +363,7 @@ const makeFirstWindow = (cfg = {}) => ({
   hedgeMaxPrice: 10,
   hedgeIvDiffMin: 0,
   hedgeIvDiffMax: 2,
+  hedgeStrikeDiffMin: 0,
   sharedLongStrikes: 0,
   isActive: true,
   sort_order: 0,
@@ -2277,6 +2280,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           hedgeMaxPrice: s.hedgeMaxPrice,
           hedgeIvDiffMin: s.hedgeIvDiffMin,
           hedgeIvDiffMax: s.hedgeIvDiffMax,
+          hedgeStrikeDiffMin: s.hedgeStrikeDiffMin,
           sharedLongStrikes: s.sharedLongStrikes,
           isActive: s.isActive
         })));
@@ -2351,6 +2355,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         hedgeMaxPrice: s.hedgeMaxPrice,
         hedgeIvDiffMin: s.hedgeIvDiffMin,
         hedgeIvDiffMax: s.hedgeIvDiffMax,
+        hedgeStrikeDiffMin: s.hedgeStrikeDiffMin,
         sharedLongStrikes: s.sharedLongStrikes,
         isActive: s.isActive
       })));
@@ -2391,6 +2396,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       hedgeMaxPrice: s.hedgeMaxPrice,
       hedgeIvDiffMin: s.hedgeIvDiffMin,
       hedgeIvDiffMax: s.hedgeIvDiffMax,
+      hedgeStrikeDiffMin: s.hedgeStrikeDiffMin,
       sharedLongStrikes: s.sharedLongStrikes,
       isActive: s.isActive
     })));
@@ -2449,7 +2455,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     if (target) {
       const allowHedge = mode === 'live' || (config.strategyVersion ?? 1) >= 2;
       setSchedules(prev => prev.map(s => s.id === scannerFill.windowId
-        ? { ...s, ...scannerToWindowFields(scannerFill.values, allowHedge) } : s));
+        ? { ...s, ...scannerToWindowFields(scannerFill.values, allowHedge, mode !== 'live') } : s));
     }
     setScheduleFocus({
       token: scannerFill.token,
