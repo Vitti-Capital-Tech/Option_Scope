@@ -99,22 +99,22 @@ export const GUIDES = [
   },
   {
     id: 'cosmic',
-    title: 'Cosmic Trade — account, API key and the Cosmic Paper tab',
-    summary: 'The Cosmic Paper tab runs our strategy on Cosmic Trade’s BTC options prices — it needs NO Cosmic account. A Cosmic account and API key are only needed later, for live trading on Cosmic (not available yet).',
+    title: 'Cosmic Trade — account, API key and the Cosmic app',
+    summary: 'Cosmic Trade now has its own app (Cosmic Ratio Spread scanner + Cosmic Paper), separate from this Delta dashboard. Cosmic Paper runs our strategy on Cosmic Trade’s BTC options prices — it needs NO Cosmic account. A Cosmic account and API key are only needed later, for live trading on Cosmic (not available yet).',
     sections: [
       {
         heading: 'Part A — Paper trading on Cosmic (no Cosmic account needed)',
         images: [
           { src: 'dash-cosmic-paper.png', caption: '1 · your Cosmic account   2 · New Account   3 · Underlying BTC (the only option on Cosmic).' },
         ],
-        where: 'Dashboard → **Cosmic Paper** tab',
+        where: 'The separate **Cosmic app** → **Cosmic Paper** tab',
         steps: [
-          'Open the **Cosmic Paper** tab.',
+          'Open the **Cosmic app** (it is no longer a tab here) and go to **Cosmic Paper**. Log in with the same email as this dashboard.',
           'Click **New Account**, give it a name, keep **Underlying = BTC** (Cosmic lists BTC options only) and create it.',
           'Set the filters and time windows exactly as on the Paper Trading tab.',
           'Within a minute the engine starts trading it on Cosmic’s live prices. Positions, P&L and exits show the same way as on Paper Trading.',
         ],
-        note: 'Delta paper accounts stay on the Paper Trading tab; Cosmic accounts appear only on the Cosmic Paper tab.',
+        note: 'Delta accounts stay in this dashboard; Cosmic accounts appear only in the Cosmic app.',
       },
       {
         heading: 'Part B — Create a Cosmic Trade account',
