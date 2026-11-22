@@ -6,7 +6,13 @@
 
 export function normalizeIv(iv) {
   if (!Number.isFinite(iv)) return null;
-  return iv <= 1 ? iv * 100 : iv;
+  // Delta sends every IV (mark_vol, quotes.mark_iv / bid_iv / ask_iv) as a FRACTION — 0.84 = 84%,
+  // 1.008 = 100.8% — and the Cosmic adapter (cosmicApi.js) sends the same. The old rule
+  // (`iv <= 1 ? iv * 100 : iv`) read anything above 100% as ~1%, so the Min IV Edge and the
+  // hedge IV-diff filters misjudged strikes once IV crossed 100% (JD Algo5, 2026-11-22: short
+  // ask IV stored as 1.0001 next to a 99.2 bid IV; near hedges rejected, far ones passed).
+  // Same fix as src/scannerUtils.js normalizeIv (2026-11-20) — paper AND live.
+  return iv * 100;
 }
 
 export function toFiniteNumber(v) {
