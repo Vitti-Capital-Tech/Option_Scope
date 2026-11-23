@@ -7901,3 +7901,97 @@ details.dr-note p {
   .nav-tabs-container .nav-tab-icon { display: none; }
   .logo-text { white-space: nowrap; font-size: 13px; }
 }
+
+/* ── Sidebar navigation (secondary pages: Daily Report, Slippage, IV Analysis, Manual) ── */
+.nav-menu-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.nav-menu-btn:hover { border-color: var(--accent); color: var(--text); }
+.nav-menu-btn.active { border-color: var(--accent); color: var(--accent); }
+
+.side-nav-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(0, 0, 0, 0.45);
+  animation: side-nav-fade 0.15s ease;
+}
+.side-nav {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: min(280px, 85vw);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px;
+  background: var(--bg2);
+  border-right: 1px solid var(--border);
+  box-shadow: 8px 0 24px rgba(0, 0, 0, 0.35);
+  overflow-y: auto;
+  animation: side-nav-in 0.18s ease;
+}
+.side-nav-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 2px 12px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  font-family: 'Inter', sans-serif;
+  font-weight: 800;
+  font-size: 13px;
+  letter-spacing: 1px;
+  color: var(--accent);
+  white-space: nowrap;
+}
+.side-nav-head .logo-text span { font-weight: 400; }
+.side-nav-section {
+  padding: 8px 8px 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.side-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--text);
+  cursor: pointer;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.side-nav-item:hover { background: var(--bg3); }
+.side-nav-item.active { border-color: var(--accent); background: rgba(59, 130, 246, 0.1); }
+.side-nav-item.active .side-nav-icon,
+.side-nav-item.active .side-nav-label { color: var(--accent); }
+.side-nav-icon { display: flex; color: var(--text-dim); flex-shrink: 0; }
+.side-nav-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.side-nav-label { font-size: 13px; font-weight: 600; }
+.side-nav-desc { font-size: 11px; color: var(--text-dim); }
+@keyframes side-nav-in { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+@keyframes side-nav-fade { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .side-nav, .side-nav-backdrop { animation: none; }
+}
