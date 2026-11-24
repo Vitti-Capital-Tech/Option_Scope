@@ -1455,6 +1455,7 @@ export default function TradingWorkspace(props) {
               liveMarks={props.liveMarks}
               livePositions={liveExchangeState?.positions}
               group={props.group}
+              otherLiveAccounts={props.otherLiveAccounts}
             />
           )}
 

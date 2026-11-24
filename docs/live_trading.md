@@ -1114,6 +1114,12 @@ the `supabase_realtime` publication.
 rejection (not armed, nothing to reduce, margin…) never blocks the others; each account's
 status shows in its own Trade tab.
 
+**Also on other accounts (migration 076).** Below Whole group, an **Also on other accounts**
+list adds any other live account the user owns (an admin: any live account), in or out of a
+group. The same order goes to each picked account (`p_extra_accounts`, same
+`group_request_id`); the database re-checks that each is live and the caller's own (or admin).
+Accounts not armed are tagged — their copy is not sent to Delta.
+
 > [!WARNING]
 > **The engine doesn't manage manual orders.** A filled manual **long** is an untracked
 > position, so the engine **adopts** it after its usual ~120s grace (see

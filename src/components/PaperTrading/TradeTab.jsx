@@ -107,7 +107,7 @@ function ManualOrdersTable({ rows, now }) {
 }
 
 // ── Tab ─────────────────────────────────────────────────────────────────
-export default function TradeTab({ accountId, accountArmed, engineDryRun, products, underlying, spotPrice, liveMarks, livePositions, group }) {
+export default function TradeTab({ accountId, accountArmed, engineDryRun, products, underlying, spotPrice, liveMarks, livePositions, group, otherLiveAccounts }) {
   const options = useMemo(
     () => (products || []).filter(p => p.contract_type === 'call_options' || p.contract_type === 'put_options'),
     [products],
@@ -164,6 +164,20 @@ export default function TradeTab({ accountId, accountArmed, engineDryRun, produc
   const [wholeGroup, setWholeGroup] = useState(true);
   const groupOthers = group?.canFanOut ? (group.memberCount || 1) - 1 : 0;
   const toGroup = wholeGroup && groupOthers > 0;
+  // "Also on" (migration 076): extra live accounts outside the group (or group members picked
+  // one by one when Whole group is off). The pick belongs to this account; switching clears it.
+  const [extraState, setExtraState] = useState({ accountId: null, ids: [] });
+  const groupMemberIds = useMemo(() => new Set(group?.memberIds || []), [group]);
+  const extraChoices = (otherLiveAccounts || []).filter(a => !(toGroup && groupMemberIds.has(a.id)));
+  const extraIds = extraState.accountId === accountId
+    ? extraState.ids.filter(id => extraChoices.some(a => a.id === id))
+    : [];
+  const toggleExtra = (id) => setExtraState({
+    accountId,
+    ids: extraIds.includes(id) ? extraIds.filter(x => x !== id) : [...extraIds, id],
+  });
+  const extraNames = extraChoices.filter(a => extraIds.includes(a.id)).map(a => a.name);
+  const totalAccounts = 1 + (toGroup ? groupOthers : 0) + extraIds.length;
   const [notice, setNotice] = useState('');
   const [errorState, setErrorState] = useState({ symbol: null, msg: '' });
   const formError = errorState.symbol === symbol ? errorState.msg : '';
@@ -218,7 +232,9 @@ export default function TradeTab({ accountId, accountArmed, engineDryRun, produc
     if (!(sizeN >= 1) || sizeN !== Number(size)) return setFormError('Size must be a whole number of contracts (at least 1).');
     if (orderType === 'limit' && !(priceN > 0)) return setFormError('Enter a limit price.');
     const what = `${side.toUpperCase()} ${sizeN} × ${symbol} ${orderType === 'market' ? 'at MARKET' : `@ ${price}`}${reduceOnly ? ' (reduce-only)' : ''}`;
-    const where = toGroup ? `\n\nOn ALL ${groupOthers + 1} accounts of group "${group.name}" (same size and price on each).` : '';
+    const where = (toGroup ? `\n\nOn ALL ${groupOthers + 1} accounts of group "${group.name}" (same size and price on each).` : '')
+      + (extraIds.length ? `\n\nAlso on ${extraIds.length} more account${extraIds.length === 1 ? '' : 's'}: ${extraNames.join(', ')} (same size and price).` : '')
+      + (totalAccounts > 1 ? `\n\nTotal: ${totalAccounts} accounts.` : '');
     const warn = engineDryRun ? '\n\nThe engine is in DRY-RUN mode: the order will be logged, not sent to Delta.' : '';
     if (!(await showConfirm(`${what}${where}${warn}`, {
       title: 'Place live order?',
@@ -236,10 +252,18 @@ export default function TradeTab({ accountId, accountArmed, engineDryRun, produc
       p_limit_price: orderType === 'limit' ? priceN : null,
       p_reduce_only: reduceOnly,
       p_whole_group: toGroup,
+      // Only sent when used, so the Trade tab keeps working before migration 076 is run.
+      ...(extraIds.length ? { p_extra_accounts: extraIds } : {}),
     });
     setSubmitting(false);
-    if (error) setFormError(`Could not send the order: ${error.message}`);
-    else if (count > 1) setNotice(`Sent to ${count} accounts of group "${group.name}". Each account's status shows in its own Trade tab.`);
+    if (error) {
+      const missing076 = extraIds.length && /p_extra_accounts|function .*place_manual_order|schema cache/i.test(error.message || '');
+      setFormError(missing076
+        ? 'Could not send the order: "Also on" needs database migration 076 (076_manual_order_extra_accounts.sql). Nothing was placed.'
+        : `Could not send the order: ${error.message}`);
+    } else if (count > 1) {
+      setNotice(`Sent to ${count} accounts${toGroup ? ` (group "${group.name}"${extraIds.length ? ` + ${extraIds.length} more` : ''})` : ''}. Each account's status shows in its own Trade tab.`);
+    }
   };
 
   if (!options.length) {
@@ -330,11 +354,34 @@ export default function TradeTab({ accountId, accountArmed, engineDryRun, produc
             </label>
           )}
 
+          {extraChoices.length > 0 && (
+            <details className="pt-trade-extra">
+              <summary>
+                Also on other accounts{extraIds.length ? <span className="pt-trade-extra-count">{extraIds.length} selected</span> : <span className="pt-dim"> (optional)</span>}
+              </summary>
+              <div className="pt-trade-extra-list">
+                {extraChoices.map(a => (
+                  <label key={a.id} className="pt-trade-check">
+                    <input type="checkbox" checked={extraIds.includes(a.id)} onChange={() => toggleExtra(a.id)} />
+                    <span>{a.name}</span>
+                    {a.groupName && <span className="pt-dim">· {a.groupName}</span>}
+                    {!a.armed && <span className="pt-trade-extra-warn">not armed</span>}
+                  </label>
+                ))}
+              </div>
+              {extraIds.length > 0 && (
+                <div className="pt-dim" style={{ fontSize: 11 }}>
+                  Same order (size, price, reduce-only) on each. Every account's engine places its own copy; one rejection doesn't stop the others.
+                </div>
+              )}
+            </details>
+          )}
+
           {blocked && <div className="pt-trade-error">{blocked}</div>}
           {formError && <div className="pt-trade-error">{formError}</div>}
           {notice && <div className="pt-trade-note">{notice}</div>}
           <button type="button" className={`pt-trade-submit ${side}`} disabled={!!blocked || submitting || !symbol} onClick={submit}>
-            {submitting ? 'Sending…' : `${side === 'buy' ? 'Buy' : 'Sell'} ${sizeN >= 1 ? sizeN : ''} ${orderType === 'market' ? '@ Market' : price ? `@ ${price}` : ''}${toGroup ? ` · ${groupOthers + 1} accounts` : ''}`}
+            {submitting ? 'Sending…' : `${side === 'buy' ? 'Buy' : 'Sell'} ${sizeN >= 1 ? sizeN : ''} ${orderType === 'market' ? '@ Market' : price ? `@ ${price}` : ''}${totalAccounts > 1 ? ` · ${totalAccounts} accounts` : ''}`}
           </button>
         </div>
 

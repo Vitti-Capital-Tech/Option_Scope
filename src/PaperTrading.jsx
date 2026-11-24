@@ -4048,9 +4048,20 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
                 return {
                   name: grp.name,
                   memberCount: accounts.filter(a => a.group_id === grp.id).length,
+                  memberIds: accounts.filter(a => a.group_id === grp.id).map(a => a.id),
                   canFanOut: userProfile?.role === 'admin' || grp.user_id === session?.user?.id,
                 };
               })()}
+              // Trade tab "Also on" picker: the other live accounts this user can see (a client
+              // sees only their own; an admin all). place_manual_order (076) re-checks access.
+              otherLiveAccounts={accounts
+                .filter(a => a.mode === 'live' && a.id !== activeAccountId)
+                .map(a => ({
+                  id: a.id,
+                  name: a.name,
+                  armed: !!a.live_enabled,
+                  groupName: groups.find(g => g.id === a.group_id)?.name || null,
+                }))}
             />
             </div>
           </>

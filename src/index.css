@@ -7690,7 +7690,14 @@ details.dr-note p {
 .pt-trade-quick { display: flex; gap: 6px; }
 .pt-trade-quick button { flex: 1; height: 24px; border: 1px solid var(--border); border-radius: 4px; background: transparent; color: var(--text-dim); font-size: 11px; cursor: pointer; text-transform: none; }
 .pt-trade-quick button:disabled { opacity: 0.4; cursor: default; }
-.pt-trade-check { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text); cursor: pointer; }
+.pt-trade-check { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 0; font-size: 12px; letter-spacing: 0; text-transform: none; color: var(--text); cursor: pointer; }
+/* The global `input { width: 100% }` / `label { uppercase }` rules made these checkboxes take half the row. */
+.pt-trade-check input[type="checkbox"] { width: auto; flex: none; margin: 0; padding: 0; accent-color: var(--accent); cursor: pointer; }
+.pt-trade-extra { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12px; color: var(--text); }
+.pt-trade-extra > summary { cursor: pointer; font-weight: 600; user-select: none; }
+.pt-trade-extra-count { margin-left: 8px; padding: 1px 7px; border-radius: 10px; font-size: 10px; font-weight: 700; color: var(--accent); background: rgba(56, 139, 253, 0.12); }
+.pt-trade-extra-list { display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto; margin: 8px 0 6px; }
+.pt-trade-extra-warn { font-size: 10px; font-weight: 700; color: #d29922; }
 .pt-trade-error { padding: 8px 10px; border-radius: 6px; font-size: 12px; color: var(--put); background: rgba(246, 70, 93, 0.08); border: 1px solid rgba(246, 70, 93, 0.25); }
 .pt-trade-submit { height: 40px; border: 0; border-radius: 8px; color: #fff; font-size: 14px; font-weight: 700; cursor: pointer; }
 .pt-trade-submit.buy { background: var(--call); }

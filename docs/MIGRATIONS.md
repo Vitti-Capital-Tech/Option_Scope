@@ -177,6 +177,7 @@ apply on databases with existing duplicates.
 | 071 | Paper **Max Net Credit** entry selection (`paper_trading_config.entry_by_max_credit`) | Paper entry |
 | 072 | `paper_trading_accounts.exchange` (`delta` / `cosmic`) — Cosmic Paper accounts; a CHECK keeps Cosmic accounts paper-only | Accounts |
 | 075 | Partial scale-down **Ratio Gap** (`paper_trading_config.partial_scale_ratio_gap`, default 1): slice while live ATM ratio ≥ new ratio + gap | Scale-down |
+| 076 | Manual order on **extra accounts** (`place_manual_order(..., p_extra_accounts UUID[])`; drops the 8-arg version): each extra must be live and the caller's own (or admin) | Live |
 
 ## RPC reference
 
