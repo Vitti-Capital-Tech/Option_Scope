@@ -520,12 +520,24 @@ function LiveOrderHistoryTab({ orderHistory }) {
     if (/-MLC(\b|-)/.test(coid)) return 'Manual Leg Close';
     if (/-CX\b/.test(coid)) return 'Manual Close';
     if (/-TP(\b|-)/.test(coid)) return 'Take Profit';
-    return '—'; // entry legs (-EB/-ES) and anything unmatched
+    // Dashboard Trade tab (place_manual_order → engine tags MAN-…).
+    if (/^MAN-/.test(coid)) return o.reduce_only ? 'Manual Close (Dashboard)' : 'Manual Order (Dashboard)';
+    // No tag = not placed by the engine: Delta's own expiry settlement, or an order someone
+    // placed on Delta's app/website (e.g. "Close position"). Only FILLED ones are named —
+    // a cancelled, never-filled order exited nothing.
+    if (!coid) {
+      if (o.meta_data?.order_type === 'settlement_order') return 'Expiry Settlement';
+      const filled = (num(o.size) || 0) - (num(o.unfilled_size) ?? 0);
+      if (filled > 0) return o.reduce_only ? 'Manual Close (Delta)' : 'Manual Order (Delta)';
+    }
+    return '—'; // entry legs (-EB/-ES), cancelled untagged orders and anything unmatched
   };
   const reasonColor = (r) =>
     r === 'Take Profit' ? 'var(--call)'
       : r === 'Stop Loss' ? 'var(--put)'
-        : r === '—' ? 'var(--text-dim)' : 'var(--text)';
+        // Done on Delta outside the engine — stands out so it's never missed.
+        : /\(Delta\)$/.test(r) ? '#d29922'
+          : r === '—' ? 'var(--text-dim)' : 'var(--text)';
 
   const arrowBtn = { display: 'flex', alignItems: 'center', justifyContent: 'center', width: 22, height: 22, padding: 0, background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text)', cursor: 'pointer' };
   const todayYmd = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
@@ -725,6 +737,44 @@ function livePnlOf(p, liveMarks) {
     return { pnl: size * cv * (closePx - entry), mark: liveMark ?? closePx };
   }
   return { pnl: n(p.unrealized_pnl ?? p.unrealised_pnl) ?? 0, mark: liveMark ?? n(p.mark_price) };
+}
+
+// Payoff at the current spot (live) — like Delta Exchange's payoff: what the open option legs
+// would be worth if they expired with the underlying at today's spot, minus their entry prices.
+//   Σ signed contracts × contract value × (intrinsic at spot − entry price)
+// Same P&L basis as livePnlOf. Strike / type come from the product (strike_price, contract_type),
+// else Delta's symbol format C-BTC-62400-251125. Non-option legs (perps…) are skipped.
+// Returns { payoff, legs } or null when there is no spot or no option leg.
+function livePayoffAtSpot(positions, spotPrice, products, underlying) {
+  const n = (v) => (v == null || v === '' || Number.isNaN(Number(v)) ? null : Number(v));
+  const S = n(spotPrice);
+  if (!(S > 0)) return null;
+  const bySym = {};
+  for (const p of (products || [])) if (p?.symbol) bySym[p.symbol] = p;
+  let payoff = 0;
+  let legs = 0;
+  for (const p of (positions || [])) {
+    const size = n(p.size) || 0;
+    const entry = n(p.entry_price);
+    if (size === 0 || entry == null) continue;
+    const sym = p.product_symbol || '';
+    const prod = bySym[sym];
+    let isCall = null, strike = null;
+    if (prod && /_options$/.test(prod.contract_type || '')) {
+      isCall = prod.contract_type === 'call_options';
+      strike = n(prod.strike_price);
+    } else {
+      const m = /^([CP])-([A-Z]+)-(\d+(?:\.\d+)?)-\d{6}$/.exec(sym);
+      if (m && (!underlying || m[2] === underlying)) { isCall = m[1] === 'C'; strike = Number(m[3]); }
+    }
+    if (isCall == null || strike == null) continue;
+    if (prod?.underlying_asset?.symbol && underlying && prod.underlying_asset.symbol !== underlying) continue;
+    const cv = n(p.product?.contract_value) ?? n(prod?.contract_value) ?? 0.001;
+    const intrinsic = Math.max(0, isCall ? S - strike : strike - S);
+    payoff += size * cv * (intrinsic - entry);
+    legs++;
+  }
+  return legs ? { payoff, legs } : null;
 }
 
 // ── Risk & Margin (live) — real margin/liquidation from Delta ──────────────
@@ -1178,6 +1228,8 @@ export default function TradingWorkspace(props) {
   const paperCount = (n) => (showLoading ? null : n);
   // Open positions right now — drives whether Close All shows (hidden when flat).
   const openCount = live ? (liveOpenLegs || 0) : visible.length;
+  // Live payoff at the current spot (Delta-style), recomputed on every spot tick.
+  const payoffNow = live ? livePayoffAtSpot(live.positions, props.spotPrice, props.products, underlying) : null;
   const TABS = [
     { key: 'positions', label: 'Positions', icon: 'positions', count: live ? liveOpenLegs : paperCount(spreadCount) },
     { key: 'open', label: 'Open Orders', icon: 'open', count: live ? (live.orders?.length ?? 0) : paperCount(longCount) },
@@ -1218,6 +1270,16 @@ export default function TradingWorkspace(props) {
                     {spotChangePct >= 0 ? '+' : ''}{spotChangePct.toFixed(2)}%
                   </span>
                 )}
+              </div>
+            )}
+            {payoffNow && (
+              <div className="pt-spot-display"
+                title={`Payoff at the current spot: what the ${payoffNow.legs} open option leg${payoffNow.legs === 1 ? '' : 's'} would be worth at expiry if ${underlying} stayed at this spot, minus their entry prices (Delta-style payoff).`}
+                style={{ height: '28px', padding: '0 12px', gap: '6px', border: `1px solid ${payoffNow.payoff >= 0 ? 'rgba(63, 185, 80, 0.25)' : 'rgba(248, 81, 73, 0.3)'}`, background: payoffNow.payoff >= 0 ? 'rgba(63, 185, 80, 0.08)' : 'rgba(248, 81, 73, 0.08)', borderRadius: '8px', fontSize: '11px', display: 'flex', alignItems: 'center', marginRight: '8px' }}>
+                <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.5px', color: 'var(--text-dim)' }}>PAYOFF</span>
+                <span style={{ fontWeight: 700, fontFamily: 'Inter', fontVariantNumeric: 'tabular-nums', color: payoffNow.payoff >= 0 ? 'var(--call)' : 'var(--put)' }}>
+                  {payoffNow.payoff >= 0 ? '+' : '−'}${Math.abs(payoffNow.payoff).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
               </div>
             )}
             {props.onSync && (

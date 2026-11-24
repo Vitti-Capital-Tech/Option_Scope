@@ -1308,6 +1308,10 @@ export function createLiveExecutor(getCtx) {
         }
         const map = new Map();
         for (const [k, a] of acc) map.set(k, a.qty > 0 ? a.notional / a.qty : null);
+        // order id → product symbol, so the engine can tell which leg a NEW fill touched (a
+        // fill on a tracked leg it did not expect → an immediate positions check).
+        map.symbolOf = new Map();
+        if (Array.isArray(res)) for (const f of res) if (f.order_id != null && f.product_symbol) map.symbolOf.set(String(f.order_id), f.product_symbol);
         return map;
       } catch (e) {
         logWarn(`[${accountName}] recentFillOrderIds() fetch failed: ${e.message}`);

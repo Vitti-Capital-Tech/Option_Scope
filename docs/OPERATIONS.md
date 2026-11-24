@@ -168,6 +168,8 @@ Live entry (armed real accounts):
 | `ENTRY_SELL_MODIFY_PX` | 1 | Short leg is modified to this price ($) |
 | `ENTRY_BUY_MARK_PLUS` | 50 | Long leg is modified to mark + this ($) |
 | `ENTRY_HEDGE_OFFSET` | 2 | Fallback hedge offset when `entry_hedge_offset` (migration 068) is missing |
+| `ENTRY_PLANNER_OFF` | unset | `1` = old entry selection (best-ROI short per long, calls before puts); kill switch for `engine/lib/entryPlanner.js` |
+| `ENTRY_PLANNER_MODE` | unset | `greedy` / `optimal` forces that short-selection mode for every window; unset = optimal with All Same Type or Hedge Leg on, greedy otherwise |
 | `ENTRY_CHASE_ATTEMPTS` | 2 | Chase re-prices (hedge leg / legacy chase) |
 | `ENTRY_CHASE_POLL_MS` | 1200 | Wait per chase attempt |
 | `ENTRY_CHASE_BUMP` | 1 | Flat $ cross per attempt |

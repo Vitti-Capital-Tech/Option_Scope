@@ -57,6 +57,10 @@ in full.
 | **Fenced cycle** | An evaluation cycle stuck past `EVAL_HANG_MS`, invalidated so it can no longer write |
 | **Ticker hub** | One shared Delta WebSocket per underlying for all accounts (`engine/lib/tickerHub.js`) |
 | **Live snapshot** | `live_exchange_state` — positions, orders, fills, balances copied from Delta for the dashboard |
+| **Ratio Gap** | Partial scale-down: a slice is sold only while live ATM ratio ≥ ratio after the slice + this gap (default 1, migration `075`) |
+| **Greedy / Optimal entry** | Same-minute short selection. Greedy: each long its best free short, nearest first. Optimal: shorts (and hedges) planned across all longs for the most spreads (`engine/lib/entryPlanner.js`) |
+| **PAYOFF chip** | Live dashboard value next to SPOT: the account's payoff at the current spot |
+| `MAN-…` | Order placed from the dashboard Trade tab |
 
 ## `trade_id` / `client_order_id` tags
 

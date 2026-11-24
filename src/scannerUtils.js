@@ -288,7 +288,7 @@ export function excludedStrikesFor(list, expiry) {
  *  - ATM ratio EQUAL to the strike ratio (diff 0): a pct below 100 leaves the ratio unchanged; at
  *    100 and above the short grows by (pct − 100)% of the strike ratio (100 → base, 150 → base × 1.5,
  *    200 → base × 2). Until 2026-11-20 a pct below 100 grew it by pct% (80 → base × 1.8).
- *    SCANNERS ONLY for now: the engine (engine/lib/utils.js) still grows it by pct% below 100.
+ *    The engine (engine/lib/utils.js) uses the same rule since 2026-11-24.
  *  - ATM ratio below the strike ratio: unchanged.
  * Rounded to 0.25 and never below the base qty.
  */

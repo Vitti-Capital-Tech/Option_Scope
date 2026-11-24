@@ -52,7 +52,7 @@ expiry, because it only divides the short value and a short's margin follows its
 within the near-expiry window, at most 100x beyond it. It used to come from the long, which over-stated a
 calendar's margin (a far long → 100x).
 
-Call / Put Scaling above 100 applies the entered value minus 100 (350 → 250%), as in the Ratio Spread scanner.
+Call / Put Scaling follows the Ratio Spread scanner's rule (`scaleSellQtyToAtm`): used as entered on the gap; with the ATM ratio equal to the strike ratio, below 100 → unchanged, 100 and above → grows by (pct − 100)%.
 
 ## Filters
 

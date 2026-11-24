@@ -543,6 +543,8 @@ This is **cross-role**, not just same-role:
 
 - A new **short** is blocked on an existing open **long** strike — including a **long-only remnant's** own long. You're already long that strike, so shorting it nets/conflicts (on Delta they're the same product). *This was the "unique strike not working" bug.*
 - A new **long** is blocked on an existing **active short** strike.
+- **Hedge strikes (paper AND live since 2026-11-24):** a held hedge's strike is occupied too — no new long/short there — and a new hedge never lands on a long/short strike (hedges may share a strike). Paper used to allow both, so it could enter 3-leg sets live couldn't.
+- **Same-minute selection (2026-11-24):** candidates are chosen so two longs don't want the same short in one minute — greedy (next-best free short) by default, optimal (`engine/lib/entryPlanner.js`, shorts + hedges planned together) with All Same Type / Hedge Leg on; calls and puts alternate. See LLD *Entry selection*.
 
 **Long-only remnant nuance & replacement:** a held long-only position (short bought back, `sellQty = 0`) keeps its **long** strike occupied but **frees its old short strike** — that old short strike can be shorted again (matches the partial unique index, migration `026`).
 
@@ -573,7 +575,7 @@ liveAtmRatio = ATM buy price / ATM sell price
 diff = max(0, liveAtmRatio - baseRatio)
 adjustedRatio = baseRatio + (pct% × diff)
 ```
-This lets you capture a percentage (e.g. 50%) of the extra ratio available at ATM strikes.
+This lets you capture a percentage (e.g. 50%) of the extra ratio available at ATM strikes. When the ATM ratio **equals** the base ratio: pct below 100 → unchanged; 100 and above → base × (1 + (pct − 100)/100) (150 → × 1.5). Same function as the scanner since 2026-11-24 (`scaleSellQtyToAtm`; the engine used to grow an equal ratio by pct% below 100).
 
 > [!NOTE]
 > This is the **entry-time** scaling, computed from the natural `sellQty` using **fresh** ATM prices at the moment of entry. It is the same formula used during the scan for the [Max Net Premium filter](#how-the-sell-quantity-ratio-is-calculated), but evaluated independently — both stages start from the natural `sellQty`, so the scale is never compounded.
@@ -1003,7 +1005,7 @@ STOP:   Can't go below 0.50 (50% floor of initial scaled lot size)
 |-----------|---------|---------|
 | **PnL threshold** | `currentGrossPnl ≥ checkpointPnl + (checkpointAtmPnl × 10%)` | The position's gross profit must exceed the last checkpoint plus 10% of the ATM P&L |
 | **Floor limit** | `hypotheticalLotSize ≥ floorLimit (50% of initial)` | Can't reduce below 50% of the initial scaled lot size |
-| **ATM ratio guard** | `liveAtmRatio ≥ recalculatedRatio + 1` | The live ATM ratio must be at least 1 higher than what the ratio would become after scaling |
+| **ATM ratio guard** | `liveAtmRatio ≥ recalculatedRatio + Ratio Gap` | The live ATM ratio must be at least **Ratio Gap** (Control Panel, migration `075`, default 1) higher than what the ratio would become after scaling |
 
 ### What Happens When It Scales
 

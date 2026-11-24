@@ -280,6 +280,7 @@ const COPY_FILTER_COLUMNS = {
   partial_scale_lot_pct: 'partialScaleLotPct',
   partial_scale_threshold_pct: 'partialScaleThresholdPct',
   partial_scale_max_pct: 'partialScaleMaxPct',
+  partial_scale_ratio_gap: 'partialScaleRatioGap',
   max_sl_pct: 'maxSlPct',
 };
 // Source account's config row → { db: columns to write, ui: draft-config keys }. Only
@@ -533,6 +534,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     partialScaleLotPct: 10,
     partialScaleThresholdPct: 10,
     partialScaleMaxPct: 50,
+    // Ratio Gap (migration 075): slice while live ATM ratio ≥ ratio after it + gap.
+    partialScaleRatioGap: 1,
     // Paper-only account max SL (migration 066): % of balance, 0 = off.
     maxSlPct: 20
   }));
@@ -651,6 +654,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
   const hasPartialScaleColRef = useRef(false);
   // Whether paper_trading_config has migration 066's max_sl_pct column (same guard).
   const hasMaxSlColRef = useRef(false);
+  const hasRatioGapColRef = useRef(false);
   // Session-open spot per underlying → drives the % change on the spot bar shown
   // above the tables (captured once, first time we see a spot for that underlying).
   const spotOpenRef = useRef({});
@@ -1890,6 +1894,9 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
               partial_scale_threshold_pct: clampPct(newCfg.partialScaleThresholdPct, 10, 0, 1000),
               partial_scale_max_pct: clampPct(newCfg.partialScaleMaxPct, 50, 1, 99),
             } : {}),
+        // Migration 075 — sent once the column exists (or when changed from the default 1).
+        ...((hasRatioGapColRef.current || (newCfg.partialScaleRatioGap != null && Number(newCfg.partialScaleRatioGap) !== 1))
+          ? { partial_scale_ratio_gap: clampPct(newCfg.partialScaleRatioGap, 1, 0, 100) } : {}),
         // Migration 066 — sent once the column exists (or when changed from the default).
         ...((hasMaxSlColRef.current || (newCfg.maxSlPct != null && Number(newCfg.maxSlPct) !== 20))
           ? { max_sl_pct: clampPct(newCfg.maxSlPct, 20, 0, 100) } : {}),
@@ -1941,6 +1948,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     'partialScaleLotPct',
     'partialScaleThresholdPct',
     'partialScaleMaxPct',
+    'partialScaleRatioGap',
     'maxSlPct'
   ];
 
@@ -2181,6 +2189,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           partialScaleLotPct: data.partial_scale_lot_pct != null ? Number(data.partial_scale_lot_pct) : 10,
           partialScaleThresholdPct: data.partial_scale_threshold_pct != null ? Number(data.partial_scale_threshold_pct) : 10,
           partialScaleMaxPct: data.partial_scale_max_pct != null ? Number(data.partial_scale_max_pct) : 50,
+          partialScaleRatioGap: data.partial_scale_ratio_gap != null ? Number(data.partial_scale_ratio_gap) : 1,
           // Paper-only account max SL (migration 066).
           maxSlPct: data.max_sl_pct != null ? Number(data.max_sl_pct) : 20
         };
@@ -2190,6 +2199,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
         hasOiFilterModeColRef.current = Object.prototype.hasOwnProperty.call(data, 'oi_filter_mode');
         hasPartialScaleColRef.current = Object.prototype.hasOwnProperty.call(data, 'partial_scale_enabled');
         hasMaxSlColRef.current = Object.prototype.hasOwnProperty.call(data, 'max_sl_pct');
+        hasRatioGapColRef.current = Object.prototype.hasOwnProperty.call(data, 'partial_scale_ratio_gap');
         setConfig(loadedConfig);
         setDraftConfig(loadedConfig);
         setConfigDbId(data.id);

@@ -350,6 +350,12 @@ export default function ControlPanel({
                         value={draftConfig?.partialScaleMaxPct ?? 50}
                         onChange={e => updateDraftConfig('partialScaleMaxPct', e.target.value)} />
                     </div>
+                    <div key="partialScaleRatioGap" className="form-group">
+                      <label className="pt-field-label" style={{ marginBottom: 0 }} title="A slice is sold only while the live ATM ratio is at least the ratio after the slice + this gap (live ratio ≥ new ratio + gap). Default 1.">Ratio Gap</label>
+                      <CustomInput type="number" step="0.25" min="0" max="100" showStepper width={90}
+                        value={draftConfig?.partialScaleRatioGap ?? 1}
+                        onChange={e => updateDraftConfig('partialScaleRatioGap', e.target.value)} />
+                    </div>
                   </>
                 )}
               </div>

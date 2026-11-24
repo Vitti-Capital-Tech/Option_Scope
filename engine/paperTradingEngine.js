@@ -31,6 +31,7 @@ import {
 // share ONE Delta market-data connection per underlying instead of opening one each — the
 // per-IP connection cap (HTTP 429) makes N-per-account unscalable.
 import { subscribeTickers } from './lib/tickerHub.js';
+import { planMaxSpreads, interleaveUnits } from './lib/entryPlanner.js';
 // Shared per-underlying product list (see productHub.js): one Delta fetch + one read-only
 // copy for all account engines, last good list kept on a failed / empty fetch.
 import { getSharedProducts } from './lib/productHub.js';
@@ -182,6 +183,14 @@ function entryStaggerMs(accountId, minute) {
 }
 
 const ENTRY_HEDGE_OFFSET = Math.max(0, Number(process.env.ENTRY_HEDGE_OFFSET ?? 2));
+// Kill switch for the entry selection (2026-11-24): ENTRY_PLANNER_OFF=1 →
+// the old selection (best-ROI short per long, calls listed before puts). Restart to apply.
+const ENTRY_PLANNER_OFF = process.env.ENTRY_PLANNER_OFF === '1';
+// Short selection per window: OPTIMAL (shorts chosen across all longs together, most spreads
+// first) when the window has All Same Type on, GREEDY (each long its best short, next best when
+// a nearer long took it this minute) otherwise. ENTRY_PLANNER_MODE=optimal | greedy forces one
+// mode for every window; unset / anything else = that per-window rule.
+const ENTRY_PLANNER_MODE = String(process.env.ENTRY_PLANNER_MODE || '').toLowerCase();
 
 // Retry a same-minute entry attempt that ABORTED because a leg could not fill. The minute
 // is claimed when a cycle starts (see lastEntryMinute), which is right for never skipping a
@@ -456,6 +465,8 @@ async function startSingleAccountEngine(account) {
     partialScaleLotPct: 10,
     partialScaleThresholdPct: 10,
     partialScaleMaxPct: 50,
+    // Ratio Gap (migration 075): a slice needs live ATM ratio ≥ ratio after it + this gap.
+    partialScaleRatioGap: 1,
     // Account max SL (migration 066) — PAPER ONLY. % of the paper balance; when the total
     // unrealized P&L reaches −(balance × maxSlPct%), every position is closed. 0 = off.
     maxSlPct: 20
@@ -577,13 +588,35 @@ async function startSingleAccountEngine(account) {
   let fillIdsCache = null;
   let fillIdsAt = 0;
   let fillIdsFetching = false;
+  // Fill-triggered reconcile (2026-11-24): at most one per this gap.
+  const FILL_RECONCILE_MIN_GAP_MS = 5000;
+  let lastFillTriggeredReconcileAt = 0;
 
   function kickFillIdsRefresh() {
     if (fillIdsFetching) return;                                   // one in flight is enough
     if (Date.now() - fillIdsAt < LIVE_FILL_POLL_MS) return;        // not due yet
     fillIdsFetching = true;
     live.recentFillOrderIds()
-      .then(set => { if (set != null) { fillIdsCache = set; fillIdsAt = Date.now(); } })
+      .then(set => {
+        if (set == null) return;
+        const prev = fillIdsCache;
+        fillIdsCache = set; fillIdsAt = Date.now();
+        // A NEW fill on a tracked leg (any order — engine's, dashboard ✕, or a manual close on
+        // Delta's own app) → reconcile right away instead of waiting for the 30s timer, so a
+        // leg closed outside the engine is seen (and alerted) within seconds. Throttled.
+        if (prev && set.symbolOf) {
+          const legSyms = new Set();
+          for (const p of positions) {
+            if (p.buyLeg?.symbol) legSyms.add(p.buyLeg.symbol);
+            if (p.sellLeg?.symbol) legSyms.add(p.sellLeg.symbol);
+          }
+          const touched = [...set.keys()].some(id => !prev.has(id) && legSyms.has(set.symbolOf.get(id)));
+          if (touched && Date.now() - lastFillTriggeredReconcileAt >= FILL_RECONCILE_MIN_GAP_MS) {
+            lastFillTriggeredReconcileAt = Date.now();
+            reconcileOrphans().catch(() => {});
+          }
+        }
+      })
       .catch(() => { /* recentFillOrderIds already logs; keep the previous set to age out */ })
       .finally(() => { fillIdsFetching = false; });
   }
@@ -814,6 +847,8 @@ async function startSingleAccountEngine(account) {
           partialScaleLotPct: data.partial_scale_lot_pct != null ? Number(data.partial_scale_lot_pct) : 10,
           partialScaleThresholdPct: data.partial_scale_threshold_pct != null ? Number(data.partial_scale_threshold_pct) : 10,
           partialScaleMaxPct: data.partial_scale_max_pct != null ? Number(data.partial_scale_max_pct) : 50,
+          // Ratio Gap (migration 075); missing column → 1 (the old fixed gap).
+          partialScaleRatioGap: data.partial_scale_ratio_gap != null ? Number(data.partial_scale_ratio_gap) : 1,
           // Account max SL (migration 066) — paper only.
           maxSlPct: data.max_sl_pct != null ? Number(data.max_sl_pct) : 20
         };
@@ -2928,7 +2963,34 @@ async function startSingleAccountEngine(account) {
         // needs no confirmation; an unexpectedly missing long must be confirmed first.
         const longGone = longSize === 0
           && ((pos.buyLeg?.lotSize || 0) <= 0 || confirmedAbsent(pos.buyLeg?.symbol));
-        const danglingShort = pos.sellQty > 0 && shortSize > 0 && longGone;
+        let danglingShort = pos.sellQty > 0 && shortSize > 0 && longGone;
+        // Fast alert (2026-11-24): the long is missing from THIS snapshot and Delta's order
+        // history already shows it sold by an order the ENGINE did not place (no client tag =
+        // Delta's own app/web, or MAN- = the dashboard Trade tab) → alert now instead of after
+        // 3 checks + 90s (Biswal Holdings: closed 04:03:56, alerted 04:05:49). Engine-tagged
+        // sells are left out, so the engine's own exit (long sold a moment before its short)
+        // never trips it. Alert only — nothing is booked, closed or converted on this proof.
+        if (!danglingShort && pos.sellQty > 0 && shortSize > 0 && longSize === 0
+          && (pos.buyLeg?.lotSize || 0) > 0 && ageMs > 90000) {
+          if (onceAlerts.has(onceKey('short-without-long', pos))) {
+            danglingShort = true; // already alerted on the fast proof — keep the episode open
+          } else {
+            const orders = await orderHistory();
+            if (Array.isArray(orders)) {
+              const since = (legLastSeenAt.get(pos.buyLeg.symbol) ?? new Date(pos.entryTime).getTime()) - CLOSE_PROOF_CLOCK_SLACK_MS;
+              // Not the engine's: no client tag (and not one of its exchange brackets — a
+              // triggered TP/SL also has no tag, but carries stop_order_type / bracket_order),
+              // or a dashboard Trade-tab order (MAN-).
+              const external = orders.filter(o => {
+                const coid = String(o.client_order_id || '');
+                if (coid.startsWith('MAN-')) return true;
+                return coid === '' && !o.stop_order_type && !o.bracket_order
+                  && o.meta_data?.order_type !== 'settlement_order'; // expiry settlement isn't a manual close
+              });
+              if (filledSince(external, pos.buyLeg.symbol, 'sell', since) >= longContracts(pos.buyLeg)) danglingShort = true;
+            }
+          }
+        }
         if (!danglingShort) {
           onceAlerts.delete(onceKey('short-without-long', pos));
           resolveIssue(onceKey('short-without-long', pos), 'the short is no longer open without its long');
@@ -4601,8 +4663,9 @@ async function startSingleAccountEngine(account) {
           set.add(Number(p.buyLeg.strike));
         }
         if (p.sellLeg?.strike != null) set.add(Number(p.sellLeg.strike));
-        // Live: a held hedge occupies its strike too (one leg per symbol on Delta).
-        if (accountState.mode === 'live' && (p.hedgeLeg?.lotSize || 0) > 0 && p.hedgeLeg?.strike != null) set.add(Number(p.hedgeLeg.strike));
+        // A held hedge occupies its strike too (one leg per symbol on Delta; paper mirrors live
+        // since 2026-11-24).
+        if ((p.hedgeLeg?.lotSize || 0) > 0 && p.hedgeLeg?.strike != null) set.add(Number(p.hedgeLeg.strike));
       }
 
       // ── User-excluded strikes (migration 040; paper AND live since 2026-10-07) ──────
@@ -4820,13 +4883,18 @@ async function startSingleAccountEngine(account) {
       // this cycle). Delta nets a symbol into one position, so a hedge there would be mixed into
       // that leg's size checks and bracket. Several HEDGES may share a strike: each is exited by
       // the engine at its own pair's level for its own contracts, and the symbol's Delta bracket
-      // sits at the farthest pair's level (syncSharedHedgeBrackets). Paper: no limit.
+      // sits at the farthest pair's level (syncSharedHedgeBrackets). Paper applies the same rule
+      // (since 2026-11-24) so paper never enters a 3-leg set live could not.
       const liveHedgeBlocked = new Set();
-      if (accountState.mode === 'live') {
-        for (const p of positions) {
-          if (p.buyLeg?.symbol && (p.buyLeg.lotSize || 0) > 0) liveHedgeBlocked.add(p.buyLeg.symbol);
-          if (p.sellLeg?.symbol && p.sellQty > 0) liveHedgeBlocked.add(p.sellLeg.symbol);
-        }
+      // Entry plan with hedges (live, Hedge Leg on — see buildUnits): the main legs (long/short)
+      // the plan gives this minute's spreads, which no hedge may take, and the hedge the plan
+      // chose for each spread (`${buy symbol}|${sell symbol}` → hedge symbol). Empty until the
+      // plan is built, so the ATM gate before it prices with the usual nearest hedge.
+      const plannedMainSymbols = new Set();
+      const plannedHedgeBySpread = new Map();
+      for (const p of positions) { // paper + live
+        if (p.buyLeg?.symbol && (p.buyLeg.lotSize || 0) > 0) liveHedgeBlocked.add(p.buyLeg.symbol);
+        if (p.sellLeg?.symbol && p.sellQty > 0) liveHedgeBlocked.add(p.sellLeg.symbol);
       }
       const hedgeFilters = {
         maxPrice: Number(effectiveConfig.hedgeMaxPrice ?? 10),
@@ -4854,6 +4922,7 @@ async function startSingleAccountEngine(account) {
           && oiOk(t)                                // Delta OI limit (migration 062)
           && tradableOk(t)                          // Delta trading_status = operational
           && !liveHedgeBlocked.has(t.symbol)        // live: symbol held as a main long/short (see above)
+          && !plannedMainSymbols.has(t.symbol)      // a planned spread's long/short this minute
           && quote(t) > 0);
         return listHedgeStrikes(pool, type, Number(spread.sellLeg.strike), spread.sellIv, spread.strikeDiff, hedgeFilters)
           .map(ticker => ({ ticker, ask: quote(ticker) }));
@@ -4870,12 +4939,17 @@ async function startSingleAccountEngine(account) {
         if (hedgeChoiceCache.has(key)) return hedgeChoiceCache.get(key);
         const options = hedgeOptionsFor(spread);
         let best = null;
-        for (const h of options) { // nearest first (listHedgeStrikes)
+        // The entry plan's hedge for this spread first (when it is still a qualifying option),
+        // then the usual nearest-first scan.
+        const plannedSym = plannedHedgeBySpread.get(key);
+        const planned = plannedSym ? options.find(h => h.ticker.symbol === plannedSym) : null;
+        const ordered = planned ? [planned, ...options.filter(h => h !== planned)] : options;
+        for (const h of ordered) { // planned, then nearest first (listHedgeStrikes)
           const r = calculateAtmPnlAndRoi(spread, h);
           if (r.atmPnl == null || r.ratioToUse == null) continue; // unpriceable at ATM → can't price
           const net = r.ratioToUse * spread.sellPrice - spread.buyPrice - r.ratioToUse * (hedgeLotPct / 100) * h.ask;
           if (net < -effectiveConfig.maxNetPremium) continue;
-          best = { ...h, roi: r.roi, atmPnl: r.atmPnl }; // first qualifying = nearest the short
+          best = { ...h, roi: r.roi, atmPnl: r.atmPnl, planned: h === planned }; // first qualifying = planned, else nearest the short
           break;
         }
         const choice = best ? { ...best, optionCount: options.length, optionStrikes: options.map(o => Number(o.ticker.strike)) } : null;
@@ -5164,36 +5238,10 @@ async function startSingleAccountEngine(account) {
         ? (a, b) => (b.netCredit - a.netCredit) || (b.roi - a.roi)
         : (a, b) => b.roi - a.roi;
 
-      const uniqueCalls = [];
-      for (const group of Object.values(callGroups)) {
-        if (isSharedLong('call', group[0].buyLeg.strike)) { uniqueCalls.push(...pickSharedLongSpreads(group)); continue; }
-        group.sort(rankWithinLong);
-        const primary = group[0];
-        uniqueCalls.push(primary);
-        if (hasConflictWithOtherActivePositions(primary, positions)) {
-          const fallback = group.slice(1).find(s => !hasConflictWithOtherActivePositions(s, positions));
-          if (fallback) uniqueCalls.push(fallback);
-        }
-      }
-
-      const uniquePuts = [];
-      for (const group of Object.values(putGroups)) {
-        if (isSharedLong('put', group[0].buyLeg.strike)) { uniquePuts.push(...pickSharedLongSpreads(group)); continue; }
-        group.sort(rankWithinLong);
-        const primary = group[0];
-        uniquePuts.push(primary);
-        if (hasConflictWithOtherActivePositions(primary, positions)) {
-          const fallback = group.slice(1).find(s => !hasConflictWithOtherActivePositions(s, positions));
-          if (fallback) uniquePuts.push(fallback);
-        }
-      }
-
       // Sort candidate lists: by distance to ATM (closest first), or — Max Net Credit on —
       // by net credit (largest first), ties broken by distance to ATM.
       const atmDist = (a, b) => Math.abs(a.buyLeg.strike - spotPrice) - Math.abs(b.buyLeg.strike - spotPrice);
       const entryOrder = entryByCredit ? (a, b) => (b.netCredit - a.netCredit) || atmDist(a, b) : atmDist;
-      uniqueCalls.sort(entryOrder);
-      uniquePuts.sort(entryOrder);
 
       // Candidate pool size (not a cap — just how many to rank). Floored at 10, and at
       // least the derived per-type cap so the combined model always has enough to fill.
@@ -5205,10 +5253,198 @@ async function startSingleAccountEngine(account) {
         ? 0
         : Math.max(10, derivedTypeCap(effectiveConfig, 'put'));
 
-      const uniqueTopSpreads = [
-        ...uniqueCalls.slice(0, maxCallCandidates),
-        ...uniquePuts.slice(0, maxPutCandidates)
-      ];
+      let uniqueTopSpreads;
+      if (ENTRY_PLANNER_OFF) {
+        // ── Old selection (kill switch ENTRY_PLANNER_OFF=1): best short per long, calls first ──
+        const oldList = (groups, type) => {
+          const out = [];
+          for (const group of Object.values(groups)) {
+            if (isSharedLong(type, group[0].buyLeg.strike)) { out.push(...pickSharedLongSpreads(group)); continue; }
+            group.sort(rankWithinLong);
+            const primary = group[0];
+            out.push(primary);
+            if (hasConflictWithOtherActivePositions(primary, positions)) {
+              const fallback = group.slice(1).find(s => !hasConflictWithOtherActivePositions(s, positions));
+              if (fallback) out.push(fallback);
+            }
+          }
+          return out.sort(entryOrder);
+        };
+        uniqueTopSpreads = [
+          ...oldList(callGroups, 'call').slice(0, maxCallCandidates),
+          ...oldList(putGroups, 'put').slice(0, maxPutCandidates),
+        ];
+      } else {
+        // ── Entry selection (2026-11-24) ─────────────────────────────────────────────────────
+        // Before: each long kept only its best-ROI short, so several longs wanting the SAME short
+        // (62400 / 62800 / 63000 all best with 64600) collided in one minute — the first took it,
+        // the rest were skipped and farther longs entered instead (JD Algo). The old conflict
+        // fallback only looked at positions already open, not spreads staged that minute.
+        //
+        // Mode: OPTIMAL when the active window has All Same Type or Hedge Leg on, GREEDY otherwise
+        // (ENTRY_PLANNER_MODE=optimal | greedy forces one). With hedges (live) the plan chooses
+        // each spread's hedge too, so no hedge lands on a strike another planned spread needs as
+        // long/short; entry then uses that hedge and keeps every hedge off the planned main legs.
+        // GREEDY: longs in entry order; each takes its best-ROI short, and when that
+        // short was already taken THIS minute by a nearer long, its next-best free short. The long's
+        // shorts are listed best first up to that one, so if the nearer long does NOT enter (book,
+        // hedge, margin…) this long still gets its best short — the entry loop's strike-conflict
+        // check skips the ones taken and the rest of a long once one of its spreads entered.
+        // OPTIMAL: lib/entryPlanner.js chooses the shorts across all
+        // longs together — most spreads in the free slots, nearest longs, then total ROI.
+        // The entry loop's checks (caps, strike conflict, book, hedge, "nearer blocked → no
+        // farther") are unchanged.
+        const openFull = (type) => positions.filter(p => p.underlying === underlying && (p.sellQty || 0) > 0 && (!type || p.type === type)).length;
+        const combinedCapNow = Math.max(0, Math.floor(effectiveConfig.maxCombinedPositions ?? config.maxCombinedPositions ?? 4));
+        const slotsFor = (type) => Math.max(0, Math.min(derivedTypeCap(effectiveConfig, type) - openFull(type), combinedCapNow - openFull(null)));
+        const metric = entryByCredit ? (s) => Number(s.netCredit) || 0 : (s) => Number(s.roi) || 0;
+        const legsTxt = (s) => `${s.buyLeg.strike}/${s.sellLeg.strike}`;
+        // All Same Type or Hedge Leg window → optimal (one type gets every slot / the hedges must be
+        // fitted with the shorts); otherwise greedy. The env var can force either mode.
+        // Hedge Leg on → optimal too: the plan picks each spread's short AND hedge together.
+        const useOptimal = ENTRY_PLANNER_MODE === 'optimal'
+          || (ENTRY_PLANNER_MODE !== 'greedy' && (!!effectiveConfig.allSameType || hedgeOn));
+        // A hedge strike blocks main legs (strikesOccupiedBy; paper + live), so hedges are planned with the
+        // shorts and open positions' hedge strikes are kept off every new long/short.
+        const planHedges = hedgeOn; // paper mirrors live (2026-11-24)
+
+        // Returns units (each = the spread(s) of one long strike, tried together) in entry order.
+        const buildUnits = (groups, type, maxCands) => {
+          if (!(maxCands > 0)) return [];
+          const gs = Object.values(groups);
+          gs.forEach(g => g.sort(rankWithinLong));
+          gs.sort((a, b) => entryOrder(a[0], b[0]));
+          const pool = gs.slice(0, maxCands);
+          const sharedUnits = new Map();  // group → its shared-long picks (paper v2)
+          const preTaken = [];
+          for (const g of pool) {
+            if (!isSharedLong(type, g[0].buyLeg.strike)) continue;
+            const picks = pickSharedLongSpreads(g);
+            sharedUnits.set(g, picks);
+            for (const s of picks) preTaken.push(Number(s.buyLeg.strike), Number(s.sellLeg.strike));
+          }
+          // Live: strikes held by an open position's HEDGE also block a new long/short.
+          const openHedgeStrikes = new Set();
+          for (const p of positions) { // paper + live
+            if (p.underlying === underlying && p.type === type && p.expiry === config.expiry
+              && (p.hedgeLeg?.lotSize || 0) > 0 && p.hedgeLeg?.strike != null) openHedgeStrikes.add(Number(p.hedgeLeg.strike));
+          }
+          for (const st of openHedgeStrikes) preTaken.push(st);
+          // Shorts of this long that don't clash with an open position, best first.
+          const freeOf = (g) => g.filter(s => !hasConflictWithOtherActivePositions(s, positions)
+            && !openHedgeStrikes.has(Number(s.buyLeg.strike)) && !openHedgeStrikes.has(Number(s.sellLeg.strike)));
+          // The best short whose strike is held by a LONG-ONLY remnant stays listed first, as
+          // before: that is what the entry loop's replace/upgrade path acts on. (A clash with a
+          // full spread can never enter, so it is not listed.)
+          const leadOf = (g) => {
+            const g0b = Number(g[0].buyLeg.strike), g0s = Number(g[0].sellLeg.strike);
+            const onLongOnly = positions.some(p => p.underlying === underlying && p.type === type
+              && !(p.sellQty > 0) && !p.buyLeg?.isHedge && (p.buyLeg?.lotSize ?? 0) > 0
+              && (Number(p.buyLeg?.strike) === g0b || Number(p.buyLeg?.strike) === g0s));
+            return onLongOnly && hasConflictWithOtherActivePositions(g[0], positions) ? [g[0]] : [];
+          };
+
+          if (!useOptimal) {
+            const used = new Set(preTaken); // strikes taken this minute (assuming each pick enters)
+            const units = [];
+            const swaps = [];
+            for (const g of pool) {
+              if (sharedUnits.has(g)) { const picks = sharedUnits.get(g); if (picks.length) units.push(picks); continue; }
+              const free = freeOf(g);
+              const b = Number(g[0].buyLeg.strike);
+              const i = used.has(b) ? -1 : free.findIndex(s => !used.has(Number(s.sellLeg.strike)));
+              let tail = free; // nothing free this minute → all listed: they enter only if a nearer pick fails
+              if (i >= 0) {
+                tail = free.slice(0, i + 1);
+                used.add(b); used.add(Number(free[i].sellLeg.strike));
+                if (i > 0) swaps.push(`${legsTxt(free[i])} (best /${free[0].sellLeg.strike} taken)`);
+              }
+              const unit = [...leadOf(g), ...tail];
+              if (unit.length) units.push(unit);
+              // A nearer long that can't get a short this minute (every valid short of it, or the
+              // long strike itself, taken by a nearer pick) stops this type: no farther long of it
+              // enters this minute — the next minute retries from the nearest (same rule as a
+              // book block, depthBlockedTypes). Its own spreads stay listed in case a nearer pick
+              // fails to enter.
+              if (i < 0 && free.length) {
+                if (!onlyExits) log(`[${accountState.name}] ⏸ ${type.toUpperCase()} ${b}: ${used.has(b) ? `strike ${b} is a nearer spread's short` : `its short${free.length === 1 ? '' : 's'} ${free.map(s => s.sellLeg.strike).join(', ')} taken`} this minute — not entering a farther ${type}; retrying from the nearest next minute.`);
+                break;
+              }
+            }
+            if (!onlyExits && swaps.length) {
+              log(`[${accountState.name}] ⇄ Next-best short ${type.toUpperCase()} (same minute): ${swaps.join(', ')}`);
+            }
+            return units;
+          }
+
+          const planList = [];             // { g, long, opts } — opts free of open positions
+          for (const g of pool) {
+            if (sharedUnits.has(g)) continue;
+            const opts = freeOf(g);
+            if (opts.length) planList.push({ g, long: Number(g[0].buyLeg.strike), opts });
+          }
+          const k = slotsFor(type);
+          // Hedge options per spread (live, Hedge Leg on): every qualifying hedge that keeps the
+          // spread's ATM P&L / ROI floors and the 3-leg Max Net Debit — nearest the short first.
+          const hedgeOptsCache = new Map();
+          const hedgesOf = planHedges ? (sp) => {
+            if (hedgeOptsCache.has(sp)) return hedgeOptsCache.get(sp);
+            const list = hedgeOptionsFor(sp).map(h => ({ h, r: calculateAtmPnlAndRoi(sp, h) }))
+              .filter(({ h, r }) => r.atmPnl != null && r.ratioToUse != null
+                && r.atmPnl >= (sp.atmMinPnl ?? 0) && (r.roi ?? 0) >= (sp.atmMinRoi ?? 0)
+                && (r.ratioToUse * sp.sellPrice - sp.buyPrice - r.ratioToUse * (hedgeLotPct / 100) * h.ask) >= -effectiveConfig.maxNetPremium)
+              .map(({ h, r }) => ({ strike: Number(h.ticker.strike), symbol: h.ticker.symbol, roi: r.roi ?? 0 }));
+            hedgeOptsCache.set(sp, list);
+            return list;
+          } : null;
+          // The hedge never changes the score: hedges are tried nearest the short first and the
+          // first plan found wins a tie, so each spread keeps its NEAREST hedge unless that strike
+          // is another planned spread's long/short — only then is a farther hedge used. Hedges
+          // may share a strike.
+          const plan = planMaxSpreads(planList, k, { preTaken, metric, ...(hedgesOf ? { hedgesOf } : {}) });
+          const planned = new Map(); // g → planned spread
+          for (const { gi, spread, hedge } of plan.picks) {
+            planned.set(planList[gi].g, spread);
+            if (planHedges) {
+              plannedMainSymbols.add(spread.buyLeg.symbol).add(spread.sellLeg.symbol);
+              if (hedge) plannedHedgeBySpread.set(`${spread.buyLeg.symbol}|${spread.sellLeg.symbol}`, hedge.symbol);
+            }
+          }
+          if (planHedges) hedgeChoiceCache.clear(); // entry re-reads each spread's hedge with the plan
+          const planUsed = new Set(preTaken);
+          for (const s of planned.values()) planUsed.add(Number(s.buyLeg.strike)).add(Number(s.sellLeg.strike));
+
+          // Planned spreads in entry order; longs the plan leaves out follow as backups (they enter
+          // only if a planned one fails).
+          const units = [];
+          const backups = [];
+          for (const g of pool) {
+            if (sharedUnits.has(g)) { const picks = sharedUnits.get(g); if (picks.length) units.push(picks); continue; }
+            const lead = leadOf(g);
+            if (planned.has(g)) { units.push([...lead, planned.get(g)]); continue; }
+            const free = freeOf(g);
+            const alt = free.find(s => !planUsed.has(Number(s.buyLeg.strike)) && !planUsed.has(Number(s.sellLeg.strike))) || free[0];
+            const unit = [...lead, ...(alt ? [alt] : [])];
+            if (unit.length) backups.push(unit);
+          }
+          const differs = planHedges
+            || plan.picks.some(({ gi, spread }) => spread !== planList[gi].opts[0])
+            || plan.picks.length !== Math.min(k, planList.length);
+          if (!onlyExits && plan.picks.length && differs) {
+            log(`[${accountState.name}] ⚖ Entry plan ${type.toUpperCase()} (${k} slot${k === 1 ? '' : 's'}): ${plan.picks.map(({ gi, spread, hedge }) => `${legsTxt(spread)}${hedge ? ` h${hedge.strike}` : ''}${spread !== planList[gi].opts[0] ? ` (best was /${planList[gi].opts[0].sellLeg.strike})` : ''}`).join(', ')}${backups.length ? ` | backups: ${backups.map(u => legsTxt(u[u.length - 1])).join(', ')}` : ''}${plan.exhausted ? ' | search budget hit — best found used' : ''}`);
+          }
+          return [...units, ...backups];
+        };
+
+        const callUnits = buildUnits(callGroups, 'call', maxCallCandidates);
+        const putUnits = buildUnits(putGroups, 'put', maxPutCandidates);
+        // Calls and puts take turns (C, P, C, P …) so neither type fills the combined cap first.
+        // The type with fewer open spreads starts; a tie → the one whose first long is nearer spot.
+        const firstDist = (u) => (u.length ? Math.abs(Number(u[0][u[0].length - 1].buyLeg.strike) - spotPrice) : Infinity);
+        const oc = openFull('call'), op = openFull('put');
+        const first = oc !== op ? (oc < op ? 'call' : 'put') : (firstDist(putUnits) < firstDist(callUnits) ? 'put' : 'call');
+        uniqueTopSpreads = interleaveUnits(callUnits, putUnits, first).flat();
+      }
 
       if (!onlyExits && uniqueTopSpreads.length > 0) {
         const topDesc = uniqueTopSpreads.map(s => `${s.buyLeg.type.toUpperCase()} ${s.buyLeg.strike}/${s.sellLeg.strike} (${entryByCredit ? `Net: $${s.netCredit.toFixed(1)}, ` : ''}ROI: ${s.roi.toFixed(1)}%, ATM P&L: $${s.atmPnl.toFixed(1)})`).join(', ');
@@ -5276,6 +5512,8 @@ async function startSingleAccountEngine(account) {
         const lotStepPct = pctOr(config.partialScaleLotPct, 10, n => n > 0 && n <= 100);
         const pnlStepPct = pctOr(config.partialScaleThresholdPct, 10, n => n >= 0 && n <= 1000);
         const maxScalePct = pctOr(config.partialScaleMaxPct, 50, n => n > 0 && n < 100);
+        // Ratio Gap (migration 075): slice only while liveAtmRatio ≥ recalculatedRatio + gap (was fixed 1).
+        const ratioGap = pctOr(config.partialScaleRatioGap, 1, n => n >= 0 && n <= 100);
         // Dynamic ATM ratio-based scaling (full spreads only — skipped once long-only)
         if (atmStrike !== null && pos.sellQty > 0) {
           // LOT PRECISION. Every lot quantity below is rounded before it is compared, so
@@ -5396,9 +5634,9 @@ async function startSingleAccountEngine(account) {
             while (
               currentGrossPnl >= threshold &&
               hypotheticalLotSize >= floorLimit &&
-              liveAtmRatio >= recalculatedRatio + 1
+              liveAtmRatio >= recalculatedRatio + ratioGap
             ) {
-              log(`[${accountState.name}]: ⚖️ SCALING: Position ${pos.id} (${pos.type.toUpperCase()}) - PnL: $${currentGrossPnl.toFixed(2)} >= Threshold: $${threshold.toFixed(2)}. ATM ratio (1:x) increased: Recalculated Ratio ${recalculatedRatio.toFixed(2)} <= Live ${liveAtmRatio} - 1. Reducing buy lot size from ${currentLotSize} to ${hypotheticalLotSize}.`);
+              log(`[${accountState.name}]: ⚖️ SCALING: Position ${pos.id} (${pos.type.toUpperCase()}) - PnL: $${currentGrossPnl.toFixed(2)} >= Threshold: $${threshold.toFixed(2)}. ATM ratio (1:x) increased: Recalculated Ratio ${recalculatedRatio.toFixed(2)} <= Live ${liveAtmRatio} - ${ratioGap}. Reducing buy lot size from ${currentLotSize} to ${hypotheticalLotSize}.`);
 
               const partialGrossPnl = buyPriceDiff * deltaBuyQty;
 
@@ -6700,8 +6938,8 @@ async function startSingleAccountEngine(account) {
             const occ = [];
             if (!p.buyLeg?.isHedge && (p.buyLeg?.lotSize ?? 1) > 0 && p.buyLeg?.strike != null) occ.push(Number(p.buyLeg.strike));
             if (p.sellQty > 0 && p.sellLeg?.strike != null) occ.push(Number(p.sellLeg.strike));
-            // Live: a new long/short can't land on a held hedge strike (one leg per symbol).
-            if (accountState.mode === 'live' && (p.hedgeLeg?.lotSize || 0) > 0 && p.hedgeLeg?.strike != null) occ.push(Number(p.hedgeLeg.strike));
+            // A new long/short can't land on a held hedge strike (one leg per symbol; paper too).
+            if ((p.hedgeLeg?.lotSize || 0) > 0 && p.hedgeLeg?.strike != null) occ.push(Number(p.hedgeLeg.strike));
             return occ;
           };
           const conflictScope = [
@@ -7040,13 +7278,13 @@ async function startSingleAccountEngine(account) {
             // Live: the gate's hedge strike may have been taken since by a long/short (Delta
             // position or a spread staged earlier this cycle) → the next-best hedge was picked; it
             // must still pass the same ATM P&L / ROI floors.
-            if (accountState.mode === 'live' && cand && spread.atmHedgeSymbol && cand.ticker.symbol !== spread.atmHedgeSymbol) {
+            if (cand && spread.atmHedgeSymbol && cand.ticker.symbol !== spread.atmHedgeSymbol) {
               const r = calculateAtmPnlAndRoi(spread);
               if (r.atmPnl == null || r.atmPnl < (spread.atmMinPnl ?? 0) || (r.roi ?? 0) < (spread.atmMinRoi ?? 0)) {
-                logWarn(`[${accountState.name}] ⛔ ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: its hedge strike is now held as a long/short, and with the next hedge (${cand.ticker.strike}) ATM P&L $${r.atmPnl != null ? r.atmPnl.toFixed(2) : 'null'} / ROI ${r.roi != null ? r.roi.toFixed(2) : 0}% is below the floor.`);
+                logWarn(`[${accountState.name}] ⛔ ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: ${cand.planned ? "with the entry plan's hedge" : 'its hedge strike is now held as a long/short, and with the next hedge'} (${cand.ticker.strike}) ATM P&L $${r.atmPnl != null ? r.atmPnl.toFixed(2) : 'null'} / ROI ${r.roi != null ? r.roi.toFixed(2) : 0}% is below the floor.`);
                 continue;
               }
-              log(`[${accountState.name}] ↪ ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: hedge strike now held as a long/short — using ${cand.ticker.strike} instead (ATM P&L $${r.atmPnl.toFixed(2)}, ROI ${(r.roi ?? 0).toFixed(2)}%).`);
+              log(`[${accountState.name}] ↪ ${spreadType.toUpperCase()} ${bStrike}/${sStrike}: ${cand.planned ? 'entry plan hedge (keeps the planned shorts free)' : 'hedge strike now held as a long/short'} — using ${cand.ticker.strike} instead (ATM P&L $${r.atmPnl.toFixed(2)}, ROI ${(r.roi ?? 0).toFixed(2)}%).`);
             }
             let best = cand ? cand.ticker : null;
             let bestAsk = cand ? cand.ask : null;
@@ -7338,11 +7576,9 @@ async function startSingleAccountEngine(account) {
             heldSymbols.add(newPos.sellLeg.symbol);
             if (hedgeLeg) heldSymbols.add(hedgeLeg.symbol);
           }
-          if (accountState.mode === 'live') {
-            liveHedgeBlocked.add(newPos.buyLeg.symbol);
-            liveHedgeBlocked.add(newPos.sellLeg.symbol);
-            hedgeChoiceCache.clear();
-          }
+          liveHedgeBlocked.add(newPos.buyLeg.symbol); // paper + live
+          liveHedgeBlocked.add(newPos.sellLeg.symbol);
+          hedgeChoiceCache.clear();
         }
         revertPendingRotate();
 
