@@ -1240,6 +1240,15 @@ Evaluating 1 candidate spreads for entry (Spot: 77226.3, ATM Strike: 77200)
 
 When the count is **0**, the single top filter is additionally logged as a warning with the pool sizes.
 
+**Held strikes (2026-11-25).** Strikes the account already holds (one leg per strike) are left out of the scan pool before scanning, so they never show as a reject. The line now lists them, and when the scan found **0** candidates it re-scans with them included and says how many pairs only the collision stopped (log-only, nothing entered differently):
+
+```
+Evaluating 0 candidate spreads … | pool 21c/12p, top rejects: shortExitZone:84 strikeDiff:42 longDist:32
+  | held strikes (one leg per strike): calls 61400–63200 → 9 pairs blocked by them (e.g. 60400/61800, 60800/61600, 61200/62000, 61400/62200)
+```
+
+The re-scan applies the scan filters only (not the ATM P&L / ROI gate), so it shows what the scanner would list, not what would pass entry.
+
 > [!NOTE]
 > This used to print **only** when the scan returned zero candidates. That blind spot is what
 > made the 2026-09-02 `lotSize` leak take a day to find: the scanner showed 5 matches, the

@@ -4781,6 +4781,10 @@ async function startSingleAccountEngine(account) {
       // account's timers — including their minute-boundary entry scan — later and later.
       let topSpreads = [];
       const totalRejected = {};
+      // Strike-collision note for the "Evaluating …" log (2026-11-25, Dg: max 7, 5 open, 0
+      // candidates for an hour while the scanner listed 56 — every one needed a strike Dg already
+      // held, which were left out of the scan above without a word in the logs).
+      let heldNote = '';
       if (wantEntries) {
         // "All same type" window: only that type can enter, so the other type is not scanned
         // at all. It used to be scanned, priced (ATM P&L / ROI, hedge pick, per-candidate logs)
@@ -4795,6 +4799,45 @@ async function startSingleAccountEngine(account) {
 
         // Merge rejection counts from calls + puts
         for (const k of new Set([...Object.keys(callRej), ...Object.keys(putRej)])) totalRejected[k] = (callRej[k] || 0) + (putRej[k] || 0);
+
+        // Held strikes (one leg per strike) left out of the scan: list them, and when the scan
+        // found nothing, re-scan WITH them to show how many pairs only the collision stopped.
+        // Log-only — nothing here changes what is entered.
+        try {
+          const ranges = (arr) => {
+            const s = [...arr].sort((a, b) => a - b);
+            if (!s.length) return '';
+            let step = Infinity;
+            for (let i = 1; i < s.length; i++) step = Math.min(step, s[i] - s[i - 1]);
+            const out = [];
+            let a = s[0], prev = s[0];
+            for (let i = 1; i <= s.length; i++) {
+              if (i < s.length && s[i] - prev === step) { prev = s[i]; continue; }
+              out.push(a === prev ? `${a}` : `${a}–${prev}`);
+              if (i < s.length) { a = s[i]; prev = s[i]; }
+            }
+            return out.join(',');
+          };
+          const parts = [];
+          for (const type of ['call', 'put']) {
+            if (onlyType && onlyType !== type) continue;
+            const held = occupiedStrikes[type];
+            if (!held.size) continue;
+            let txt = `${type === 'call' ? 'calls' : 'puts'} ${ranges(held)}`;
+            if (topSpreads.length === 0) {
+              const withHeld = allTickers.filter(t => t.type === type && t.expiry === config.expiry
+                && (atmStrike === null || (type === 'call' ? t.strike >= atmStrike : t.strike <= atmStrike))
+                && !excludedStrikes.has(Number(t.strike)) && oiOk(t) && tradableOk(t));
+              const blocked = scanTickers(withHeld, effectiveConfig, spotPrice, atmStrike, getTickerPrice).pairs
+                .filter(s => held.has(Number(s.buyLeg.strike)) || held.has(Number(s.sellLeg.strike)));
+              if (blocked.length) {
+                txt += ` → ${blocked.length} pair${blocked.length === 1 ? '' : 's'} blocked by them (e.g. ${blocked.slice(0, 4).map(s => `${s.buyLeg.strike}/${s.sellLeg.strike}`).join(', ')})`;
+              }
+            }
+            parts.push(txt);
+          }
+          if (parts.length) heldNote = ` | held strikes (one leg per strike): ${parts.join(' · ')}`;
+        } catch { /* diagnostics only */ }
       }
 
       function getTickerPrice(strike, optType, priceField, expiry) {
@@ -5041,7 +5084,7 @@ async function startSingleAccountEngine(account) {
           .slice(0, 3)
           .map(([k, v]) => `${k}:${v}`)
           .join(' ');
-        log(`[${accountState.name}] Evaluating ${topSpreads.length} candidate spreads for entry (Spot: ${spotPrice}, ATM Strike: ${atmStrike})${rejSummary ? ` | pool ${callTickers.length}c/${putTickers.length}p, top rejects: ${rejSummary}` : ''}${excludedStrikes.size ? ` | excluded strikes: ${[...excludedStrikes].sort((a, b) => a - b).join(',')}` : ''}${oiFilterOn && (oiBlocked.call.length || oiBlocked.put.length) ? ` | OI-blocked (${oiCapM != null ? `≥ $${oiCapM}M or locked` : 'Delta-locked'}):${oiBlocked.call.length ? `calls ${oiBlocked.call.sort((a, b) => a - b).join(',')}` : ''}${oiBlocked.call.length && oiBlocked.put.length ? ' · ' : ''}${oiBlocked.put.length ? `puts ${oiBlocked.put.sort((a, b) => a - b).join(',')}` : ''}` : ''}`);
+        log(`[${accountState.name}] Evaluating ${topSpreads.length} candidate spreads for entry (Spot: ${spotPrice}, ATM Strike: ${atmStrike})${rejSummary ? ` | pool ${callTickers.length}c/${putTickers.length}p, top rejects: ${rejSummary}` : ''}${heldNote}${excludedStrikes.size ? ` | excluded strikes: ${[...excludedStrikes].sort((a, b) => a - b).join(',')}` : ''}${oiFilterOn && (oiBlocked.call.length || oiBlocked.put.length) ? ` | OI-blocked (${oiCapM != null ? `≥ $${oiCapM}M or locked` : 'Delta-locked'}):${oiBlocked.call.length ? `calls ${oiBlocked.call.sort((a, b) => a - b).join(',')}` : ''}${oiBlocked.call.length && oiBlocked.put.length ? ' · ' : ''}${oiBlocked.put.length ? `puts ${oiBlocked.put.sort((a, b) => a - b).join(',')}` : ''}` : ''}`);
         if (topSpreads.length === 0) {
           // Log top rejection reason to diagnose why 0 candidates
           const topFilter = Object.entries(totalRejected)
