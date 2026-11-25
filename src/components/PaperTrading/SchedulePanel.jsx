@@ -978,11 +978,11 @@ export default function SchedulePanel({
                       <span className="schedule-item-label" title="Hedge IV Diff Max — |hedge IV − short IV| must be at most this.">Hedge IV Max</span>
                       <CustomInput type="number" min="0" step="0.5" suffix="%" value={s.hedgeIvDiffMax ?? 2} onChange={e => handleChange(s.id, 'hedgeIvDiffMax', Number(e.target.value))} />
                     </div>
-                    {/* Min Hedge Strike Diff (migration 074) — PAPER only: the hedge strike must be at
-                        least this many points beyond the short. 0 = off. */}
+                    {/* Min Hedge Strike Diff (migration 074) — PAPER only: the hedge may sit at most
+                        (spread width − this) points beyond the short. 0 = off. */}
                     {isPaper && (
                       <div className="schedule-item-block schedule-item-num-block">
-                        <span className="schedule-item-label" title="Min Hedge Strike Diff — the hedge strike must be at least this many points beyond the short strike. 0 = off.">Hedge Dist Min</span>
+                        <span className="schedule-item-label" title="Min Hedge Strike Diff — the hedge may sit at most (spread width − this) points beyond the short (width 1800, value 300 → hedges up to 1500 beyond the short). 0 = off (up to width − one strike).">Hedge Dist Min</span>
                         <CustomInput type="number" min="0" step="100" value={s.hedgeStrikeDiffMin ?? 0} onChange={e => handleChange(s.id, 'hedgeStrikeDiffMin', Math.max(0, Number(e.target.value) || 0))} />
                       </div>
                     )}

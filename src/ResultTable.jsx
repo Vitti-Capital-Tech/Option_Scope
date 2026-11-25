@@ -35,11 +35,25 @@ function describeIntrinsic(detail, field) {
 const isApproxIntrinsic = (detail) => !!detail && (detail.mode === 'bracket' || detail.mode === 'single');
 
 // Hedge leg (3rd long) under the spread strikes — only when the Hedge toggle is on. Every
-// qualifying hedge (beyond the short, up to width − one step and at least Min Hedge Strike Diff away, under
-// Max Hedge Price, inside the IV-diff range, 3-leg net within Max Debit) is its own row (paper
-// trading enters the one nearest the short). The row's Net Premium / ATM P&L / Margin / ROI include it.
-function HedgeLine({ hedge }) {
+// qualifying hedge (beyond the short, up to width − one step, or width − Min Hedge Strike Diff when set, under
+// Max Hedge Price, inside the IV-diff range, 3-leg net within Max Debit) is listed in the pair's ONE
+// row, nearest the short first, each with its own ATM ROI (2026-11-26). ✓ = the nearest: the one
+// paper and live enter, and the one the row's Net Premium / ATM P&L / Margin / ROI include.
+function HedgeLine({ hedge, options }) {
   if (!hedge) return null;
+  if (options && options.length > 1) {
+    return (
+      <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2, lineHeight: 1.45 }}>
+        {options.map(o => (
+          <div key={o.strike} style={o.chosen ? { fontWeight: 700, color: 'var(--text)' } : undefined}
+            title={`Hedge long ${Number(o.strike).toLocaleString()} @ $${Number(o.price).toFixed(2)}${o.iv != null ? ` (${Number(o.iv).toFixed(1)}% IV)` : ''} × ${o.qty} · net premium $${Number(o.netPremium ?? 0).toFixed(2)}${o.atAtm != null ? ` · worth $${Number(o.atAtm).toFixed(2)} at ATM` : ''}${o.roi != null ? ` · ATM ROI ${o.roi.toFixed(2)}%` : ''}${o.chosen ? ' — nearest the short: used for this row and entered by paper / live' : ''}`}>
+            H: <span className="scanner-buy">+{Number(o.strike).toLocaleString()}</span> @ ${Number(o.price).toFixed(2)} × {o.qty}
+            {o.roi != null && <> · {o.roi >= 0 ? '+' : ''}{o.roi.toFixed(2)}%</>}{o.chosen ? ' ✓' : ''}
+          </div>
+        ))}
+      </div>
+    );
+  }
   const price = Number(hedge.price);
   return (
     <div
@@ -291,6 +305,10 @@ export default function ResultTable({
         return { ...h, qty, atAtm, atAtmPnl: pnl, margin: m, roi: (pnl != null && m > 0) ? (pnl / m) * 100 : null };
       };
       const hedge = r.hedge ? priceHedge(r.hedge) : null;
+      // Every qualifying hedge for this pair, priced the same way, listed in the row (✓ = the
+      // nearest, which prices the row and is what the engine enters).
+      const hedgeOptions = (r.hedgeOptions?.length ? r.hedgeOptions : (r.hedge ? [r.hedge] : []))
+        .map(h => (r.hedge && Number(h.strike) === Number(r.hedge.strike) ? { ...hedge, chosen: true } : { ...priceHedge(h), chosen: false }));
 
       // Compute P&L scaled to the adjusted lot size
       const atAtmPnl = hedge ? hedge.atAtmPnl : (legsPnl != null ? legsPnl * adjustedLotSize : null);
@@ -327,6 +345,7 @@ export default function ResultTable({
         roundedAtmRatio,
         hasAtmData,
         hedge,
+        hedgeOptions,
         netDelta3: hedge?.netDelta3 ?? r.netDelta3,
       };
     });
@@ -445,9 +464,9 @@ export default function ResultTable({
                 // credit (largest first; ties → nearer ATM). OFF: ATM order + ROI.
                 const byCredit = !!config?.entryByMaxCredit;
                 const credit = (r) => Number(r.netPremium) || 0;
-                // Hedge on: one row per hedge option. The rows of one long/short pair stay together
-                // (the pair placed by its best row) and its hedges run closest → farthest from the
-                // short, so the pair's first row is the nearest hedge — the one paper trading enters.
+                // One row per long/short pair (its hedges are listed inside the row since 2026-11-26);
+                // kept as a guard: if a pair ever has several rows they stay together, nearest
+                // hedge first.
                 const pairKey = (r) => `${r.buyLeg.strike}|${r.sellLeg.strike}`;
                 const hedgeDist = (r) => (r.hedge ? Math.abs(Number(r.hedge.strike) - Number(r.sellLeg.strike)) : 0);
                 Object.keys(groups).forEach(strike => {
@@ -509,7 +528,7 @@ export default function ResultTable({
                                 </span>
                               </div>
                               <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Δ: {bestRow.strikeDiff.toLocaleString()}</div>
-                              <HedgeLine hedge={bestRow.hedge} />
+                              <HedgeLine hedge={bestRow.hedge} options={bestRow.hedgeOptions} />
                             </div>
                           </div>
                         </td>
@@ -592,7 +611,7 @@ export default function ResultTable({
                                   </span>
                                 </div>
                                 <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Δ: {r.strikeDiff.toLocaleString()}</div>
-                                <HedgeLine hedge={r.hedge} />
+                                <HedgeLine hedge={r.hedge} options={r.hedgeOptions} />
                               </div>
                             </td>
                             <td>

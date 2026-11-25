@@ -415,10 +415,10 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
       // ratio unit (short qty × Hedge Lot %); ResultTable scales it with the short.
       const hedgePool = config.hedgeEnabled ? sorted.filter(t => (t.ask ?? 0) > 0) : [];
       // Every qualifying hedge for a pair (listHedgeStrikes — same rule as paper trading):
-      // strikes beyond the short from one strike step up to (width − one step) away — or inside
-      // at least Min Hedge Strike Diff beyond the short when set — under Max Hedge Price and inside the
-      // IV-diff range, nearest the short first. EVERY option within Max Debit gets its own row
-      // (2026-11-20), so all usable hedges are visible; paper trading enters the nearest one.
+      // strikes beyond the short from one strike step up to (width − one step) away — or up to
+      // (width − Min Hedge Strike Diff) when set — under Max Hedge Price and inside the IV-diff range,
+      // nearest the short first. Every option within Max Debit is listed in the pair's row
+      // (ResultTable HedgeLine); paper / live enter the nearest one.
       const hedgeOptionsFor = (buyLeg, sellLeg, shortQty, width) => {
         if (!config.hedgeEnabled || !(config.hedgeLotPct > 0)) return [];
         const pool = hedgePool.filter(t => t !== buyLeg && t !== sellLeg);
@@ -530,11 +530,10 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
             }))
             .filter(h => h.netPremium >= -config.maxNetPremium);
           if (config.hedgeEnabled && hedgeOptions.length === 0) continue;
-          // One row per qualifying hedge (nearest first; rank 0 = the one paper trading
-          // enters). Hedge off → a single 2-leg row.
-          const hedgeRows = config.hedgeEnabled ? hedgeOptions : [null];
-          for (let hedgeRank = 0; hedgeRank < hedgeRows.length; hedgeRank++) {
-          const hedge = hedgeRows[hedgeRank];
+          // One row per pair (2026-11-26, back to the single-row view): the row is priced with the
+          // NEAREST qualifying hedge — the one paper and live enter — and lists every qualifying
+          // hedge under the strikes (ResultTable HedgeLine, ✓ on the nearest). Hedge off → 2-leg row.
+          const hedge = config.hedgeEnabled ? hedgeOptions[0] : null;
 
           // Max-debit (maxNetPremium) check on the post-scaling net premium.
           const netPrem = hedge ? hedge.netPremium : scaledSellQty * sellPrice - buyPrice;
@@ -562,9 +561,9 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
             netPremium: netPrem.toFixed(2),
             deltaDiff,
             netDelta3,
-            hedge
+            hedge,
+            hedgeOptions: config.hedgeEnabled ? hedgeOptions : [],
           });
-          }
         }
       }
 
@@ -968,7 +967,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
                     />
                   </div>
                   <div key="hedgeStrikeDiff" className="form-group row-inline"
-                    title="Min Hedge Strike Diff — the hedge strike must be at least this many points beyond the SHORT strike. 0 = off.">
+                    title="Min Hedge Strike Diff — the hedge may sit at most (spread width − this) points beyond the short (width 1800, value 300 → hedges up to 1500 beyond the short). 0 = off (up to width − one strike).">
                     <label>Min Hedge Strike Diff</label>
                     <CustomInput type="number" step="100" min="0" showStepper width={100} value={config.hedgeStrikeDiffMin ?? 0}
                       onChange={e => updateConfig('hedgeStrikeDiffMin', Math.max(0, Number(e.target.value) || 0))}

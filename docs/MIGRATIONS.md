@@ -176,6 +176,7 @@ apply on databases with existing duplicates.
 | 070 | Per-account Telegram **alerts** chat (`telegram_alert_chat_id`, `telegram_alert_link_code`) | Telegram |
 | 071 | Paper **Max Net Credit** entry selection (`paper_trading_config.entry_by_max_credit`) | Paper entry |
 | 072 | `paper_trading_accounts.exchange` (`delta` / `cosmic`) — Cosmic Paper accounts; a CHECK keeps Cosmic accounts paper-only | Accounts |
+| 074 | Min Hedge Strike Diff (`paper_trading_schedules.hedge_strike_diff_min`, default 0, paper only). Since 2026-11-26 it caps how FAR the hedge may be: up to (spread width − value) beyond the short (1800 − 300 → 1500); it was a minimum distance from the short before | Hedge |
 | 075 | Partial scale-down **Ratio Gap** (`paper_trading_config.partial_scale_ratio_gap`, default 1): slice while live ATM ratio ≥ new ratio + gap | Scale-down |
 | 076 | Manual order on **extra accounts** (`place_manual_order(..., p_extra_accounts UUID[])`; drops the 8-arg version): each extra must be live and the caller's own (or admin) | Live |
 

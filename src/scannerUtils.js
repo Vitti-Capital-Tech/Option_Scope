@@ -163,9 +163,13 @@ export function listHedgeStrikes(candidates, type, sellStrike, sellIv, strikeDif
     if (g > 0 && g < step) step = g;
   }
   if (!Number.isFinite(step)) return [];
-  const maxDist = width - step;
-  // Min Hedge Strike Diff (2026-11-20): the hedge must be at least distMin points beyond the short.
-  const minDist = Math.max(0, Number(distMin) || 0);
+  // Min Hedge Strike Diff (2026-11-26): the FAR limit is pulled in by it — the hedge may sit from
+  // one strike beyond the short up to (width − distMin) beyond it (width 1800, min 300 → up to
+  // 1500). 0 = off: up to (width − one step), as before. (2026-11-20 → 11-25 it was a MINIMUM
+  // distance from the short instead.)
+  const dm = Math.max(0, Number(distMin) || 0);
+  const maxDist = dm > 0 ? width - dm : width - step;
+  const minDist = 0;
   const out = [];
   for (const t of candidates || []) {
     const k = Number(t?.strike);

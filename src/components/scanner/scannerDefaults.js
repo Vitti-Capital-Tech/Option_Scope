@@ -27,8 +27,8 @@ export const SCANNER_DEFAULTS = {
   hedgeMaxPrice: 10,
   hedgeIvDiffMin: 0,
   hedgeIvDiffMax: 2,
-  // Min Hedge Strike Diff: the hedge strike must be at least this many points beyond the
-  // short. 0 = off.
+  // Min Hedge Strike Diff: the hedge may sit at most (spread width − this) points beyond the
+  // short. 0 = off (up to width − one strike).
   hedgeStrikeDiffMin: 0,
   // Delta's contract-level OI limit (from 14 Oct 2026): with the toggle on, spreads with a leg
   // on a strike whose OI (USD) is at/over the cap — or that Delta has locked (reduce-only) —

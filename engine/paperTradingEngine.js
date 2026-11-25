@@ -931,7 +931,7 @@ async function startSingleAccountEngine(account) {
           hedgeMaxPrice: s.hedge_max_price ?? 10,
           hedgeIvDiffMin: s.hedge_iv_diff_min ?? 0,
           hedgeIvDiffMax: s.hedge_iv_diff_max ?? 2,
-          // Min Hedge Strike Diff (migration 074, PAPER only): hedge at least this far beyond the short.
+          // Min Hedge Strike Diff (migration 074, PAPER only): hedge at most (width − this) beyond the short.
           hedgeStrikeDiffMin: s.hedge_strike_diff_min ?? 0,
           // Shared Long Strikes (migration 044, paper v2): how many near-ATM long strikes may
           // carry two spreads. 0 = off.
@@ -5096,7 +5096,7 @@ async function startSingleAccountEngine(account) {
       };
       // Log text for the hedge distance range in effect.
       const hedgeDistTxt = hedgeFilters.distMin > 0
-        ? `from ${hedgeFilters.distMin} pts beyond the short (Min Hedge Strike Diff) up to (width − one step)`
+        ? `from one step beyond the short up to (width − ${hedgeFilters.distMin}) (Min Hedge Strike Diff)`
         : 'from one step beyond the short up to (width − one step)';
       // Every qualifying hedge for a spread: strikes beyond the short from one strike step up
       // to (width − one step) away, under Max Hedge Price and inside the IV-diff range
