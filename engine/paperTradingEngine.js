@@ -2415,6 +2415,148 @@ async function startSingleAccountEngine(account) {
     return true;
   }
 
+  // ── Hedge legs changed on Delta (armed real, 2026-11-25) ─────────────────────────────────
+  // The hedge (3rd long) was invisible to reconcile: closing or reducing it on Delta (app/web,
+  // the dashboard Trade tab, or its own TP bracket firing) left the engine thinking it was
+  // still open — no alert, and the pair's later hedge close booked "already closed".
+  // Now, per hedge SYMBOL (several pairs may share one): tracked contracts = Σ hedges on it;
+  // when Delta holds FEWER, and that stays the same over 3 snapshots and 90 s, and order
+  // history shows at least the missing contracts SOLD by orders the engine did not tag (no
+  // client id — Delta app / bracket — or a MAN- Trade-tab order), the missing contracts are
+  // booked at Delta's actual sell fills and taken off the hedges: all of them when Delta is
+  // flat, else split across the sharing pairs in proportion to their contracts. Each pair:
+  // all gone → `${id}-HX` (same id as a normal hedge exit, so it can't double-book), part →
+  // `${id}-HXR-<remaining>`. Telegram "🛡️ Hedge closed/reduced on Delta". No proof → alert
+  // once, nothing booked. Never places an order. Skipped: hedges the engine is closing itself
+  // (resting -HXL, closed this cycle), hedge-only rows (their own retry handles them) and
+  // hedges younger than 2 min.
+  const hedgeSeen = new Map(); // hedge symbol → { contracts, at, passes } while Delta < tracked
+  async function reconcileExternalHedgeChanges(sizeBySymbol, orderHistory) {
+    if (!(accountState.mode === 'live' && accountState.live_enabled && !live.dryRun)) return;
+    const now = Date.now();
+    const bySym = new Map();
+    for (const pos of positions) {
+      if (pos.underlying !== config.underlying || !hasOpenHedge(pos) || !pos.hedgeLeg.symbol) continue;
+      if (pos.hedgeLeg.exitOrderId != null || closedHedgeIds.has(pos.id) || isHedgeOnlyRow(pos)) continue;
+      if (now - new Date(pos.entryTime).getTime() < 120000) continue;
+      // Expiry settles the hedge on Delta; the expiry path books it (settledPx), not this.
+      if (pos.expiry && now >= new Date(pos.expiry).getTime() - 60000) continue;
+      const sym = pos.hedgeLeg.symbol;
+      if (!bySym.has(sym)) bySym.set(sym, []);
+      bySym.get(sym).push(pos);
+    }
+    const seenNow = new Set();
+    for (const [sym, list] of bySym) {
+      const expected = list.reduce((s, p) => s + longContracts(p.hedgeLeg), 0);
+      const raw = sizeBySymbol[sym];
+      const rawN = raw == null ? 0 : Math.round(Number(raw));
+      if (!Number.isFinite(rawN) || rawN < 0) continue; // short on a hedge symbol: not ours to judge
+      const actual = rawN;
+      if (actual >= expected) {
+        hedgeSeen.delete(sym);
+        if (openIssues.has(`hedge-external:${sym}`)) resolveIssue(`hedge-external:${sym}`, `Delta holds all ${expected} tracked hedge contract(s) again — nothing booked`);
+        continue;
+      }
+      seenNow.add(sym);
+      const s = hedgeSeen.get(sym);
+      if (!s || s.contracts !== actual) { hedgeSeen.set(sym, { contracts: actual, at: now, passes: 1 }); continue; }
+      s.passes += 1;
+      if (s.passes < 3 || now - s.at < 90000) continue; // must hold steady before acting
+
+      const missing = expected - actual;
+      const orders = await orderHistory();
+      if (!Array.isArray(orders)) continue; // order history unreadable → try next pass
+      const since = Math.min(...list.map(p => new Date(p.entryTime).getTime())) - 120000;
+      const sold = orders
+        .filter(o => o.product_symbol === sym && String(o.side) === 'sell'
+          && new Date(o.updated_at || o.created_at || 0).getTime() >= since)
+        .filter(o => o.meta_data?.order_type !== 'settlement_order')
+        .filter(o => { const coid = String(o.client_order_id || ''); return coid === '' || coid.startsWith('MAN-'); })
+        .reduce((t, o) => t + Math.max(0, Math.abs(Number(o.size) || 0) - Math.abs(Number(o.unfilled_size) || 0)), 0);
+      const issueKey = `hedge-external:${sym}`;
+      if (sold < missing) {
+        if (!openIssues.has(issueKey)) {
+          logWarn(`[${accountState.name}] ⏸ Hedge ${sym}: Delta holds ${actual} of ${expected} tracked contract(s), but order history shows only ${sold} sold outside the engine — NOT booking; admin alerted.`);
+          raiseIssue(issueKey, { severity: 'high', context: `Hedge ${sym}: Delta holds ${actual} of the ${expected} contract(s) the engine tracks, but order history shows only ${sold} sold outside the engine. Nothing booked — check on Delta.`, error: { message: 'hedge-external-unverified' } }, { admin: true });
+        }
+        continue;
+      }
+      hedgeSeen.delete(sym);
+
+      // Split the missing contracts across the pairs on this symbol (largest remainder).
+      const cons = list.map(p => longContracts(p.hedgeLeg));
+      const cut = actual === 0 ? cons.slice() : cons.map(c => Math.floor(c * missing / expected));
+      if (actual > 0) {
+        let left = missing - cut.reduce((a, b) => a + b, 0);
+        const order = cons.map((c, i) => ({ i, rem: (c * missing / expected) - cut[i] })).sort((a, b) => b.rem - a.rem);
+        for (const { i } of order) { if (left <= 0) break; if (cut[i] < cons[i]) { cut[i] += 1; left -= 1; } }
+      }
+
+      lastDbWrite = Date.now(); // hold fetchActivePositions off during the mutate+persist
+      const fills = await live.fills().catch(() => []);
+      const fillPx = closingFillPriceFrom(fills, sym, 'sell', missing);
+      const tk = tickerData[sym];
+      const px = fillPx ?? tk?.bid ?? tk?.markPrice ?? tk?.lastPrice ?? null;
+      const lines = [];
+      let netTotal = 0;
+      for (let i = 0; i < list.length; i++) {
+        const pos = list[i];
+        const n = cut[i];
+        const hedge = pos.hedgeLeg;
+        if (!(n > 0) || !hasOpenHedge(pos) || closedHedgeIds.has(pos.id)) continue;
+        const total = longContracts(hedge);
+        const full = n >= total;
+        const perC = hedge.lotSize / total;
+        const soldLot = full ? hedge.lotSize : Number((perC * n).toFixed(6));
+        const exitPx = px ?? hedge.entryPrice ?? 0;
+        const entryFeePart = full ? (hedge.entryFee || 0) : (hedge.entryFee || 0) * (n / total);
+        const exitFee = calculateFee(exitPx, spotPrice, soldLot, hedge.originalLotSize || 1);
+        const gross = (exitPx - (hedge.entryPrice || 0)) * soldLot;
+        const net = gross - entryFeePart - exitFee;
+        netTotal += net;
+        try {
+          await supabase.from('trade_history').upsert([{
+            trade_id: full ? `${pos.id}-HX` : `${pos.id}-HXR-${total - n}`,
+            underlying: pos.underlying, expiry: pos.expiry, type: pos.type,
+            buy_leg: JSON.stringify({ ...hedge, lotSize: soldLot, exitIv: tk?.bidIv ?? tk?.iv ?? null }),
+            sell_leg: JSON.stringify({ lotSize: 0 }),
+            hedge_leg: JSON.stringify({ ...hedge, lotSize: soldLot }),
+            sell_qty: 0, strike_diff: 0,
+            entry_time: pos.entryTime instanceof Date ? pos.entryTime.toISOString() : (pos.entryTime || new Date().toISOString()),
+            entry_buy_price: hedge.entryPrice ?? 0, entry_sell_price: 0, entry_spot_price: pos.entrySpotPrice ?? spotPrice,
+            margin: 0, exit_time: new Date().toISOString(),
+            exit_buy_price: exitPx, exit_sell_price: null, exit_spot_price: spotPrice,
+            realized_gross_pnl: gross, realized_net_pnl: net, exit_fee: exitFee, total_fees: entryFeePart + exitFee,
+            exit_reason: `Hedge ${full ? 'closed' : 'reduced'} on Delta (${total}→${total - n} contracts)`,
+            is_partial: true, lot_size: soldLot, account_id: accountState.id,
+          }], { onConflict: 'trade_id', ignoreDuplicates: true });
+        } catch (e) { logError(`[${accountState.name}] External hedge booking failed for ${pos.id}:`, e); }
+        // The hedge premium is part of the carried margin (hedgePremiumMargin) — drop the sold part.
+        pos.margin = Math.max(0, (Number(pos.margin) || 0) - (Number(hedge.entryPrice) || 0) * soldLot);
+        if (full) {
+          closedHedgeIds.add(pos.id);
+          pos.hedgeLeg = null;
+        } else {
+          pos.hedgeLeg = { ...hedge, lotSize: Number((hedge.lotSize - soldLot).toFixed(6)), entryFee: (hedge.entryFee || 0) - entryFeePart };
+        }
+        try {
+          await supabase.from('active_positions').update({ hedge_leg: pos.hedgeLeg ? JSON.stringify(pos.hedgeLeg) : null, margin: pos.margin }).eq('id', pos.id);
+        } catch (e) { logError(`[${accountState.name}] External hedge persist failed for ${pos.id}:`, e); }
+        lines.push(`${pos.type.toUpperCase()} ${pos.buyLeg?.strike}/${pos.sellLeg?.strike}: hedge ${hedge.strike} ${total} → ${total - n}`);
+        log(`[${accountState.name}] 🛡️ EXTERNAL HEDGE ${full ? 'CLOSE' : 'REDUCE'} (Delta): ${pos.type.toUpperCase()} ${pos.buyLeg?.strike}/${pos.sellLeg?.strike} hedge ${hedge.strike} ${total}→${total - n} contracts | booked ${soldLot} @ $${Number(exitPx).toFixed(2)}${fillPx == null ? ' (no fill found — mark)' : ''} | net $${net.toFixed(2)}`);
+      }
+      if (lines.length) {
+        resolveIssue(issueKey, 'the hedge change on Delta was confirmed and booked');
+        notifyTrade({
+          title: actual === 0 ? '🛡️ Hedge closed on Delta' : '🛡️ Hedge reduced on Delta',
+          lines: [`${prettySymbol(sym)}: ${expected} → ${actual} contracts (changed on Delta)`, ...lines, `Sold @ $${px != null ? Number(px).toFixed(2) : '—'}`],
+          pnl: netTotal, pnlLabel: 'Hedge P&L',
+        });
+      }
+    }
+    for (const k of [...hedgeSeen.keys()]) if (!seenNow.has(k)) hedgeSeen.delete(k);
+  }
+
   // Partial-reduction reconcile (armed real): the user reduced a leg's SIZE directly on
   // Delta (still open, just smaller). Bring the engine's tracked size DOWN to match and book
   // the closed slice — no order is placed (the reduction already happened on Delta), so the
@@ -2906,6 +3048,9 @@ async function startSingleAccountEngine(account) {
 
     // Sync any leg the user REDUCED directly on Delta (still open, just smaller) down to match.
     await reconcilePartialReductions(sizeBySymbol, liveOrders);
+
+    // Hedge legs closed / reduced directly on Delta (app, Trade tab, its own bracket).
+    await reconcileExternalHedgeChanges(sizeBySymbol, orderHistory).catch(e => logError(`[${accountState.name}] reconcileExternalHedgeChanges failed:`, e));
 
     const now = Date.now();
 
@@ -4831,7 +4976,8 @@ async function startSingleAccountEngine(account) {
               const blocked = scanTickers(withHeld, effectiveConfig, spotPrice, atmStrike, getTickerPrice).pairs
                 .filter(s => held.has(Number(s.buyLeg.strike)) || held.has(Number(s.sellLeg.strike)));
               if (blocked.length) {
-                txt += ` → ${blocked.length} pair${blocked.length === 1 ? '' : 's'} blocked by them (e.g. ${blocked.slice(0, 4).map(s => `${s.buyLeg.strike}/${s.sellLeg.strike}`).join(', ')})`;
+                // scanTickers returns at most 50 pairs, so 50 means "50 or more".
+                txt += ` → ${blocked.length >= 50 ? '50+' : blocked.length} pair${blocked.length === 1 ? '' : 's'} blocked by them (e.g. ${blocked.slice(0, 4).map(s => `${s.buyLeg.strike}/${s.sellLeg.strike}`).join(', ')})`;
               }
             }
             parts.push(txt);
