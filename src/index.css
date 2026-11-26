@@ -8037,3 +8037,47 @@ details.dr-note p {
 @media (prefers-reduced-motion: reduce) {
   .side-nav, .side-nav-backdrop { animation: none; }
 }
+
+/* ── Split view (desktop: two dashboards side by side, src/splitView.js) ── */
+.split-pane {
+  position: relative;
+  overflow: hidden;
+}
+.split-divider {
+  flex: 0 0 6px;
+  height: 100%;
+  cursor: col-resize;
+  background: var(--border);
+  position: relative;
+  z-index: 5;
+  transition: background 0.15s;
+}
+.split-divider::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 2px;
+  height: 32px;
+  transform: translate(-50%, -50%);
+  border-radius: 2px;
+  background: var(--text-dim);
+  opacity: 0.6;
+}
+.split-divider:hover,
+body.split-dragging .split-divider { background: var(--accent); }
+body.split-dragging,
+body.split-dragging * { cursor: col-resize !important; user-select: none !important; }
+body.split-dragging .split-pane { pointer-events: none; }
+/* Each pane has its own top bar — trim it to fit half a screen. */
+.split-pane .navbar { padding: 0 10px; gap: 8px; }
+.split-pane .logo-text { display: none; }
+.split-pane .nav-tabs-container { gap: 4px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.split-pane .nav-tabs-container::-webkit-scrollbar { display: none; }
+/* Pane ≤ 900px (class set by splitResponsive.js): icon-only tabs. */
+.split-pane.split-narrow .nav-tab-text { display: none; }
+.split-pane.split-narrow .nav-tab { padding: 6px 8px; gap: 0; }
+.split-pane.split-narrow .ws-badge span { display: none; }
+@media (max-width: 1099px) {
+  .nav-split-btn { display: none !important; }
+}

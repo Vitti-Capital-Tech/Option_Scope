@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { TrendingUp, Target, Columns, Radio, FileSpreadsheet, Gauge, CalendarRange, Activity, BookOpen, Sun, Moon, Menu, X, MoreHorizontal, LayoutGrid, RotateCcw } from 'lucide-react';
+import { TrendingUp, Target, Columns, Radio, FileSpreadsheet, Gauge, CalendarRange, Activity, BookOpen, Sun, Moon, Menu, X, MoreHorizontal, LayoutGrid, RotateCcw, Columns2 } from 'lucide-react';
+import { useSplit } from '../../splitView.js';
 
 // Every dashboard, in display order. The user picks which ones sit in the top bar (desktop) /
 // bottom bar (mobile, first 4); the rest live in the sidebar opened from the menu button (top
@@ -46,6 +47,8 @@ export default function Navbar({
   const [pickOpen, setPickOpen] = useState(false);
   const [topKeys, setTopKeys] = useState(readTop);
   const pickRef = useRef(null);
+  const split = useSplit();
+  const inRightPane = split.active && split.sideOf(activeTab) === 'right';
 
   const topTabs = useMemo(() => ALL_TABS.filter(t => topKeys.includes(t.key)), [topKeys]);
   const sideTabs = useMemo(() => ALL_TABS.filter(t => !topKeys.includes(t.key)), [topKeys]);
@@ -172,6 +175,20 @@ export default function Navbar({
             </button>
             {pickOpen && picker}
           </div>
+          {split.available && (
+            <button
+              type="button"
+              className={`nav-tab nav-split-btn ${split.active ? 'active' : ''}`}
+              onClick={() => split.toggle(activeTab)}
+              title={split.active
+                ? `Close split view — keep ${inRightPane ? 'this' : 'the left'} dashboard`
+                : 'Split view — two dashboards side by side (each pane has its own top bar)'}
+              aria-pressed={split.active}
+              style={{ padding: '6px' }}
+            >
+              <Columns2 size={16} />
+            </button>
+          )}
           <button className="nav-tab" onClick={toggleTheme} title="Toggle Theme" style={{ padding: '6px' }}>
             {theme === 'dark' ? (
               <Sun size={16} />
