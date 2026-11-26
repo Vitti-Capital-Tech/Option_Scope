@@ -101,17 +101,34 @@ function quoteOf(leg, storedPx, entryTime) {
   return { quote: storedPx, known: !(Date.parse(entryTime) >= FILL_BOOKED_SINCE) };
 }
 
-function legResult({ quote, known }, order, sign, fallbackCv, strike) {
+// A modified entry order no longer carries the first limit: the engine re-prices an unfilled
+// sell to $1 and an unfilled buy to mark + 50 (ENTRY_SELL_MODIFY_PX / ENTRY_BUY_MARK_PLUS).
+// The hedge's chase never goes above its first limit, so its limit is always ask + offset.
+const BUY_MODIFIED_GAP = 40;
+
+// `offset` = the account's entry offset for this leg (buy / sell / hedge). With no saved quote,
+// the engine's first limit was quote + offset (buy) / quote − offset (sell), so an order that
+// wasn't modified gives the quote back as limit ∓ offset — marked `estimated`.
+function legResult({ quote, known }, order, sign, fallbackCv, strike, offset) {
   if (!(quote > 0)) return null;
-  const base = { quote, strike, limit: num(order?.limit_price) };
-  if (!known) return { ...base, status: 'no-quote' };
-  if (!order) return { ...base, status: 'no-data' };
+  const limit = num(order?.limit_price);
+  const base = { quote, strike, limit };
+  if (!order) return { ...base, status: known ? 'no-data' : 'no-quote' };
   const fill = num(order.average_fill_price);
   const filled = Math.max(0, Math.round((num(order.size) ?? 0) - (num(order.unfilled_size) ?? 0)));
   if (fill == null || filled <= 0) return { ...base, status: 'unfilled', filled: 0 };
+  let q = quote;
+  let estimated = false;
+  if (!known) {
+    const modified = sign < 0 ? limit != null && limit <= 1 : limit != null && limit - fill >= BUY_MODIFIED_GAP;
+    if (limit == null || offset == null || modified) return { ...base, status: 'no-quote', modified };
+    q = limit - sign * offset;
+    if (!(q > 0)) return { ...base, status: 'no-quote' };
+    estimated = true;
+  }
   const cv = num(order.contract_value) ?? fallbackCv;
-  const slip = sign * (fill - quote);
-  return { ...base, status: 'ok', fill, filled, slip, pct: (slip / quote) * 100, cost: cv != null ? slip * filled * cv : null };
+  const slip = sign * (fill - q);
+  return { ...base, quote: q, estimated, status: 'ok', fill, filled, slip, pct: (slip / q) * 100, cost: cv != null ? slip * filled * cv : null };
 }
 
 function summarize(rows) {
@@ -140,7 +157,7 @@ export default function SlippageReport({ onNavigate, theme, toggleTheme, active 
   const [accountId, setAccountId] = useState('all');
   const [from, setFrom] = useState(() => shiftDate(tradeDateOf(Date.now()), -6));
   const [to, setTo] = useState(() => tradeDateOf(Date.now()));
-  const [data, setData] = useState({ entries: [], fills: [] });
+  const [data, setData] = useState({ entries: [], fills: [], offsets: {} });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [loadedAt, setLoadedAt] = useState(null);
@@ -207,10 +224,10 @@ export default function SlippageReport({ onNavigate, theme, toggleTheme, active 
       : selectedGroup ? selectedGroup.ids
       : accountId.startsWith('group:') ? []
       : [accountId];
-    if (!session || ids.length === 0) return { entries: [], fills: [] };
+    if (!session || ids.length === 0) return { entries: [], fills: [], offsets: {} };
     const since = `${from}T00:00:00.000Z`;
     const until = `${to}T23:59:59.999Z`;
-    const [open, closed, fills] = await Promise.all([
+    const [open, closed, fills, offsets] = await Promise.all([
       fetchAll(() => supabase.from('active_positions').select(`id, ${ENTRY_COLS}`)
         .in('account_id', ids).gte('entry_time', since).lte('entry_time', until).order('entry_time', { ascending: false })),
       // Hedge exit rows (-HX…) carry the hedge price in entry_buy_price — not an entry row.
@@ -219,6 +236,12 @@ export default function SlippageReport({ onNavigate, theme, toggleTheme, active 
         .order('entry_time', { ascending: false })),
       // Orders are created a moment before the position row is written — start an hour early.
       fetchEntryFills(ids, new Date(Date.parse(since) - 3600000).toISOString()),
+      // Entry offsets, to rebuild the quote of entries booked at the fill (see legResult).
+      supabase.from('paper_trading_config').select('account_id, entry_buy_offset, entry_sell_offset, entry_hedge_offset')
+        .in('account_id', ids)
+        .then(({ data: rows }) => Object.fromEntries((rows || []).map(c => [c.account_id, {
+          buy: num(c.entry_buy_offset) ?? 10, sell: num(c.entry_sell_offset) ?? 3, hedge: num(c.entry_hedge_offset) ?? 2,
+        }])), () => ({})),
     ]);
     // One entry per position id: an open position, else its full-exit row, else a partial row
     // that still carries the short (a long-ladder row may have sell_qty 0).
@@ -232,7 +255,7 @@ export default function SlippageReport({ onNavigate, theme, toggleTheme, active 
       const prev = byId.get(id);
       if (!prev || rank(row) > rank(prev)) byId.set(id, row);
     });
-    return { entries: [...byId.values()], fills };
+    return { entries: [...byId.values()], fills, offsets };
   }, [session, accounts, accountId, selectedGroup, from, to]);
 
   const apply = useCallback((d) => {
@@ -268,13 +291,14 @@ export default function SlippageReport({ onNavigate, theme, toggleTheme, active 
       const bl = e.buy_leg || {};
       const sl = e.sell_leg || {};
       const hl = e.hedge_leg || null;
+      const off = data.offsets?.[e.account_id] || {};
       const long = legResult(quoteOf(bl, num(e.entry_buy_price), e.entry_time), byTag.get(`${e.id}-EB`), 1,
-        num(bl.contractValue) ?? num(bl.originalLotSize), bl.strike);
+        num(bl.contractValue) ?? num(bl.originalLotSize), bl.strike, off.buy);
       const short = num(e.sell_qty) > 0
-        ? legResult(quoteOf(sl, num(e.entry_sell_price), e.entry_time), byTag.get(`${e.id}-ES`), -1, num(sl.contractValue) ?? num(sl.lotSize), sl.strike)
+        ? legResult(quoteOf(sl, num(e.entry_sell_price), e.entry_time), byTag.get(`${e.id}-ES`), -1, num(sl.contractValue) ?? num(sl.lotSize), sl.strike, off.sell)
         : null;
       const hedge = hl ? legResult(quoteOf(hl, num(hl.entryPrice), e.entry_time), byTag.get(`${e.id}-HB`), 1,
-        num(hl.contractValue) ?? num(hl.originalLotSize), hl.strike) : null;
+        num(hl.contractValue) ?? num(hl.originalLotSize), hl.strike, off.hedge) : null;
       const legs = [long, short, hedge].filter(Boolean);
       const matched = legs.some(x => x.status === 'ok');
       return {
@@ -329,12 +353,14 @@ export default function SlippageReport({ onNavigate, theme, toggleTheme, active 
       return <span className="sl-muted" title="This order is not in Delta's recent order history (older than ~2,000 orders), so its fill price isn't available">{fmtPx(x.quote)} · no fill data</span>;
     }
     if (x.status === 'no-quote') {
-      return <span className="sl-muted" title="This entry was booked at Delta's fill price and the engine's quote wasn't saved yet (entries from 18 Nov until the quote-saving update), so slippage can't be measured">{fmtPx(x.quote)} fill · quote not saved</span>;
+      return <span className="sl-muted" title={x.modified
+        ? "The entry order was modified (not filled within the first wait), so its limit no longer shows the original quote and slippage can't be measured"
+        : "This entry was booked at Delta's fill price and the engine's quote wasn't saved, so slippage can't be measured"}>{fmtPx(x.quote)} fill · {x.modified ? 'order modified' : 'quote not saved'}</span>;
     }
     if (x.status === 'unfilled') return <span className="sl-muted" title="The entry order did not fill">{fmtPx(x.quote)} · not filled</span>;
     return (
-      <span className="sl-leg" title={`Quote ${x.quote} · limit sent ${x.limit ?? '—'} · avg fill ${r4(x.fill)} · ${x.filled} contract(s)${x.cost != null ? ` · cost ${fmtUsd(x.cost)}` : ''}`}>
-        <span className="sl-px">{fmtPx(x.quote)} → {fmtPx(x.fill)}</span>
+      <span className="sl-leg" title={`${x.estimated ? 'Quote (estimated = limit ∓ the current entry offset)' : 'Quote'} ${r4(x.quote)} · limit sent ${x.limit ?? '—'} · avg fill ${r4(x.fill)} · ${x.filled} contract(s)${x.cost != null ? ` · cost ${fmtUsd(x.cost)}` : ''}`}>
+        <span className="sl-px">{x.estimated ? '~' : ''}{fmtPx(x.quote)} → {fmtPx(x.fill)}</span>
         <span className={`sl-slip ${slipTone(x.slip)}`}>{fmtSlip(x.slip)} ({fmtPct(x.pct)})</span>
       </span>
     );
@@ -520,7 +546,9 @@ export default function SlippageReport({ onNavigate, theme, toggleTheme, active 
               <p>
                 Fills come from Delta's order history, which keeps the most recent ~2,000 orders per account; older entries show
                 “no fill data”. Leg averages are weighted by contracts filled. The engine books each entry at Delta's fill, so
-                the quote is kept separately on the leg; entries from 18 Nov until that was added show “quote not saved”.
+                the quote is kept separately on the leg. For entries from 18 Nov until that was added, the quote is rebuilt from the
+                entry order's limit (limit − Buy/Hedge Offset, limit + Sell Offset, using the account's current offsets) and shown
+                with “~”; orders that were modified because they didn't fill at first show “order modified”.
               </p>
             </details>
           </>
