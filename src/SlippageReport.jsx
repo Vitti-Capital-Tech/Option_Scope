@@ -91,9 +91,20 @@ async function fetchEntryFills(ids, since) {
 }
 
 // One leg's quote vs fill. `sign` turns the price gap into a cost (buy: fill − quote; sell: quote − fill).
-function legResult(quote, order, sign, fallbackCv, strike) {
+// Since 2026-11-18 the engine books Delta's actual fill into the entry price, so the quote it
+// decided on lives in the leg JSON (`quotePrice`, saved from 2026-11-26). An entry booked at
+// the fill with no saved quote can't be measured — comparing fill with fill would read 0.
+const FILL_BOOKED_SINCE = Date.parse('2026-11-18T03:18:00Z');
+function quoteOf(leg, storedPx, entryTime) {
+  const q = num(leg?.quotePrice);
+  if (q != null) return { quote: q, known: true };
+  return { quote: storedPx, known: !(Date.parse(entryTime) >= FILL_BOOKED_SINCE) };
+}
+
+function legResult({ quote, known }, order, sign, fallbackCv, strike) {
   if (!(quote > 0)) return null;
   const base = { quote, strike, limit: num(order?.limit_price) };
+  if (!known) return { ...base, status: 'no-quote' };
   if (!order) return { ...base, status: 'no-data' };
   const fill = num(order.average_fill_price);
   const filled = Math.max(0, Math.round((num(order.size) ?? 0) - (num(order.unfilled_size) ?? 0)));
@@ -257,12 +268,12 @@ export default function SlippageReport({ onNavigate, theme, toggleTheme, active 
       const bl = e.buy_leg || {};
       const sl = e.sell_leg || {};
       const hl = e.hedge_leg || null;
-      const long = legResult(num(e.entry_buy_price), byTag.get(`${e.id}-EB`), 1,
+      const long = legResult(quoteOf(bl, num(e.entry_buy_price), e.entry_time), byTag.get(`${e.id}-EB`), 1,
         num(bl.contractValue) ?? num(bl.originalLotSize), bl.strike);
       const short = num(e.sell_qty) > 0
-        ? legResult(num(e.entry_sell_price), byTag.get(`${e.id}-ES`), -1, num(sl.contractValue) ?? num(sl.lotSize), sl.strike)
+        ? legResult(quoteOf(sl, num(e.entry_sell_price), e.entry_time), byTag.get(`${e.id}-ES`), -1, num(sl.contractValue) ?? num(sl.lotSize), sl.strike)
         : null;
-      const hedge = hl ? legResult(num(hl.entryPrice), byTag.get(`${e.id}-HB`), 1,
+      const hedge = hl ? legResult(quoteOf(hl, num(hl.entryPrice), e.entry_time), byTag.get(`${e.id}-HB`), 1,
         num(hl.contractValue) ?? num(hl.originalLotSize), hl.strike) : null;
       const legs = [long, short, hedge].filter(Boolean);
       const matched = legs.some(x => x.status === 'ok');
@@ -316,6 +327,9 @@ export default function SlippageReport({ onNavigate, theme, toggleTheme, active 
     if (!x) return <span className="sl-muted">—</span>;
     if (x.status === 'no-data') {
       return <span className="sl-muted" title="This order is not in Delta's recent order history (older than ~2,000 orders), so its fill price isn't available">{fmtPx(x.quote)} · no fill data</span>;
+    }
+    if (x.status === 'no-quote') {
+      return <span className="sl-muted" title="This entry was booked at Delta's fill price and the engine's quote wasn't saved yet (entries from 18 Nov until the quote-saving update), so slippage can't be measured">{fmtPx(x.quote)} fill · quote not saved</span>;
     }
     if (x.status === 'unfilled') return <span className="sl-muted" title="The entry order did not fill">{fmtPx(x.quote)} · not filled</span>;
     return (
@@ -505,7 +519,8 @@ export default function SlippageReport({ onNavigate, theme, toggleTheme, active 
               </p>
               <p>
                 Fills come from Delta's order history, which keeps the most recent ~2,000 orders per account; older entries show
-                “no fill data”. Leg averages are weighted by contracts filled.
+                “no fill data”. Leg averages are weighted by contracts filled. The engine books each entry at Delta's fill, so
+                the quote is kept separately on the leg; entries from 18 Nov until that was added show “quote not saved”.
               </p>
             </details>
           </>

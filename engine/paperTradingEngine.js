@@ -547,6 +547,7 @@ async function startSingleAccountEngine(account) {
   let capZeroSkipping = false;
   let lastDbWrite = 0;
   let schedules = []; // Time-based schedule windows
+  let noWindowLogged = false; // "no schedule window yet — entries held" logged for the current state
 
   // ── Live trading (Delta Exchange) ─────────────────────────────────────
   let liveCreds = null; // { apiKey, apiSecret } for mode==='live', else null
@@ -4917,7 +4918,18 @@ async function startSingleAccountEngine(account) {
         if (liveEntryBlocked) log(`[${accountState.name}] Live account not armed${live.dryRun ? ' / engine in dry-run' : ''} — no entries (Start Live places real orders on Delta).`);
         liveEntryBlockLogged = liveEntryBlocked;
       }
-      const wantEntries = !onlyExits && !accountState.paused && dayAllowsEntry && capAllowsEntry && !liveEntryBlocked;
+      // No schedule window yet (2026-11-26): every account keeps a permanent Window 1, so an empty
+      // list only happens while an account is being created — its engine starts the moment the
+      // account row exists, before the dashboard has written its window. Entering then used the
+      // base config (base max positions, no Hedge Leg — hedge lives on windows only): "hedge 6am"
+      // and "hedge all time" each opened 4 unhedged pairs seconds after creation, ~40 s before
+      // their window (max 7, hedge on) was saved. Exits still run.
+      const noWindowYet = schedules.length === 0;
+      if (!onlyExits && noWindowYet !== noWindowLogged) {
+        if (noWindowYet) log(`[${accountState.name}] No schedule window yet — entries held until the account's window is saved.`);
+        noWindowLogged = noWindowYet;
+      }
+      const wantEntries = !onlyExits && !accountState.paused && dayAllowsEntry && capAllowsEntry && !liveEntryBlocked && !noWindowYet;
 
       // scanTickers is an O(n²) pass over every strike pair, per type — tens of ms per
       // account, and it holds the event loop the whole time (every account engine shares
@@ -8537,6 +8549,11 @@ async function startSingleAccountEngine(account) {
               const got = (k) => (ids[k] != null ? af.get(String(ids[k])) : null);
               const fL = got('long'), fS = got('short'), fH = got('hedge');
               const missing = [];
+              // Keep the quote the engine decided on (before it is replaced by the fill) inside
+              // the leg JSON, so the Slippage tab can still compare quote → fill.
+              t.buyLeg = { ...t.buyLeg, quotePrice: t.entryBuyPrice };
+              if (t.sellQty > 0) t.sellLeg = { ...t.sellLeg, quotePrice: t.entrySellPrice };
+              if (isTriplet && t.hedgeLeg) t.hedgeLeg = { ...t.hedgeLeg, quotePrice: t.hedgeLeg.entryPrice };
               if (fL) t.entryBuyPrice = fL.avgPx; else missing.push('long');
               if (t.sellQty > 0) { if (fS) t.entrySellPrice = fS.avgPx; else missing.push('short'); }
               if (fL && (t.sellQty <= 0 || fS)) t.entryFee = fL.commission + (fS?.commission ?? 0);
