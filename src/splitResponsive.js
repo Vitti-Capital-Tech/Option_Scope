@@ -23,12 +23,15 @@ const ROOT_PREFIX = /^\s*((?:html|body)(?:[.#:[][^\s>+~]*)?)\s+(.+)$/;
 
 let conditions = []; // [{ cls, max, min }]
 
+// Both spellings: the source `(max-width: 900px)` (dev) and the range syntax the production
+// minifier rewrites it to — `(width<=900px)`, `(width<=1500px) and (width>=769px)`.
 function parseCondition(mediaText) {
   const t = String(mediaText || '').trim();
-  if (/prefers-|print|hover|pointer|orientation|height|aspect|resolution/.test(t)) return null;
-  const max = t.match(/max-width:\s*(\d+(?:\.\d+)?)px/);
+  if (/prefers-|print|hover|pointer|orientation|height|aspect|resolution|\bnot\b|,/.test(t)) return null;
+  const num = '(\\d+(?:\\.\\d+)?)px';
+  const max = t.match(new RegExp(`max-width:\\s*${num}`)) || t.match(new RegExp(`\\bwidth\\s*<=?\\s*${num}`));
   if (!max) return null;
-  const min = t.match(/min-width:\s*(\d+(?:\.\d+)?)px/);
+  const min = t.match(new RegExp(`min-width:\\s*${num}`)) || t.match(new RegExp(`\\bwidth\\s*>=?\\s*${num}`));
   return { max: Number(max[1]), min: min ? Number(min[1]) : 0 };
 }
 
