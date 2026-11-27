@@ -5101,10 +5101,8 @@ async function startSingleAccountEngine(account) {
         maxPrice: Number(effectiveConfig.hedgeMaxPrice ?? 10),
         ivMin: Number(effectiveConfig.hedgeIvDiffMin ?? 0),
         ivMax: Number(effectiveConfig.hedgeIvDiffMax ?? 2),
-        // Min Hedge Strike Diff (migration 074): paper only — never applied to a live account.
-        ...(accountState.mode !== 'live'
-          ? { distMin: Number(effectiveConfig.hedgeStrikeDiffMin ?? 0) }
-          : {}),
+        // Min Hedge Strike Diff (migration 074): paper AND live (promoted to live 2026-11-27).
+        distMin: Number(effectiveConfig.hedgeStrikeDiffMin ?? 0),
       };
       // Log text for the hedge distance range in effect.
       const hedgeDistTxt = hedgeFilters.distMin > 0

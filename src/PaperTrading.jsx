@@ -2461,7 +2461,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     if (target) {
       const allowHedge = mode === 'live' || (config.strategyVersion ?? 1) >= 2;
       setSchedules(prev => prev.map(s => s.id === scannerFill.windowId
-        ? { ...s, ...scannerToWindowFields(scannerFill.values, allowHedge, mode !== 'live') } : s));
+        ? { ...s, ...scannerToWindowFields(scannerFill.values, allowHedge) } : s));
     }
     setScheduleFocus({
       token: scannerFill.token,

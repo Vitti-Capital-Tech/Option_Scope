@@ -21,7 +21,7 @@ export const sortSchedulesByStart = (list) => {
 // (ratio deviation, min short premium, max short ratio, ATM P&L/ROI floors) have no
 // per-window equivalent and are left out. Hedge fields are copied only where the window
 // uses them (paper, strategy v2+).
-export function scannerToWindowFields(v, allowHedge, isPaper = true) {
+export function scannerToWindowFields(v, allowHedge) {
   const fields = {
     minStrikeDiff: Number(v.minStrikeDiff),
     minLongDist: Number(v.minLongDist),
@@ -38,9 +38,7 @@ export function scannerToWindowFields(v, allowHedge, isPaper = true) {
       hedgeMaxPrice: Number(v.hedgeMaxPrice),
       hedgeIvDiffMin: Number(v.hedgeIvDiffMin),
       hedgeIvDiffMax: Number(v.hedgeIvDiffMax),
-    });
-    // Min Hedge Strike Diff — paper windows only (migration 074).
-    if (isPaper) Object.assign(fields, {
+      // Min Hedge Strike Diff (migration 074) — paper and live windows.
       hedgeStrikeDiffMin: Math.max(0, Number(v.hedgeStrikeDiffMin) || 0),
     });
   }
