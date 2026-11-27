@@ -45,7 +45,8 @@ function HedgeLine({ hedge, options }) {
   if (options && options.length > 1) {
     return (
       <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2, lineHeight: 1.45 }}>
-        {options.map(o => (
+        {/* Top 2 only (nearest the short first; the first is the one paper / live enter). */}
+        {options.slice(0, 2).map(o => (
           <div key={o.strike} style={o.chosen ? { fontWeight: 700, color: 'var(--text)' } : undefined}
             title={`Hedge long ${Number(o.strike).toLocaleString()} @ $${Number(o.price).toFixed(2)}${o.iv != null ? ` (${Number(o.iv).toFixed(1)}% IV)` : ''} × ${o.qty} · net premium $${Number(o.netPremium ?? 0).toFixed(2)}${o.atAtm != null ? ` · worth $${Number(o.atAtm).toFixed(2)} at ATM` : ''}${o.roi != null ? ` · ATM ROI ${o.roi.toFixed(2)}%` : ''}${o.chosen ? ' — nearest the short: used for this row and entered by paper / live' : ''}`}>
             H: <span className="scanner-buy">+{Number(o.strike).toLocaleString()}</span> @ ${Number(o.price).toFixed(2)} × {o.qty}
