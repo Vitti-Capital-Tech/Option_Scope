@@ -8081,6 +8081,26 @@ async function startSingleAccountEngine(account) {
             // it for a pair that then never opens (Dg PUT 83600/82200, 2026-10-21).
             const repPos = t._replaceableLongOnlyPos ?? null;
 
+            // Pause / Stop Live re-read from the DB right before a REAL entry (2026-11-27, Kajal:
+            // an entry went in after the account was paused). The engine learns of a pause through
+            // Realtime, with a 30 s fallback sync — a missed event left up to 30 s in which a
+            // paused account could still enter. One small read per real entry closes that gap.
+            // Fail-closed like the DB guards below: if the read fails, no entry this time.
+            if (liveArmed && !live.dryRun) {
+              const { data: accNow, error: accErr } = await supabase.from('paper_trading_accounts')
+                .select('paused, live_enabled').eq('id', accountState.id).maybeSingle();
+              if (accErr || !accNow) {
+                logWarn(`[${accountState.name}] Entry ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} skipped — could not re-check pause / armed state (${accErr?.message ?? 'account not found'}); failing safe.`);
+                continue;
+              }
+              if (accNow.paused || !accNow.live_enabled) {
+                accountState.paused = !!accNow.paused;
+                accountState.live_enabled = !!accNow.live_enabled;
+                logWarn(`[${accountState.name}] Entry ${t.type.toUpperCase()} ${t.buyLeg.strike}/${t.sellLeg.strike} skipped — the account was ${accNow.paused ? 'paused' : 'disarmed (Stop Live)'} just now.`);
+                break; // no further entries this cycle either
+              }
+            }
+
             // DB-level PER-TYPE count guard — count only full spreads (active short leg).
             // Long-only held positions (sell_qty === 0) don't count toward the cap. The cap
             // is the derived per-type cap (ceil(split% × maxCombined)) for ALL accounts now
@@ -9772,7 +9792,12 @@ export async function startPaperTradingEngine() {
         }
       }
     )
-    .subscribe();
+    // Status line so a dead Realtime feed is visible in the logs (2026-11-27: Kajal's pause
+    // reached the engine only through the 30 s fallback sync, and nothing said why).
+    .subscribe((status, err) => {
+      if (status === 'SUBSCRIBED') log('Accounts Realtime channel: SUBSCRIBED');
+      else logWarn(`Accounts Realtime channel: ${status}${err ? ` (${err.message || err})` : ''} — account changes arrive via the 30 s fallback sync until it reconnects.`);
+    });
 
   // Periodic sync check — every 30 seconds as fallback for missed Realtime events
   const syncTimer = setInterval(async () => {
