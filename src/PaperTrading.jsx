@@ -513,7 +513,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     shortExitPrice: 1.1,
     longExitSlices: 5,
     variableExitSlices: false,
-    strategyVersion: 1,
     tradeDays: [0, 1, 2, 3, 4, 5, 6],
     // Strike prices no new leg may be entered on (migration 040) — paper only.
     excludedStrikes: [],
@@ -1299,7 +1298,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           combined_split_pct: data.combinedSplitPct ?? 70,
           entry_buy_offset: data.entryBuyOffset ?? 10,
           entry_sell_offset: data.entrySellOffset ?? 3,
-          // Paper accounts are the experimental testbed → v2; live starts on stable v1.
+          // No logic reads strategy_version any more; it is written only because the DB's
+          // account-group rule (migrations 050 / 052) groups accounts with the same value.
           strategy_version: accountMode === 'live' ? 1 : 2,
           trade_days: [0, 1, 2, 3, 4, 5, 6]
         }]);
@@ -2120,7 +2120,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           exit_type: 'ATM',
           exit_points: 0,
           variable_exit_slices: false,
-          strategy_version: 1,
+          strategy_version: mode === 'live' ? 1 : 2, // DB group rule only (see account creation)
           trade_days: [0, 1, 2, 3, 4, 5, 6],
           excluded_strikes: [],
           full_deploy_enabled: false,
@@ -2166,11 +2166,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
           initialBalance: data.initial_balance ?? 3000,
           maxCombinedPositions: data.max_combined_positions ?? 4,
           combinedSplitPct: data.combined_split_pct ?? 70,
-          // Which strategy logic this account runs (1 = stable/live, 2+ = experimental
-          // paper). Gate v2-only UI controls on this so they don't show on live accounts,
-          // e.g. {config.strategyVersion >= 2 && <NewFilterField />}. See migration 018.
-          strategyVersion: data.strategy_version ?? 1,
-          // Weekdays new entries are allowed on (0=Sun..6=Sat). v2/paper entry-gate. See migration 021.
+          // Weekdays new entries are allowed on (0=Sun..6=Sat). See migration 021.
           tradeDays: Array.isArray(data.trade_days) ? data.trade_days : [0, 1, 2, 3, 4, 5, 6],
           // Strike prices no new leg may be entered on (migration 040) — paper only.
           excludedStrikes: normalizeExcludedStrikes(data.excluded_strikes),
@@ -2212,7 +2208,7 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
       }
     } catch (e) { }
     return null;
-  }, [activeAccountId]);
+  }, [activeAccountId, mode]);
 
   // Convert UTC time string 'HH:mm' or 'HH:mm:ss' to IST 'HH:mm'
   const utcToIst = (utcTimeStr) => {
@@ -2459,9 +2455,8 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
     setFillApplied(scannerFill.token);
     const target = schedules.find(s => s.id === scannerFill.windowId);
     if (target) {
-      const allowHedge = mode === 'live' || (config.strategyVersion ?? 1) >= 2;
       setSchedules(prev => prev.map(s => s.id === scannerFill.windowId
-        ? { ...s, ...scannerToWindowFields(scannerFill.values, allowHedge) } : s));
+        ? { ...s, ...scannerToWindowFields(scannerFill.values) } : s));
     }
     setScheduleFocus({
       token: scannerFill.token,
@@ -3945,7 +3940,6 @@ export default function PaperTrading({ onNavigate, theme, toggleTheme, mode = 'p
               tradeHistory={tradeHistory}
               historyFilterDate={historyFilterDate}
               now={now}
-              strategyVersion={config.strategyVersion ?? 1}
               balanceAllocationPct={shownAllocationPct}
               initialBalance={config.initialBalance ?? activeAccount?.default_config?.initialBalance ?? 3000}
               walletBalance={walletBalance}

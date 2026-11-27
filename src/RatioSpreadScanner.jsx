@@ -25,6 +25,8 @@ import Navbar from './components/PaperTrading/Navbar';
 import CustomSelect from './components/common/CustomSelect';
 import CustomInput from './components/common/CustomInput';
 import { ScannerFilterToolbar } from './components/scanner/ScannerFilters';
+import { LiveSendControl, LiveSendResults } from './components/scanner/LiveSend';
+import { useLiveSend, rowSendKey } from './components/scanner/useLiveSend';
 import { SCANNER_DEFAULTS, SCANNER_CONFIG_KEY } from './components/scanner/scannerDefaults';
 import { ChevronDown } from 'lucide-react';
 
@@ -713,6 +715,12 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
     }
   };
 
+  // 1-click orders (migration 077, PAPER accounts for now): picked accounts + ON switch + per-row Send.
+  const liveSend = useLiveSend({ underlying, expiry: selExpiry, config });
+  const liveSendFor = (type) => (liveSend.ready
+    ? { state: (row) => liveSend.rowState[rowSendKey(type, row)], send: (row) => liveSend.send(type, row) }
+    : null);
+
   const updateConfig = (keyOrObj, value) => {
     setConfig(c => {
       const updates = typeof keyOrObj === 'object' ? keyOrObj : { [keyOrObj]: value };
@@ -805,6 +813,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
           {/* Saved settings · + Save · Send to window · Reset */}
           <ScannerFilterToolbar config={config} updateConfig={updateConfig} onSendToWindow={onSendToWindow}
             underlying={underlying} expiry={selExpiry} onApplyMarket={applyMarket} />
+          <LiveSendControl ls={liveSend} />
 
           <div className="hide-mobile" style={{ width: 1, height: 24, backgroundColor: 'var(--border)' }}></div>
 
@@ -1035,6 +1044,7 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
             lastRefreshed={lastRefreshed}
             trueAtmStrike={globalAtmStrike}
             tickerData={tickerData}
+            liveSend={liveSendFor('call')}
           />
           <ResultTable
             title="PUT SPREAD"
@@ -1050,7 +1060,9 @@ export default function RatioSpreadScanner({ onNavigate, theme, toggleTheme, onS
             lastRefreshed={lastRefreshed}
             trueAtmStrike={globalAtmStrike}
             tickerData={tickerData}
+            liveSend={liveSendFor('put')}
           />
+          <LiveSendResults ls={liveSend} />
         </main>
       </div>
     </div>

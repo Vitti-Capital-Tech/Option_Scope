@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useCallback } from 'react';
 import { RefreshCw, Target, ChevronRight } from 'lucide-react';
 import { leverageFor, shortNotionalCap } from './scannerUtils';
+import { LiveSendButton } from './components/scanner/LiveSend';
 
 // Human-readable explanation of how an ATM intrinsic price was resolved for a target
 // strike — exact listed / bracket-average / single-neighbour / omitted. Rendered as a
@@ -81,7 +82,10 @@ export default function ResultTable({
   // Optional per-leg price sources { buy, sell } (ticker maps). The Calendar Spread scanner
   // prices the long at the LONG expiry and the short at the SHORT expiry; without it every
   // lookup uses tickerData (one expiry — the Ratio Spread scanner).
-  priceSources = null
+  priceSources = null,
+  // 1-click live orders (Ratio Spread Scanner, migration 077): { state(row), send(row) } while
+  // 1-click is ON with accounts picked; null hides the per-row Send button.
+  liveSend = null
 }) {
   const [expandedStrikes, setExpandedStrikes] = useState({});
   // Anchored hover tooltip for the ATM intrinsic cells (see renderIntrinsic /
@@ -529,6 +533,7 @@ export default function ResultTable({
                               </div>
                               <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Δ: {bestRow.strikeDiff.toLocaleString()}</div>
                               <HedgeLine hedge={bestRow.hedge} options={bestRow.hedgeOptions} />
+                              {liveSend && <LiveSendButton state={liveSend.state(bestRow)} onSend={() => liveSend.send(bestRow)} />}
                             </div>
                           </div>
                         </td>
@@ -612,6 +617,7 @@ export default function ResultTable({
                                 </div>
                                 <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Δ: {r.strikeDiff.toLocaleString()}</div>
                                 <HedgeLine hedge={r.hedge} options={r.hedgeOptions} />
+                                {liveSend && <LiveSendButton state={liveSend.state(r)} onSend={() => liveSend.send(r)} />}
                               </div>
                             </td>
                             <td>

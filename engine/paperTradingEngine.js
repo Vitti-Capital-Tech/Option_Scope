@@ -39,7 +39,7 @@ import { getCosmicSpot } from './lib/cosmicApi.js';
 import {
   safeParseLeg, calculateFee, calcMargin, leverageFor, shortNotionalCap, scanTickers,
   computeEntryAtmRatio, computeScaledSellQty,
-  pickTopUniqueStrikes, pickHedgeStrike, listHedgeStrikes, log, logWarn, logError,
+  pickTopUniqueStrikes, pickHedgeStrike, listHedgeStrikes, log, logWarn, logError, addLogTap,
   effectiveOiCapM, isOiBlocked, pickExpiry, expiryModeForDte,
   normalizeExcludedStrikes, excludedStrikesFor
 } from './lib/utils.js';
@@ -271,29 +271,6 @@ const POSITIONS_RETRY_MAX_MS = 15000;
 const ABSENCE_RECHECK_MS = 10000;
 
 /**
- * ── STRATEGY VERSIONING ──────────────────────────────────────────────────────
- * `config.strategyVersion` (per-account, from paper_trading_config.strategy_version)
- * gates experimental strategy logic so it can be tested on a PAPER account without
- * affecting LIVE accounts. Live accounts stay on version 1; bump an experimental
- * paper account to 2 to run new logic.
- *
- * Add a branch ONLY where behaviour actually changes — everything else stays shared:
- *
- *     if (config.strategyVersion >= 2) {
- *       // new experimental logic
- *     } else {
- *       // stable logic — live accounts run this
- *     }
- *
- * `config` is threaded into scanTickers()/schedule windows too, so `config.strategyVersion`
- * is available there as well. The frontend reads the same value to show/hide any v2-only
- * UI controls, so a v2 filter neither runs nor appears on a v1 (live) account.
- *
- * Promotion: once validated on paper, set the live account's strategy_version to 2 in
- * the DB (no redeploy). Once ALL accounts are on the new version, DELETE the old branch
- * so versions don't pile up — keep at most stable (live) + experimental (paper) alive.
- * ─────────────────────────────────────────────────────────────────────────────
- *
  * Build `count` equidistant exit price levels (sorted ascending) spanning the
  * long option's current bid up to `upperBound` (= max(entry, last 1-2hr high)).
  * Used to scale a held long-only leg out as its bid recovers. Levels are evenly
@@ -438,12 +415,8 @@ async function startSingleAccountEngine(account) {
     combinedSplitPct: 70,
     entryBuyOffset: 10,
     entrySellOffset: 3,
-    // Which strategy logic to run. 1 = stable (live accounts); an experimental
-    // paper account is set to 2+ to test new logic. Branch on it wherever the
-    // behaviour diverges — see the STRATEGY VERSIONING note below.
-    strategyVersion: 1,
     // Weekdays new entries are allowed on (0=Sun..6=Sat), aligned to the 17:30 IST
-    // trading-day boundary. All seven = trade every day. v2/paper entry-gate only.
+    // trading-day boundary. All seven = trade every day. Paper and live.
     tradeDays: [0, 1, 2, 3, 4, 5, 6],
     // Paper full-deployment fill (migration 030) — paper only. When enabled, once
     // per IST day at fullDeployTime the whole remaining pool is concentrated across
@@ -521,6 +494,9 @@ async function startSingleAccountEngine(account) {
   let entryRetryAt = 0;
   let entryRetryMinute = -1;
   let entryRetriesUsed = 0;
+  // Scanner "Send" entry request (migration 077), claimed by processScannerEntries and waiting
+  // for the next full cycle, which enters exactly that spread (`forcedCycle` in evaluateStrategy).
+  let forcedEntry = null;
   let isEvaluating = false;
   let evaluationStart = 0;
   let liveEntryInFlight = false; // a live openSpread is placing / waiting on orders
@@ -773,7 +749,9 @@ async function startSingleAccountEngine(account) {
           combined_split_pct: 70,
           entry_buy_offset: 10,
           entry_sell_offset: 3,
-          // Paper = experimental testbed (v2), live = stable (v1).
+          // strategy_version no longer drives any logic (paper vs live is read from the account's
+          // mode). Still written because the DB's account-group rule (migrations 050 / 052) only
+          // lets accounts with the same value share a group: paper 2, live 1.
           strategy_version: accountState.mode === 'live' ? 1 : 2,
           trade_days: [0, 1, 2, 3, 4, 5, 6],
           full_deploy_enabled: false,
@@ -830,7 +808,6 @@ async function startSingleAccountEngine(account) {
           entryBuyOffset: data.entry_buy_offset ?? 10,
           entrySellOffset: data.entry_sell_offset ?? 3,
           entryHedgeOffset: data.entry_hedge_offset ?? ENTRY_HEDGE_OFFSET, // migration 068
-          strategyVersion: data.strategy_version ?? 1,
           tradeDays: Array.isArray(data.trade_days) ? data.trade_days : [0, 1, 2, 3, 4, 5, 6],
           // Paper full-deployment fill (migration 030) — paper only.
           fullDeployEnabled: data.full_deploy_enabled ?? false,
@@ -924,7 +901,7 @@ async function startSingleAccountEngine(account) {
           // Per-window min-days-to-expiry (migration 019) — all accounts, paper AND live.
           // Falls back to the account-level config value for rows that predate it.
           daysToExpiry: s.days_to_expiry ?? config.daysToExpiry ?? 0,
-          // Per-window hedge leg (strategy_version >= 2 only, migration 041): on/off, and the
+          // Per-window hedge leg (migration 041, paper and live): on/off, and the
           // 3rd long's size as a % of the spread's short qty.
           hedgeEnabled: s.hedge_enabled ?? false,
           hedgeLotPct: s.hedge_lot_pct ?? 0,
@@ -932,9 +909,9 @@ async function startSingleAccountEngine(account) {
           hedgeMaxPrice: s.hedge_max_price ?? 10,
           hedgeIvDiffMin: s.hedge_iv_diff_min ?? 0,
           hedgeIvDiffMax: s.hedge_iv_diff_max ?? 2,
-          // Min Hedge Strike Diff (migration 074, PAPER only): hedge at most (width − this) beyond the short.
+          // Min Hedge Strike Diff (migration 074, paper and live): hedge at most (width − this) beyond the short.
           hedgeStrikeDiffMin: s.hedge_strike_diff_min ?? 0,
-          // Shared Long Strikes (migration 044, paper v2): how many near-ATM long strikes may
+          // Shared Long Strikes (migration 044, paper only): how many near-ATM long strikes may
           // carry two spreads. 0 = off.
           sharedLongStrikes: s.shared_long_strikes ?? 0,
           isActive: s.is_active ?? true,
@@ -3599,6 +3576,64 @@ async function startSingleAccountEngine(account) {
     } catch (e) { logError(`[${accountState.name}] processCancelRequests error:`, e); }
   }
 
+  // Scanner "Send" (migration 077) — PAPER accounts only for now (live later): enter ONE given
+  // spread now, through the normal entry path
+  // (engine sizing, entry offsets, modify / all-or-nothing fill, brackets, exits). Skipped for it:
+  // the window's scan filters, ATM P&L / ROI floors, Max Net Debit, time window and min days to
+  // expiry. Kept: max positions (combined + per-type, in memory and DB), armed, not paused, margin
+  // (allocation + Delta free balance), strike already held, fresh two-sided quotes, depth / live
+  // entry queue, OI cap, Delta rejections, expiry.
+  // The row is claimed here and handed to the next full cycle (started at once through
+  // entryRetryAt); the outcome is written back to the row for the scanner.
+  const SCANNER_ENTRY_MAX_AGE_MS = 60000;
+  const fmtExpiryDay = (e) => (e && Number.isFinite(Date.parse(e)) ? new Date(e).toISOString().slice(0, 10) : '—');
+  async function finishScannerEntry(id, fields) {
+    try {
+      await supabase.from('scanner_entry_requests')
+        .update({ ...fields, processed_at: new Date().toISOString() }).eq('id', id);
+    } catch (e) { logError(`[${accountState.name}] scanner entry request ${id} update failed:`, e); }
+  }
+  async function processScannerEntries() {
+    try {
+      if (forcedEntry) return; // one at a time — the next poll picks up the rest
+      const { data, error } = await supabase
+        .from('scanner_entry_requests').select('*')
+        .eq('account_id', accountState.id).eq('status', 'pending')
+        .order('created_at', { ascending: true }).limit(5);
+      if (error || !data || !data.length) return;
+      for (const r of data) {
+        // A backlog from a down engine is never entered late — prices have moved since the click.
+        if (Date.now() - new Date(r.created_at).getTime() > SCANNER_ENTRY_MAX_AGE_MS) {
+          await finishScannerEntry(r.id, { status: 'expired', message: 'Not sent: the engine picked it up more than 60s after the click.' });
+          continue;
+        }
+        const { data: claimed } = await supabase.from('scanner_entry_requests')
+          .update({ status: 'processing' }).eq('id', r.id).eq('status', 'pending').select('id');
+        if (!claimed || !claimed.length) continue;
+        const fail = (message) => finishScannerEntry(r.id, { status: 'failed', message });
+        // PAPER accounts only for now (2026-11-27) — live is promoted once paper has proven it.
+        // The live path below (armed / dry-run, Delta sizing) is already in place for that.
+        if (accountState.mode === 'live') {
+          await fail('Scanner orders are enabled for paper accounts only for now.');
+          continue;
+        }
+        if (accountState.paused) { await fail('Account is paused.'); continue; }
+        if (String(r.underlying || '').toUpperCase() !== String(config.underlying || '').toUpperCase()) {
+          await fail(`Account trades ${config.underlying}, not ${r.underlying}.`);
+          continue;
+        }
+        if (!config.expiry || Date.parse(r.expiry) !== Date.parse(config.expiry)) {
+          await fail(`Account trades the ${fmtExpiryDay(config.expiry)} expiry, not ${fmtExpiryDay(r.expiry)}.`);
+          continue;
+        }
+        forcedEntry = { req: r };
+        entryRetryAt = Date.now(); // a full cycle right away — not waiting for the minute
+        log(`[${accountState.name}] ◎ Scanner entry request: ${String(r.type).toUpperCase()} ${r.buy_strike}/${r.sell_strike}${r.hedge_strike != null ? ` + hedge ${r.hedge_strike}` : ''} — entering now.`);
+        return; // one per cycle
+      }
+    } catch (e) { logError(`[${accountState.name}] processScannerEntries error:`, e); }
+  }
+
   // Manual order (UI Trade tab → delta_order_requests). Each row is CLAIMED (pending →
   // processing) before sending, so an overlapping poll tick can never place it twice; the
   // `MAN-<id>` client_order_id is a second guard on Delta's side. The outcome is written back
@@ -4635,6 +4670,26 @@ async function startSingleAccountEngine(account) {
       lastEntryMinute = Math.floor(evaluationStart / 60000);
       entryRetryAt = 0; // this cycle IS the retry (if one was pending) — don't run it twice
     }
+    // Scanner "Send" request waiting for this cycle (processScannerEntries). Its skip reasons are
+    // ordinary log lines, so a log tap keeps this account's skip / reject lines for the reply.
+    let forcedCycle = null;
+    let untapForced = null;
+    if (!onlyExits && forcedEntry) {
+      const req = forcedEntry.req;
+      forcedEntry = null;
+      if (Date.now() - new Date(req.created_at).getTime() > SCANNER_ENTRY_MAX_AGE_MS) {
+        finishScannerEntry(req.id, { status: 'expired', message: 'Not entered: more than 60s passed since the click.' });
+      } else {
+        forcedCycle = { req, freshMinute: freshEntryMinute, positionId: null, notes: [] };
+        const tag = `[${accountState.name}]`;
+        untapForced = addLogTap((m) => {
+          if (m.startsWith(tag) && /skipp|blocked|reject|abort|Passed = false|not persisted|cooling|paused|no live|LIVE entry/i.test(m)) {
+            forcedCycle.notes.push(m.slice(tag.length).trim());
+          }
+        });
+      }
+    }
+    const forced = forcedCycle?.req ?? null;
     try {
       // Live fairness: start this minute's entry scan after a per-minute pseudo-random delay
       // (see ENTRY_STAGGER_MS), so the entry governor's "first come" draw order rotates.
@@ -4662,7 +4717,7 @@ async function startSingleAccountEngine(account) {
 
       // ── Apply active time-schedule overrides ──────────────────────────
       const activeSchedule = getActiveSchedule();
-      const effectiveConfig = activeSchedule
+      const windowConfig = activeSchedule
         ? {
           ...config,
           // Paper combined-position sizing (migration 027) — take the ACTIVE window's
@@ -4692,35 +4747,43 @@ async function startSingleAccountEngine(account) {
           // Per-window min-days-to-expiry (migration 019) — all accounts, paper AND live.
           // Falls back to the account-level value for rows that predate the migration.
           daysToExpiry: activeSchedule.daysToExpiry ?? config.daysToExpiry,
-          // Hedge leg (migration 041): LIVE accounts (any strategy version — live runs v1) and
-          // paper strategy_version >= 2. Without the live half, a live window's Hedge toggle
-          // never reached effectiveConfig, so hedgeRequired stayed false and live entries went
-          // in without their hedge (JD2, 2026-10-16).
-          ...((config.strategyVersion >= 2 || accountState.mode === 'live')
-            ? {
-              hedgeEnabled: activeSchedule.hedgeEnabled ?? false,
-              hedgeLotPct: activeSchedule.hedgeLotPct ?? 0,
-              hedgeMaxPrice: activeSchedule.hedgeMaxPrice ?? 10,
-              hedgeIvDiffMin: activeSchedule.hedgeIvDiffMin ?? 0,
-              hedgeIvDiffMax: activeSchedule.hedgeIvDiffMax ?? 2,
-            }
-            : {}),
+          // Hedge leg (migration 041) — paper and live (live since 2026-10-16: JD2's live window
+          // Hedge toggle never reached effectiveConfig before, so live entries went in unhedged).
+          hedgeEnabled: activeSchedule.hedgeEnabled ?? false,
+          hedgeLotPct: activeSchedule.hedgeLotPct ?? 0,
+          hedgeMaxPrice: activeSchedule.hedgeMaxPrice ?? 10,
+          hedgeIvDiffMin: activeSchedule.hedgeIvDiffMin ?? 0,
+          hedgeIvDiffMax: activeSchedule.hedgeIvDiffMax ?? 2,
           // Min Hedge Strike Diff (migration 074) — paper AND live (promoted to live 2026-11-27).
           hedgeStrikeDiffMin: activeSchedule.hedgeStrikeDiffMin ?? 0,
-          // Shared Long Strikes stay paper v2 only (sharedLongCount is gated the same way).
-          ...(config.strategyVersion >= 2
+          // Shared Long Strikes stay paper only (sharedLongCount is gated the same way).
+          ...(accountState.mode !== 'live'
             ? { sharedLongStrikes: activeSchedule.sharedLongStrikes ?? 0 }
             : {}),
         }
         : { ...config };
+      // Scanner "Send": the spread is entered as the scanner row showed it — the row's ATM
+      // scaling and hedge (strike + Hedge Lot %) replace the window's, and Max Net Debit is off
+      // (the user picked the row). These fields are read by the entry path only.
+      const effectiveConfig = forced
+        ? {
+          ...windowConfig,
+          atmRatioScaling: !!forced.atm_ratio_scaling,
+          atmRatioPctCall: Number(forced.atm_ratio_pct_call) || 0,
+          atmRatioPctPut: Number(forced.atm_ratio_pct_put) || 0,
+          hedgeEnabled: forced.hedge_strike != null,
+          hedgeLotPct: forced.hedge_strike != null ? (Number(forced.hedge_lot_pct) || 0) : 0,
+          maxNetPremium: Infinity,
+        }
+        : windowConfig;
 
-      // ── Shared Long Strikes (migration 044) — PAPER v2 only ────────────────────────
+      // ── Shared Long Strikes (migration 044) — PAPER only ─────────────────────────────
       // Normally a strike hosts one leg per account. With N > 0, the N long strikes nearest
       // ATM (calls + puts together, chosen below from this cycle's candidates) may each carry
       // TWO spreads: same long, the two valid shorts nearest ATM. Each is a separate position
       // (own cap slot + margin). Shorts stay one-per-strike, and a long can never be shorted.
-      // Live and v1 always 0 → every path below behaves exactly as before.
-      const sharedLongCount = (accountState.mode !== 'live' && config.strategyVersion >= 2)
+      // Live always 0 → every path below behaves exactly as before.
+      const sharedLongCount = accountState.mode !== 'live'
         ? Math.max(0, Math.floor(Number(effectiveConfig.sharedLongStrikes) || 0))
         : 0;
       const MAX_SPREADS_PER_SHARED_LONG = 2;
@@ -4925,7 +4988,11 @@ async function startSingleAccountEngine(account) {
         if (noWindowYet) log(`[${accountState.name}] No schedule window yet — entries held until the account's window is saved.`);
         noWindowLogged = noWindowYet;
       }
-      const wantEntries = !onlyExits && !accountState.paused && dayAllowsEntry && capAllowsEntry && !liveEntryBlocked && !noWindowYet;
+      // A scanner "Send" cycle skips the day / window gates (not pause, arming or max positions —
+      // those are checked per candidate below).
+      const wantEntries = forced
+        ? (!accountState.paused && !liveEntryBlocked)
+        : (!onlyExits && !accountState.paused && dayAllowsEntry && capAllowsEntry && !liveEntryBlocked && !noWindowYet);
 
       // scanTickers is an O(n²) pass over every strike pair, per type — tens of ms per
       // account, and it holds the event loop the whole time (every account engine shares
@@ -4938,7 +5005,43 @@ async function startSingleAccountEngine(account) {
       // candidates for an hour while the scanner listed 56 — every one needed a strike Dg already
       // held, which were left out of the scan above without a word in the logs).
       let heldNote = '';
-      if (wantEntries) {
+      // Scanner "Send": only the requested pair, from the whole quote pool, with the window's scan
+      // filters off (min width, IV edge, long distance, short premium, ratio deviation, max short
+      // ratio, Max Net Debit). The quote checks stay: both legs quoted and fresh (≤120s), IV and
+      // delta present, and the short not already at its buy-back price.
+      const forcedScan = () => {
+        const type = String(forced.type).toLowerCase();
+        const b = Number(forced.buy_strike);
+        const sk = Number(forced.sell_strike);
+        const label = `Scanner entry ${type.toUpperCase()} ${b}/${sk}`;
+        const pool = allTickers.filter(t => t.type === type && t.expiry === config.expiry
+          && (Number(t.strike) === b || Number(t.strike) === sk));
+        for (const k of [b, sk]) {
+          const tk = pool.find(t => Number(t.strike) === k);
+          const why = !tk ? 'is not listed / quoted for this expiry'
+            : occupiedStrikes[type]?.has(k) ? 'is already held by an open position (one leg per strike)'
+              : excludedStrikes.has(k) ? 'is an excluded strike'
+                : !oiOk(tk) ? "is at Delta's open-interest limit"
+                  : !tradableOk(tk) ? 'has trading disrupted on Delta' : null;
+          if (why) { logWarn(`[${accountState.name}] ${label} skipped: strike ${k} ${why}.`); return []; }
+        }
+        const permissive = {
+          ...effectiveConfig, minStrikeDiff: 0, minIvDiff: 0, minLongDist: 0, minSellPremium: 0,
+          maxRatioDeviation: Infinity, maxSellQty: Infinity, maxNetPremium: Infinity,
+        };
+        const { pairs, rejected } = scanTickers(pool, permissive, spotPrice, atmStrike, getTickerPrice);
+        const pair = pairs.find(x => Number(x.buyLeg.strike) === b && Number(x.sellLeg.strike) === sk);
+        if (!pair) {
+          const names = { noPrice: 'no ask/bid', staleQuote: 'quote older than 120s', noIv: 'no IV', noDelta: 'no delta', shortExitZone: 'short already at its buy-back price' };
+          const why = Object.entries(rejected).filter(([, v]) => v > 0).map(([k]) => names[k] || k).join(', ');
+          logWarn(`[${accountState.name}] ${label} skipped: the pair failed the quote checks (${why || 'not a valid long/short pair'}).`);
+          return [];
+        }
+        return [pair];
+      };
+      if (wantEntries && forced) {
+        topSpreads = forcedScan();
+      } else if (wantEntries) {
         // "All same type" window: only that type can enter, so the other type is not scanned
         // at all. It used to be scanned, priced (ATM P&L / ROI, hedge pick, per-candidate logs)
         // and only dropped at the candidate cut (maxCallCandidates / maxPutCandidates = 0).
@@ -5058,8 +5161,7 @@ async function startSingleAccountEngine(account) {
         return pBelow ?? pAbove;
       }
 
-      // Hedge leg (3rd long) this cycle — PAPER accounts, strategy_version >= 2, window
-      // toggle on and a Hedge Lot % > 0. Shared by the ATM P&L gate and the entry so both see
+      // Hedge leg (3rd long) this cycle — paper and live, window toggle on and a Hedge Lot % > 0. Shared by the ATM P&L gate and the entry so both see
       // the SAME strike: the non-excluded strike beyond the short, nearest it, whose price is
       // below Max Hedge Price and whose |IV − short IV| is inside the window's range
       // (pickHedgeStrike). Returns { ticker, ask } or null.
@@ -5067,10 +5169,9 @@ async function startSingleAccountEngine(account) {
       // hedge strike is rejected (never entered as a plain 2-leg), and a Hedge Lot % of 0
       // blocks entries for that window instead of silently trading unhedged.
       const hedgeLotPct = Number(effectiveConfig.hedgeLotPct) || 0;
-      // Live accounts (any strategy version) and paper v2+ — only when the active window's
-      // Hedge toggle is on (off by default).
-      const hedgeRequired = !!effectiveConfig.hedgeEnabled
-        && (accountState.mode === 'live' || config.strategyVersion >= 2);
+      // Only when the active window's Hedge toggle is on (off by default) — or a scanner row
+      // that carries a hedge.
+      const hedgeRequired = !!effectiveConfig.hedgeEnabled;
       const hedgeOn = hedgeRequired && hedgeLotPct > 0;
       if (hedgeRequired && !hedgeOn && wantEntries) {
         logWarn(`[${accountState.name}] Hedge Leg is on but Hedge Lot % is 0 — no entries this window until a Hedge Lot % is set.`);
@@ -5119,6 +5220,12 @@ async function startSingleAccountEngine(account) {
           && !liveHedgeBlocked.has(t.symbol)        // live: symbol held as a main long/short (see above)
           && !plannedMainSymbols.has(t.symbol)      // a planned spread's long/short this minute
           && quote(t) > 0);
+        // Scanner "Send": only the hedge strike the scanner row showed (still not on a held
+        // long/short, tradable, under the OI limit, quoted) — no price / IV / distance filter.
+        if (forced) {
+          const hk = Number(forced.hedge_strike);
+          return pool.filter(t => Number(t.strike) === hk).map(ticker => ({ ticker, ask: quote(ticker) }));
+        }
         return listHedgeStrikes(pool, type, Number(spread.sellLeg.strike), spread.sellIv, spread.strikeDiff, hedgeFilters)
           .map(ticker => ({ ticker, ask: quote(ticker) }));
       }
@@ -5303,8 +5410,10 @@ async function startSingleAccountEngine(account) {
 
         // Hedge on → a candidate without a qualifying hedge strike is not eligible.
         const hedgeMissing = hedgeRequired && !atmHedge;
+        // Scanner "Send": the ATM P&L / ROI floors are off (the user picked the row); it must still
+        // be priceable at ATM (the short qty comes from the ATM ratio) and have its hedge.
         const passed = !hedgeMissing && atmPnl != null
-          && (byCredit ? netCredit != null : (atmPnl >= minAtmPnl && (roi ?? 0) >= minAtmRoi));
+          && (forced ? ratioToUse != null : (byCredit ? netCredit != null : (atmPnl >= minAtmPnl && (roi ?? 0) >= minAtmRoi)));
         // Loop only runs when wantEntries, so this always logs during an entry-eligible cycle.
         // The intrinsics are logged alongside the verdict because the ATM P&L is only ever
         // as good as the two prices it came from. Without them a wrong number is unfalsifiable:
@@ -5320,7 +5429,9 @@ async function startSingleAccountEngine(account) {
         if (hedgeMissing) {
           const opts = hedgeOptionsFor(spread);
           if (opts.length === 0) {
-            hedgeWhy = ` | no hedge strike (price < $${hedgeFilters.maxPrice}, |IV − short IV| in [${hedgeFilters.ivMin}, ${hedgeFilters.ivMax}]) → rejected`;
+            hedgeWhy = forced
+              ? ` | hedge ${forced.hedge_strike} is held as a long/short, not tradable, at the OI limit or not quoted → rejected`
+              : ` | no hedge strike (price < $${hedgeFilters.maxPrice}, |IV − short IV| in [${hedgeFilters.ivMin}, ${hedgeFilters.ivMax}]) → rejected`;
           } else {
             const nets = opts.map(h => {
               const r = calculateAtmPnlAndRoi(spread, h);
@@ -5510,7 +5621,7 @@ async function startSingleAccountEngine(account) {
           gs.forEach(g => g.sort(rankWithinLong));
           gs.sort((a, b) => entryOrder(a[0], b[0]));
           const pool = gs.slice(0, maxCands);
-          const sharedUnits = new Map();  // group → its shared-long picks (paper v2)
+          const sharedUnits = new Map();  // group → its shared-long picks (paper)
           const preTaken = [];
           for (const g of pool) {
             if (!isSharedLong(type, g[0].buyLeg.strike)) continue;
@@ -5640,6 +5751,8 @@ async function startSingleAccountEngine(account) {
         const first = oc !== op ? (oc < op ? 'call' : 'put') : (firstDist(putUnits) < firstDist(callUnits) ? 'put' : 'call');
         uniqueTopSpreads = interleaveUnits(callUnits, putUnits, first).flat();
       }
+      // Scanner "Send": just the requested pair (no entry plan, no per-type candidate cut).
+      if (forced) uniqueTopSpreads = processedSpreads.slice(0, 1);
 
       if (!onlyExits && uniqueTopSpreads.length > 0) {
         const topDesc = uniqueTopSpreads.map(s => `${s.buyLeg.type.toUpperCase()} ${s.buyLeg.strike}/${s.sellLeg.strike} (${entryByCredit ? `Net: $${s.netCredit.toFixed(1)}, ` : ''}ROI: ${s.roi.toFixed(1)}%, ATM P&L: $${s.atmPnl.toFixed(1)})`).join(', ');
@@ -6789,12 +6902,12 @@ async function startSingleAccountEngine(account) {
       };
 
       const liveCoolingDown = liveArmed && Date.now() < liveMarginCooldownUntil;
-      if (!onlyExits && !paused && dayAllowsEntry && capAllowsEntry && liveCoolingDown) {
+      if (!onlyExits && !paused && (forced || (dayAllowsEntry && capAllowsEntry)) && liveCoolingDown) {
         // partMargin stays null -> the entry loop skips every live candidate this cycle.
         const mins = Math.ceil((liveMarginCooldownUntil - Date.now()) / 60000);
         logWarn(`[${accountState.name}] LIVE entries paused ~${mins} more min after a Delta margin rejection.`);
       }
-      if (!onlyExits && !paused && dayAllowsEntry && capAllowsEntry && liveArmed && !liveCoolingDown) {
+      if (!onlyExits && !paused && (forced || (dayAllowsEntry && capAllowsEntry)) && liveArmed && !liveCoolingDown) {
         try {
           const snap = await live.walletSnapshot();
           const bal = snap?.balance;
@@ -6831,7 +6944,12 @@ async function startSingleAccountEngine(account) {
             }
             // Normal: remaining ÷ free slots. Full-deploy pass: concentrate the whole
             // remaining pool across openable spreads (migration 030, now live too).
-            const sized = sizePartMargin({ remainingBudget, remainingSlots, maxPos, openHere, label: 'LIVE' });
+            // Scanner "Send": a regular position's share — remaining ÷ free slots (max positions
+            // applies; no free slot → 0 → skipped). Never the full-deploy pass (its daily latch
+            // stays with the normal scan).
+            const sized = forced
+              ? { partMargin: remainingSlots > 0 ? remainingBudget / remainingSlots : 0, isFullDeploy: false }
+              : sizePartMargin({ remainingBudget, remainingSlots, maxPos, openHere, label: 'LIVE' });
             partMargin = sized.partMargin;
             if (!sized.isFullDeploy) {
               log(`[${accountState.name}] ¤ LIVE sizing: balance $${bal.toFixed(2)} × ${allocPct}% = $${budget.toFixed(2)} budget | used $${usedMargin.toFixed(2)}${deltaNote} | remaining $${remainingBudget.toFixed(2)} ÷ ${remainingSlots} free slot(s) (window combined cap ${maxPos}) = $${partMargin.toFixed(2)}/position`);
@@ -6852,7 +6970,7 @@ async function startSingleAccountEngine(account) {
       // window re-divides whatever balance is left by its own combined cap. Paper
       // accounts only (mode !== 'live'); armed AND unarmed live accounts are untouched.
       const isPaperAccount = accountState.mode !== 'live';
-      if (!onlyExits && !paused && dayAllowsEntry && capAllowsEntry && isPaperAccount) {
+      if (!onlyExits && !paused && (forced || (dayAllowsEntry && capAllowsEntry)) && isPaperAccount) {
         await refreshRealizedPnl();
         const equity = getPaperEquity();
         const allocPct = config.balanceAllocationPct ?? 90;
@@ -6868,14 +6986,17 @@ async function startSingleAccountEngine(account) {
 
         // Normal: remaining ÷ free slots. Full-deploy pass: concentrate the whole remaining
         // pool across openable spreads (shared with the live block via sizePartMargin).
-        const sized = sizePartMargin({ remainingBudget, remainingSlots, maxPos, openHere, label: 'PAPER' });
+        // Scanner "Send": remaining ÷ free slots (no free slot → 0 → skipped); never the full-deploy pass.
+        const sized = forced
+          ? { partMargin: remainingSlots > 0 ? remainingBudget / remainingSlots : 0, isFullDeploy: false }
+          : sizePartMargin({ remainingBudget, remainingSlots, maxPos, openHere, label: 'PAPER' });
         partMargin = sized.partMargin;
         if (!sized.isFullDeploy) {
           log(`[${accountState.name}] ¤ PAPER sizing: equity $${equity.toFixed(2)} × ${allocPct}% = $${budget.toFixed(2)} budget | used $${usedMargin.toFixed(2)} | remaining $${remainingBudget.toFixed(2)} ÷ ${remainingSlots} free slot(s) (window combined cap ${maxPos}) = $${partMargin.toFixed(2)}/position`);
         }
       }
 
-      if (!onlyExits && !paused && dayAllowsEntry && capAllowsEntry && !liveEntryBlocked) {
+      if (!onlyExits && !paused && (forced || (dayAllowsEntry && capAllowsEntry)) && !liveEntryBlocked) {
         // Fix B — pre-entry symbol guard (live armed). Delta treats each option contract as
         // ONE product, so if a position already exists on a candidate leg's symbol (e.g.
         // another spread's long at the strike we want to short, or a stuck half-open leg),
@@ -6920,7 +7041,8 @@ async function startSingleAccountEngine(account) {
         // committed when the candidate is staged in newEntries and reverted otherwise, so a
         // pair is never exited for a spread that then fails to enter. Committed victims are
         // booked like any strategy exit (pushed to `exited`) after this loop.
-        const rotateOn = isPaperAccount && !!config.replaceCloserAtm;
+        // Not for a scanner "Send": it must never close an open pair to make room.
+        const rotateOn = isPaperAccount && !!config.replaceCloserAtm && !forced;
         const rotatingIds = new Set();
         const rotateCommits = [];
         let pendingRotate = null;
@@ -7022,6 +7144,14 @@ async function startSingleAccountEngine(account) {
           };
           // Live accounts need a valid per-position margin part to size safely.
           if (liveArmed && partMargin == null) continue;
+          // Scanner "Send" never goes past the account's allocation or max positions: with no free
+          // slot or no allocated balance left, the normal sizing would still trade a minimum 1 unit.
+          if (forced && !(partMargin > 0.01)) {
+            const openFullNow = remaining.filter(p => p.underlying === underlying && p.sellQty > 0).length;
+            const capNow = activeCombinedCap();
+            logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: ${openFullNow >= capNow ? `max positions reached (${openFullNow} open, window max ${capNow})` : "the account's allocated balance is fully used"}.`);
+            continue;
+          }
           // Paper accounts self-skip when the allocated pool is exhausted — either no
           // per-position part at all, or the running pool consumed by entries already
           // opened THIS cycle leaves nothing (mirrors the live "no budget" self-skip).
@@ -7079,7 +7209,7 @@ async function startSingleAccountEngine(account) {
           // Paper weekly / monthly expiry mode (DTE 7 / 30) trades its Friday expiry down to
           // the last day, so the window DTE is not a minimum there.
           const daysRemaining = (new Date(config.expiry).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
-          if (activeExpiryMode() === 'daily' && daysRemaining < (effectiveConfig.daysToExpiry || 0)) {
+          if (!forced && activeExpiryMode() === 'daily' && daysRemaining < (effectiveConfig.daysToExpiry || 0)) {
             logWarn(`[${accountState.name}] Entry candidate ${spreadType.toUpperCase()} ${bStrike}/${sStrike} skipped: days to expiry (${daysRemaining.toFixed(2)}) is less than min required (${effectiveConfig.daysToExpiry})`);
             continue;
           }
@@ -7146,7 +7276,7 @@ async function startSingleAccountEngine(account) {
             return occ.includes(bStrike) || occ.includes(sStrike);
           });
 
-          // Shared Long Strikes (paper v2): on a shared long, full spreads that merely share
+          // Shared Long Strikes (paper): on a shared long, full spreads that merely share
           // this LONG (their short is elsewhere and they don't hold our short) are not a
           // conflict while fewer than MAX_SPREADS_PER_SHARED_LONG use it. Any other clash —
           // a short on our long, our short taken, or a long-only remnant — still blocks.
@@ -7451,7 +7581,7 @@ async function startSingleAccountEngine(account) {
             : calcMargin(entryBuyPrice, adjustedLotSize, spotPrice, adjustedSellQty, spread.sellLeg.lotSize, config.underlying, config.expiry);
 
           // ── Per-spread hedge leg (3rd long-only leg → long/short/long triplet) ──
-          // Live accounts and paper accounts with strategy_version >= 2, gated by the active window's Hedge toggle (calls and
+          // Paper and live accounts, gated by the active window's Hedge toggle (calls and
           // puts alike). The 3rd long sits one strike-width beyond the short (call: short +
           // width, put: short − width; nearest listed strike, pickHedgeStrike) and is sized as
           // THIS spread's own short qty × Hedge Lot %. Attached to this position (persisted in
@@ -7460,7 +7590,7 @@ async function startSingleAccountEngine(account) {
           // spread is SKIPPED (hedge on means hedged entries only, never a plain 2-leg).
           let hedgeLeg = null;
           let hedgeMargin = 0;
-          // Live accounts and paper v2+ (hedgeRequired), only when the window's Hedge toggle is on.
+          // Paper and live (hedgeRequired), only when the window's Hedge toggle is on.
           // Same candidate the ATM P&L gate priced (hedgeCandidateFor), re-read now.
           if (hedgeRequired) {
             // Qty = the FINAL (leverage / $195k-cap scaled) short qty × Hedge Lot %.
@@ -7567,6 +7697,7 @@ async function startSingleAccountEngine(account) {
             entryFee,
             margin: candidateMargin + hedgeMargin,
             _replaceableLongOnlyPos: replaceableLongOnlyPos,
+            _forced: !!forced, // scanner "Send" entry (outcome reported back to the request row)
           };
 
           // ── Pre-stage checks — before the governor reserves shared depth and before the
@@ -8688,6 +8819,7 @@ async function startSingleAccountEngine(account) {
             } else {
               // Persisted OK — this entry may now enter the in-memory book.
               persistedEntryIds.add(t.id);
+              if (t._forced && forcedCycle) forcedCycle.positionId = t.id;
               const originalLotSize = t.sellLeg.lotSize || 1;
               const ratioLong = t.buyLeg.lotSize / originalLotSize;
               // Net premium in USD. The premium P&L is scaled by lotSize (= contractValue ×
@@ -8762,6 +8894,23 @@ async function startSingleAccountEngine(account) {
         isEvaluating = false;
         evaluationStart = 0;
         liveEntryInFlight = false;
+      }
+      // Scanner "Send": write the outcome back to the request row.
+      if (forcedCycle) {
+        untapForced?.();
+        const fc = forcedCycle;
+        const r = fc.req;
+        const label = `${String(r.type).toUpperCase()} ${r.buy_strike}/${r.sell_strike}`;
+        if (fc.positionId) {
+          log(`[${accountState.name}] ◎ Scanner entry ${label} entered (${fc.positionId}).`);
+          finishScannerEntry(r.id, { status: 'entered', position_id: fc.positionId, message: `Entered ${label}.` });
+        } else {
+          const why = fc.notes.length ? fc.notes[fc.notes.length - 1] : 'Not entered — see the engine log for this account.';
+          log(`[${accountState.name}] ◎ Scanner entry ${label} not entered: ${why}`);
+          finishScannerEntry(r.id, { status: 'skipped', message: why.slice(0, 500) });
+        }
+        // The request took this minute's first cycle: run the normal entry scan right after.
+        if (fc.freshMinute && !stale()) entryRetryAt = Date.now() + 1000;
       }
       // NB: no entry-minute stamp here — it is claimed on START (see above) so a long
       // cycle can never consume the minute it never scanned.
@@ -9489,6 +9638,7 @@ async function startSingleAccountEngine(account) {
       if (flags.cancelReq) await processCancelRequests().catch(() => {});
       if (flags.orderReq) await processOrderRequests().catch(() => {});
       if (flags.editReq) await processEditRequests().catch(() => {});
+      if (flags.scannerEntry) await processScannerEntries().catch(() => {});
     }
   };
 }
@@ -9781,7 +9931,7 @@ export async function startPaperTradingEngine() {
       } catch (e) { logError('Consolidated request poll error:', e); return; }
     }
     try {
-      const [closeAllRes, closeReqRes, cancelReqRes, manualExRes, orderReqRes, editReqRes] = await Promise.all([
+      const [closeAllRes, closeReqRes, cancelReqRes, manualExRes, orderReqRes, editReqRes, scannerEntryRes] = await Promise.all([
         supabase.from('paper_trading_accounts').select('id').eq('close_all_requested', true).in('id', ids),
         liveIds.length
           ? supabase.from('delta_close_requests').select('account_id').in('account_id', liveIds)
@@ -9794,6 +9944,7 @@ export async function startPaperTradingEngine() {
         // unarmed account is answered with a clear failure instead of sitting pending.
         supabase.from('delta_order_requests').select('account_id').eq('status', 'pending').in('account_id', ids),
         supabase.from('delta_edit_requests').select('account_id').eq('status', 'pending').in('account_id', ids),
+        supabase.from('scanner_entry_requests').select('account_id').eq('status', 'pending').in('account_id', ids),
       ]);
       const pending = {};
       const mark = (rows, key, field) => {
@@ -9810,6 +9961,7 @@ export async function startPaperTradingEngine() {
       mark(manualExRes.data, 'manualEx', 'account_id');
       mark(orderReqRes.data, 'orderReq', 'account_id');
       mark(editReqRes.data, 'editReq', 'account_id');
+      mark(scannerEntryRes.data, 'scannerEntry', 'account_id');
       for (const [accountId, flags] of Object.entries(pending)) {
         const engine = runningEngines[accountId];
         if (engine?.processRequests) engine.processRequests(flags).catch(() => {});

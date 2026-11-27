@@ -42,7 +42,7 @@ in full.
 | **Armed / Disarmed** | A live account with `live_enabled = true` sends real orders (unless dry-run is on). Disarmed = no new real orders |
 | **Dry-run** | `DELTA_LIVE_DRYRUN=true` (default): live orders are only logged |
 | **Paused** | Account opens no new entries; exits continue |
-| **Strategy version (v1 / v2)** | Per-account switch: paper runs experimental **v2**, live the stable **v1**. Features are validated on v2 and then promoted |
+| **Strategy version (v1 / v2)** | *Removed from the code 2026-11-27.* Was a per-account switch (paper v2, live v1); paper vs live is now read from the account's mode. The DB column remains only for the account-group rule |
 | **Schedule window** | A named IST time range that overrides filters (DTE, caps, exits, hedge…) while active. [LLD.md §12](LLD.md#12-time-based-filter-schedules) |
 | **Control Panel** | Account-level (global) filters, edited with Apply / Reset |
 | **Account group / leader** | Accounts sharing one set of settings; saving on the **leader** copies to the others (`sync_account_group`) |

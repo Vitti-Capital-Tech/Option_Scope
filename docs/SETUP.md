@@ -125,9 +125,8 @@ it. Bypass only when you are sure: `git commit --no-verify`.
 
 ## 8) Tests
 
-There is no automated test suite. Changes are validated on **paper** accounts first
-(strategy version 2), then promoted to live — see *Strategy Versioning* in
-[paper_trading_explained.md](paper_trading_explained.md). Live changes are validated in
+There is no automated test suite. Changes are validated on **paper** accounts first, then promoted to live
+(paper-only behaviour is gated on the account's mode). Live changes are validated in
 dry-run (`DELTA_LIVE_DRYRUN=true`) before an account is armed.
 
 ## Where to read next

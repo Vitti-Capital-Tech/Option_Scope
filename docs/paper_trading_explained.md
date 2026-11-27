@@ -45,31 +45,9 @@ The strategy is a **ratio spread** — you buy 1 option (the long/buy leg) and s
 
 ## Strategy Versioning (Paper vs Live)
 
-**Column**: `paper_trading_config.strategy_version` (default `1`) · **Migrations**: `018`, `019`, `020`
+**Strategy version removed (2026-11-27).** `paper_trading_config.strategy_version` (migrations `018`–`020`) used to gate experimental logic (paper = v2, live = v1). It had become the same as the account's mode — every paper account was v2 and every live account v1 — so the code now reads **paper vs live straight from the account's `mode`** and nothing branches on the version. The column stays in the database, written at account creation (paper 2, live 1), only because the account-group membership rule (migrations `050` / `052`) requires group members to share it.
 
-The strategy logic is one shared codebase, but a per-account **`strategy_version`** flag lets experimental changes (new filters, changed entry/exit rules) run on **paper** accounts without touching **live** accounts:
-
-- **Live accounts → version 1 (stable).** They only ever run logic that has already been validated.
-- **Paper accounts → version 2 (experimental testbed).** New logic lands here first.
-
-Both the **engine** (behaviour) and the **UI** (which controls are shown) branch on the **same** value — the engine reads `config.strategyVersion`, the dashboard reads it off the loaded config — so a v2-only feature neither runs nor appears on a v1 (live) account.
-
-**Adding a versioned change**: branch only where behaviour actually diverges; everything else stays shared.
-
-```js
-if (config.strategyVersion >= 2) { /* new experimental logic */ }
-else { /* stable logic — live accounts run this */ }
-```
-
-**Promotion (paper → live)**: once validated on paper, either flip a live account's `strategy_version` to `2` in the DB (a single change, no redeploy — lets you roll out to one live account first, then the rest), **or** fold the v2 code into the shared path so it becomes the new stable v1. Keep at most two generations alive (stable + experimental) and delete the old branch once every account is promoted.
-
-> [!NOTE]
-> **Current fleet policy (migration `020`)**: **all paper accounts are v2, all live accounts are v1**, and new accounts inherit this from their `mode` at creation (paper → 2, live → 1). This makes paper the experimental testbed rather than an exact mirror of live. The `strategy_version` column is kept (not replaced by a raw `mode` check) so a single live account can still be promoted to v2 independently for a staged real-money rollout.
-
-**v2-gated features so far:**
-- **Per-window Days to Expiry** (migration `019`): see filter [#9](#entry-filters-what-makes-a-good-spread) and [Time-Based Filter Schedules](#time-based-filter-schedules).
-- **Trading Days (day-of-week entry filter)** (migration `021`): see [Trading Days](#trading-days-day-of-week-entry-filter).
-- **Hedge Leg (per-spread 3rd long / triplet)** (migrations `022` config, `023` leg column): see [Hedge Leg](#hedge-leg--per-spread-3rd-long-long--short--long-triplet).
+New logic is still tried on **paper** first (gated with `accountState.mode !== 'live'` in the engine, `isPaper` in the dashboard) and reaches live once validated — by dropping that gate. Paper-only today: Shared Long Strikes, ATM P&L / ROI floors, Max Net Credit, Replace Farther Pair, Account Max SL, weekly / monthly expiry modes; the Hedge Leg, Trading Days and per-window Min DTE run on paper and live.
 
 ---
 
@@ -631,6 +609,7 @@ This is **execution-realistic** — no cheating with mid-prices.
 
 ### Entry quote & tradability gates (all accounts)
 
+- **Scanner 1-click orders (2026-11-27, migration `077`, paper accounts only for now).** The Ratio Spread Scanner's **⚡ 1-click Paper** panel: pick paper accounts, switch ON, and each row's **Send** enters that spread on all of them at once. Each engine runs a full cycle right away for only that spread: the row's ATM scaling and hedge (strike + Hedge Lot %) are used; the window's scan filters, ATM P&L / ROI floors, Max Net Debit, time window and min days to expiry are skipped; max positions, allocation (remaining ÷ free slots), pause, held strikes, quotes and depth still apply; Replace Farther Pair never fires for it. The result (entered / not entered + reason) shows in the scanner. Details: `docs/live_trading.md`.
 - **No schedule window yet → no entries (2026-11-26).** An account's engine starts as soon as the account row exists, before the dashboard has saved its window. Entering then used the base config (base max positions, no Hedge Leg — hedge lives on windows only): *hedge 6am* and *hedge all time* each opened 4 unhedged pairs seconds after creation. Entries now wait until the account has at least one window (log `No schedule window yet — entries held …`); exits are unaffected.
 - **Two-sided, fresh quote.** Before a candidate is staged (before the [governor](#cross-account-entry-governor-paper--live) reserves depth and before it takes a cap slot), the long and the short need a two-sided quote, and the side hit — long / hedge **ask**, short **bid** — must have a price (and, when reported, a size) updated within `ENTRY_QUOTE_FRESH_MS` (env, default 60 s) and a size > 0. The hedge needs only its ask. Added after 2026-10-21 21:57 UTC, when `C-BTC-86400` showed a ~$35 bid with no buyer behind it: 8 accounts bought the long, couldn't sell the short even at $1, and unwound three minutes in a row.
 - **Delta trading status.** Products whose `trading_status` is not `operational` are left out of the scan pool and the hedge picker (`tradableOk`), logged once per change (`⊘ Delta trading disrupted on N product(s)`). Open positions are unaffected.
@@ -1344,13 +1323,13 @@ The following parameters are scheduled per window:
 14. **SL/TP Diff (pts)** — label *SL/TP Pts* (`slTpDecoyDiff`) — per-window SL/TP decoy trigger offset (migration `031`)
 15. **Short Exit Price / Variable Ladder** — *Short Exit*, *Var.*, *Slices* (`shortExitPrice`, `variableExitSlices`, `longExitSlices`) — per-window exit ladder controls (migration `033`)
 16. **Days to Expiry** — *Min DTE* (`daysToExpiry`; paper: **7** = weekly Friday expiry, **30** = monthly last-Friday expiry, see Product Refresh & Expiry Rollover) — **all accounts, paper and live** (migration `019`). The window's value guards its own entries; the account-global traded expiry **follows the active window** as **(current date + that window's DTE)**, re-selected in ~realtime as windows change (smallest DTE wins on overlap). See [Strategy Versioning](#strategy-versioning-paper-vs-live).
-17. **Hedge Leg** (`hedgeEnabled` + `hedgeLotPct`) — **paper v2 and live accounts** (off by default) (config migration `041`, leg column `023`). Adds a per-spread 3rd long-only leg (long/short/long triplet). See [Hedge Leg](#hedge-leg--per-spread-3rd-long-long--short--long-triplet).
+17. **Hedge Leg** (`hedgeEnabled` + `hedgeLotPct`) — **paper and live accounts** (off by default) (config migration `041`, leg column `023`). Adds a per-spread 3rd long-only leg (long/short/long triplet). See [Hedge Leg](#hedge-leg--per-spread-3rd-long-long--short--long-triplet).
 
 18. **Shared Long Strikes** (`sharedLongStrikes`, default `0` = off) — **v2 (experimental paper) accounts only** (migration `044`). See [Shared Long Strikes](#shared-long-strikes-paper-v2).
 
 All other filter settings (like `minSellPremium`, `maxRatioDeviation`, etc.) default back to the base account config.
 
-### Shared Long Strikes (paper v2)
+### Shared Long Strikes (paper only)
 
 **File**: [paperTradingEngine.js](../engine/paperTradingEngine.js) (`sharedLongCount`, `pickSharedLongSpreads`) · **Columns**: `paper_trading_schedules.shared_long_strikes`, `active_positions.long_share_slot` · **Migration**: `044`
 
@@ -1738,9 +1717,9 @@ flowchart TD
 Several accounts can share **one set of settings** while still trading on their own.
 
 - **What is shared**: everything you set — Control Panel filters, exits, trade days, full deploy, excluded strikes, allocation % / entry offsets / position caps, and all schedule windows (with their hedge, caps and exit overrides).
-- **What stays per account**: balance and initial balance, open positions, P&L and history, strategy version, credentials, Start Live / Disarm, Pause and Telegram. Sizing still uses each account's own balance.
+- **What stays per account**: balance and initial balance, open positions, P&L and history, credentials, Start Live / Disarm, Pause and Telegram. Sizing still uses each account's own balance.
 - **How it works**: settings are still saved per account. Each group has a **leader** (`account_groups.leader_account_id`, migration `064`; if none is set, or the leader left, the first-created member). When the group's owner or an admin saves a change on the **leader** (Apply filters, Apply schedules, Edit account), the same settings are copied to every other member at once (`sync_account_group` with the leader as source). A save on a follower stays on that account until the leader's next save — the banner says "this account follows X". A client editing their own account that sits in someone else's group just saves it for that account. The engine sees each member's settings change exactly as if you had edited it.
-- **Rules**: same mode (paper or live) and same strategy version. Members may belong to **different users** — e.g. an admin's group of client accounts (migration `052`); only the group's owner or an admin can add accounts to it. An account can be in one group at a time.
+- **Rules**: same mode (paper or live). Members may belong to **different users** — e.g. an admin's group of client accounts (migration `052`); only the group's owner or an admin can add accounts to it. An account can be in one group at a time.
 - **Exit points differ per member (migrations `053`/`054`)**: when windows are copied, every other member's window **Exit Points** become the saved value ± a random whole number from 10 to 50 (only + if − would go below 0), so the accounts don't all exit at the same spot level. The account you saved from keeps exactly what you typed. A member keeps its offset while that window's value is unchanged and gets a new one when you change it; within one window no two accounts of the group end up on the same exit points. Typing a value directly into a member makes it the new base. Only schedule windows get the offset (not the account-level fallback), and an ATM exit ignores points.
 - **Random or Fixed difference (migration `058`)**: each group has an *Exit points difference* switch in the Groups modal — **Fixed** (the default, also for groups that existed before `058`) with a *Step* (default 25, editable), or **Random** (the ± offset above, drawn from the group's *From–To* range, default 10–50). Fixed keeps the saved account on its typed value and puts the others on an arithmetic progression around it, e.g. 5 accounts at step 25 → −50, −25, 0, +25, +50 (given out in account creation order, so each account keeps its place; a minus step that would go below 0 is replaced by the next plus step). Changing the setting re-applies it to the group's windows immediately. It can also be chosen when creating a group.
 - **Managing**: **Groups** button next to *New Account*. Create a group from two or more accounts and choose which one the group follows (it becomes the leader). Each group has a *Group follows* selector to change the leader — the new leader's settings are copied to the others at once (`handleSetGroupLeader`); the leader's chip carries a crown. Adding an account replaces its settings with the leader's. Removing the leader falls back to the first-created member. Removing an account, or deleting the group, leaves the accounts with their current settings; they just stop syncing.

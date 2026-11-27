@@ -413,12 +413,26 @@ export function formatLog(msg) {
  *   2. Never make the marker the only handle — keep a distinctive ASCII phrase
  *      in the message, and grep on that.
  */
+// Log taps: a listener sees every log / logWarn message (used to capture why a scanner entry
+// request was skipped — the per-candidate skip reasons are plain log lines). A tap must never
+// throw into the logger.
+const logTaps = new Set();
+export function addLogTap(fn) {
+  logTaps.add(fn);
+  return () => logTaps.delete(fn);
+}
+function tapLog(msg) {
+  for (const fn of logTaps) { try { fn(String(msg)); } catch { /* ignore */ } }
+}
+
 export function log(msg) {
   console.log(formatLog(msg));
+  if (logTaps.size) tapLog(msg);
 }
 
 export function logWarn(msg) {
   console.warn(formatLog(`⚠ ${msg}`));
+  if (logTaps.size) tapLog(msg);
 }
 
 export function logError(msg, err) {

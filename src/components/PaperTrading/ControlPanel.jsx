@@ -40,7 +40,6 @@ export default function ControlPanel({
   tradeHistory,
   historyFilterDate,
   now,
-  strategyVersion = 1,
   balanceAllocationPct,
   initialBalance,
   walletBalance,
@@ -468,7 +467,6 @@ export default function ControlPanel({
           historyFilterDate={historyFilterDate}
           now={now}
           currentUnderlying={underlying}
-          strategyVersion={strategyVersion}
           isPaper={!accountIsLive}
           balanceAllocationPct={balanceAllocationPct}
           initialBalance={initialBalance}

@@ -120,7 +120,7 @@ apply on databases with existing duplicates.
 | 016 | Admins can manage accounts they don't own | Auth |
 | 017 | `order_history` on the live snapshot | Live |
 | 017 | Realtime for config + schedules *(not in bundle)* | Sync |
-| 018 | Per-account `strategy_version` | Versioning |
+| 018 | Per-account `strategy_version` *(no longer read by the code since 2026-11-27 — kept for the account-group rule)* | Versioning |
 | 019 | Per-window Min Days to Expiry | Schedules |
 | 020 | Backfill strategy versions *(data, not in bundle)* | Versioning |
 | 021 | Trading Days (day-of-week entry filter) | Entries |
@@ -147,7 +147,7 @@ apply on databases with existing duplicates.
 | 041 | Hedge toggle + hedge lot % | Hedge |
 | 042 | Drop old 022 hedge columns | Hedge |
 | 043 | Hedge max price + IV diff range | Hedge |
-| 044 | Shared long strikes (paper v2) | Entries |
+| 044 | Shared long strikes (paper only) | Entries |
 | 045 | `live_daily_stats` | Reporting |
 | 046 | Backfill flags on daily stats | Reporting |
 | 047 | `pnl_is_estimate` on daily stats | Reporting |
@@ -179,6 +179,7 @@ apply on databases with existing duplicates.
 | 074 | Min Hedge Strike Diff (`paper_trading_schedules.hedge_strike_diff_min`, default 0; paper only until 2026-11-27, now paper and live). Since 2026-11-26 it caps how FAR the hedge may be: up to (spread width − value) beyond the short (1800 − 300 → 1500); it was a minimum distance from the short before | Hedge |
 | 075 | Partial scale-down **Ratio Gap** (`paper_trading_config.partial_scale_ratio_gap`, default 1): slice while live ATM ratio ≥ new ratio + gap | Scale-down |
 | 076 | Manual order on **extra accounts** (`place_manual_order(..., p_extra_accounts UUID[])`; drops the 8-arg version): each extra must be live and the caller's own (or admin) | Live |
+| 077 | Scanner **1-click orders** (PAPER accounts only for now — `request_scanner_entry` rejects live accounts): `scanner_entry_requests` (one row per account, shared `group_request_id`, status pending → processing → entered / skipped / failed / expired + message / position id), `request_scanner_entry(accounts[], underlying, expiry, type, buy, sell, hedge strike, Hedge Lot %, ATM scaling, call %, put %)` (each account a paper account owned by the caller or admin; the same spread for the same account within 10 s is ignored), and `get_pending_engine_requests` gains the `scannerEntry` kind | Live |
 
 ## RPC reference
 
