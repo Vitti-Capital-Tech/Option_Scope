@@ -4705,12 +4705,8 @@ async function startSingleAccountEngine(account) {
               hedgeIvDiffMax: activeSchedule.hedgeIvDiffMax ?? 2,
             }
             : {}),
-          // Min Hedge Strike Diff (migration 074) — PAPER accounts only; live keeps the default range.
-          ...(accountState.mode !== 'live'
-            ? {
-              hedgeStrikeDiffMin: activeSchedule.hedgeStrikeDiffMin ?? 0,
-            }
-            : {}),
+          // Min Hedge Strike Diff (migration 074) — paper AND live (promoted to live 2026-11-27).
+          hedgeStrikeDiffMin: activeSchedule.hedgeStrikeDiffMin ?? 0,
           // Shared Long Strikes stay paper v2 only (sharedLongCount is gated the same way).
           ...(config.strategyVersion >= 2
             ? { sharedLongStrikes: activeSchedule.sharedLongStrikes ?? 0 }
